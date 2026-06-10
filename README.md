@@ -1,0 +1,101 @@
+# Claude Code Model Triage Layer
+
+A drop-in config layer for [Claude Code](https://code.claude.com) that routes every task to the **cheapest adequate Claude model** (Haiku → Sonnet → Opus → Fable 5), escalates automatically when a cheaper tier's output fails verification, and reports per-tier usage — **all billed to your Claude Pro/Max subscription**, not the pay-per-token API.
+
+No app, no server, no API keys. It's five subagent definitions, one instructions file, a statusline script, and three settings keys.
+
+## Why this exists
+
+Top-tier models (Fable 5) are excellent but burn subscription quota ~3–5× faster than Sonnet. Two facts shape the design:
+
+1. **A standalone router (Agent SDK / API) cannot use subscription auth** — Anthropic's policy requires API keys for SDK-built agents. The only subscription-billed implementation is configuration *inside* Claude Code.
+2. **Claude Code has no automatic prompt router** — nothing can swap the main-loop model per prompt. So triage is done by the orchestrating model itself, following a rubric, delegating to subagents pinned to cheaper/stronger models.
+
+## How it works
+
+```
+You ──► Main loop: Opus (1M context, high effort)  ← triage rubric (triage.md)
+              │  classifies difficulty upfront, fans out in parallel
+              ├──► triage-quick-task      Haiku  · low    renames, lookups, boilerplate
+              ├──► triage-builder         Sonnet · medium well-specified features/fixes
+              ├──► triage-deep-reasoner   Opus   · xhigh  hard debugging, design, fan-out
+              ├──► triage-fable-architect Fable  · xhigh  hardest problems (auto, with ⚠ notice)
+              └──► triage-reviewer        Opus   · high   read-only quality gate
+```
+
+- **Routing**: the orchestrator classifies each task by difficulty *before* delegating (no wasteful "try cheap first" ladder-climbing) and parallelizes independent subtasks.
+- **Verification**: after a worker returns code, the orchestrator runs the project's own tests/lint/build before accepting. No objective check available? The read-only Opus reviewer reads the diff — far cheaper than redoing the work.
+- **Escalation**: workers reply `ESCALATE:` when out of their depth; failed verification escalates one tier up with the failed attempt as context. Escalation to Fable is automatic but always announced: `⚠ Escalating to Fable: <reason>`.
+- **Visibility**: a one-line per-tier token tally after each task (say `usage report` anytime), and a statusline showing `model · ctx N%` that turns red at ≥60% context.
+
+## Requirements
+
+- Claude Code with a **Pro or Max subscription** login (this is what makes it subscription-billed)
+- `jq` (for the installer and statusline): `brew install jq`
+- **Max plan**: Opus 1M context is included. **Pro plan**: Opus 1M bills extra usage credits — after installing, change `"model"` to `"opus"` (200K) in `~/.claude/settings.json`.
+
+## Install
+
+```bash
+git clone <this-repo> && cd claude-triage-layer
+./install.sh
+```
+
+Then **start a new Claude Code session** (config loads at startup). The installer:
+
+- copies the 5 agents to `~/.claude/agents/`, the rubric to `~/.claude/triage.md`, and the statusline script
+- appends one line — `@triage.md` — to your global `~/.claude/CLAUDE.md` (append-only; never overwrites)
+- sets `model: "opus[1m]"`, `effortLevel: "high"`, and the `statusLine` in `~/.claude/settings.json`, **saving your previous values** to `~/.claude/triage-preinstall.json` first
+- warns if `ANTHROPIC_API_KEY` is set (see Caveats)
+
+<details>
+<summary>Manual install (no script)</summary>
+
+1. `cp agents/triage-*.md ~/.claude/agents/`
+2. `cp triage.md ~/.claude/ && cp statusline.sh ~/.claude/ && chmod +x ~/.claude/statusline.sh`
+3. Append a line containing exactly `@triage.md` to `~/.claude/CLAUDE.md`
+4. In `~/.claude/settings.json` (note your old values first):
+   ```json
+   {
+     "model": "opus[1m]",
+     "effortLevel": "high",
+     "statusLine": { "type": "command", "command": "~/.claude/statusline.sh" }
+   }
+   ```
+</details>
+
+## Using it
+
+**Nothing to invoke — it's always on in new sessions.** Ask for what you want; the orchestrator decides which tier does it. Useful controls:
+
+| You want | Do |
+|---|---|
+| Override its routing | "send this to triage-deep-reasoner" / "just use triage-quick-task" |
+| A full top-tier session | `/model fable` — the rubric still delegates cheap work down |
+| A cheap session | `/model sonnet` |
+| One-turn deep reasoning | include `ultrathink` in your prompt |
+| Spend tally | say `usage report` (also printed after each task) |
+| Subscription quota | `/usage` (the tally covers delegated tokens only) |
+
+**Verify it's working**: in a fresh session, ask for a trivial rename — you should see a Task spawn for `triage-quick-task` (Haiku). Ask for gnarly debugging — it should go straight to `triage-deep-reasoner`.
+
+## Customizing
+
+- **Tier models/effort**: edit the frontmatter in `~/.claude/agents/triage-*.md` (`model:` takes `haiku|sonnet|opus|fable|inherit` or full IDs; `effort:` takes `low|medium|high|xhigh|max`). Aliases track the latest models automatically.
+- **Routing behavior**: edit `~/.claude/triage.md` (e.g. require approval before Fable instead of just a notification).
+- **Per project**: a project's own `CLAUDE.md` can override or opt out.
+- **Context-warning threshold**: edit the `60` in `~/.claude/statusline.sh`.
+
+## Disable / uninstall
+
+- **Kill switch** (keep files, stop routing): delete the `@triage.md` line from `~/.claude/CLAUDE.md`.
+- **Full uninstall**: `./uninstall.sh` — removes all files and restores your pre-install `model`/`effortLevel`/`statusLine` from the snapshot.
+
+Every piece degrades independently: unknown frontmatter keys are ignored, a broken statusline shows nothing, agents fall back to inheriting the session model.
+
+## Caveats
+
+- **`ANTHROPIC_API_KEY` silently overrides subscription billing.** If it's set in your environment, Claude Code bills the API instead of your plan. Unset it.
+- The rubric is **instructions, not enforcement** — the orchestrator follows it reliably but it isn't a hard gate. The deterministic parts (per-agent model/effort pins, statusline) don't depend on model compliance.
+- Per-model subscription quota weighting is undocumented; expect savings as *more usable hours per week* rather than a number on a dashboard.
+- Built against Claude Code as of June 2026 (statusline `context_window.used_percentage`, `opus[1m]` syntax, `effort:` agent frontmatter). If a future version changes these, the affected piece degrades gracefully — see Disable above.
