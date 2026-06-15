@@ -26,7 +26,8 @@ You ──► Main loop: Opus (1M context, high effort)  ← triage rubric (tria
 - **Routing**: the orchestrator classifies each task by difficulty *before* delegating (no wasteful "try cheap first" ladder-climbing) and parallelizes independent subtasks.
 - **Verification**: after a worker returns code, the orchestrator runs the project's own tests/lint/build before accepting. No objective check available? The read-only Opus reviewer reads the diff — far cheaper than redoing the work.
 - **Escalation**: workers reply `ESCALATE:` when out of their depth; failed verification escalates one tier up with the failed attempt as context. Escalation to Fable is automatic but always announced: `⚠ Escalating to Fable: <reason>`.
-- **Visibility**: a one-line per-tier token tally after each task (say `usage report` anytime), and a statusline showing `model · ctx N%` that turns red at ≥60% context.
+- **Visibility**: a one-line per-tier token tally after each task (say `usage report` anytime), and a statusline showing `model · ctx N%` that turns red at ≥60% context — plus live `ccusage` cost/burn when `ccusage` is installed.
+- **Conveniences**: each tier carries `memory: project` (per-codebase memory across sessions); `/triage-run <task>` runs classify→delegate→verify as one command; a non-blocking SubagentStop hook reminds you to run the project's checks after a worker finishes. See `triage.md` § Conveniences.
 
 ## Requirements
 
@@ -43,7 +44,7 @@ git clone <this-repo> && cd claude-triage-layer
 
 Then **start a new Claude Code session** (config loads at startup). The installer:
 
-- copies the 5 agents to `~/.claude/agents/`, the rubric to `~/.claude/triage.md`, and the statusline script
+- copies the 5 agents to `~/.claude/agents/`, the rubric to `~/.claude/triage.md`, the statusline script, the SubagentStop hook (`~/.claude/hooks/`), and the `/triage-run` workflow (`~/.claude/workflows/`)
 - appends one line — `@triage.md` — to your global `~/.claude/CLAUDE.md` (append-only; never overwrites)
 - sets `model: "opus[1m]"`, `effortLevel: "high"`, and the `statusLine` in `~/.claude/settings.json`, **saving your previous values** to `~/.claude/triage-preinstall.json` first
 - warns if `ANTHROPIC_API_KEY` is set (see Caveats)

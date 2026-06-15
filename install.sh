@@ -8,13 +8,17 @@ REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 command -v jq >/dev/null || { echo "ERROR: jq is required (brew install jq)"; exit 1; }
 
-mkdir -p "$CLAUDE_DIR/agents"
+mkdir -p "$CLAUDE_DIR/agents" "$CLAUDE_DIR/hooks" "$CLAUDE_DIR/workflows"
 
-# 1. Tier agents + rubric + statusline
+# 1. Tier agents (with `memory: project`) + rubric + statusline + hook + workflow
 cp "$REPO_DIR"/agents/triage-*.md "$CLAUDE_DIR/agents/"
 cp "$REPO_DIR/triage.md" "$CLAUDE_DIR/triage.md"
 cp "$REPO_DIR/statusline.sh" "$CLAUDE_DIR/statusline.sh"
 chmod +x "$CLAUDE_DIR/statusline.sh"
+# SubagentStop verification-reminder hook + reusable /triage-run command
+cp "$REPO_DIR/hooks/triage-verify.sh" "$CLAUDE_DIR/hooks/triage-verify.sh"
+chmod +x "$CLAUDE_DIR/hooks/triage-verify.sh"
+cp "$REPO_DIR/workflows/triage-run.js" "$CLAUDE_DIR/workflows/triage-run.js"
 
 # 2. Wire the rubric into the global CLAUDE.md (append-only; never overwrites)
 touch "$CLAUDE_DIR/CLAUDE.md"
@@ -34,6 +38,16 @@ jq --arg cmd "$CLAUDE_DIR/statusline.sh" \
   '.model = "opus[1m]" | .effortLevel = "high"
    | .statusLine = {type: "command", command: $cmd}' \
   "$SETTINGS" > "$tmp" && mv "$tmp" "$SETTINGS"
+
+# 3b. Wire the SubagentStop verification-reminder hook (idempotent; never clobbers
+#     other hooks). Drops any prior copy of our hook, then re-adds it.
+tmp=$(mktemp)
+jq --arg hook "$CLAUDE_DIR/hooks/triage-verify.sh" '
+  .hooks.SubagentStop = (((.hooks.SubagentStop // [])
+      | map(select((.hooks // [] | map(.command) | index($hook)) | not)))
+    + [{matcher: "triage-builder|triage-quick-task",
+        hooks: [{type: "command", command: $hook, timeout: 15}]}])
+' "$SETTINGS" > "$tmp" && mv "$tmp" "$SETTINGS"
 
 # 4. Billing-safety warning
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then

@@ -38,6 +38,13 @@ Track the per-subagent token counts reported in each Task result, grouped by tie
 
 `Usage: haiku 12k · sonnet 85k · opus 40k · fable 0 (orchestrator excluded; /usage for quota)`
 
+## Conveniences
+
+- **Per-agent memory.** Each tier agent carries `memory: project` frontmatter, so it keeps a per-codebase `.claude/agent-memory/<agent-name>/MEMORY.md` and accumulates patterns across sessions instead of starting fresh. (Requires Claude Code ≥ 2.1.172.)
+- **`/triage-run <task>`.** A reusable workflow (`~/.claude/workflows/triage-run.js`) that runs the whole loop as one command: classify → delegate to the right tier(s) via `agentType` → verify (objective check or reviewer).
+- **SubagentStop reminder hook** (`~/.claude/hooks/triage-verify.sh`). When `triage-builder`/`triage-quick-task` finish, it surfaces the project's detected check commands so the verification protocol isn't silently skipped. **Non-blocking and side-effect-free** — it reminds, it does not run tests itself. (Requires Claude Code ≥ 2.1.163 for `additionalContext`; degrades to a harmless no-op otherwise.)
+- **Statusline** shows live `ccusage` cost / 5-hour-block burn **if ccusage is installed** (`npm i -g ccusage`, or `bun`), then appends `model · context %` (⚠ at ≥60%). With ccusage absent it falls back to `model · context %` — no `npx`-per-render lag.
+
 ## Uninstall / disable
 
 Your pre-install `settings.json` values are saved by `install.sh` to `~/.claude/triage-preinstall.json`.
@@ -45,5 +52,5 @@ Your pre-install `settings.json` values are saved by `install.sh` to `~/.claude/
 - **Disable routing only**: remove the `@triage.md` line from `~/.claude/CLAUDE.md`.
 - **Full uninstall**: run `uninstall.sh` from the repo, or manually:
   1. Remove the `@triage.md` line from `~/.claude/CLAUDE.md`.
-  2. `rm ~/.claude/agents/triage-*.md ~/.claude/triage.md ~/.claude/statusline.sh`
-  3. In `~/.claude/settings.json`: restore `model` and `effortLevel` from `~/.claude/triage-preinstall.json` and delete the `statusLine` key.
+  2. `rm ~/.claude/agents/triage-*.md ~/.claude/triage.md ~/.claude/statusline.sh ~/.claude/hooks/triage-verify.sh ~/.claude/workflows/triage-run.js` and `rm -rf ~/.claude/agent-memory/triage-*`.
+  3. In `~/.claude/settings.json`: restore `model` and `effortLevel` from `~/.claude/triage-preinstall.json`, delete the `statusLine` key, and remove the `hooks.SubagentStop` entry pointing at `triage-verify.sh`.
