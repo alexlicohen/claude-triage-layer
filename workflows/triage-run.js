@@ -52,11 +52,27 @@ const plan = await agent(
 
 phase('Execute')
 const TIER_AGENT = { quick: 'triage-quick-task', builder: 'triage-builder', deep: 'triage-deep-reasoner', fable: 'triage-fable-architect' }
+// Fable is disabled org-wide (Anthropic-side) as of 2026-06-29. While unavailable,
+// remap the `fable` tier to triage-deep-reasoner at MAX effort (triage.md routing
+// rule: Fable tier unavailable → deep-reasoner at max). Flip to true when restored.
+const FABLE_AVAILABLE = false
 const results = await parallel(plan.subtasks.map(st => () => {
-  if (st.tier === 'fable') log(`⚠ Escalating to Fable: ${st.desc}`)
+  let agentType = TIER_AGENT[st.tier] || 'triage-builder'
+  const opts = { phase: 'Execute' }
+  if (st.tier === 'fable') {
+    if (FABLE_AVAILABLE) {
+      log(`⚠ Escalating to Fable: ${st.desc}`)
+    } else {
+      agentType = 'triage-deep-reasoner'
+      opts.effort = 'max'
+      log(`⚠ Fable unavailable — using triage-deep-reasoner at max effort: ${st.desc}`)
+    }
+  }
+  opts.agentType = agentType
+  opts.label = `${st.tier === 'fable' && !FABLE_AVAILABLE ? 'deep←fable' : st.tier}:${st.desc.slice(0, 24)}`
   return agent(
     `${st.desc}\n\nRelevant files: ${(st.files || []).join(', ') || '(discover)'}\nAcceptance criteria: ${st.acceptance}`,
-    { label: `${st.tier}:${st.desc.slice(0, 28)}`, phase: 'Execute', agentType: TIER_AGENT[st.tier] || 'triage-builder' }
+    opts
   ).then(out => ({ subtask: st, output: out }))
 })).then(r => r.filter(Boolean))
 
