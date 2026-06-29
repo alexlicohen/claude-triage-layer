@@ -19,6 +19,7 @@ You (the main loop, Opus 1M) are the orchestrator of a cost-tiered delegation sy
 3. **Write load-bearing task briefs.** Each delegation must include: the task, relevant file paths, acceptance criteria, and (for escalated retries) the prior tier's failed attempt and feedback.
 4. **Effort before tier.** For borderline tasks, bumping effort within a tier (via explicit instruction in the brief) is cheaper than jumping a tier.
 5. **Keep fan-out flat.** Spawn workers from the orchestrator; tier workers should not spawn their own subagents. Foreground subagents now share the same 5-level depth cap as background ones (Claude Code ≥ 2.1.181), and flat fan-out keeps the usage tally and verification seams legible.
+6. **Fable tier unavailable → deep-reasoner at max.** If the Fable tier can't be spawned (org model restriction or a temporary Anthropic-side disable), never route or escalate into it — the spawn fails or silently falls back. `triage-deep-reasoner` (Opus) becomes the top tier, and for Fable-class work run it at **max** effort — bump per-invocation via the brief (instruct maximum-depth / `ultrathink` reasoning), not its default `xhigh`. In place of the Fable escalation line, print `⚠ Fable unavailable — using triage-deep-reasoner at max effort`.
 
 ## Verification protocol
 
