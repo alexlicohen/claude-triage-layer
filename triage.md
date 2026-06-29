@@ -18,6 +18,7 @@ You (the main loop, Opus 1M) are the orchestrator of a cost-tiered delegation sy
 2. **Parallelize.** Fan independent subtasks out to multiple workers in a single message. Quality at speed is the priority; parallel spend is acceptable.
 3. **Write load-bearing task briefs.** Each delegation must include: the task, relevant file paths, acceptance criteria, and (for escalated retries) the prior tier's failed attempt and feedback.
 4. **Effort before tier.** For borderline tasks, bumping effort within a tier (via explicit instruction in the brief) is cheaper than jumping a tier.
+5. **Keep fan-out flat.** Spawn workers from the orchestrator; tier workers should not spawn their own subagents. Foreground subagents now share the same 5-level depth cap as background ones (Claude Code ≥ 2.1.181), and flat fan-out keeps the usage tally and verification seams legible.
 
 ## Verification protocol
 
@@ -41,9 +42,25 @@ Track the per-subagent token counts reported in each Task result, grouped by tie
 ## Conveniences
 
 - **Per-agent memory.** Each tier agent carries `memory: project` frontmatter, so it keeps a per-codebase `.claude/agent-memory/<agent-name>/MEMORY.md` and accumulates patterns across sessions instead of starting fresh. (Requires Claude Code ≥ 2.1.172.)
-- **`/triage-run <task>`.** A reusable workflow (`~/.claude/workflows/triage-run.js`) that runs the whole loop as one command: classify → delegate to the right tier(s) via `agentType` → verify (objective check or reviewer).
-- **SubagentStop reminder hook** (`~/.claude/hooks/triage-verify.sh`). When `triage-builder`/`triage-quick-task` finish, it surfaces the project's detected check commands so the verification protocol isn't silently skipped. **Non-blocking and side-effect-free** — it reminds, it does not run tests itself. (Requires Claude Code ≥ 2.1.163 for `additionalContext`; degrades to a harmless no-op otherwise.)
+- **`/triage-run <task>`.** A reusable workflow (`~/.claude/workflows/triage-run.js`) that runs the whole loop as one command: classify → delegate to the right tier(s) via `agentType` → verify (objective check or reviewer). Its structured-output (`agent({schema})`) classify stage is reliable on Claude Code ≥ 2.1.187 — earlier builds could loop on schema-validation retries.
 - **Statusline** shows live `ccusage` cost / 5-hour-block burn **if ccusage is installed** (`npm i -g ccusage`, or `bun`), then appends `model · context %` (⚠ at ≥60%). With ccusage absent it falls back to `model · context %` — no `npx`-per-render lag.
+
+## Harness integration (Claude Code ≥ 2.1.186)
+
+Newer Claude Code enforces parts of this rubric at the permission layer instead of relying on model compliance. `install.sh` wires two rule sets into `settings.json` → `permissions`:
+
+- **Fable confirm-gate.** `ask` on `Agent(triage-fable-architect)` — the harness prompts before any Fable spawn, enforcing the "⚠ before Fable" rule rather than trusting the orchestrator to print it. Gate by agent **type**, not `model:` — `Agent(type)` enforcement for *named* spawns landed in 2.1.186; matching a frontmatter-set `model:` is unverified. Change `ask` → `deny` in settings to hard-block Fable.
+- **Worker-spawn allowlist.** `allow` on the four cheaper tier spawns so parallel fan-out never prompts. This allowlists *spawning the worker only* — the worker's own Bash/Edit/etc. calls stay gated by your normal permissions.
+
+**Auto mode** (`permissions.defaultMode: "auto"`): destructive git / `terraform|pulumi|cdk destroy` you didn't ask for are blocked (2.1.183); set `autoMode.classifyAllShell` to route *all* worker shell through the classifier (2.1.193); and when a worker's command is blocked, `/permissions` → recently-denied now shows *why* (2.1.193).
+
+**Background fan-out.** A background worker that hits a permission gate now surfaces the prompt to the orchestrator instead of silently auto-denying (2.1.186) — background fan-out is safe and verification stays orchestrator-side.
+
+**Headless / cron.** Pre-authenticate MCP servers from the shell with `claude mcp login <name>` (2.1.186) before a headless or scheduled run — interactively-authed MCP servers can otherwise be absent in subagent runs.
+
+**Maintenance.** A deprecated or auto-updated tier model now warns on stderr, including models set in agent frontmatter (2.1.183) — treat it as a signal to bump `model:` in `agents/triage-*.md`.
+
+> **Do NOT add a `SubagentStop` hook to run or announce verification.** It was tried and retired: `SubagentStop` `additionalContext` is delivered to the *stopping subagent*, not the orchestrator — so it derails workers (confused reports, attempted self-edits) while leaving the parent uninformed. Verification is **orchestrator-only** (see protocol above). Matcher semantics have also shifted: hyphenated identifiers now exact-match (2.1.195) and comma — not `|` — is the multi-matcher separator (2.1.191), so a `triage-builder|triage-quick-task` matcher would not even fire reliably.
 
 ## Uninstall / disable
 
@@ -52,5 +69,5 @@ Your pre-install `settings.json` values are saved by `install.sh` to `~/.claude/
 - **Disable routing only**: remove the `@triage.md` line from `~/.claude/CLAUDE.md`.
 - **Full uninstall**: run `uninstall.sh` from the repo, or manually:
   1. Remove the `@triage.md` line from `~/.claude/CLAUDE.md`.
-  2. `rm ~/.claude/agents/triage-*.md ~/.claude/triage.md ~/.claude/statusline.sh ~/.claude/hooks/triage-verify.sh ~/.claude/workflows/triage-run.js` and `rm -rf ~/.claude/agent-memory/triage-*`.
-  3. In `~/.claude/settings.json`: restore `model` and `effortLevel` from `~/.claude/triage-preinstall.json`, delete the `statusLine` key, and remove the `hooks.SubagentStop` entry pointing at `triage-verify.sh`.
+  2. `rm ~/.claude/agents/triage-*.md ~/.claude/triage.md ~/.claude/statusline.sh ~/.claude/workflows/triage-run.js` and `rm -rf ~/.claude/agent-memory/triage-*`.
+  3. In `~/.claude/settings.json`: restore `model` and `effortLevel` from `~/.claude/triage-preinstall.json`, delete the `statusLine` key, and remove the triage `Agent(...)` rules from `permissions.allow` / `permissions.ask`.

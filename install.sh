@@ -8,16 +8,13 @@ REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 command -v jq >/dev/null || { echo "ERROR: jq is required (brew install jq)"; exit 1; }
 
-mkdir -p "$CLAUDE_DIR/agents" "$CLAUDE_DIR/hooks" "$CLAUDE_DIR/workflows"
+mkdir -p "$CLAUDE_DIR/agents" "$CLAUDE_DIR/workflows"
 
-# 1. Tier agents (with `memory: project`) + rubric + statusline + hook + workflow
+# 1. Tier agents (with `memory: project`) + rubric + statusline + /triage-run workflow
 cp "$REPO_DIR"/agents/triage-*.md "$CLAUDE_DIR/agents/"
 cp "$REPO_DIR/triage.md" "$CLAUDE_DIR/triage.md"
 cp "$REPO_DIR/statusline.sh" "$CLAUDE_DIR/statusline.sh"
 chmod +x "$CLAUDE_DIR/statusline.sh"
-# SubagentStop verification-reminder hook + reusable /triage-run command
-cp "$REPO_DIR/hooks/triage-verify.sh" "$CLAUDE_DIR/hooks/triage-verify.sh"
-chmod +x "$CLAUDE_DIR/hooks/triage-verify.sh"
 cp "$REPO_DIR/workflows/triage-run.js" "$CLAUDE_DIR/workflows/triage-run.js"
 
 # 2. Wire the rubric into the global CLAUDE.md (append-only; never overwrites)
@@ -39,14 +36,20 @@ jq --arg cmd "$CLAUDE_DIR/statusline.sh" \
    | .statusLine = {type: "command", command: $cmd}' \
   "$SETTINGS" > "$tmp" && mv "$tmp" "$SETTINGS"
 
-# 3b. Wire the SubagentStop verification-reminder hook (idempotent; never clobbers
-#     other hooks). Drops any prior copy of our hook, then re-adds it.
+# 3b. Harness-level routing rules (idempotent; appends only what's missing and
+#     preserves existing rules + order). Enforces the rubric at the permission layer:
+#       - `ask` before any Fable spawn → confirms the costly tier (the ⚠ rule, enforced)
+#       - `allow` the worker spawns    → fan-out never prompts (a worker's OWN Bash/Edit
+#                                         calls stay gated by your normal permissions)
+#     Gate by agent TYPE, not `model:` — `Agent(type)` enforcement for named subagent
+#     spawns landed in Claude Code 2.1.186; matching a frontmatter-set `model:` is
+#     unverified. Switch the `ask` to `deny` below to hard-block Fable instead.
 tmp=$(mktemp)
-jq --arg hook "$CLAUDE_DIR/hooks/triage-verify.sh" '
-  .hooks.SubagentStop = (((.hooks.SubagentStop // [])
-      | map(select((.hooks // [] | map(.command) | index($hook)) | not)))
-    + [{matcher: "triage-builder|triage-quick-task",
-        hooks: [{type: "command", command: $hook, timeout: 15}]}])
+jq '
+  ["Agent(triage-quick-task)","Agent(triage-builder)","Agent(triage-deep-reasoner)","Agent(triage-reviewer)"] as $workers
+  | ["Agent(triage-fable-architect)"] as $fable
+  | .permissions.allow = ((.permissions.allow // []) + ($workers - (.permissions.allow // [])))
+  | .permissions.ask   = ((.permissions.ask   // []) + ($fable   - (.permissions.ask   // [])))
 ' "$SETTINGS" > "$tmp" && mv "$tmp" "$SETTINGS"
 
 # 4. Billing-safety warning

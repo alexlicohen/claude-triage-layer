@@ -2,7 +2,7 @@
 
 A drop-in config layer for [Claude Code](https://code.claude.com) that routes every task to the **cheapest adequate Claude model** (Haiku → Sonnet → Opus → Fable 5), escalates automatically when a cheaper tier's output fails verification, and reports per-tier usage — **all billed to your Claude Pro/Max subscription**, not the pay-per-token API.
 
-No app, no server, no API keys. It's five subagent definitions, one instructions file, a statusline script, and three settings keys.
+No app, no server, no API keys. It's five subagent definitions, one instructions file, a statusline script, a `/triage-run` workflow, and a handful of settings keys.
 
 ## Why this exists
 
@@ -27,13 +27,14 @@ You ──► Main loop: Opus (1M context, high effort)  ← triage rubric (tria
 - **Verification**: after a worker returns code, the orchestrator runs the project's own tests/lint/build before accepting. No objective check available? The read-only Opus reviewer reads the diff — far cheaper than redoing the work.
 - **Escalation**: workers reply `ESCALATE:` when out of their depth; failed verification escalates one tier up with the failed attempt as context. Escalation to Fable is automatic but always announced: `⚠ Escalating to Fable: <reason>`.
 - **Visibility**: a one-line per-tier token tally after each task (say `usage report` anytime), and a statusline showing `model · ctx N%` that turns red at ≥60% context — plus live `ccusage` cost/burn when `ccusage` is installed.
-- **Conveniences**: each tier carries `memory: project` (per-codebase memory across sessions); `/triage-run <task>` runs classify→delegate→verify as one command; a non-blocking SubagentStop hook reminds you to run the project's checks after a worker finishes. See `triage.md` § Conveniences.
+- **Conveniences**: each tier carries `memory: project` (per-codebase memory across sessions); `/triage-run <task>` runs classify→delegate→verify as one command; and the installer adds harness-level `permissions` rules — an `ask` confirm-gate before any Fable spawn, plus an allowlist for the cheaper worker spawns so fan-out doesn't prompt. See `triage.md`.
 
 ## Requirements
 
 - Claude Code with a **Pro or Max subscription** login (this is what makes it subscription-billed)
 - `jq` (for the installer and statusline): `brew install jq`
 - **Max plan**: Opus 1M context is included. **Pro plan**: Opus 1M bills extra usage credits — after installing, change `"model"` to `"opus"` (200K) in `~/.claude/settings.json`.
+- **Version**: built and verified against Claude Code **2.1.195**. The harness permission gate needs **≥ 2.1.186**, `/triage-run`'s structured-output classify stage needs **≥ 2.1.187**, and per-agent memory needs **≥ 2.1.172** — on older builds those pieces degrade gracefully (rules no-op, memory ignored).
 
 ## Install
 
@@ -44,9 +45,9 @@ git clone <this-repo> && cd claude-triage-layer
 
 Then **start a new Claude Code session** (config loads at startup). The installer:
 
-- copies the 5 agents to `~/.claude/agents/`, the rubric to `~/.claude/triage.md`, the statusline script, the SubagentStop hook (`~/.claude/hooks/`), and the `/triage-run` workflow (`~/.claude/workflows/`)
+- copies the 5 agents to `~/.claude/agents/`, the rubric to `~/.claude/triage.md`, the statusline script, and the `/triage-run` workflow (`~/.claude/workflows/`)
 - appends one line — `@triage.md` — to your global `~/.claude/CLAUDE.md` (append-only; never overwrites)
-- sets `model: "opus[1m]"`, `effortLevel: "high"`, and the `statusLine` in `~/.claude/settings.json`, **saving your previous values** to `~/.claude/triage-preinstall.json` first
+- sets `model: "opus[1m]"`, `effortLevel: "high"`, and the `statusLine` in `~/.claude/settings.json` (**saving your previous values** to `~/.claude/triage-preinstall.json` first), and adds the Fable confirm-gate / worker-allowlist `permissions` rules
 - warns if `ANTHROPIC_API_KEY` is set (see Caveats)
 
 <details>
@@ -83,7 +84,7 @@ Then **start a new Claude Code session** (config loads at startup). The installe
 ## Customizing
 
 - **Tier models/effort**: edit the frontmatter in `~/.claude/agents/triage-*.md` (`model:` takes `haiku|sonnet|opus|fable|inherit` or full IDs; `effort:` takes `low|medium|high|xhigh|max`). Aliases track the latest models automatically.
-- **Routing behavior**: edit `~/.claude/triage.md` (e.g. require approval before Fable instead of just a notification).
+- **Routing behavior**: edit `~/.claude/triage.md`. The installer already adds an `ask`-gate before Fable; change it to `deny` in `settings.json` → `permissions` to hard-block, or remove the rule to go back to notify-only.
 - **Per project**: a project's own `CLAUDE.md` can override or opt out.
 - **Context-warning threshold**: edit the `60` in `~/.claude/statusline.sh`.
 
@@ -99,4 +100,4 @@ Every piece degrades independently: unknown frontmatter keys are ignored, a brok
 - **`ANTHROPIC_API_KEY` silently overrides subscription billing.** If it's set in your environment, Claude Code bills the API instead of your plan. Unset it.
 - The rubric is **instructions, not enforcement** — the orchestrator follows it reliably but it isn't a hard gate. The deterministic parts (per-agent model/effort pins, statusline) don't depend on model compliance.
 - Per-model subscription quota weighting is undocumented; expect savings as *more usable hours per week* rather than a number on a dashboard.
-- Built against Claude Code as of June 2026 (statusline `context_window.used_percentage`, `opus[1m]` syntax, `effort:` agent frontmatter). If a future version changes these, the affected piece degrades gracefully — see Disable above.
+- Built and verified against Claude Code **2.1.195** (June 2026): statusline `context_window.used_percentage`, `opus[1m]` syntax, `effort:` agent frontmatter, and `Agent(type)` permission rules. If a future version changes these, the affected piece degrades gracefully — see Disable above.
