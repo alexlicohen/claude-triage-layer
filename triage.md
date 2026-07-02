@@ -18,8 +18,10 @@ You (the main loop, Opus 1M) are the orchestrator of a cost-tiered delegation sy
 2. **Parallelize.** Fan independent subtasks out to multiple workers in a single message. Quality at speed is the priority; parallel spend is acceptable.
 3. **Write load-bearing task briefs.** Each delegation must include: the task, relevant file paths, acceptance criteria, and (for escalated retries) the prior tier's failed attempt and feedback.
 4. **Effort before tier.** For borderline tasks, bumping effort within a tier (via explicit instruction in the brief) is cheaper than jumping a tier.
-5. **Keep fan-out flat.** Spawn workers from the orchestrator; tier workers should not spawn their own subagents. Foreground subagents now share the same 5-level depth cap as background ones (Claude Code ≥ 2.1.181), and flat fan-out keeps the usage tally and verification seams legible.
-6. **Fable tier unavailable → deep-reasoner at max.** If the Fable tier can't be spawned (org model restriction or a temporary Anthropic-side disable), never route or escalate into it — the spawn fails or silently falls back. `triage-deep-reasoner` (Opus) becomes the top tier, and for Fable-class work run it at **max** effort — bump per-invocation via the brief (instruct maximum-depth / `ultrathink` reasoning), not its default `xhigh`. In place of the Fable escalation line, print `⚠ Fable unavailable — using triage-deep-reasoner at max effort`.
+5. **Keep fan-out flat.** Spawn workers from the orchestrator; tier workers should not spawn their own subagents. Foreground subagents share the same 5-level depth cap as background ones (Claude Code ≥ 2.1.181), and flat fan-out keeps the usage tally and verification seams legible.
+6. **Danger-zone → deep tier.** Route correctness-critical work to `triage-deep-reasoner` (Opus) by default, never `triage-builder`: changes to a shared primitive/dispatcher that many callers depend on, anything touching ≥3 modules at once, and format-sensitive work where a subtle wrong layer silently corrupts output. These are easy to break or duplicate, and green unit tests can still hide a broken seam (see verification rule 4).
+7. **Dedup-check before specifying a new capability.** Before delegating work that ADDS a function or code path that may overlap existing code, grep for existing implementations and write the brief as "reuse/extend X, do not reimplement." Name the ONE module that owns a decision so consumers call it instead of re-deciding. Duplication usually traces to parallel workers not seeing each other's code plus under-specification — not to tier.
+8. **Fable tier — available but gated; escalate ONLY as needed.** `triage-deep-reasoner` (Opus) is the workhorse top tier; escalate to `triage-fable-architect` (Fable) only for genuinely correctness-critical / hardest work, or when the Opus tier escalates or fails. Fable is **expensive** — do not spray it, and always print `⚠ Escalating to Fable: <one-line reason>` before a successful spawn. If a Fable spawn hard-fails (a stale model registry — a session predating the model grant can't spawn it; restart the session to refresh the registry), fall back to `triage-deep-reasoner` at **max** effort (instruct maximum-depth / `ultrathink` in the brief, not its default `xhigh`) and print `⚠ Fable unavailable — using triage-deep-reasoner at max effort`.
 
 ## Verification protocol
 
@@ -27,6 +29,9 @@ After any worker returns code changes:
 1. Discover and run the project's objective checks — package.json scripts (test/lint), Makefile targets, pytest/ruff, cargo check, etc. — before accepting the result.
 2. On failure: retry once at the same tier with the failure output as context; if it fails again, escalate one tier with the full history.
 3. For non-trivial changes with **no** objective check available, run `triage-reviewer` on the diff. `PASS` → accept; `FIX:` → send fixes back to the same tier; `ESCALATE:` → escalate one tier.
+4. **Core/shared-module changes get an integration check, not just unit tests.** When a change touches a shared dispatcher/primitive or format-sensitive code, verify the SEAMS — run the dependent workflow end-to-end, or run `triage-reviewer`, before accepting. Green unit tests can pass while the caller is silently left on an old code path.
+
+> **Verification is orchestrator-only — do NOT add a `SubagentStop` hook to run or announce it.** A hook was tried and retired: `SubagentStop` `additionalContext` is delivered to the *stopping subagent*, not the parent — so it derails `triage-builder`/`triage-quick-task` workers (confused reports, attempted self-edits) while leaving the orchestrator uninformed. Running the objective checks is the orchestrator's job (steps 1–3 above) — the only correct place for it. Matcher semantics have also shifted: hyphenated identifiers now exact-match (2.1.195) and comma — not `|` — is the multi-matcher separator (2.1.191), so a `triage-builder|triage-quick-task` matcher would not even fire reliably.
 
 ## Escalation protocol
 
@@ -44,7 +49,7 @@ Track the per-subagent token counts reported in each Task result, grouped by tie
 
 - **Per-agent memory.** Each tier agent carries `memory: project` frontmatter, so it keeps a per-codebase `.claude/agent-memory/<agent-name>/MEMORY.md` and accumulates patterns across sessions instead of starting fresh. (Requires Claude Code ≥ 2.1.172.)
 - **`/triage-run <task>`.** A reusable workflow (`~/.claude/workflows/triage-run.js`) that runs the whole loop as one command: classify → delegate to the right tier(s) via `agentType` → verify (objective check or reviewer). Its structured-output (`agent({schema})`) classify stage is reliable on Claude Code ≥ 2.1.187 — earlier builds could loop on schema-validation retries.
-- **Statusline** shows live `ccusage` cost / 5-hour-block burn **if ccusage is installed** (`npm i -g ccusage`, or `bun`), then appends `model · context %` (⚠ at ≥60%). With ccusage absent it falls back to `model · context %` — no `npx`-per-render lag.
+- **Statusline** shows live `ccusage` cost / 5-hour-block burn **if ccusage is installed** (`npm i -g ccusage`, or `bun`), then appends `model · context %` (⚠ at ≥60%). With ccusage absent it falls back to `model · context %` — no per-render download lag.
 
 ## Harness integration (Claude Code ≥ 2.1.186)
 
@@ -61,14 +66,12 @@ Newer Claude Code enforces parts of this rubric at the permission layer instead 
 
 **Maintenance.** A deprecated or auto-updated tier model now warns on stderr, including models set in agent frontmatter (2.1.183) — treat it as a signal to bump `model:` in `agents/triage-*.md`.
 
-> **Do NOT add a `SubagentStop` hook to run or announce verification.** It was tried and retired: `SubagentStop` `additionalContext` is delivered to the *stopping subagent*, not the orchestrator — so it derails workers (confused reports, attempted self-edits) while leaving the parent uninformed. Verification is **orchestrator-only** (see protocol above). Matcher semantics have also shifted: hyphenated identifiers now exact-match (2.1.195) and comma — not `|` — is the multi-matcher separator (2.1.191), so a `triage-builder|triage-quick-task` matcher would not even fire reliably.
-
 ## Uninstall / disable
 
 Your pre-install `settings.json` values are saved by `install.sh` to `~/.claude/triage-preinstall.json`.
 
 - **Disable routing only**: remove the `@triage.md` line from `~/.claude/CLAUDE.md`.
 - **Full uninstall**: run `uninstall.sh` from the repo, or manually:
-  1. Remove the `@triage.md` line from `~/.claude/CLAUDE.md`.
-  2. `rm ~/.claude/agents/triage-*.md ~/.claude/triage.md ~/.claude/statusline.sh ~/.claude/workflows/triage-run.js` and `rm -rf ~/.claude/agent-memory/triage-*`.
-  3. In `~/.claude/settings.json`: restore `model` and `effortLevel` from `~/.claude/triage-preinstall.json`, delete the `statusLine` key, and remove the triage `Agent(...)` rules from `permissions.allow` / `permissions.ask`.
+  1. Remove the `@triage.md` line from `~/.claude/CLAUDE.md` (delete the file if otherwise empty).
+  2. `rm ~/.claude/agents/triage-quick-task.md ~/.claude/agents/triage-builder.md ~/.claude/agents/triage-deep-reasoner.md ~/.claude/agents/triage-reviewer.md ~/.claude/agents/triage-fable-architect.md ~/.claude/triage.md ~/.claude/statusline.sh ~/.claude/workflows/triage-run.js` and `rm -rf ~/.claude/agent-memory/triage-*`. (List the five agent files explicitly — do **not** `rm triage-*.md` by glob, or you may delete your own unrelated `triage-*` agents.)
+  3. In `~/.claude/settings.json`: restore `model`, `effortLevel`, **and** `statusLine` from `~/.claude/triage-preinstall.json` (a `null` saved value means the key was absent pre-install — delete it), and remove the triage `Agent(...)` rules from `permissions.allow` / `permissions.ask` (and `permissions.deny` if you converted the Fable gate to `deny`).
