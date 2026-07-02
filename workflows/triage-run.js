@@ -122,21 +122,35 @@ async function verify(items, remediated) {
     )
   }
 
+  // A gate whose agent dies (agent() → null) gets ONE bounded retry; a second null
+  // is reported INCOMPLETE by assess() — loud, and never a silent pass. Retrying the
+  // GATE (not the subtasks) is deliberate: a dead verifier says nothing about the work,
+  // so re-running subtasks on it would be remediation without a signal.
+  async function runGate(mk, name) {
+    let out = await mk()
+    if (out == null) {
+      log(`⚠ ${name} gate returned no output (spawn/run failure) — retrying the gate once.`)
+      out = await mk()
+      if (out == null) log(`⚠ ${name} gate failed twice — verification will be reported INCOMPLETE.`)
+    }
+    return out
+  }
+
   if (plan.objective_check) {
     // Seam enforcement (rubric verification rule 4): a danger subtask means a green
     // objective check can still hide a broken seam, so run BOTH gates; the combined
     // verdict fails if EITHER fails (see assess()). Non-danger plans keep the either/or.
     if (hasDanger) {
-      const [checkOut, review] = await parallel([runObjective, runReview])
-      if (checkOut == null || review == null) {
-        log('⚠ Seam check: a gate returned no output (unrunnable) — treating as FAIL; cannot confirm correctness-critical work.')
-      }
+      const [checkOut, review] = await parallel([
+        () => runGate(runObjective, 'objective'),
+        () => runGate(runReview, 'reviewer'),
+      ])
       return { type: 'seam', command: plan.objective_check, result: checkOut, verdict: review, seam: true, remediated: !!remediated }
     }
-    const checkOut = await runObjective()
+    const checkOut = await runGate(runObjective, 'objective')
     return { type: 'objective', command: plan.objective_check, result: checkOut, remediated: !!remediated }
   }
-  const review = await runReview()
+  const review = await runGate(runReview, 'reviewer')
   return { type: 'review', verdict: review, remediated: !!remediated }
 }
 
@@ -147,28 +161,34 @@ const objFailed = t => /(^|\n)\s*FAIL\b/i.test(String(t || ''))
 const reviewFailed = t => /^\s*(FIX|ESCALATE)\b/i.test(String(t || '').trimStart())
 const reviewEscalate = t => /^\s*ESCALATE\b/i.test(String(t || '').trimStart())
 
-// Aggregate a verification object into { text, failed, isEscalate }.
+// Aggregate a verification object into { text, failed, isEscalate, incomplete }.
 //   text       = feedback fed to remediation AND matched against for failure attribution.
 //   failed     = a 'seam' result fails if EITHER gate fails (objective FAIL or reviewer FIX/ESCALATE).
 //   isEscalate = only the reviewer escalates; an objective FAIL is a same-tier retry.
+//   incomplete = a gate died (null even after its retry). Tri-state, per the rubric's
+//                fail-loud rule: INCOMPLETE is not a pass and not a work-failure — there
+//                is no feedback to remediate against, so it is reported loudly instead.
 function assess(v) {
   if (v.type === 'objective') {
-    const t = String(v.result || '')
-    return { text: t, failed: objFailed(t), isEscalate: reviewEscalate(t) }
+    if (v.result == null) return { text: '', failed: false, isEscalate: false, incomplete: true }
+    const t = String(v.result)
+    return { text: t, failed: objFailed(t), isEscalate: reviewEscalate(t), incomplete: false }
   }
   if (v.type === 'review') {
-    const t = String(v.verdict || '')
-    return { text: t, failed: reviewFailed(t), isEscalate: reviewEscalate(t) }
+    if (v.verdict == null) return { text: '', failed: false, isEscalate: false, incomplete: true }
+    const t = String(v.verdict)
+    return { text: t, failed: reviewFailed(t), isEscalate: reviewEscalate(t), incomplete: false }
   }
-  // 'seam': both gates ran (danger subtask + objective_check). A missing/unrunnable
-  // gate (null) counts as a failure — fail loud, never a false clean.
-  const objText = String(v.result || '')
-  const revText = String(v.verdict || '')
-  const gateMissing = v.result == null || v.verdict == null
+  // 'seam': both gates ran (danger subtask + objective_check). A dead gate marks the
+  // verification INCOMPLETE; a REAL failure from whichever gate did run still fails
+  // (and remediates on its feedback). Never a silent pass.
+  const objText = String(v.result ?? '')
+  const revText = String(v.verdict ?? '')
   return {
     text: `Objective check:\n${objText}\n\nReviewer:\n${revText}`,
-    failed: gateMissing || objFailed(objText) || reviewFailed(revText),
+    failed: objFailed(objText) || reviewFailed(revText),
     isEscalate: reviewEscalate(revText),
+    incomplete: v.result == null || v.verdict == null,
   }
 }
 
@@ -226,6 +246,14 @@ if (failed && results.length) {
   const bySubtask = new Map(results.map(r => [r.subtask, r]))
   for (const r of redoResults) bySubtask.set(r.subtask, r)
   verification = await verify([...bySubtask.values()], true)
+}
+
+// Tri-state, fail-loud: whatever verification object we're returning (initial or
+// re-verified), a dead gate makes it INCOMPLETE — flagged on the result and logged,
+// never passed off as a confirmed green.
+if (assess(verification).incomplete) {
+  log('⚠ VERIFICATION INCOMPLETE — a gate could not run even after a retry; this result is NOT a confirmed pass.')
+  verification.incomplete = true
 }
 
 return { task, plan, results, remediation, verification }

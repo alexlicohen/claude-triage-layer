@@ -4,7 +4,28 @@ Reverse-chronological. Each entry cites the commit(s) it corresponds to and,
 where known, the test-count delta. See `test/roundtrip.sh` and `test/lint.sh`
 for the current check catalog.
 
-## Wave 3 — CI harness, drift checker, deterministic usage tally, workflow seam-checks (this change, uncommitted on `qol-additions`)
+## Wave 3.1 — tri-state verification (fail-loud INCOMPLETE) + workflow scenario tests
+
+- `workflows/triage-run.js`: closed the wave-3 known gap — a verifier gate whose
+  agent dies (`agent()` → null) is no longer a non-failing empty string on the
+  single-gate paths. All gates (objective, reviewer, seam) now get ONE bounded
+  retry of the *gate itself*; a second null makes the verification **INCOMPLETE**
+  (tri-state PASS/FAIL/INCOMPLETE, per the grant-forge fail-loud spine): loudly
+  logged, flagged on the returned `verification.incomplete`, and — deliberately —
+  NOT remediated (a dead verifier says nothing about the work; re-running
+  subtasks on it would be remediation without a signal). A real failure from
+  whichever seam gate DID run still remediates on that gate's feedback. This
+  supersedes wave 3's seam-path "null counts as FAIL" semantics.
+- Added `test/workflow-scenarios.mjs` (wired into `make test`): executes the
+  actual workflow body under mocked DSL globals — the previously ad-hoc,
+  discarded harness is now a committed regression net. 8 scenarios / 28
+  assertions covering both wave-3 features and the tri-state paths (gate
+  retry-then-clean, dead-gate INCOMPLETE with no remediation on both single-gate
+  paths, seam with one dead + one failing gate). Teeth proven by mutation:
+  reverting the INCOMPLETE fix in the source makes S6 go RED (26/2), restore
+  goes green (28/0). Check count: **36 → 64** (36 round-trip + 28 scenario).
+
+## Wave 3 — CI harness, drift checker, deterministic usage tally, workflow seam-checks (`9ceb599`)
 
 Three parallel workstreams (built by tier workers per the triage rubric itself:
 one builder, two deep-reasoners; orchestrator-verified and integrated), applying
@@ -42,7 +63,7 @@ fail-loud, one green gate, tests-with-teeth, docs-tested-against-code.
   under mocked DSL globals (4 control-flow scenarios, all green).
 - Known gap (deferred, tracked): the pre-existing single-gate objective/review
   paths still treat a null verifier as a non-failing empty string — a latent
-  fail-silent the seam path does not share. Follow-up hardening planned.
+  fail-silent the seam path does not share. *(Resolved in wave 3.1, above.)*
 
 **CI harness, round-trip tests, drift checker**:
 - Added `test/roundtrip.sh`: a 21+-check (currently 36) install/uninstall

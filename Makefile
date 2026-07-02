@@ -5,6 +5,7 @@ lint:
 
 test:
 	./test/roundtrip.sh
+	node test/workflow-scenarios.mjs
 
 drift:
 	./drift.sh
