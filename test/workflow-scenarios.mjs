@@ -25,6 +25,10 @@ function chk(name, cond) {
 
 // A budget mock with no target set — the legacy/identity case: remaining() is
 // Infinity, so every budget branch in the workflow short-circuits.
+// NOTE: spent: () => 0 is a mock convenience only — the REAL runtime's spent()
+// returns actual session-wide spend even when total is null (observed live
+// 2026-07-01: spent=649,955 with total:null). The workflow just passes it
+// through; assertions on spent===0 hold for the mock, not the runtime.
 const NO_BUDGET = { total: null, remaining: () => Infinity, spent: () => 0 }
 
 // Run the workflow body with a scripted agent. `script` maps a label-prefix (or

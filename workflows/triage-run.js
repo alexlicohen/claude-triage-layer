@@ -109,7 +109,9 @@ async function spawn(need, stage, desc, thunk) {
 }
 
 // budgetReport() — the `budget` field added to the return value. spent is stamped
-// at return time. When not budgeted this is {total: null, spent: 0, skipped: []}.
+// at return time. NOTE (observed live 2026-07-01): even with total:null the real
+// runtime's spent() reports actual session-wide spend (e.g. 649,955), not 0 —
+// only the mock returns 0. skipped is always [] when not budgeted.
 function budgetReport() {
   return { total: budget ? budget.total : null, spent: budget ? budget.spent() : 0, skipped }
 }
