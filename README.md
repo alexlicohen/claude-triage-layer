@@ -1,5 +1,7 @@
 # Claude Code Model Triage Layer
 
+[![CI](https://github.com/alexlicohen/claude-triage-layer/actions/workflows/ci.yml/badge.svg)](https://github.com/alexlicohen/claude-triage-layer/actions/workflows/ci.yml)
+
 A drop-in config layer for [Claude Code](https://code.claude.com) that routes every task to the **cheapest adequate Claude model** (Haiku → Sonnet → Opus → Fable 5), escalates automatically when a cheaper tier's output fails verification, and reports per-tier usage — **all billed to your Claude Pro/Max subscription**, not the pay-per-token API.
 
 No app, no server, no API keys. It's five subagent definitions, one instructions file, a statusline script, a `/triage-run` workflow, and a handful of settings keys.
