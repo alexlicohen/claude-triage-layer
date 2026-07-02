@@ -26,15 +26,16 @@ You ──► Main loop: Opus (1M context, high effort)  ← triage rubric (tria
 - **Routing**: the orchestrator classifies each task by difficulty *before* delegating (no wasteful "try cheap first" ladder-climbing) and parallelizes independent subtasks.
 - **Verification**: after a worker returns code, the orchestrator runs the project's own tests/lint/build before accepting. No objective check available? The read-only Opus reviewer reads the diff — far cheaper than redoing the work.
 - **Escalation**: workers reply `ESCALATE:` when out of their depth; failed verification escalates one tier up with the failed attempt as context. Escalation to Fable is automatic but always announced: `⚠ Escalating to Fable: <reason>`.
-- **Visibility**: a one-line per-tier token tally after each task (say `usage report` anytime), and a statusline showing `model · ctx N%` that turns red at ≥60% context — plus live `ccusage` cost/burn when `ccusage` is installed.
-- **Conveniences**: each tier carries `memory: project` (per-codebase memory across sessions); `/triage-run <task>` runs classify→delegate→verify as one command; and the installer adds harness-level `permissions` rules — an `ask` confirm-gate before any Fable spawn, plus an allowlist for the cheaper worker spawns so fan-out doesn't prompt. See `triage.md`.
+- **Seam checks & targeted remediation**: `/triage-run` runs both the test/lint gate and a reviewer on correctness-critical (`danger`) subtasks, and on failure re-runs only the subtasks implicated by the failure output — re-running everything only when it can't attribute the failure.
+- **Visibility**: a one-line per-tier token tally after each task (say `usage report` anytime) — computed deterministically from the session's on-disk subagent transcripts by `scripts/triage-usage.sh`, not recalled from model memory — and a statusline showing `model · ctx N%` that turns red at ≥60% context, plus live `ccusage` cost/burn when `ccusage` is installed.
+- **Conveniences**: each implementation tier (not the read-only reviewer) carries `memory: project` (per-codebase memory across sessions); `/triage-run <task>` runs classify→delegate→verify as one command; and the installer adds harness-level `permissions` rules — an `ask` confirm-gate before any Fable spawn, plus an allowlist for the cheaper worker spawns so fan-out doesn't prompt. See `triage.md`.
 
 ## Requirements
 
 - Claude Code with a **Pro or Max subscription** login (this is what makes it subscription-billed)
 - `jq` (for the installer and statusline): `brew install jq`
 - **Max plan**: Opus 1M context is included. **Pro plan**: Opus 1M bills extra usage credits — after installing, change `"model"` to `"opus"` (200K) in `~/.claude/settings.json`.
-- **Version**: built and verified against Claude Code **2.1.195**. The harness permission gate needs **≥ 2.1.186**, `/triage-run`'s structured-output classify stage needs **≥ 2.1.187**, and per-agent memory needs **≥ 2.1.172** — on older builds those pieces degrade gracefully (rules no-op, memory ignored).
+- **Version**: built and verified against Claude Code **2.1.195**. The harness permission gate needs **≥ 2.1.186**, `/triage-run`'s structured-output classify stage needs **≥ 2.1.187**, and per-agent memory needs **≥ 2.1.172**. On older builds the permission rules simply no-op and per-agent memory is ignored; `/triage-run` is the exception — its classify stage can loop on schema-validation retries below 2.1.187 rather than degrade cleanly, so run it on a current build. `install.sh` checks `claude --version` itself and prints a specific warning per shortfall (or "could not verify" if `claude` is missing/unparseable) — warn-only, it never blocks the install.
 
 ## Install
 
@@ -50,20 +51,24 @@ Then **start a new Claude Code session** (config loads at startup). The installe
 - sets `model: "opus[1m]"`, `effortLevel: "high"`, and the `statusLine` in `~/.claude/settings.json` (**saving your previous values** to `~/.claude/triage-preinstall.json` first), and adds the Fable confirm-gate / worker-allowlist `permissions` rules
 - warns if `ANTHROPIC_API_KEY` is set (see Caveats)
 
+Two flags, composable: `./install.sh --dry-run` prints the full mutation plan (every file's create/overwrite/unchanged status, the CLAUDE.md append, the settings keys and permission rules, the snapshot) and writes nothing; `./install.sh --files-only` copies/chmods just the installed files — agents, `statusline.sh`, the `/triage-run` workflow, `scripts/triage-usage.sh`, `triage.md` — skipping anything listed in `.driftignore` (e.g. a hand-forked `triage.md`) instead of clobbering it, and leaves `CLAUDE.md`, `settings.json`, and permissions untouched. This is the primitive behind `make sync` for re-pulling repo file updates without re-running the settings merge.
+
 <details>
 <summary>Manual install (no script)</summary>
 
 1. `cp agents/triage-*.md ~/.claude/agents/`
 2. `cp triage.md ~/.claude/ && cp statusline.sh ~/.claude/ && chmod +x ~/.claude/statusline.sh`
-3. Append a line containing exactly `@triage.md` to `~/.claude/CLAUDE.md`
-4. In `~/.claude/settings.json` (note your old values first):
+3. `mkdir -p ~/.claude/workflows && cp workflows/triage-run.js ~/.claude/workflows/` (needed for `/triage-run`)
+4. Append a line containing exactly `@triage.md` to `~/.claude/CLAUDE.md` — make sure the file ends in a newline first, or the line fuses onto the last one
+5. In `~/.claude/settings.json` (note your old values first), using your real home path in the `statusLine` command (tilde is not expanded inside JSON):
    ```json
    {
      "model": "opus[1m]",
      "effortLevel": "high",
-     "statusLine": { "type": "command", "command": "~/.claude/statusline.sh" }
+     "statusLine": { "type": "command", "command": "/Users/<you>/.claude/statusline.sh" }
    }
    ```
+6. Optional (harness ≥ 2.1.186): to enforce the rubric at the permission layer, add `permissions` rules — an `ask` on `Agent(triage-fable-architect)` and an `allow` for the four cheaper `Agent(triage-*)` spawns. `install.sh` does this for you.
 </details>
 
 ## Using it
@@ -94,6 +99,17 @@ Then **start a new Claude Code session** (config loads at startup). The installe
 - **Full uninstall**: `./uninstall.sh` — removes all files and restores your pre-install `model`/`effortLevel`/`statusLine` from the snapshot.
 
 Every piece degrades independently: unknown frontmatter keys are ignored, a broken statusline shows nothing, agents fall back to inheriting the session model.
+
+## Testing
+
+```bash
+make verify   # lint -> drift -> test, fail-fast; the single green gate
+```
+
+- `make lint` — `bash -n` on every `*.sh`, `node --check` on `workflows/*.js`, `shellcheck` (if installed) at `--severity=warning`, and a docs-consistency check (every path this README's install sections cite must exist; the "five subagent definitions" claim above must match `agents/triage-*.md` on disk).
+- `make test` — `test/roundtrip.sh`, an install/uninstall round-trip suite that never touches your real `~/.claude` (every case runs in its own `mktemp -d` sandbox via `$CLAUDE_DIR`). Covers idempotent re-install, an empty-dir install, a symlinked `settings.json`, an invalid `settings.json` (install must abort with zero mutation), a hand-converted Fable `ask`→`deny` rule surviving uninstall cleanup, and both statusline render paths.
+- `make drift` — `./drift.sh` compares your **installed** `~/.claude` copies against this repo file-by-file (5 agents, `statusline.sh`, `workflows/triage-run.js`, `triage.md`) and reports `same` / `MISSING (not installed)` / `FORKED`. A fork you've made on purpose (e.g. a hand-tuned `triage.md`) goes in `.driftignore` and reports `forked (expected)` instead of failing. Run it with `CLAUDE_DIR=/path/to/other/.claude ./drift.sh` to check a non-default install.
+- CI (`.github/workflows/ci.yml`) runs `make verify` on macOS + Linux for every push/PR, with `shellcheck` installed so lint is never running in `SKIP` mode there.
 
 ## Caveats
 

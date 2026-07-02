@@ -1,0 +1,7 @@
+# Files where a live ~/.claude fork is EXPECTED and should not fail drift.sh.
+# One repo-relative path per line.
+
+# The user's live triage.md is a deliberate personal fork (routing tweaks,
+# Fable-availability notes, etc. — see triage.md's own uninstall section for
+# what's safe to hand-edit). Don't flag it as unexpected drift.
+triage.md
