@@ -17,6 +17,12 @@
 #   D - invalid settings.json: install aborts before ANY mutation.
 #   E - a Fable `ask` rule hand-converted to `deny` is still cleaned up
 #       by uninstall.
+#   F - install.sh --dry-run against a populated sandbox: no mutation at all.
+#   G - install.sh --files-only with a driftignored, differing triage.md:
+#       files copied, the fork is skipped (not clobbered), CLAUDE.md/settings
+#       untouched.
+#   H - version-compat warnings: stub `claude --version` on PATH (old/absent/
+#       new) and check the right warning (or none) is printed.
 #   Plus two direct statusline.sh checks (non-numeric / numeric pct).
 set -u
 
@@ -214,6 +220,112 @@ E_RC=$?
 chk "E2: uninstall exits 0" '[ "$E_RC" -eq 0 ]'
 chk "E3: the converted deny rule is removed on uninstall" \
   '[ "$(jq "has(\"permissions\")" "$E_DIR/settings.json")" = "false" ] || ! jq -e ".permissions.deny // [] | index(\"Agent(triage-fable-architect)\")" "$E_DIR/settings.json" >/dev/null'
+
+# =============================================================================
+# Case F — install.sh --dry-run: no mutation against a populated sandbox
+# =============================================================================
+F_DIR=$(new_sandbox)
+mkdir -p "$F_DIR"
+printf 'existing global rules\n' > "$F_DIR/CLAUDE.md"
+cat > "$F_DIR/settings.json" <<'EOF'
+{
+  "model": "sonnet",
+  "effortLevel": "medium",
+  "permissions": {"allow": ["Bash(ls:*)"]}
+}
+EOF
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+F_CLAUDE_MD_BEFORE=$(cat "$F_DIR/CLAUDE.md")
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+F_SETTINGS_BEFORE=$(cat "$F_DIR/settings.json")
+
+F_OUT_FILE=$(mktemp)
+ALL_TMP="$ALL_TMP $F_OUT_FILE"
+CLAUDE_DIR="$F_DIR" "$REPO_DIR/install.sh" --dry-run >"$F_OUT_FILE" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+F_RC=$?
+chk "F1: --dry-run exits 0" '[ "$F_RC" -eq 0 ]'
+chk "F2: CLAUDE.md byte-identical after --dry-run" \
+  '[ "$(cat "$F_DIR/CLAUDE.md")" = "$F_CLAUDE_MD_BEFORE" ]'
+chk "F3: settings.json byte-identical after --dry-run" \
+  '[ "$(cat "$F_DIR/settings.json")" = "$F_SETTINGS_BEFORE" ]'
+chk "F4: no preinstall snapshot written" '[ ! -f "$F_DIR/triage-preinstall.json" ]'
+chk "F5: no agent files copied" '[ ! -f "$F_DIR/agents/triage-quick-task.md" ]'
+chk "F6: no statusline.sh copied" '[ ! -f "$F_DIR/statusline.sh" ]'
+chk "F7: plan output mentions model key" 'grep -q "model:" "$F_OUT_FILE"'
+chk "F8: plan output mentions effortLevel key" 'grep -q "effortLevel:" "$F_OUT_FILE"'
+chk "F9: plan output mentions statusLine key" 'grep -q "statusLine:" "$F_OUT_FILE"'
+chk "F10: plan output mentions the @triage.md append" 'grep -q "@triage.md" "$F_OUT_FILE"'
+
+# =============================================================================
+# Case G — install.sh --files-only skips a driftignored, differing fork
+# (repo's own .driftignore already lists triage.md — see .driftignore)
+# =============================================================================
+G_DIR=$(new_sandbox)
+mkdir -p "$G_DIR"
+printf 'my personal triage.md fork\n' > "$G_DIR/triage.md"
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+G_TRIAGE_BEFORE=$(cat "$G_DIR/triage.md")
+
+G_OUT_FILE=$(mktemp)
+ALL_TMP="$ALL_TMP $G_OUT_FILE"
+CLAUDE_DIR="$G_DIR" "$REPO_DIR/install.sh" --files-only >"$G_OUT_FILE" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+G_RC=$?
+chk "G1: --files-only exits 0" '[ "$G_RC" -eq 0 ]'
+chk "G2: agents copied" '[ -f "$G_DIR/agents/triage-quick-task.md" ]'
+chk "G3: statusline.sh copied and executable" '[ -x "$G_DIR/statusline.sh" ]'
+chk "G4: workflows/triage-run.js copied" '[ -f "$G_DIR/workflows/triage-run.js" ]'
+chk "G5: scripts/triage-usage.sh copied and executable" '[ -x "$G_DIR/scripts/triage-usage.sh" ]'
+chk "G6: skip notice printed for triage.md" 'grep -q "skipped (expected fork): triage.md" "$G_OUT_FILE"'
+chk "G7: sandbox triage.md left untouched (fork preserved)" \
+  '[ "$(cat "$G_DIR/triage.md")" = "$G_TRIAGE_BEFORE" ]'
+chk "G8: no .bak-triage backup created for the skipped fork" '[ ! -f "$G_DIR/triage.md.bak-triage" ]'
+chk "G9: CLAUDE.md not created (files-only leaves it alone)" '[ ! -f "$G_DIR/CLAUDE.md" ]'
+chk "G10: settings.json not created (files-only leaves it alone)" '[ ! -f "$G_DIR/settings.json" ]'
+
+# =============================================================================
+# Case H — version-compat warnings (stub `claude` on PATH; --dry-run so a
+# stubbed/absent `claude` can't accidentally cause a real mutation)
+# =============================================================================
+H_STUB_DIR=$(mktemp -d)
+ALL_TMP="$ALL_TMP $H_STUB_DIR"
+
+make_stub_claude() { # $1 = version string to print
+  cat > "$H_STUB_DIR/claude" <<EOF
+#!/bin/sh
+echo "$1 (Claude Code)"
+EOF
+  chmod +x "$H_STUB_DIR/claude"
+}
+
+# H-old: version below all three documented thresholds
+make_stub_claude "2.1.100"
+H_OLD_DIR=$(new_sandbox)
+mkdir -p "$H_OLD_DIR"
+H_OLD_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $H_OLD_OUT"
+PATH="$H_STUB_DIR:/usr/bin:/bin" CLAUDE_DIR="$H_OLD_DIR" "$REPO_DIR/install.sh" --dry-run >"$H_OLD_OUT" 2>&1
+chk "H1: old claude version warns about per-agent memory" 'grep -q "per-agent memory" "$H_OLD_OUT"'
+chk "H2: old claude version warns about permission rules no-op" 'grep -q "permission rules" "$H_OLD_OUT"'
+chk "H3: old claude version warns about /triage-run classify loop" 'grep -q "classify stage can loop" "$H_OLD_OUT"'
+
+# H-absent: no `claude` anywhere on PATH
+H_ABSENT_DIR=$(new_sandbox)
+mkdir -p "$H_ABSENT_DIR"
+H_ABSENT_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $H_ABSENT_OUT"
+PATH="/usr/bin:/bin" CLAUDE_DIR="$H_ABSENT_DIR" "$REPO_DIR/install.sh" --dry-run >"$H_ABSENT_OUT" 2>&1
+chk "H4: absent claude prints could-not-verify" 'grep -q "could not verify Claude Code version" "$H_ABSENT_OUT"'
+
+# H-new: version above all thresholds -> no version warnings
+make_stub_claude "9.9.999"
+H_NEW_DIR=$(new_sandbox)
+mkdir -p "$H_NEW_DIR"
+H_NEW_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $H_NEW_OUT"
+PATH="$H_STUB_DIR:/usr/bin:/bin" CLAUDE_DIR="$H_NEW_DIR" "$REPO_DIR/install.sh" --dry-run >"$H_NEW_OUT" 2>&1
+chk "H5: new claude version prints no version WARNING lines" '! grep -q "WARNING" "$H_NEW_OUT"'
 
 # =============================================================================
 # Statusline checks (direct, no install needed)

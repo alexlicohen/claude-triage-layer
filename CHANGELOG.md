@@ -4,6 +4,50 @@ Reverse-chronological. Each entry cites the commit(s) it corresponds to and,
 where known, the test-count delta. See `test/roundtrip.sh` and `test/lint.sh`
 for the current check catalog.
 
+## Wave 4 — mutation gate, usage-tally tests, statusline spend, installer dry-run/files-only/version-warn
+
+Four parallel builder workstreams, orchestrator-verified and integrated.
+
+- **`qc/mutate.sh` + `make mutate`** — automated tests-with-teeth gate: 10
+  cataloged mutations, each applied to a fresh temp copy of the repo (anchor-based
+  matching, not line numbers; a baseline pass per suite so an already-red suite
+  reports ERROR, never a false kill; a verify-applied grep so an unmatched anchor
+  is ERROR, never a silent kill). Tri-state KILLED/SURVIVOR/ERROR; `--only <id>`,
+  `--strict`. First sweep: **8 killed, 2 survivors, 0 errors** — the survivors
+  (uninstall glob-revert; drift MISSING-branch) are real untested guards, each
+  reported with a suggested covering test. `--strict` stays off in `make mutate`
+  until they're covered.
+- **`test/usage-tally.sh` + `test/fixtures/usage/`** (wired into `make test`) —
+  24 checks over fully synthetic fixtures: peak-vs-sum-vs-last context math,
+  missing meta.json degraded behavior, unknown model → `other`, and every
+  distinct exit code (verified against the script's own EX_* constants).
+- **`statusline.sh` subagent-spend segment** — appends ` · sub Nk` (total
+  session subagent spend) via `scripts/triage-usage.sh` behind a 30-second
+  cache keyed by `session_id`, using the documented `transcript_path` stdin
+  field when present; any failure renders an empty segment (the existing
+  degradation contract). Cold render ~0.6s, warm ~0.15s.
+- **`install.sh --dry-run` / `--files-only`** (composable) — dry-run prints an
+  honest per-item mutation plan (create/overwrite-with-backup/unchanged per
+  file, CLAUDE.md append status, settings keys, permission rules, snapshot)
+  and writes nothing; files-only copies just the installed files, skipping
+  `.driftignore`-listed personal forks (`skipped (expected fork): triage.md`)
+  — the primitive behind the new `make sync` target. Round-trip cases F/G/H
+  added.
+- **Version-compat warning** — `install.sh` parses `claude --version`
+  (BSD-safe awk compare, no `sort -V`) and warns per threshold
+  (2.1.172/2.1.186/2.1.187) or when unverifiable; never blocks the install.
+- Check count: **64 → 113** (61 round-trip + 24 usage-tally + 28 scenario),
+  plus the 10-mutation sweep. `make test` now runs all three suites.
+- Live-fire integration notes: the drift gate caught the repo-ahead
+  `statusline.sh` before sync (second real catch); `make sync` correctly
+  skipped the personal `triage.md` fork on its first use; and a builder's
+  self-verification caught a `set -e` bare-`[ ]`-as-last-statement footgun in
+  `install_file` plus an exec-bit-stripping write-back in `qc/mutate.sh` that
+  was producing false kills.
+- Deferred: covering tests for the two mutation survivors (then flip CI to
+  `--strict`); R4 routing stats; R7 budget-aware /triage-run; R8 escalation
+  feedback loop.
+
 ## Wave 3.1 — tri-state verification (fail-loud INCOMPLETE) + workflow scenario tests
 
 - `workflows/triage-run.js`: closed the wave-3 known gap — a verifier gate whose

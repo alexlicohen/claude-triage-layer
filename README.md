@@ -35,7 +35,7 @@ You ──► Main loop: Opus (1M context, high effort)  ← triage rubric (tria
 - Claude Code with a **Pro or Max subscription** login (this is what makes it subscription-billed)
 - `jq` (for the installer and statusline): `brew install jq`
 - **Max plan**: Opus 1M context is included. **Pro plan**: Opus 1M bills extra usage credits — after installing, change `"model"` to `"opus"` (200K) in `~/.claude/settings.json`.
-- **Version**: built and verified against Claude Code **2.1.195**. The harness permission gate needs **≥ 2.1.186**, `/triage-run`'s structured-output classify stage needs **≥ 2.1.187**, and per-agent memory needs **≥ 2.1.172**. On older builds the permission rules simply no-op and per-agent memory is ignored; `/triage-run` is the exception — its classify stage can loop on schema-validation retries below 2.1.187 rather than degrade cleanly, so run it on a current build.
+- **Version**: built and verified against Claude Code **2.1.195**. The harness permission gate needs **≥ 2.1.186**, `/triage-run`'s structured-output classify stage needs **≥ 2.1.187**, and per-agent memory needs **≥ 2.1.172**. On older builds the permission rules simply no-op and per-agent memory is ignored; `/triage-run` is the exception — its classify stage can loop on schema-validation retries below 2.1.187 rather than degrade cleanly, so run it on a current build. `install.sh` checks `claude --version` itself and prints a specific warning per shortfall (or "could not verify" if `claude` is missing/unparseable) — warn-only, it never blocks the install.
 
 ## Install
 
@@ -50,6 +50,8 @@ Then **start a new Claude Code session** (config loads at startup). The installe
 - appends one line — `@triage.md` — to your global `~/.claude/CLAUDE.md` (append-only; never overwrites)
 - sets `model: "opus[1m]"`, `effortLevel: "high"`, and the `statusLine` in `~/.claude/settings.json` (**saving your previous values** to `~/.claude/triage-preinstall.json` first), and adds the Fable confirm-gate / worker-allowlist `permissions` rules
 - warns if `ANTHROPIC_API_KEY` is set (see Caveats)
+
+Two flags, composable: `./install.sh --dry-run` prints the full mutation plan (every file's create/overwrite/unchanged status, the CLAUDE.md append, the settings keys and permission rules, the snapshot) and writes nothing; `./install.sh --files-only` copies/chmods just the installed files — agents, `statusline.sh`, the `/triage-run` workflow, `scripts/triage-usage.sh`, `triage.md` — skipping anything listed in `.driftignore` (e.g. a hand-forked `triage.md`) instead of clobbering it, and leaves `CLAUDE.md`, `settings.json`, and permissions untouched. This is the primitive behind `make sync` for re-pulling repo file updates without re-running the settings merge.
 
 <details>
 <summary>Manual install (no script)</summary>
