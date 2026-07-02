@@ -47,7 +47,7 @@ Track the per-subagent token counts reported in each Task result, grouped by tie
 
 ## Conveniences
 
-- **Per-agent memory.** Each tier agent carries `memory: project` frontmatter, so it keeps a per-codebase `.claude/agent-memory/<agent-name>/MEMORY.md` and accumulates patterns across sessions instead of starting fresh. (Requires Claude Code ≥ 2.1.172.)
+- **Per-agent memory.** Each implementation-tier agent (quick-task, builder, deep-reasoner, fable-architect — not the read-only reviewer) carries `memory: project` frontmatter, so it keeps a per-codebase `.claude/agent-memory/<agent-name>/MEMORY.md` and accumulates patterns across sessions instead of starting fresh. (Requires Claude Code ≥ 2.1.172.)
 - **`/triage-run <task>`.** A reusable workflow (`~/.claude/workflows/triage-run.js`) that runs the whole loop as one command: classify → delegate to the right tier(s) via `agentType` → verify (objective check or reviewer). Its structured-output (`agent({schema})`) classify stage is reliable on Claude Code ≥ 2.1.187 — earlier builds could loop on schema-validation retries.
 - **Statusline** shows live `ccusage` cost / 5-hour-block burn **if ccusage is installed** (`npm i -g ccusage`, or `bun`), then appends `model · context %` (⚠ at ≥60%). With ccusage absent it falls back to `model · context %` — no per-render download lag.
 

@@ -27,14 +27,14 @@ You ──► Main loop: Opus (1M context, high effort)  ← triage rubric (tria
 - **Verification**: after a worker returns code, the orchestrator runs the project's own tests/lint/build before accepting. No objective check available? The read-only Opus reviewer reads the diff — far cheaper than redoing the work.
 - **Escalation**: workers reply `ESCALATE:` when out of their depth; failed verification escalates one tier up with the failed attempt as context. Escalation to Fable is automatic but always announced: `⚠ Escalating to Fable: <reason>`.
 - **Visibility**: a one-line per-tier token tally after each task (say `usage report` anytime), and a statusline showing `model · ctx N%` that turns red at ≥60% context — plus live `ccusage` cost/burn when `ccusage` is installed.
-- **Conveniences**: each tier carries `memory: project` (per-codebase memory across sessions); `/triage-run <task>` runs classify→delegate→verify as one command; and the installer adds harness-level `permissions` rules — an `ask` confirm-gate before any Fable spawn, plus an allowlist for the cheaper worker spawns so fan-out doesn't prompt. See `triage.md`.
+- **Conveniences**: each implementation tier (not the read-only reviewer) carries `memory: project` (per-codebase memory across sessions); `/triage-run <task>` runs classify→delegate→verify as one command; and the installer adds harness-level `permissions` rules — an `ask` confirm-gate before any Fable spawn, plus an allowlist for the cheaper worker spawns so fan-out doesn't prompt. See `triage.md`.
 
 ## Requirements
 
 - Claude Code with a **Pro or Max subscription** login (this is what makes it subscription-billed)
 - `jq` (for the installer and statusline): `brew install jq`
 - **Max plan**: Opus 1M context is included. **Pro plan**: Opus 1M bills extra usage credits — after installing, change `"model"` to `"opus"` (200K) in `~/.claude/settings.json`.
-- **Version**: built and verified against Claude Code **2.1.195**. The harness permission gate needs **≥ 2.1.186**, `/triage-run`'s structured-output classify stage needs **≥ 2.1.187**, and per-agent memory needs **≥ 2.1.172** — on older builds those pieces degrade gracefully (rules no-op, memory ignored).
+- **Version**: built and verified against Claude Code **2.1.195**. The harness permission gate needs **≥ 2.1.186**, `/triage-run`'s structured-output classify stage needs **≥ 2.1.187**, and per-agent memory needs **≥ 2.1.172**. On older builds the permission rules simply no-op and per-agent memory is ignored; `/triage-run` is the exception — its classify stage can loop on schema-validation retries below 2.1.187 rather than degrade cleanly, so run it on a current build.
 
 ## Install
 
@@ -55,15 +55,17 @@ Then **start a new Claude Code session** (config loads at startup). The installe
 
 1. `cp agents/triage-*.md ~/.claude/agents/`
 2. `cp triage.md ~/.claude/ && cp statusline.sh ~/.claude/ && chmod +x ~/.claude/statusline.sh`
-3. Append a line containing exactly `@triage.md` to `~/.claude/CLAUDE.md`
-4. In `~/.claude/settings.json` (note your old values first):
+3. `mkdir -p ~/.claude/workflows && cp workflows/triage-run.js ~/.claude/workflows/` (needed for `/triage-run`)
+4. Append a line containing exactly `@triage.md` to `~/.claude/CLAUDE.md` — make sure the file ends in a newline first, or the line fuses onto the last one
+5. In `~/.claude/settings.json` (note your old values first), using your real home path in the `statusLine` command (tilde is not expanded inside JSON):
    ```json
    {
      "model": "opus[1m]",
      "effortLevel": "high",
-     "statusLine": { "type": "command", "command": "~/.claude/statusline.sh" }
+     "statusLine": { "type": "command", "command": "/Users/<you>/.claude/statusline.sh" }
    }
    ```
+6. Optional (harness ≥ 2.1.186): to enforce the rubric at the permission layer, add `permissions` rules — an `ask` on `Agent(triage-fable-architect)` and an `allow` for the four cheaper `Agent(triage-*)` spawns. `install.sh` does this for you.
 </details>
 
 ## Using it
