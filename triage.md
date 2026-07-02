@@ -45,10 +45,12 @@ Track the per-subagent token counts reported in each Task result, grouped by tie
 
 `Usage: haiku 12k · sonnet 85k · opus 40k · fable 0 (orchestrator excluded; /usage for quota)`
 
+For a "usage report" (or the end-of-task tally), do **not** recall per-subagent counts from memory — run `~/.claude/scripts/triage-usage.sh` and print its line verbatim. It reads this session's on-disk subagent transcripts (`~/.claude/projects/<slug>/<session-id>/subagents/*.jsonl`), sums each subagent's peak context per model family, and excludes your own orchestrator turns. Default (no args) picks the current session; pass a transcript/dir path to tally another. If it prints `INCOMPLETE` or exits non-zero, report that rather than substituting remembered numbers — and note the figure is a relative per-tier proxy, not billing (`/usage` remains authoritative for quota).
+
 ## Conveniences
 
 - **Per-agent memory.** Each implementation-tier agent (quick-task, builder, deep-reasoner, fable-architect — not the read-only reviewer) carries `memory: project` frontmatter, so it keeps a per-codebase `.claude/agent-memory/<agent-name>/MEMORY.md` and accumulates patterns across sessions instead of starting fresh. (Requires Claude Code ≥ 2.1.172.)
-- **`/triage-run <task>`.** A reusable workflow (`~/.claude/workflows/triage-run.js`) that runs the whole loop as one command: classify → delegate to the right tier(s) via `agentType` → verify (objective check or reviewer). Its structured-output (`agent({schema})`) classify stage is reliable on Claude Code ≥ 2.1.187 — earlier builds could loop on schema-validation retries.
+- **`/triage-run <task>`.** A reusable workflow (`~/.claude/workflows/triage-run.js`) that runs the whole loop as one command: classify → delegate to the right tier(s) via `agentType` → verify (objective check or reviewer). It enforces verification rule 4: subtasks the classifier flags `danger` (shared primitive/dispatcher, ≥3 modules, format-sensitive output) run BOTH the objective check AND the reviewer when a check exists — either failing fails the round. Remediation is targeted: the failure is attributed to subtasks whose files appear in the verifier output and only those re-run (falling back to re-running all, logged, when attribution matches nothing). Its structured-output (`agent({schema})`) classify stage is reliable on Claude Code ≥ 2.1.187 — earlier builds could loop on schema-validation retries.
 - **Statusline** shows live `ccusage` cost / 5-hour-block burn **if ccusage is installed** (`npm i -g ccusage`, or `bun`), then appends `model · context %` (⚠ at ≥60%). With ccusage absent it falls back to `model · context %` — no per-render download lag.
 
 ## Harness integration (Claude Code ≥ 2.1.186)

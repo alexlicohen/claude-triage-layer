@@ -42,7 +42,7 @@ for a in $AGENTS; do
   rm -rf "$CLAUDE_DIR/agent-memory/$a"
 done
 rm -f "$CLAUDE_DIR/triage.md" "$CLAUDE_DIR/statusline.sh"
-rm -f "$CLAUDE_DIR/workflows/triage-run.js" "$CLAUDE_DIR/hooks/triage-verify.sh"
+rm -f "$CLAUDE_DIR/workflows/triage-run.js" "$CLAUDE_DIR/scripts/triage-usage.sh" "$CLAUDE_DIR/hooks/triage-verify.sh"
 
 # 2b. Remove the triage routing rules from settings.permissions (leaves your other
 #     rules and permissions.defaultMode intact). Also drops the Fable rule whether it

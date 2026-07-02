@@ -37,7 +37,7 @@ apply_settings() { # $1 = tmp file
   if [ -L "$SETTINGS" ]; then cat "$1" > "$SETTINGS" && rm -f "$1"; else mv "$1" "$SETTINGS"; fi
 }
 
-mkdir -p "$CLAUDE_DIR/agents" "$CLAUDE_DIR/workflows"
+mkdir -p "$CLAUDE_DIR/agents" "$CLAUDE_DIR/workflows" "$CLAUDE_DIR/scripts"
 
 # 1. Tier agents (implementation tiers carry `memory: project`) + rubric + statusline + /triage-run workflow
 for f in "$REPO_DIR"/agents/triage-*.md; do
@@ -47,6 +47,8 @@ copy_file "$REPO_DIR/triage.md" "$CLAUDE_DIR/triage.md"
 copy_file "$REPO_DIR/statusline.sh" "$CLAUDE_DIR/statusline.sh"
 chmod +x "$CLAUDE_DIR/statusline.sh"
 copy_file "$REPO_DIR/workflows/triage-run.js" "$CLAUDE_DIR/workflows/triage-run.js"
+copy_file "$REPO_DIR/scripts/triage-usage.sh" "$CLAUDE_DIR/scripts/triage-usage.sh"
+chmod +x "$CLAUDE_DIR/scripts/triage-usage.sh"
 
 # 2. Wire the rubric into the global CLAUDE.md (append-only; never overwrites)
 touch "$CLAUDE_DIR/CLAUDE.md"
