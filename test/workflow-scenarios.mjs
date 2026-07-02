@@ -23,10 +23,17 @@ function chk(name, cond) {
   else { fail++; console.log(`FAIL: ${name}`) }
 }
 
+// A budget mock with no target set — the legacy/identity case: remaining() is
+// Infinity, so every budget branch in the workflow short-circuits.
+const NO_BUDGET = { total: null, remaining: () => Infinity, spent: () => 0 }
+
 // Run the workflow body with a scripted agent. `script` maps a label-prefix (or
 // 'classify' for the schema'd classify call) to an array of queued responses;
-// a queue exhausting falls back to its last entry. Returns {result, logs, calls}.
-async function run(script) {
+// a queue exhausting falls back to its last entry. A queued value that is an Error
+// instance is THROWN by agent() instead of returned — simulating the DSL's hard
+// budget ceiling. `budget` overrides the mocked DSL budget global (default: none).
+// Returns {result, logs, calls}.
+async function run(script, budget = NO_BUDGET) {
   const logs = []
   const calls = [] // { label, prompt }
   const queues = new Map(Object.entries(script).map(([k, v]) => [k, [...v]]))
@@ -46,7 +53,9 @@ async function run(script) {
       if (label.startsWith(key) && (!best || key.length > best.length)) best = key
     }
     if (best === undefined) throw new Error(`unscripted agent call: label=${label}`)
-    return scripted(best)
+    const val = scripted(best)
+    if (val instanceof Error) throw val   // simulate the DSL hard budget ceiling
+    return val
   }
 
   const parallel = thunks => Promise.all(thunks.map(t => Promise.resolve().then(t).catch(() => null)))
@@ -62,8 +71,8 @@ async function run(script) {
   const log = m => logs.push(String(m))
   const phase = () => {}
 
-  const fn = new AsyncFunction('args', 'log', 'phase', 'agent', 'parallel', 'pipeline', src)
-  const result = await fn('test task', log, phase, agent, parallel, pipeline)
+  const fn = new AsyncFunction('args', 'log', 'phase', 'agent', 'parallel', 'pipeline', 'budget', src)
+  const result = await fn('test task', log, phase, agent, parallel, pipeline, budget)
   return { result, logs, calls }
 }
 
@@ -183,6 +192,83 @@ const countCalls = (calls, prefix) => calls.filter(c => c.label.startsWith(prefi
   chk('S8: remediation ran on the live gate\'s feedback', result.remediation !== null)
   chk('S8: remediation targeted core.js', result.remediation.implicated.some(i => i.matched.includes('core.js')))
   chk('S8: final verification flagged incomplete (objective gate still dead)', result.verification.incomplete === true)
+}
+
+// ---- Scenario 9: budget with total=null → IDENTITY. Same behavior as S1, plus a
+// budget field reporting total:null / spent:0 / empty skipped. (Explicit NO_BUDGET,
+// which is also the default the other 8 scenarios run under.)
+{
+  const { result, calls } = await run({
+    classify: [PLAN('make test', [ST('t1', 'builder', ['a.js'])])],
+    'builder:': ['did t1'],
+    'verify:objective-check': ['all good\nPASS'],
+  }, NO_BUDGET)
+  chk('S9: budget field present with total:null', result.budget && result.budget.total === null)
+  chk('S9: budget.skipped empty (nothing skipped in null mode)', Array.isArray(result.budget.skipped) && result.budget.skipped.length === 0)
+  chk('S9: budget.spent is 0 in null mode', result.budget.spent === 0)
+  chk('S9: identity — no reviewer spawned, no remediation, not incomplete',
+    countCalls(calls, 'verify:reviewer') === 0 && result.remediation === null && result.verification.incomplete !== true)
+}
+
+// ---- Scenario 10: constrained budget — remaining() drops below RESERVE after the
+// first subtask's pre-check → the second subtask is skipped and reported in
+// return.budget.skipped, the skip is logged, and verification still runs on the work
+// that DID complete. (RESERVE = 60_000 in the workflow.) remaining() returns a high
+// value on its FIRST call (subtask A's pre-check) and a sub-reserve value after.
+{
+  let calls = 0
+  const budget = { total: 200000, remaining: () => (++calls === 1 ? 150000 : 20000), spent: () => 180000 }
+  const { result, logs, calls: agentCalls } = await run({
+    classify: [PLAN('make test', [ST('sub A', 'builder', ['a.js']), ST('sub B', 'builder', ['b.js'])])],
+    'builder:': ['did sub A'],
+    'verify:objective-check': ['ok\nPASS'],
+  }, budget)
+  chk('S10: only the first subtask spawned (second skipped for budget)', countCalls(agentCalls, 'builder:') === 1)
+  chk('S10: skipped subtask reported in return.budget.skipped',
+    result.budget.skipped.some(s => s.stage.startsWith('Execute') && s.desc === 'sub B'))
+  chk('S10: skip logged with what was skipped + remaining budget',
+    logs.some(l => l.includes('Budget: skipping') && l.includes('sub B') && l.includes('20000')))
+  chk('S10: verification still ran on the completed work',
+    countCalls(agentCalls, 'verify:objective-check') === 1 && result.verification.incomplete !== true)
+  chk('S10: budget report carries total + stamped spent', result.budget.total === 200000 && result.budget.spent === 180000)
+}
+
+// ---- Scenario 11: hard ceiling — agent() THROWS mid-execute (spent hit total). The
+// throw is caught, the subtask recorded as skipped, and the workflow returns PARTIAL
+// results + a budget report instead of crashing. remaining() stays high so pre-checks
+// pass and the THROW (not a refusal) is what exercises the ceiling path.
+{
+  const budget = { total: 500000, remaining: () => 400000, spent: () => 250000 }
+  const { result, logs } = await run({
+    classify: [PLAN('make test', [ST('good sub', 'builder', ['a.js']), ST('ceiling sub', 'deep', ['b.js'])])],
+    'builder:': ['did good sub'],
+    'deep:': [new Error('agent() budget ceiling reached')],
+    'verify:objective-check': ['ok\nPASS'],
+  }, budget)
+  chk('S11: partial results kept — the good subtask survived',
+    result.results.length === 1 && result.results[0].subtask.desc === 'good sub')
+  chk('S11: ceiling subtask recorded as skipped',
+    result.budget.skipped.some(s => s.stage.startsWith('Execute') && s.desc === 'ceiling sub'))
+  chk('S11: ceiling hit logged (caught, not crashed)', logs.some(l => l.includes('token ceiling')))
+  chk('S11: returned a budget report + no error field (not a crash/abort)',
+    result.budget.total === 500000 && result.budget.spent === 250000 && result.error === undefined)
+  chk('S11: verification still ran on the partial results', result.verification && result.verification.incomplete !== true)
+}
+
+// ---- Scenario 12: budget below RESERVE from the start → EVERY subtask skipped →
+// early return with an explicit error field (not a hollow empty success), and
+// verification is never reached. (remaining() always < RESERVE.)
+{
+  const budget = { total: 100000, remaining: () => 5000, spent: () => 96000 }
+  const { result, logs, calls } = await run({
+    classify: [PLAN('make test', [ST('only sub', 'builder', ['a.js'])])],
+    // 'builder:' intentionally unscripted — it must never be called (would throw).
+    'verify:objective-check': ['should never run\nPASS'],
+  }, budget)
+  chk('S12: explicit error field on total budget exhaustion', typeof result.error === 'string' && result.error.includes('all subtasks skipped'))
+  chk('S12: no results, all recorded in budget.skipped', result.results.length === 0 && result.budget.skipped.length === 1)
+  chk('S12: verification never reached (no gate spawned)', countCalls(calls, 'verify:') === 0 && result.verification === null)
+  chk('S12: the abort was logged', logs.some(l => l.includes('every subtask was skipped')))
 }
 
 console.log('')

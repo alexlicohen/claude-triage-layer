@@ -38,6 +38,7 @@ After any worker returns code changes:
 - Triggers: a worker replies `ESCALATE:`, verification fails twice, or the reviewer says `ESCALATE:`.
 - Action: re-delegate one tier up (quick-task → builder → deep-reasoner → fable-architect), passing the failed attempt, verification output, and reviewer feedback as context.
 - Escalation is fully automatic — **but every escalation to `triage-fable-architect` must print `⚠ Escalating to Fable: <one-line reason>` in user-visible text before the spawn.**
+- **Record the post-mortem at escalation time** (escalations are not recoverable from transcripts afterward — subagent metadata rarely captures them). After any escalation, append one dated line to the failing tier's project memory, `.claude/agent-memory/<failing-agent>/MEMORY.md` (create it if missing): what the task was, why the tier's attempt failed, and what the next tier needed to succeed. Consult that file when writing future briefs for the tier — this is the layer's learning loop, and the orchestrator is the only place it can happen.
 
 ## Usage tally
 

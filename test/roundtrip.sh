@@ -328,6 +328,53 @@ PATH="$H_STUB_DIR:/usr/bin:/bin" CLAUDE_DIR="$H_NEW_DIR" "$REPO_DIR/install.sh" 
 chk "H5: new claude version prints no version WARNING lines" '! grep -q "WARNING" "$H_NEW_OUT"'
 
 # =============================================================================
+# Case I — uninstall must remove only the five shipped agents by name, never
+# a user-authored triage-*.md agent (a glob-based revert would delete it)
+# =============================================================================
+I_DIR=$(new_sandbox)
+mkdir -p "$I_DIR/agents"
+
+run_install "$I_DIR" >/dev/null 2>&1
+printf 'my own agent, not shipped by this repo\n' > "$I_DIR/agents/triage-mine.md"
+
+run_uninstall "$I_DIR" >/dev/null 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+I_RC=$?
+chk "I1: uninstall exits 0" '[ "$I_RC" -eq 0 ]'
+chk "I2: user-authored triage-mine.md survives uninstall" '[ -f "$I_DIR/agents/triage-mine.md" ]'
+chk "I3: all five shipped agents removed" \
+  '[ ! -f "$I_DIR/agents/triage-quick-task.md" ] && [ ! -f "$I_DIR/agents/triage-builder.md" ] && [ ! -f "$I_DIR/agents/triage-deep-reasoner.md" ] && [ ! -f "$I_DIR/agents/triage-reviewer.md" ] && [ ! -f "$I_DIR/agents/triage-fable-architect.md" ]'
+
+# =============================================================================
+# Case J — drift.sh: a checked file missing from an installed sandbox is
+# reported as unexpected drift and fails the exit code
+# =============================================================================
+J_DIR=$(new_sandbox)
+mkdir -p "$J_DIR"
+
+run_install "$J_DIR" >/dev/null 2>&1
+
+J_SAME_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $J_SAME_OUT"
+CLAUDE_DIR="$J_DIR" "$REPO_DIR/drift.sh" >"$J_SAME_OUT" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+J_SAME_RC=$?
+chk "J1: freshly installed sandbox drifts clean (exit 0)" '[ "$J_SAME_RC" -eq 0 ]'
+chk "J2: freshly installed sandbox has no MISSING/FORKED lines" \
+  '! grep -qE "MISSING|FORKED" "$J_SAME_OUT"'
+
+rm -f "$J_DIR/scripts/triage-usage.sh"
+
+J_MISSING_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $J_MISSING_OUT"
+CLAUDE_DIR="$J_DIR" "$REPO_DIR/drift.sh" >"$J_MISSING_OUT" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+J_MISSING_RC=$?
+chk "J3: drift.sh reports MISSING for the deleted checked file" \
+  'grep -q "MISSING (not installed): scripts/triage-usage.sh" "$J_MISSING_OUT"'
+chk "J4: drift.sh exits non-zero once a checked file is missing" '[ "$J_MISSING_RC" -ne 0 ]'
+
+# =============================================================================
 # Statusline checks (direct, no install needed)
 # =============================================================================
 STATUSLINE="$REPO_DIR/statusline.sh"

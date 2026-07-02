@@ -17,10 +17,10 @@ sync:
 	./install.sh --files-only
 
 # Mutation gate: prove the test suite has teeth (killed/survivor/error per
-# mutation). Survivors are reported but don't fail; use qc/mutate.sh --strict
-# once they have covering tests.
+# mutation). Strict since all 10 mutations have covering tests: any survivor
+# fails the gate.
 mutate:
-	./qc/mutate.sh
+	./qc/mutate.sh --strict
 
 # One green gate: lint -> drift -> test, fail-fast.
 verify: lint drift test

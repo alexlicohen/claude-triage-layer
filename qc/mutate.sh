@@ -236,13 +236,12 @@ MUT6
         "    if (v.result == null) return { text: '', failed: false, isEscalate: false, incomplete: true }" 1 "$rep"
       ;;
     8)
-      # triage-run.js: runGate -> single attempt, no retry (9 lines -> 3 lines).
-      {
-        printf '  async function runGate(mk, name) {\n'
-        printf '    return await mk()\n'
-        printf '  }\n'
-      } > "$rep"
-      mut_replace_block "$target" '  async function runGate(mk, name) {' 9 "$rep"
+      # triage-run.js: disable the gate retry surgically — the retry condition
+      # becomes `if (false)`, so the gate is tried once and null is returned
+      # immediately. 1-line replace: robust to surrounding runGate changes
+      # (a 9-line block replace went stale when budget logic reshaped runGate).
+      printf '    if (false) { // MUTATED: retry disabled\n' > "$rep"
+      mut_replace_block "$target" '    if (out == null && !ceilinged) {' 1 "$rep"
       ;;
     9)
       # triage-run.js: matchedFiles() -> always [] (3 lines -> 3 lines).
@@ -281,7 +280,7 @@ verify_mutation() {
     5) ! grep -qF '.permissions.deny  -= $fable' "$target" ;;
     6) ! grep -qF 'case "$PCT" in' "$target" && grep -qF 'if [ "$PCT" -ge 60 ]; then' "$target" ;;
     7) grep -qF "incomplete: false }" "$target" && ! grep -qF "if (v.result == null) return { text: '', failed: false, isEscalate: false, incomplete: true }" "$target" ;;
-    8) ! grep -qF 'retrying the gate once' "$target" ;;
+    8) grep -qF 'MUTATED: retry disabled' "$target" ;;
     9) grep -qF 'function matchedFiles(r, text) {' "$target" && ! grep -qF 'fileMentioned(f, text)' "$target" ;;
     10) [ "$(grep -cF 'UNEXPECTED_DRIFT=1' "$target")" -eq 1 ] ;;
     *) return 1 ;;
@@ -289,11 +288,15 @@ verify_mutation() {
 }
 
 # -----------------------------------------------------------------------------
-# Repo copy: tracked files only (git ls-files), current on-disk content (so
-# uncommitted in-flight edits from parallel workers are included), never .git.
+# Repo copy: tracked + untracked-unignored files (git ls-files -co
+# --exclude-standard), current on-disk content (so uncommitted in-flight edits
+# AND brand-new files from parallel workers are included), never .git. Tracked-
+# only copies caused false baseline-red: a tracked file referencing a new
+# untracked file (e.g. install.sh -> scripts/triage-stats.sh) broke the copy's
+# own suite before any mutation was applied.
 # -----------------------------------------------------------------------------
 FILELIST="$WORK_ROOT/filelist.txt"
-if ! git -C "$REPO_DIR" ls-files > "$FILELIST" 2>/dev/null; then
+if ! git -C "$REPO_DIR" ls-files --cached --others --exclude-standard > "$FILELIST" 2>/dev/null; then
   echo "ERROR: $REPO_DIR is not a git repo (or git ls-files failed) — cannot build a clean copy." >&2
   exit 1
 fi

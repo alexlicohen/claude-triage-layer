@@ -59,6 +59,61 @@ if (!plan || !Array.isArray(plan.subtasks) || plan.subtasks.length === 0) {
   return { error: 'classify failed', plan: plan ?? null }
 }
 
+// ─── Budget awareness ───────────────────────────────────────────────────────
+// The DSL exposes `budget = {total, spent(), remaining()}`. total === null means
+// the user set NO token target: remaining() is Infinity and behavior must be
+// EXACTLY the legacy control flow. Every budget branch below is guarded on
+// `budgeted`, so the null path never calls remaining(), never skips, never wraps a
+// spawn in a catch — it is byte-for-byte the pre-budget workflow.
+const budgeted = !!(budget && budget.total != null)
+const skipped = []   // {stage, desc} for every spawn we refuse OR that hit the ceiling
+
+// RESERVE — the ONE tuned budget constant: a floor of tokens held back from WORK
+// spawns (Execute subtasks + remediation redos). Once remaining() is at/below it we
+// stop STARTING new work, so this much budget stays available to VERIFY the work
+// already done. Ordering choice (rubric: an unverified result is worse than a
+// smaller verified one): we skip WORK before VERIFICATION, so verify gates are NOT
+// held to this floor — they may draw the reserve down to the last token (see
+// runGate, floor 0). Sized to cover one seam verification of the completed work: an
+// objective-check gate (Haiku, ~12k in the usage tally) plus a reviewer gate (Opus,
+// ~40k) ≈ 52k; 60k adds headroom. Deeper stages (remediation re-verify) draw further
+// down and are themselves budget-gated and ceiling-guarded, not silently unbounded.
+const RESERVE = 60_000
+
+// spawn() — SINGLE OWNER of "may I start this WORK agent under the budget?". Two
+// budget failure modes, kept DISTINCT from the existing null-resolve (spawn/run
+// failure) handling that callers already do:
+//   1. pre-spawn refusal — remaining() at/below `need`: record a skip, do NOT call
+//      agent(). (fail-loud: logged with what was skipped + remaining budget.)
+//   2. hard ceiling — agent() THROWS mid-flight (spent reached total, the DSL's
+//      documented throw for a budgeted spawn): catch it, record a skip, return null.
+//      Never an unhandled crash that would lose the partial results already gathered.
+// `need` = RESERVE for work. When NOT budgeted this is a transparent `await thunk()`
+// — no check, no catch — so legacy throw propagation (e.g. an unscripted test call)
+// is preserved and behavior is unchanged.
+async function spawn(need, stage, desc, thunk) {
+  if (!budgeted) return await thunk()
+  const left = budget.remaining()
+  if (left <= need) {
+    log(`⚠ Budget: skipping ${stage} "${desc}" — ${left} tokens remaining, at/below the ${need}-token work reserve.`)
+    skipped.push({ stage, desc })
+    return null
+  }
+  try {
+    return await thunk()
+  } catch (e) {
+    log(`⚠ Budget: ${stage} "${desc}" hit the token ceiling (${String((e && e.message) || e)}); ~${left} remaining at pre-check — recorded as skipped, partial results kept.`)
+    skipped.push({ stage, desc })
+    return null
+  }
+}
+
+// budgetReport() — the `budget` field added to the return value. spent is stamped
+// at return time. When not budgeted this is {total: null, spent: 0, skipped: []}.
+function budgetReport() {
+  return { total: budget ? budget.total : null, spent: budget ? budget.spent() : 0, skipped }
+}
+
 phase('Execute')
 const TIER_AGENT = { quick: 'triage-quick-task', builder: 'triage-builder', deep: 'triage-deep-reasoner', fable: 'triage-fable-architect' }
 
@@ -67,27 +122,46 @@ function brief(st, extra) {
     `Acceptance criteria: ${st.acceptance}` + (extra ? `\n\n${extra}` : '')
 }
 
-// Run one subtask. Fable is available and gated: announce it, and if the spawn
+// Run one subtask, budget-gated (WORK floor = RESERVE) via spawn(): one budget
+// decision per subtask, before it starts, plus a hard-ceiling catch around the
+// agent() call(s). Fable is available and gated: announce it, and if the spawn
 // hard-fails (agent() returns null — e.g. a stale model registry), fall back to
-// triage-deep-reasoner at max effort per the rubric. Returns null if even the
-// fallback dies, so filter(Boolean) drops it (rather than leaking a `null` output).
+// triage-deep-reasoner at max effort per the rubric. Returns null if the subtask is
+// budget-skipped, hits the ceiling, or even the fallback dies — so filter(Boolean)
+// drops it (rather than leaking a `null` output).
 async function runSubtask(st) {
-  if (st.tier === 'fable') {
-    log(`⚠ Escalating to Fable: ${st.desc}`)
-    const out = await agent(brief(st), { phase: 'Execute', agentType: 'triage-fable-architect', label: `fable:${st.desc.slice(0, 24)}` })
-    if (out) return { subtask: st, output: out }
-    log(`⚠ Fable unavailable — using triage-deep-reasoner at max effort: ${st.desc}`)
-    const fb = await agent(brief(st), { phase: 'Execute', agentType: 'triage-deep-reasoner', effort: 'max', label: `deep←fable:${st.desc.slice(0, 24)}` })
-    return fb ? { subtask: st, output: fb } : null
-  }
-  const agentType = TIER_AGENT[st.tier] || 'triage-builder'
-  const out = await agent(brief(st), { phase: 'Execute', agentType, label: `${st.tier}:${st.desc.slice(0, 24)}` })
-  return out ? { subtask: st, output: out } : null
+  return spawn(RESERVE, `Execute:${st.tier}`, st.desc, async () => {
+    if (st.tier === 'fable') {
+      log(`⚠ Escalating to Fable: ${st.desc}`)
+      const out = await agent(brief(st), { phase: 'Execute', agentType: 'triage-fable-architect', label: `fable:${st.desc.slice(0, 24)}` })
+      if (out) return { subtask: st, output: out }
+      log(`⚠ Fable unavailable — using triage-deep-reasoner at max effort: ${st.desc}`)
+      const fb = await agent(brief(st), { phase: 'Execute', agentType: 'triage-deep-reasoner', effort: 'max', label: `deep←fable:${st.desc.slice(0, 24)}` })
+      return fb ? { subtask: st, output: fb } : null
+    }
+    const agentType = TIER_AGENT[st.tier] || 'triage-builder'
+    const out = await agent(brief(st), { phase: 'Execute', agentType, label: `${st.tier}:${st.desc.slice(0, 24)}` })
+    return out ? { subtask: st, output: out } : null
+  })
 }
 
 const results = (await parallel(plan.subtasks.map(st => () => runSubtask(st)))).filter(Boolean)
 const dropped = plan.subtasks.length - results.length
 if (dropped > 0) log(`⚠ ${dropped} of ${plan.subtasks.length} subtask(s) failed or were dropped — results are incomplete`)
+
+// Fail-loud (no silent empty success): if the budget refused EVERY subtask before it
+// could spawn, there is nothing to verify — return an explicit error, not a hollow
+// "success" with empty results. (A partial success — at least one subtask ran — falls
+// through and gets verified normally.)
+if (budgeted && results.length === 0 &&
+    skipped.filter(s => s.stage.startsWith('Execute')).length === plan.subtasks.length) {
+  log('⚠ Budget: every subtask was skipped before it could spawn — no work performed; aborting before verification.')
+  return {
+    task, plan, results: [], remediation: null, verification: null,
+    error: 'budget exhausted: all subtasks skipped before execution',
+    budget: budgetReport(),
+  }
+}
 
 phase('Verify')
 const TIER_ORDER = ['quick', 'builder', 'deep', 'fable']
@@ -122,15 +196,40 @@ async function verify(items, remediated) {
     )
   }
 
-  // A gate whose agent dies (agent() → null) gets ONE bounded retry; a second null
-  // is reported INCOMPLETE by assess() — loud, and never a silent pass. Retrying the
-  // GATE (not the subtasks) is deliberate: a dead verifier says nothing about the work,
-  // so re-running subtasks on it would be remediation without a signal.
+  // Budget: a verify gate runs on the VERIFY floor (0), NOT the work RESERVE — we
+  // skip WORK before VERIFICATION (rubric: an unverified result is worse than a
+  // smaller verified one), so a gate runs as long as ANY budget remains and may draw
+  // the reserve down to the last token. No budget at all → skip the gate (recorded,
+  // logged); assess() then reports it INCOMPLETE — fail-loud, never a silent pass.
+  //
+  // A gate whose agent dies (agent() → null, a spawn/run failure) still gets ONE
+  // bounded retry; a second null is reported INCOMPLETE by assess(). Retrying the GATE
+  // (not the subtasks) is deliberate: a dead verifier says nothing about the work, so
+  // re-running subtasks on it would be remediation without a signal. A hard-ceiling
+  // THROW (budgeted only) is DISTINCT: caught, recorded once as a skip, and NOT
+  // retried (a spent-out budget won't recover on a re-attempt).
   async function runGate(mk, name) {
-    let out = await mk()
-    if (out == null) {
+    const stage = `Verify:${name}`
+    if (budgeted && budget.remaining() <= 0) {
+      log(`⚠ Budget: skipping ${stage} gate — 0 tokens remaining; verification reported INCOMPLETE.`)
+      skipped.push({ stage, desc: name })
+      return null
+    }
+    let ceilinged = false
+    const attempt = async () => {
+      if (!budgeted) return await mk()   // legacy path: throws propagate, no catch
+      try {
+        return await mk()
+      } catch (e) {
+        if (!ceilinged) { skipped.push({ stage, desc: name }); ceilinged = true }
+        log(`⚠ Budget: ${stage} gate hit the token ceiling (${String((e && e.message) || e)}) — treated as no output (INCOMPLETE).`)
+        return null
+      }
+    }
+    let out = await attempt()
+    if (out == null && !ceilinged) {
       log(`⚠ ${name} gate returned no output (spawn/run failure) — retrying the gate once.`)
-      out = await mk()
+      out = await attempt()
       if (out == null) log(`⚠ ${name} gate failed twice — verification will be reported INCOMPLETE.`)
     }
     return out
@@ -226,13 +325,16 @@ if (failed && results.length) {
   }
   log(isEscalate ? 'Verification: ESCALATE — re-running the implicated subtask(s) one tier up with the feedback.'
                  : 'Verification did not pass — re-running the implicated subtask(s) with the feedback as context.')
-  const redo = await parallel(targets.map(r => () => {
+  // Remediation redos are WORK → budget-gated on the RESERVE floor (same as Execute),
+  // with a ceiling catch, via spawn(). A budget-skipped redo drops from redoResults
+  // (filter(Boolean)); the original result stays in the merged re-verify set below.
+  const redo = await parallel(targets.map(r => () => spawn(RESERVE, `Remediate:${r.subtask.tier}`, r.subtask.desc, async () => {
     const tier = isEscalate ? nextTier(r.subtask.tier) : r.subtask.tier
     const agentType = TIER_AGENT[tier] || 'triage-builder'
     const extra = `A prior attempt did not pass verification. Verifier feedback:\n${vtext.slice(0, 2000)}\nAddress it and complete the task.`
-    return agent(brief(r.subtask, extra), { phase: 'Verify', agentType, label: `redo:${r.subtask.desc.slice(0, 20)}` })
-      .then(out => out ? { subtask: r.subtask, output: out, tier } : null)
-  }))
+    const out = await agent(brief(r.subtask, extra), { phase: 'Verify', agentType, label: `redo:${r.subtask.desc.slice(0, 20)}` })
+    return out ? { subtask: r.subtask, output: out, tier } : null
+  })))
   const redoResults = redo.filter(Boolean)
   remediation = {
     implicated: targets.map(r => ({ desc: r.subtask.desc, matched: matchedFiles(r, vtext) })),
@@ -256,4 +358,4 @@ if (assess(verification).incomplete) {
   verification.incomplete = true
 }
 
-return { task, plan, results, remediation, verification }
+return { task, plan, results, remediation, verification, budget: budgetReport() }

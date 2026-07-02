@@ -4,6 +4,45 @@ Reverse-chronological. Each entry cites the commit(s) it corresponds to and,
 where known, the test-count delta. See `test/roundtrip.sh` and `test/lint.sh`
 for the current check catalog.
 
+## Wave 5 — strict mutation CI, routing stats, budget-aware /triage-run, escalation post-mortems
+
+- **Mutation gate strict + in CI**: covering tests added for both wave-4
+  survivors — round-trip Case I (a user-authored `agents/triage-mine.md`
+  survives uninstall) and Case J (drift.sh: clean sandbox exits 0; a deleted
+  installed file yields `MISSING (not installed)` + non-zero). Sweep is now
+  **10 killed / 0 survivors / 0 errors**; `make mutate` runs `--strict` (any
+  future surviving mutant fails the build) and is a CI step on both OSes.
+- **`scripts/triage-stats.sh`** — cross-session routing stats (per-tier
+  spawns/sessions/total/median peak-context tokens, ISO-week rollups;
+  `--project` / `--all` / `--weeks`). Evidence-based design choices: week
+  bucketing uses the embedded UTC `.timestamp` on transcript lines (present
+  300/300 sampled; mtime rejected as copy/rsync-mutable and disagreed with
+  embedded time by hours), and the escalation stat ships as an explicitly
+  labelled LOWER BOUND after sampling showed escalations are not recorded on
+  disk (only ~24% of 3,121 sampled subagents carry any description; escalation
+  markers ≈ 0). Fail-loud INCOMPLETE scoping; unreadable sessions counted and
+  reported, never dropped. Installed/uninstalled/drift-checked like the usage
+  script.
+- **Budget-aware `/triage-run`** — wires the Workflow DSL `budget` global.
+  One tuned constant (`RESERVE = 60_000`, sized from real gate costs in the
+  usage tally) floors WORK spawns (Execute + remediation) so verification
+  always has room — work is skipped before verification, since an unverified
+  result is worse than a smaller verified one. `spawn()` is the single owner
+  of the budget decision; the DSL's hard-ceiling throw is caught and recorded
+  as a skip (partial results preserved). No silent caps: every skip is logged
+  and returned in `budget.skipped`; all-skipped returns an explicit error.
+  With no budget set the control flow is unchanged (proven by short-circuit
+  analysis + scenario S9). Scenario suite 28 → 46 assertions.
+- **Escalation post-mortems (rubric)** — informed directly by the stats
+  investigation: since escalations are unrecoverable from transcripts, the
+  escalation protocol now instructs the orchestrator to append a dated
+  one-line post-mortem to the failing tier's `.claude/agent-memory/<agent>/
+  MEMORY.md` at escalation time, and to consult it when briefing that tier.
+  Rubric-only by necessity: workflows have no filesystem access, and the
+  on-disk record doesn't exist — the orchestrator is the only writer.
+- Check count: **113 → 138** (68 round-trip + 24 usage-tally + 46 scenario),
+  plus the strict 10-mutation sweep in CI.
+
 ## Wave 4 — mutation gate, usage-tally tests, statusline spend, installer dry-run/files-only/version-warn
 
 Four parallel builder workstreams, orchestrator-verified and integrated.

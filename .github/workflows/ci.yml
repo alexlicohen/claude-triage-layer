@@ -30,3 +30,6 @@ jobs:
 
       - name: make verify
         run: make verify
+
+      - name: make mutate (strict — any surviving mutant fails)
+        run: make mutate
