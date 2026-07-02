@@ -3,8 +3,8 @@
 #   1. `bash -n` (syntax check) on every *.sh in the repo.
 #   2. `node --check` on every *.js under workflows/.
 #   3. shellcheck (severity=warning) on every *.sh — IF installed. If not,
-#      print a loud SKIP and still exit 0 locally (CI always installs
-#      shellcheck, so CI gets the full lint; a missing tool locally must
+#      print a loud SKIP and still exit 0 locally (CI always installs the
+#      tool, so CI gets the full lint; a missing tool locally must
 #      never masquerade as a silent pass, hence the loud message).
 #   4. Docs-consistency check: every file path referenced in README.md's
 #      install / manual-install sections must exist on disk, and README's

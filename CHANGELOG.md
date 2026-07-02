@@ -24,6 +24,13 @@ for the current check catalog.
   paths, seam with one dead + one failing gate). Teeth proven by mutation:
   reverting the INCOMPLETE fix in the source makes S6 go RED (26/2), restore
   goes green (28/0). Check count: **36 → 64** (36 round-trip + 28 scenario).
+- First real shellcheck pass (CI run 28560142799, both OSes) failed as wave 3
+  predicted it might, with real findings in the test harness itself: an SC1073
+  parse error (a comment line beginning with the literal word `shellcheck`,
+  misread as a directive) and 13× SC2034 (3 genuinely dead captures deleted;
+  10 false positives — vars consumed inside `chk`'s eval'd condition strings —
+  suppressed individually with the repo's labeled-justification convention).
+  All 7 `.sh` files now pass `shellcheck -S warning` with zero findings.
 
 ## Wave 3 — CI harness, drift checker, deterministic usage tally, workflow seam-checks (`9ceb599`)
 

@@ -84,7 +84,8 @@ cat > "$A_DIR/settings.json" <<'EOF'
 }
 EOF
 
-A_INSTALL_OUT=$(run_install "$A_DIR" 2>&1)
+run_install "$A_DIR" >/dev/null 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 A_INSTALL_RC=$?
 chk "A1: install exits 0" '[ "$A_INSTALL_RC" -eq 0 ]'
 chk "A2: @triage.md appended on its own line" 'grep -qxF "@triage.md" "$A_DIR/CLAUDE.md"'
@@ -104,7 +105,8 @@ chk "A9: preinstall snapshot captured original values" \
   '[ "$(jq -r ".model" "$A_DIR/triage-preinstall.json")" = "sonnet" ]'
 
 # Re-install: idempotency
-A_REINSTALL_OUT=$(run_install "$A_DIR" 2>&1)
+run_install "$A_DIR" >/dev/null 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 A_REINSTALL_RC=$?
 chk "A10: re-install exits 0" '[ "$A_REINSTALL_RC" -eq 0 ]'
 chk "A11: re-install does not duplicate @triage.md" \
@@ -113,7 +115,8 @@ chk "A12: re-install does not duplicate permissions.allow entries (still 5)" \
   '[ "$(jq ".permissions.allow | length" "$A_DIR/settings.json")" -eq 5 ]'
 
 # Uninstall: restore
-A_UNINSTALL_OUT=$(run_uninstall "$A_DIR" 2>&1)
+run_uninstall "$A_DIR" >/dev/null 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 A_UNINSTALL_RC=$?
 chk "A13: uninstall exits 0" '[ "$A_UNINSTALL_RC" -eq 0 ]'
 chk "A14: model restored to pre-install value" \
@@ -135,6 +138,7 @@ mkdir -p "$B_DIR"
 
 run_install "$B_DIR" >/dev/null 2>&1
 run_uninstall "$B_DIR" >/dev/null 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 B_RC=$?
 chk "B1: uninstall exits 0 on an originally-empty dir" '[ "$B_RC" -eq 0 ]'
 chk "B2: model key deleted (was null pre-install), not written as null" \
@@ -156,6 +160,7 @@ echo '{}' > "$C_REAL"
 ln -s "$C_REAL" "$C_DIR/settings.json"
 
 run_install "$C_DIR" >/dev/null 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 C_RC=$?
 chk "C1: install exits 0 with a symlinked settings.json" '[ "$C_RC" -eq 0 ]'
 chk "C2: settings.json is still a symlink after install" '[ -L "$C_DIR/settings.json" ]'
@@ -171,11 +176,13 @@ D_DIR=$(new_sandbox)
 mkdir -p "$D_DIR"
 printf 'pre-existing CLAUDE.md content\n' > "$D_DIR/CLAUDE.md"
 printf '{ this is not valid json' > "$D_DIR/settings.json"
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 D_CLAUDE_MD_BEFORE=$(cat "$D_DIR/CLAUDE.md")
 
 D_STDERR_FILE=$(mktemp)
 ALL_TMP="$ALL_TMP $D_STDERR_FILE"
 CLAUDE_DIR="$D_DIR" "$REPO_DIR/install.sh" >/dev/null 2>"$D_STDERR_FILE"
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 D_RC=$?
 chk "D1: install exits non-zero on invalid settings.json" '[ "$D_RC" -ne 0 ]'
 chk "D2: stderr mentions 'not valid JSON'" 'grep -q "not valid JSON" "$D_STDERR_FILE"'
@@ -202,6 +209,7 @@ jq '.permissions.ask = [] | .permissions.deny = ["Agent(triage-fable-architect)"
   "$E_DIR/settings.json" > "$E_TMP" && mv "$E_TMP" "$E_DIR/settings.json"
 
 run_uninstall "$E_DIR" >/dev/null 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 E_RC=$?
 chk "E2: uninstall exits 0" '[ "$E_RC" -eq 0 ]'
 chk "E3: the converted deny rule is removed on uninstall" \
@@ -212,11 +220,13 @@ chk "E3: the converted deny rule is removed on uninstall" \
 # =============================================================================
 STATUSLINE="$REPO_DIR/statusline.sh"
 
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 STATUS_NONNUMERIC=$(printf '%s' '{"model":{"display_name":"Opus"},"context_window":{"used_percentage":"n/a"}}' \
   | PATH=/usr/bin:/bin bash "$STATUSLINE")
 chk "S1: statusline with non-numeric used_percentage does not crash and prints model only" \
   '[ "$STATUS_NONNUMERIC" = "Opus" ]'
 
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 STATUS_NUMERIC=$(printf '%s' '{"model":{"display_name":"Opus"},"context_window":{"used_percentage":42.7}}' \
   | PATH=/usr/bin:/bin bash "$STATUSLINE")
 chk "S2: statusline with used_percentage=42.7 prints 'Opus · ctx 42%'" \
