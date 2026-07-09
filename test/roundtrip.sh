@@ -379,20 +379,39 @@ chk "J4: drift.sh exits non-zero once a checked file is missing" '[ "$J_MISSING_
 
 # =============================================================================
 # Statusline checks (direct, no install needed)
+#
+# statusline.sh appends a live "· sub Nk" subagent-spend suffix (scripts/triage-
+# usage.sh), resolved either from the input's `transcript_path` field or, if that's
+# absent, by scanning ~/.claude/projects/<slug-of-$PWD> for this cwd's OWN real
+# session transcripts — ambient state outside this suite's sandboxing. S1/S2 pin an
+# explicit `transcript_path` at a fixture with no `subagents/` dir, so the suffix
+# resolves to empty deterministically regardless of what real sessions exist for
+# this repo. S3 pins one at a fixture that DOES have subagent data, to cover the
+# suffix's happy path with a known expected total (same fixture test/usage-tally.sh
+# uses directly). Each case uses its own `session_id` so the 30s statusline cache
+# can never serve a stale value across cases or a prior ad-hoc manual run.
 # =============================================================================
 STATUSLINE="$REPO_DIR/statusline.sh"
+NO_SUB_TRANSCRIPT="$REPO_DIR/test/fixtures/statusline/no-subagents.jsonl"
+THREE_FAMILY_TRANSCRIPT="$REPO_DIR/test/fixtures/usage/three-family.jsonl"
 
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
-STATUS_NONNUMERIC=$(printf '%s' '{"model":{"display_name":"Opus"},"context_window":{"used_percentage":"n/a"}}' \
+STATUS_NONNUMERIC=$(printf '%s' '{"model":{"display_name":"Opus"},"context_window":{"used_percentage":"n/a"},"session_id":"test-statusline-s1","transcript_path":"'"$NO_SUB_TRANSCRIPT"'"}' \
   | PATH=/usr/bin:/bin bash "$STATUSLINE")
 chk "S1: statusline with non-numeric used_percentage does not crash and prints model only" \
   '[ "$STATUS_NONNUMERIC" = "Opus" ]'
 
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
-STATUS_NUMERIC=$(printf '%s' '{"model":{"display_name":"Opus"},"context_window":{"used_percentage":42.7}}' \
+STATUS_NUMERIC=$(printf '%s' '{"model":{"display_name":"Opus"},"context_window":{"used_percentage":42.7},"session_id":"test-statusline-s2","transcript_path":"'"$NO_SUB_TRANSCRIPT"'"}' \
   | PATH=/usr/bin:/bin bash "$STATUSLINE")
 chk "S2: statusline with used_percentage=42.7 prints 'Opus · ctx 42%'" \
   '[ "$STATUS_NUMERIC" = "Opus · ctx 42%" ]'
+
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+STATUS_WITH_SUB=$(printf '%s' '{"model":{"display_name":"Opus"},"context_window":{"used_percentage":42.7},"session_id":"test-statusline-s3","transcript_path":"'"$THREE_FAMILY_TRANSCRIPT"'"}' \
+  | PATH=/usr/bin:/bin bash "$STATUSLINE")
+chk "S3: statusline appends '· sub Nk' from real subagent data (haiku 2k+sonnet 50k+fable 6k=58k)" \
+  '[ "$STATUS_WITH_SUB" = "Opus · ctx 42% · sub 58k" ]'
 
 # =============================================================================
 # Result
