@@ -13,6 +13,8 @@ Top-tier models (Fable 5) are excellent but burn subscription quota ~3–5× fas
 1. **A standalone router (Agent SDK / API) cannot use subscription auth** — Anthropic's policy requires API keys for SDK-built agents. The only subscription-billed implementation is configuration *inside* Claude Code.
 2. **Claude Code has no automatic prompt router** — nothing can swap the main-loop model per prompt. So triage is done by the orchestrating model itself, following a rubric, delegating to subagents pinned to cheaper/stronger models.
 
+The economics aren't speculative: Anthropic's own [coordinator-pattern cookbook](https://github.com/anthropics/claude-cookbooks/blob/main/managed_agents/CMA_plan_big_execute_small.ipynb) measures the same split on the Managed Agents API — a frontier model plans and synthesizes while cheap workers absorb the token-heavy reading — and finds it **~2.5× cheaper and ~3× faster** than a rigor-matched solo frontier agent, with 84–98% of input tokens billed at the worker rate. This layer is the Claude Code / subscription-billed implementation of the same delegation economics (plus the verification, escalation, and per-tier accounting the cookbook leaves to you); its context-isolation and brief-granularity lessons are codified as routing rules 9–10 and verification rule 5 in `triage.md`.
+
 ## How it works
 
 ```
