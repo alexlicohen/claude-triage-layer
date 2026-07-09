@@ -50,7 +50,7 @@ Then **start a new Claude Code session** (config loads at startup). The installe
 
 - copies the 5 agents to `~/.claude/agents/`, the rubric to `~/.claude/triage.md`, the statusline script, and the `/triage-run` workflow (`~/.claude/workflows/`)
 - appends one line — `@triage.md` — to your global `~/.claude/CLAUDE.md` (append-only; never overwrites)
-- sets `model: "opus[1m]"`, `effortLevel: "high"`, and the `statusLine` in `~/.claude/settings.json` (**saving your previous values** to `~/.claude/triage-preinstall.json` first), and adds the Fable confirm-gate / worker-allowlist `permissions` rules
+- sets `model: "opus[1m]"`, `effortLevel: "high"`, and the `statusLine` in `~/.claude/settings.json` (**saving your previous `statusLine`** to `~/.claude/triage-preinstall.json` first — `model`/`effortLevel` are this layer's opinionated defaults and aren't snapshotted, since uninstall leaves them as you set them rather than reverting), and adds the Fable confirm-gate / worker-allowlist `permissions` rules
 - warns if `ANTHROPIC_API_KEY` is set (see Caveats)
 
 Two flags, composable: `./install.sh --dry-run` prints the full mutation plan (every file's create/overwrite/unchanged status, the CLAUDE.md append, the settings keys and permission rules, the snapshot) and writes nothing; `./install.sh --files-only` copies/chmods just the installed files — agents, `statusline.sh`, the `/triage-run` workflow, `scripts/triage-usage.sh`, `triage.md` — skipping anything listed in `.driftignore` (e.g. a hand-forked `triage.md`) instead of clobbering it, and leaves `CLAUDE.md`, `settings.json`, and permissions untouched. This is the primitive behind `make sync` for re-pulling repo file updates without re-running the settings merge.
@@ -98,7 +98,7 @@ Two flags, composable: `./install.sh --dry-run` prints the full mutation plan (e
 ## Disable / uninstall
 
 - **Kill switch** (keep files, stop routing): delete the `@triage.md` line from `~/.claude/CLAUDE.md`.
-- **Full uninstall**: `./uninstall.sh` — removes all files and restores your pre-install `model`/`effortLevel`/`statusLine` from the snapshot.
+- **Full uninstall**: `./uninstall.sh` — removes all files and restores your pre-install `statusLine` from the snapshot. `model`/`effortLevel` are left as you have them (this layer's opinionated defaults aren't auto-reverted) — adjust those two manually if you want your pre-install values back.
 
 Every piece degrades independently: unknown frontmatter keys are ignored, a broken statusline shows nothing, agents fall back to inheriting the session model.
 

@@ -9,7 +9,8 @@
 #
 # Cases (see scratchpad spec this suite was built from):
 #   A - no-trailing-newline CLAUDE.md + pre-existing settings: install,
-#       re-install (idempotency), uninstall (restore).
+#       re-install (idempotency), uninstall (restores statusLine only —
+#       model/effortLevel are intentionally left as installed, not reverted).
 #   B - completely empty CLAUDE_DIR round-trip: null snapshot keys are
 #       deleted, not written as null; no leftover `"permissions": {}`.
 #   C - settings.json is a symlink: install writes through it, uninstall
@@ -107,8 +108,8 @@ chk "A7: permissions.allow has 5 entries after install (1 pre-existing + 4 worke
   '[ "$(jq ".permissions.allow | length" "$A_DIR/settings.json")" -eq 5 ]'
 chk "A8: pre-existing allow entry retained" \
   'jq -e ".permissions.allow | index(\"Bash(ls:*)\")" "$A_DIR/settings.json" >/dev/null'
-chk "A9: preinstall snapshot captured original values" \
-  '[ "$(jq -r ".model" "$A_DIR/triage-preinstall.json")" = "sonnet" ]'
+chk "A9: preinstall snapshot captures statusLine only (not model/effortLevel)" \
+  '[ "$(jq -r ".statusLine.command" "$A_DIR/triage-preinstall.json")" = "/old/statusline.sh" ] && [ "$(jq "has(\"model\")" "$A_DIR/triage-preinstall.json")" = "false" ] && [ "$(jq "has(\"effortLevel\")" "$A_DIR/triage-preinstall.json")" = "false" ]'
 
 # Re-install: idempotency
 run_install "$A_DIR" >/dev/null 2>&1
@@ -125,8 +126,10 @@ run_uninstall "$A_DIR" >/dev/null 2>&1
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 A_UNINSTALL_RC=$?
 chk "A13: uninstall exits 0" '[ "$A_UNINSTALL_RC" -eq 0 ]'
-chk "A14: model restored to pre-install value" \
-  '[ "$(jq -r ".model" "$A_DIR/settings.json")" = "sonnet" ]'
+chk "A14: model left as installed value, NOT restored (by design)" \
+  '[ "$(jq -r ".model" "$A_DIR/settings.json")" = "opus[1m]" ]'
+chk "A14b: effortLevel left as installed value, NOT restored (by design)" \
+  '[ "$(jq -r ".effortLevel" "$A_DIR/settings.json")" = "high" ]'
 chk "A15: statusLine restored to pre-install value" \
   '[ "$(jq -r ".statusLine.command" "$A_DIR/settings.json")" = "/old/statusline.sh" ]'
 chk "A16: permissions.allow back to original single entry" \
@@ -147,10 +150,10 @@ run_uninstall "$B_DIR" >/dev/null 2>&1
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 B_RC=$?
 chk "B1: uninstall exits 0 on an originally-empty dir" '[ "$B_RC" -eq 0 ]'
-chk "B2: model key deleted (was null pre-install), not written as null" \
-  '[ "$(jq "has(\"model\")" "$B_DIR/settings.json")" = "false" ]'
-chk "B3: effortLevel key deleted" \
-  '[ "$(jq "has(\"effortLevel\")" "$B_DIR/settings.json")" = "false" ]'
+chk "B2: model left as installed value, NOT restored/deleted (by design)" \
+  '[ "$(jq -r ".model" "$B_DIR/settings.json")" = "opus[1m]" ]'
+chk "B3: effortLevel left as installed value, NOT restored/deleted (by design)" \
+  '[ "$(jq -r ".effortLevel" "$B_DIR/settings.json")" = "high" ]'
 chk "B4: statusLine key deleted" \
   '[ "$(jq "has(\"statusLine\")" "$B_DIR/settings.json")" = "false" ]'
 chk "B5: no leftover empty permissions object" \

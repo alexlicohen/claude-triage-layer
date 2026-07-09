@@ -244,7 +244,8 @@ if [ "$DRY_RUN" -eq 1 ]; then
   if [ -f "$PREINSTALL" ]; then
     echo "  already exists — would NOT be overwritten"
   else
-    echo "  would be created, capturing current model=$cur_model effortLevel=$cur_effort statusLine=$cur_statusline"
+    echo "  would be created, capturing current statusLine=$cur_statusline"
+    echo "  (model/effortLevel are NOT captured — uninstall leaves them as you set them, it never reverts them)"
   fi
 
   echo ""
@@ -252,14 +253,17 @@ if [ "$DRY_RUN" -eq 1 ]; then
   exit 0
 fi
 
-# 3. Merge settings (model, effortLevel, statusLine), saving prior values first
-#    (settings.json was already validated as JSON upfront, above).
+# 3. Merge settings (model, effortLevel, statusLine), saving prior statusLine first
+#    (settings.json was already validated as JSON upfront, above). Only statusLine is
+#    snapshotted/restorable: its script gets deleted on uninstall (step 2 there), so a
+#    stale command would break the statusline if not restored. model/effortLevel are
+#    this layer's opinionated defaults — uninstall intentionally leaves them as you set
+#    them rather than reverting, so there's nothing to capture for those two.
 [ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
 if [ ! -f "$PREINSTALL" ]; then
-  jq '{model: (.model // null), effortLevel: (.effortLevel // null), statusLine: (.statusLine // null)}' \
-    "$SETTINGS" > "$PREINSTALL"
+  jq '{statusLine: (.statusLine // null)}' "$SETTINGS" > "$PREINSTALL"
   cp "$SETTINGS" "$SETTINGS.triage-preinstall.bak"   # full backup, for rolling back a bad merge
-  echo "Saved pre-install settings to $PREINSTALL"
+  echo "Saved pre-install statusLine to $PREINSTALL"
 fi
 tmp=$(mktemp)
 jq --arg cmd "$CLAUDE_DIR/statusline.sh" \
