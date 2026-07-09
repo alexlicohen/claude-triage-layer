@@ -9,7 +9,8 @@
 #
 # Cases (see scratchpad spec this suite was built from):
 #   A - no-trailing-newline CLAUDE.md + pre-existing settings: install,
-#       re-install (idempotency), uninstall (restore).
+#       re-install (idempotency), uninstall (restores statusLine only —
+#       model/effortLevel are intentionally left as installed, not reverted).
 #   B - completely empty CLAUDE_DIR round-trip: null snapshot keys are
 #       deleted, not written as null; no leftover `"permissions": {}`.
 #   C - settings.json is a symlink: install writes through it, uninstall
@@ -107,8 +108,8 @@ chk "A7: permissions.allow has 5 entries after install (1 pre-existing + 4 worke
   '[ "$(jq ".permissions.allow | length" "$A_DIR/settings.json")" -eq 5 ]'
 chk "A8: pre-existing allow entry retained" \
   'jq -e ".permissions.allow | index(\"Bash(ls:*)\")" "$A_DIR/settings.json" >/dev/null'
-chk "A9: preinstall snapshot captured original values" \
-  '[ "$(jq -r ".model" "$A_DIR/triage-preinstall.json")" = "sonnet" ]'
+chk "A9: preinstall snapshot captures statusLine only (not model/effortLevel)" \
+  '[ "$(jq -r ".statusLine.command" "$A_DIR/triage-preinstall.json")" = "/old/statusline.sh" ] && [ "$(jq "has(\"model\")" "$A_DIR/triage-preinstall.json")" = "false" ] && [ "$(jq "has(\"effortLevel\")" "$A_DIR/triage-preinstall.json")" = "false" ]'
 
 # Re-install: idempotency
 run_install "$A_DIR" >/dev/null 2>&1
@@ -125,8 +126,10 @@ run_uninstall "$A_DIR" >/dev/null 2>&1
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 A_UNINSTALL_RC=$?
 chk "A13: uninstall exits 0" '[ "$A_UNINSTALL_RC" -eq 0 ]'
-chk "A14: model restored to pre-install value" \
-  '[ "$(jq -r ".model" "$A_DIR/settings.json")" = "sonnet" ]'
+chk "A14: model left as installed value, NOT restored (by design)" \
+  '[ "$(jq -r ".model" "$A_DIR/settings.json")" = "opus[1m]" ]'
+chk "A14b: effortLevel left as installed value, NOT restored (by design)" \
+  '[ "$(jq -r ".effortLevel" "$A_DIR/settings.json")" = "high" ]'
 chk "A15: statusLine restored to pre-install value" \
   '[ "$(jq -r ".statusLine.command" "$A_DIR/settings.json")" = "/old/statusline.sh" ]'
 chk "A16: permissions.allow back to original single entry" \
@@ -147,10 +150,10 @@ run_uninstall "$B_DIR" >/dev/null 2>&1
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 B_RC=$?
 chk "B1: uninstall exits 0 on an originally-empty dir" '[ "$B_RC" -eq 0 ]'
-chk "B2: model key deleted (was null pre-install), not written as null" \
-  '[ "$(jq "has(\"model\")" "$B_DIR/settings.json")" = "false" ]'
-chk "B3: effortLevel key deleted" \
-  '[ "$(jq "has(\"effortLevel\")" "$B_DIR/settings.json")" = "false" ]'
+chk "B2: model left as installed value, NOT restored/deleted (by design)" \
+  '[ "$(jq -r ".model" "$B_DIR/settings.json")" = "opus[1m]" ]'
+chk "B3: effortLevel left as installed value, NOT restored/deleted (by design)" \
+  '[ "$(jq -r ".effortLevel" "$B_DIR/settings.json")" = "high" ]'
 chk "B4: statusLine key deleted" \
   '[ "$(jq "has(\"statusLine\")" "$B_DIR/settings.json")" = "false" ]'
 chk "B5: no leftover empty permissions object" \
@@ -376,20 +379,39 @@ chk "J4: drift.sh exits non-zero once a checked file is missing" '[ "$J_MISSING_
 
 # =============================================================================
 # Statusline checks (direct, no install needed)
+#
+# statusline.sh appends a live "· sub Nk" subagent-spend suffix (scripts/triage-
+# usage.sh), resolved either from the input's `transcript_path` field or, if that's
+# absent, by scanning ~/.claude/projects/<slug-of-$PWD> for this cwd's OWN real
+# session transcripts — ambient state outside this suite's sandboxing. S1/S2 pin an
+# explicit `transcript_path` at a fixture with no `subagents/` dir, so the suffix
+# resolves to empty deterministically regardless of what real sessions exist for
+# this repo. S3 pins one at a fixture that DOES have subagent data, to cover the
+# suffix's happy path with a known expected total (same fixture test/usage-tally.sh
+# uses directly). Each case uses its own `session_id` so the 30s statusline cache
+# can never serve a stale value across cases or a prior ad-hoc manual run.
 # =============================================================================
 STATUSLINE="$REPO_DIR/statusline.sh"
+NO_SUB_TRANSCRIPT="$REPO_DIR/test/fixtures/statusline/no-subagents.jsonl"
+THREE_FAMILY_TRANSCRIPT="$REPO_DIR/test/fixtures/usage/three-family.jsonl"
 
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
-STATUS_NONNUMERIC=$(printf '%s' '{"model":{"display_name":"Opus"},"context_window":{"used_percentage":"n/a"}}' \
+STATUS_NONNUMERIC=$(printf '%s' '{"model":{"display_name":"Opus"},"context_window":{"used_percentage":"n/a"},"session_id":"test-statusline-s1","transcript_path":"'"$NO_SUB_TRANSCRIPT"'"}' \
   | PATH=/usr/bin:/bin bash "$STATUSLINE")
 chk "S1: statusline with non-numeric used_percentage does not crash and prints model only" \
   '[ "$STATUS_NONNUMERIC" = "Opus" ]'
 
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
-STATUS_NUMERIC=$(printf '%s' '{"model":{"display_name":"Opus"},"context_window":{"used_percentage":42.7}}' \
+STATUS_NUMERIC=$(printf '%s' '{"model":{"display_name":"Opus"},"context_window":{"used_percentage":42.7},"session_id":"test-statusline-s2","transcript_path":"'"$NO_SUB_TRANSCRIPT"'"}' \
   | PATH=/usr/bin:/bin bash "$STATUSLINE")
 chk "S2: statusline with used_percentage=42.7 prints 'Opus · ctx 42%'" \
   '[ "$STATUS_NUMERIC" = "Opus · ctx 42%" ]'
+
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+STATUS_WITH_SUB=$(printf '%s' '{"model":{"display_name":"Opus"},"context_window":{"used_percentage":42.7},"session_id":"test-statusline-s3","transcript_path":"'"$THREE_FAMILY_TRANSCRIPT"'"}' \
+  | PATH=/usr/bin:/bin bash "$STATUSLINE")
+chk "S3: statusline appends '· sub Nk' from real subagent data (haiku 2k+sonnet 50k+fable 6k=58k)" \
+  '[ "$STATUS_WITH_SUB" = "Opus · ctx 42% · sub 58k" ]'
 
 # =============================================================================
 # Result

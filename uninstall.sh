@@ -1,6 +1,8 @@
 #!/bin/bash
 # Remove the Claude Code model-triage layer from ~/.claude (or $CLAUDE_DIR)
-# and restore the settings keys captured at install time.
+# and restore the statusLine captured at install time. model/effortLevel are
+# intentionally left as you have them (this layer's opinionated defaults are
+# not auto-reverted) — adjust those two manually if you want your old values back.
 set -euo pipefail
 
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
@@ -66,28 +68,31 @@ if [ -f "$SETTINGS" ]; then
   ' "$SETTINGS" > "$tmp" && apply_file "$tmp" "$SETTINGS"
 fi
 
-# 3. Restore the three settings keys from the pre-install snapshot. A null in the
-#    snapshot means the key was unset pre-install, so delete it (don't write a null).
-#    On a jq failure, keep the snapshot and warn rather than silently losing it.
+# 3. Restore statusLine from the pre-install snapshot — its script was just deleted in
+#    step 2, so leaving a stale command there would break the statusline if not restored.
+#    model/effortLevel are intentionally NOT restored: this layer's opinionated defaults
+#    are left as you have them, on purpose — adjust those two manually if you want your
+#    pre-install values back. (An older snapshot may still contain a model/effortLevel
+#    field from a prior version of this script; it's simply ignored here.) A null
+#    statusLine in the snapshot means it was unset pre-install, so delete it (don't write
+#    a null). On a jq failure, keep the snapshot and warn rather than silently losing it.
 if [ -f "$SETTINGS" ] && [ -f "$PREINSTALL" ]; then
   tmp=$(mktemp)
   if jq --slurpfile pre "$PREINSTALL" '
     $pre[0] as $p
-    | (if $p.model       == null then del(.model)       else .model       = $p.model       end)
-    | (if $p.effortLevel == null then del(.effortLevel) else .effortLevel = $p.effortLevel end)
-    | (if $p.statusLine  == null then del(.statusLine)  else .statusLine  = $p.statusLine  end)
+    | (if $p.statusLine == null then del(.statusLine) else .statusLine = $p.statusLine end)
   ' "$SETTINGS" > "$tmp"; then
     apply_file "$tmp" "$SETTINGS"
     rm -f "$PREINSTALL" "$SETTINGS.triage-preinstall.bak"
-    echo "Restored model/effortLevel/statusLine from pre-install snapshot."
+    echo "Restored statusLine from pre-install snapshot. (model/effortLevel left as you have them — adjust manually if you want the old values back.)"
   else
     rm -f "$tmp"
-    echo "ERROR: could not restore from $PREINSTALL — left it in place; restore model/effortLevel/statusLine manually." >&2
+    echo "ERROR: could not restore statusLine from $PREINSTALL — left it in place; restore manually if needed." >&2
   fi
 elif [ -f "$PREINSTALL" ]; then
-  echo "settings.json is missing but a snapshot exists at $PREINSTALL — restore model/effortLevel/statusLine from it manually (left in place)."
+  echo "settings.json is missing but a snapshot exists at $PREINSTALL — restore statusLine from it manually if needed (left in place)."
 else
-  echo "No pre-install snapshot found — review model/effortLevel/statusLine in $SETTINGS manually."
+  echo "No pre-install snapshot found — statusLine may still point at the now-removed triage script; check $SETTINGS if your statusline looks broken. (model/effortLevel are left as you have them, by design.)"
 fi
 
 echo "Uninstalled. New Claude Code sessions will no longer use the triage layer."
