@@ -104,8 +104,8 @@ chk "A5: model set to opus[1m] after install" \
   '[ "$(jq -r ".model" "$A_DIR/settings.json")" = "opus[1m]" ]'
 chk "A6: effortLevel set to high after install" \
   '[ "$(jq -r ".effortLevel" "$A_DIR/settings.json")" = "high" ]'
-chk "A7: permissions.allow has 5 entries after install (1 pre-existing + 4 workers)" \
-  '[ "$(jq ".permissions.allow | length" "$A_DIR/settings.json")" -eq 5 ]'
+chk "A7: permissions.allow has 6 entries after install (1 pre-existing + 5 workers)" \
+  '[ "$(jq ".permissions.allow | length" "$A_DIR/settings.json")" -eq 6 ]'
 chk "A8: pre-existing allow entry retained" \
   'jq -e ".permissions.allow | index(\"Bash(ls:*)\")" "$A_DIR/settings.json" >/dev/null'
 chk "A9: preinstall snapshot captures statusLine only (not model/effortLevel)" \
@@ -118,8 +118,8 @@ A_REINSTALL_RC=$?
 chk "A10: re-install exits 0" '[ "$A_REINSTALL_RC" -eq 0 ]'
 chk "A11: re-install does not duplicate @triage.md" \
   '[ "$(grep -cxF "@triage.md" "$A_DIR/CLAUDE.md")" -eq 1 ]'
-chk "A12: re-install does not duplicate permissions.allow entries (still 5)" \
-  '[ "$(jq ".permissions.allow | length" "$A_DIR/settings.json")" -eq 5 ]'
+chk "A12: re-install does not duplicate permissions.allow entries (still 6)" \
+  '[ "$(jq ".permissions.allow | length" "$A_DIR/settings.json")" -eq 6 ]'
 
 # Uninstall: restore
 run_uninstall "$A_DIR" >/dev/null 2>&1
@@ -331,7 +331,7 @@ PATH="$H_STUB_DIR:/usr/bin:/bin" CLAUDE_DIR="$H_NEW_DIR" "$REPO_DIR/install.sh" 
 chk "H5: new claude version prints no version WARNING lines" '! grep -q "WARNING" "$H_NEW_OUT"'
 
 # =============================================================================
-# Case I — uninstall must remove only the five shipped agents by name, never
+# Case I — uninstall must remove only the six shipped agents by name, never
 # a user-authored triage-*.md agent (a glob-based revert would delete it)
 # =============================================================================
 I_DIR=$(new_sandbox)
@@ -345,8 +345,8 @@ run_uninstall "$I_DIR" >/dev/null 2>&1
 I_RC=$?
 chk "I1: uninstall exits 0" '[ "$I_RC" -eq 0 ]'
 chk "I2: user-authored triage-mine.md survives uninstall" '[ -f "$I_DIR/agents/triage-mine.md" ]'
-chk "I3: all five shipped agents removed" \
-  '[ ! -f "$I_DIR/agents/triage-quick-task.md" ] && [ ! -f "$I_DIR/agents/triage-builder.md" ] && [ ! -f "$I_DIR/agents/triage-deep-reasoner.md" ] && [ ! -f "$I_DIR/agents/triage-reviewer.md" ] && [ ! -f "$I_DIR/agents/triage-fable-architect.md" ]'
+chk "I3: all six shipped agents removed" \
+  '[ ! -f "$I_DIR/agents/triage-quick-task.md" ] && [ ! -f "$I_DIR/agents/triage-builder.md" ] && [ ! -f "$I_DIR/agents/triage-deep-reasoner.md" ] && [ ! -f "$I_DIR/agents/triage-reviewer.md" ] && [ ! -f "$I_DIR/agents/triage-cross-reviewer.md" ] && [ ! -f "$I_DIR/agents/triage-fable-architect.md" ]'
 
 # =============================================================================
 # Case J — drift.sh: a checked file missing from an installed sandbox is

@@ -4,7 +4,7 @@
 
 A drop-in config layer for [Claude Code](https://code.claude.com) that routes every task to the **cheapest adequate Claude model** (Haiku → Sonnet → Opus → Fable 5), escalates automatically when a cheaper tier's output fails verification, and reports per-tier usage — **all billed to your Claude Pro/Max subscription**, not the pay-per-token API.
 
-No app, no server, no API keys. It's five subagent definitions, one instructions file, a statusline script, a `/triage-run` workflow, and a handful of settings keys.
+No app, no server, no API keys. It's six subagent definitions, one instructions file, a statusline script, a `/triage-run` workflow, and a handful of settings keys.
 
 ## Why this exists
 
@@ -110,7 +110,7 @@ Every piece degrades independently: unknown frontmatter keys are ignored, a brok
 make verify   # lint -> drift -> test, fail-fast; the single green gate
 ```
 
-- `make lint` — `bash -n` on every `*.sh`, `node --check` on `workflows/*.js`, `shellcheck` (if installed) at `--severity=warning`, and a docs-consistency check (every path this README's install sections cite must exist; the "five subagent definitions" claim above must match `agents/triage-*.md` on disk).
+- `make lint` — `bash -n` on every `*.sh`, `node --check` on `workflows/*.js`, `shellcheck` (if installed) at `--severity=warning`, and a docs-consistency check (every path this README's install sections cite must exist; the "six subagent definitions" claim above must match `agents/triage-*.md` on disk).
 - `make test` — `test/roundtrip.sh`, an install/uninstall round-trip suite that never touches your real `~/.claude` (every case runs in its own `mktemp -d` sandbox via `$CLAUDE_DIR`). Covers idempotent re-install, an empty-dir install, a symlinked `settings.json`, an invalid `settings.json` (install must abort with zero mutation), a hand-converted Fable `ask`→`deny` rule surviving uninstall cleanup, and both statusline render paths.
 - `make drift` — `./drift.sh` compares your **installed** `~/.claude` copies against this repo file-by-file (5 agents, `statusline.sh`, `workflows/triage-run.js`, `triage.md`) and reports `same` / `MISSING (not installed)` / `FORKED`. A fork you've made on purpose (e.g. a hand-tuned `triage.md`) goes in `.driftignore` and reports `forked (expected)` instead of failing. Run it with `CLAUDE_DIR=/path/to/other/.claude ./drift.sh` to check a non-default install.
 - CI (`.github/workflows/ci.yml`) runs `make verify` on macOS + Linux for every push/PR, with `shellcheck` installed so lint is never running in `SKIP` mode there.

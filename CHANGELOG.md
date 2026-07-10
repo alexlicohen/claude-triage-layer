@@ -4,6 +4,32 @@ Reverse-chronological. Each entry cites the commit(s) it corresponds to and,
 where known, the test-count delta. See `test/roundtrip.sh` and `test/lint.sh`
 for the current check catalog.
 
+## Wave 7 — triage-cross-reviewer: cross-vendor review as a routable tier
+
+- **New sixth tier `agents/triage-cross-reviewer.md`**: a thin Haiku·low wrapper
+  that runs an external, non-Anthropic CLI reviewer (worked example: Antigravity
+  CLI `agy` on an explicit Gemini model) and relays findings verbatim. Protocol:
+  data-boundary guard (refuses excluded repos) → prompt file with inlined diff →
+  single hardened `agy` invocation → `UNAVAILABLE`/`REFUSED` fail-loud paths →
+  verbatim relay under a `CROSS-REVIEW (…)` header. Tiers are Claude Code
+  subagents and external binaries can't be spawned as one — the wrapper is what
+  makes cross-vendor review routable by the rubric and parallelizable.
+- **Rubric**: tier-table row; verification rule 6 now routes via the tier (or
+  direct invocation); usage-tally section documents that the tier's external
+  spend is vendor-side and invisible to the tally (only Haiku wrapper overhead
+  appears).
+- **Installer/uninstaller**: worker allowlist and removal list grew to six
+  (`Agent(triage-cross-reviewer)` allow rule; per-name removal).
+- **Checks**: lint agent-count 5→6 (+README claim); roundtrip A7/A12 allowlist
+  counts, I3 six-agent removal. Check total unchanged at 140 (assertions
+  updated in place); mutation gate 10/10 killed (mutation 4's `for a in
+  $AGENTS` anchor unaffected).
+- Deferred, honestly: `/triage-run` (workflows/triage-run.js) does NOT route to
+  the new tier — orchestrator-rubric routing only for now; wiring it into the
+  workflow classifier needs workflow-scenario coverage and is parked until
+  usage justifies it. No mutation for the agent file itself (prose, no
+  executable surface — gate sized to the bug surface).
+
 ## Wave 6 — agent-agnostic instructions, cross-vendor review, orchestrator-model generalization
 
 - **AGENTS.md is now the canonical working-rules file**; `CLAUDE.md` is a
