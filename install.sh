@@ -224,7 +224,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
     echo "  statusLine: would set $cur_statusline -> {type: command, command: $CLAUDE_DIR/statusline.sh}"
   fi
 
-  for w in triage-quick-task triage-builder triage-deep-reasoner triage-reviewer; do
+  for w in triage-quick-task triage-builder triage-deep-reasoner triage-reviewer triage-cross-reviewer; do
     rule="Agent($w)"
     if printf '%s' "$CUR_SETTINGS_JSON" | jq -e --arg r "$rule" '.permissions.allow // [] | index($r)' >/dev/null 2>&1; then
       echo "  permissions.allow: already present: $rule"
@@ -281,7 +281,7 @@ jq --arg cmd "$CLAUDE_DIR/statusline.sh" \
 #     unverified. Switch the `ask` to `deny` below to hard-block Fable instead.
 tmp=$(mktemp)
 jq '
-  ["Agent(triage-quick-task)","Agent(triage-builder)","Agent(triage-deep-reasoner)","Agent(triage-reviewer)"] as $workers
+  ["Agent(triage-quick-task)","Agent(triage-builder)","Agent(triage-deep-reasoner)","Agent(triage-reviewer)","Agent(triage-cross-reviewer)"] as $workers
   | ["Agent(triage-fable-architect)"] as $fable
   | .permissions.allow = ((.permissions.allow // []) + ($workers - (.permissions.allow // [])))
   | .permissions.ask   = ((.permissions.ask   // []) + ($fable   - (.permissions.ask   // [])))

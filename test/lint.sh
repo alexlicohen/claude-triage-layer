@@ -8,7 +8,7 @@
 #      never masquerade as a silent pass, hence the loud message).
 #   4. Docs-consistency check: every file path referenced in README.md's
 #      install / manual-install sections must exist on disk, and README's
-#      claim of "five subagent definitions" must match the real agent count.
+#      claim of "six subagent definitions" must match the real agent count.
 #
 # Fail-loud: accumulates all failures, exits non-zero if any hard failure
 # occurred (shellcheck's absence is NOT a hard failure — it's an explicit,
@@ -98,16 +98,16 @@ else
   done
 
   AGENT_COUNT=$(find agents -maxdepth 1 -name 'triage-*.md' | wc -l | tr -d ' ')
-  if [ "$AGENT_COUNT" -eq 5 ]; then
-    ok "docs-consistency: agents/triage-*.md count is 5, matches README"
+  if [ "$AGENT_COUNT" -eq 6 ]; then
+    ok "docs-consistency: agents/triage-*.md count is 6, matches README"
   else
-    fail "docs-consistency: agents/triage-*.md count is $AGENT_COUNT, README claims 5 (drift)"
+    fail "docs-consistency: agents/triage-*.md count is $AGENT_COUNT, README claims 6 (drift)"
   fi
 
-  if grep -qi 'five subagent definitions' "$README"; then
-    ok "docs-consistency: README still claims 'five subagent definitions'"
+  if grep -qi 'six subagent definitions' "$README"; then
+    ok "docs-consistency: README still claims 'six subagent definitions'"
   else
-    fail "docs-consistency: README no longer says 'five subagent definitions' — update the doc-consistency check or the README"
+    fail "docs-consistency: README no longer says 'six subagent definitions' — update the doc-consistency check or the README"
   fi
 fi
 
