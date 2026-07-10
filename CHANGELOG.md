@@ -4,6 +4,27 @@ Reverse-chronological. Each entry cites the commit(s) it corresponds to and,
 where known, the test-count delta. See `test/roundtrip.sh` and `test/lint.sh`
 for the current check catalog.
 
+## Wave 6 — agent-agnostic instructions, cross-vendor review, orchestrator-model generalization
+
+- **AGENTS.md is now the canonical working-rules file**; `CLAUDE.md` is a
+  one-line `@AGENTS.md` import wrapper (Claude Code's documented import
+  syntax) reserved for Claude-specific additions. Content unchanged — this
+  makes the repo's rules readable by any AGENTS.md-aware agent (Antigravity
+  CLI, Codex, Cursor, Copilot, VS Code ≥1.104).
+- **Verification rule 6 (triage.md): optional cross-vendor second opinion**
+  on danger-zone diffs via an external CLI agent (worked example: Google's
+  Antigravity CLI with an explicit Gemini model), with the non-TTY stdout
+  workaround, signal-not-verdict framing, and a data-boundary warning.
+- **Orchestrator line generalized (triage.md + README diagram)**: the rubric
+  no longer asserts the main loop is Opus-class — the session model varies
+  with `/model`, and self-handling hard reasoning is gated on outranking the
+  deep tier. Previously, a user who switched to a cheaper session model
+  inherited an inverted rule licensing under-class self-handling.
+- Test-count delta: none (docs/rubric only; 140 checks remain green).
+- Deferred: no mutation for the new rubric text (prose, no executable
+  surface); native AGENTS.md support in Claude Code (upstream issue #34235)
+  would make the wrapper optional.
+
 ## Wave 5 — strict mutation CI, routing stats, budget-aware /triage-run, escalation post-mortems
 
 - **Mutation gate strict + in CI**: covering tests added for both wave-4

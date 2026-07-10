@@ -18,7 +18,7 @@ The economics aren't speculative: Anthropic's own [coordinator-pattern cookbook]
 ## How it works
 
 ```
-You ──► Main loop: Opus (1M context, high effort)  ← triage rubric (triage.md)
+You ──► Main loop: your session model (installed default: Opus 1M · high)  ← triage rubric (triage.md)
               │  classifies difficulty upfront, fans out in parallel
               ├──► triage-quick-task      Haiku  · low    renames, lookups, boilerplate
               ├──► triage-builder         Sonnet · medium well-specified features/fixes
@@ -94,7 +94,7 @@ Two flags, composable: `./install.sh --dry-run` prints the full mutation plan (e
 
 - **Tier models/effort**: edit the frontmatter in `~/.claude/agents/triage-*.md` (`model:` takes `haiku|sonnet|opus|fable|inherit` or full IDs; `effort:` takes `low|medium|high|xhigh|max`). Aliases track the latest models automatically.
 - **Routing behavior**: edit `~/.claude/triage.md`. The installer already adds an `ask`-gate before Fable; change it to `deny` in `settings.json` → `permissions` to hard-block, or remove the rule to go back to notify-only.
-- **Per project**: a project's own `CLAUDE.md` can override or opt out.
+- **Per project**: a project's own `CLAUDE.md` (or `AGENTS.md` via an `@AGENTS.md` wrapper — the pattern this repo itself uses) can override or opt out.
 - **Context-warning threshold**: edit the `60` in `~/.claude/statusline.sh`.
 
 ## Disable / uninstall
