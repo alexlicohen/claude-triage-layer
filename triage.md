@@ -78,10 +78,10 @@ Newer Claude Code enforces parts of this rubric at the permission layer instead 
 
 ## Uninstall / disable
 
-Your pre-install `settings.json` values are saved by `install.sh` to `~/.claude/triage-preinstall.json`.
+Your pre-install `statusLine` is saved by `install.sh` to `~/.claude/triage-preinstall.json`. (`model`/`effortLevel` are not snapshotted — uninstall intentionally leaves them as you have them.)
 
 - **Disable routing only**: remove the `@triage.md` line from `~/.claude/CLAUDE.md`.
 - **Full uninstall**: run `uninstall.sh` from the repo, or manually:
   1. Remove the `@triage.md` line from `~/.claude/CLAUDE.md` (delete the file if otherwise empty).
   2. `rm ~/.claude/agents/triage-quick-task.md ~/.claude/agents/triage-builder.md ~/.claude/agents/triage-deep-reasoner.md ~/.claude/agents/triage-reviewer.md ~/.claude/agents/triage-cross-reviewer.md ~/.claude/agents/triage-fable-architect.md ~/.claude/triage.md ~/.claude/statusline.sh ~/.claude/workflows/triage-run.js` and `rm -rf ~/.claude/agent-memory/triage-*`. (List the six agent files explicitly — do **not** `rm triage-*.md` by glob, or you may delete your own unrelated `triage-*` agents.)
-  3. In `~/.claude/settings.json`: restore `model`, `effortLevel`, **and** `statusLine` from `~/.claude/triage-preinstall.json` (a `null` saved value means the key was absent pre-install — delete it), and remove the triage `Agent(...)` rules from `permissions.allow` / `permissions.ask` (and `permissions.deny` if you converted the Fable gate to `deny`).
+  3. In `~/.claude/settings.json`: restore `statusLine` from `~/.claude/triage-preinstall.json` (a `null` saved value means the key was absent pre-install — delete it; the triage `statusline.sh` was just removed in step 2, so a stale command would break the statusline), adjust `model`/`effortLevel` by hand if you want your pre-install values back, and remove the triage `Agent(...)` rules from `permissions.allow` / `permissions.ask` (and `permissions.deny` if you converted the Fable gate to `deny`).

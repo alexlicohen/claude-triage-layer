@@ -1,6 +1,6 @@
 # claude-triage-layer — working rules
 
-- **One green gate:** `make verify` (lint+shellcheck → drift → 3 test suites, 138 checks). Run it before accepting any change; never assert green without its output. `make mutate` runs the strict 10-mutation teeth check (any survivor fails) — it's also a CI step.
+- **One green gate:** `make verify` (lint+shellcheck → drift → 3 test suites, 140 checks). Run it before accepting any change; never assert green without its output. `make mutate` runs the strict 10-mutation teeth check (any survivor fails) — it's also a CI step.
 - **Danger zone:** `workflows/triage-run.js` (codifies the rubric; Workflow-DSL constraints: `meta` stays a pure literal, no `Date.now`/`Math.random`/argless `new Date()`), `install.sh`, `uninstall.sh`. Changes here need `test/workflow-scenarios.mjs` / round-trip coverage, not just eyeballs.
 - **Syncing to the live install:** `make sync` (= `install.sh --files-only`) — never hand-`cp` into `~/.claude`, never run bare `install.sh` on an already-customized machine (it rewrites `model`/`effortLevel`/`statusLine`). Files listed in `.driftignore` are deliberate personal forks (currently `triage.md`) — sync skips them; drift reports them as `forked (expected)`.
 - **Single owners:** per-agent tally math lives in `scripts/triage-usage.sh` (stats/statusline consume it, never re-derive); verdict parsing in `triage-run.js` lives in `assess()`; the budget spawn decision in `spawn()`; the expected-fork list in `.driftignore`.
