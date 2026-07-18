@@ -4,6 +4,21 @@ Reverse-chronological. Each entry cites the commit(s) it corresponds to and,
 where known, the test-count delta. See `test/roundtrip.sh` and `test/lint.sh`
 for the current check catalog.
 
+## Wave 8 — routing-rubric refinements (builder/deep tie-breaker, per-project danger zones, quiet empty tally)
+
+- **Rule 1 (triage.md)**: explicit builder/deep tie-breaker at the boundary
+  where mis-routes concentrate — cause known AND spec written → `triage-builder`;
+  either missing → `triage-deep-reasoner`.
+- **Rule 6 (triage.md)**: the danger-zone enumeration now also honors any
+  correctness-critical files the *project's own* CLAUDE.md/AGENTS.md names — this
+  rubric loads globally, but each repo declares its own danger zone.
+- **Usage tally (triage.md)**: suppress the usage line entirely when no
+  subagents ran (an all-zeros tally is noise).
+- **Checks**: docs-only, no executable surface changed. Check total unchanged at
+  140 (0 assertions touched); `make mutate` 10/10 killed. Ported from the
+  maintainer's personal-fork optimization pass; the fork's prose compressions
+  were intentionally NOT ported — the shared rubric keeps its explanatory form.
+
 ## Wave 7 — triage-cross-reviewer: cross-vendor review as a routable tier
 
 - **New sixth tier `agents/triage-cross-reviewer.md`**: a thin Haiku·low wrapper
