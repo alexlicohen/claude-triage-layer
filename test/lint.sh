@@ -48,7 +48,7 @@ fi
 if command -v node >/dev/null 2>&1; then
   JS_FILES=$(find workflows -name '*.js' 2>/dev/null)
   if [ -z "$JS_FILES" ]; then
-    fail "no *.js files found under workflows/ — expected at least triage-run.js"
+    fail "no *.js files found under workflows/ — expected at least triage-exec.js"
   else
     while IFS= read -r f; do
       [ -z "$f" ] && continue
@@ -88,7 +88,7 @@ if [ ! -f "$README" ]; then
   fail "README.md not found — cannot run docs-consistency check"
 else
   # Paths the README's install / manual-install sections claim exist.
-  DOC_PATHS="statusline.sh triage.md workflows/triage-run.js install.sh uninstall.sh"
+  DOC_PATHS="statusline.sh triage.md workflows/triage-exec.js install.sh uninstall.sh"
   for p in $DOC_PATHS; do
     if [ -e "$p" ]; then
       ok "docs-consistency: $p exists"

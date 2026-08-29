@@ -9,10 +9,12 @@
 #
 # Cases (see scratchpad spec this suite was built from):
 #   A - no-trailing-newline CLAUDE.md + pre-existing settings: install,
-#       re-install (idempotency), uninstall (restores statusLine only —
-#       model/effortLevel are intentionally left as installed, not reverted).
-#   B - completely empty CLAUDE_DIR round-trip: null snapshot keys are
-#       deleted, not written as null; no leftover `"permissions": {}`.
+#       re-install (idempotency), uninstall. model/effortLevel/statusLine are
+#       NEVER written or reverted; env.CLAUDE_CODE_SUBAGENT_MODEL and
+#       subagentPromptCacheTtl are set only when unset and removed only when
+#       still ours.
+#   B - completely empty CLAUDE_DIR round-trip: no leftover `"permissions": {}`
+#       or `"env": {}`; nothing invented for model/effortLevel/statusLine.
 #   C - settings.json is a symlink: install writes through it, uninstall
 #       leaves it a symlink.
 #   D - invalid settings.json: install aborts before ANY mutation.
@@ -24,6 +26,10 @@
 #       untouched.
 #   H - version-compat warnings: stub `claude --version` on PATH (old/absent/
 #       new) and check the right warning (or none) is printed.
+#   K - a user-set env.CLAUDE_CODE_SUBAGENT_MODEL / subagentPromptCacheTtl is
+#       never overwritten by install and never deleted by uninstall.
+#   L - the superseded workflows/triage-run.js is removed on install when it
+#       matches a shipped version, and kept (with a note) when hand-modified.
 #   Plus two direct statusline.sh checks (non-numeric / numeric pct).
 set -u
 
@@ -100,16 +106,22 @@ chk "A3: original CLAUDE.md content preserved as its own first line" \
   '[ "$(sed -n 1p "$A_DIR/CLAUDE.md")" = "existing global rules, no trailing newline" ]'
 chk "A4: CLAUDE.md has exactly 2 lines (orig + @triage.md)" \
   '[ "$(wc -l < "$A_DIR/CLAUDE.md" | tr -d " ")" -eq 2 ]'
-chk "A5: model set to opus[1m] after install" \
-  '[ "$(jq -r ".model" "$A_DIR/settings.json")" = "opus[1m]" ]'
-chk "A6: effortLevel set to high after install" \
-  '[ "$(jq -r ".effortLevel" "$A_DIR/settings.json")" = "high" ]'
+chk "A5: model left exactly as the user had it (never written)" \
+  '[ "$(jq -r ".model" "$A_DIR/settings.json")" = "sonnet" ]'
+chk "A6: effortLevel left exactly as the user had it (never written)" \
+  '[ "$(jq -r ".effortLevel" "$A_DIR/settings.json")" = "medium" ]'
+chk "A6b: statusLine left exactly as the user had it (never written)" \
+  '[ "$(jq -r ".statusLine.command" "$A_DIR/settings.json")" = "/old/statusline.sh" ]'
+chk "A6c: env.CLAUDE_CODE_SUBAGENT_MODEL set (was unset)" \
+  '[ "$(jq -r ".env.CLAUDE_CODE_SUBAGENT_MODEL" "$A_DIR/settings.json")" = "claude-opus-5" ]'
+chk "A6d: subagentPromptCacheTtl set (was unset)" \
+  '[ "$(jq -r ".subagentPromptCacheTtl" "$A_DIR/settings.json")" = "1h" ]'
 chk "A7: permissions.allow has 6 entries after install (1 pre-existing + 5 workers)" \
   '[ "$(jq ".permissions.allow | length" "$A_DIR/settings.json")" -eq 6 ]'
 chk "A8: pre-existing allow entry retained" \
   'jq -e ".permissions.allow | index(\"Bash(ls:*)\")" "$A_DIR/settings.json" >/dev/null'
-chk "A9: preinstall snapshot captures statusLine only (not model/effortLevel)" \
-  '[ "$(jq -r ".statusLine.command" "$A_DIR/triage-preinstall.json")" = "/old/statusline.sh" ] && [ "$(jq "has(\"model\")" "$A_DIR/triage-preinstall.json")" = "false" ] && [ "$(jq "has(\"effortLevel\")" "$A_DIR/triage-preinstall.json")" = "false" ]'
+chk "A9: no preinstall snapshot is written any more (nothing is overwritten)" \
+  '[ ! -f "$A_DIR/triage-preinstall.json" ] && [ ! -f "$A_DIR/settings.json.triage-preinstall.bak" ]'
 
 # Re-install: idempotency
 run_install "$A_DIR" >/dev/null 2>&1
@@ -126,12 +138,16 @@ run_uninstall "$A_DIR" >/dev/null 2>&1
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 A_UNINSTALL_RC=$?
 chk "A13: uninstall exits 0" '[ "$A_UNINSTALL_RC" -eq 0 ]'
-chk "A14: model left as installed value, NOT restored (by design)" \
-  '[ "$(jq -r ".model" "$A_DIR/settings.json")" = "opus[1m]" ]'
-chk "A14b: effortLevel left as installed value, NOT restored (by design)" \
-  '[ "$(jq -r ".effortLevel" "$A_DIR/settings.json")" = "high" ]'
-chk "A15: statusLine restored to pre-install value" \
+chk "A14: model untouched through the whole round-trip" \
+  '[ "$(jq -r ".model" "$A_DIR/settings.json")" = "sonnet" ]'
+chk "A14b: effortLevel untouched through the whole round-trip" \
+  '[ "$(jq -r ".effortLevel" "$A_DIR/settings.json")" = "medium" ]'
+chk "A15: statusLine untouched through the whole round-trip" \
   '[ "$(jq -r ".statusLine.command" "$A_DIR/settings.json")" = "/old/statusline.sh" ]'
+chk "A15b: env.CLAUDE_CODE_SUBAGENT_MODEL removed on uninstall (still our value)" \
+  '[ "$(jq "has(\"env\")" "$A_DIR/settings.json")" = "false" ]'
+chk "A15c: subagentPromptCacheTtl removed on uninstall (still our value)" \
+  '[ "$(jq "has(\"subagentPromptCacheTtl\")" "$A_DIR/settings.json")" = "false" ]'
 chk "A16: permissions.allow back to original single entry" \
   '[ "$(jq ".permissions.allow | length" "$A_DIR/settings.json")" -eq 1 ] && jq -e ".permissions.allow | index(\"Bash(ls:*)\")" "$A_DIR/settings.json" >/dev/null'
 chk "A17: unrelated key (customKey) preserved through the whole round-trip" \
@@ -150,14 +166,18 @@ run_uninstall "$B_DIR" >/dev/null 2>&1
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 B_RC=$?
 chk "B1: uninstall exits 0 on an originally-empty dir" '[ "$B_RC" -eq 0 ]'
-chk "B2: model left as installed value, NOT restored/deleted (by design)" \
-  '[ "$(jq -r ".model" "$B_DIR/settings.json")" = "opus[1m]" ]'
-chk "B3: effortLevel left as installed value, NOT restored/deleted (by design)" \
-  '[ "$(jq -r ".effortLevel" "$B_DIR/settings.json")" = "high" ]'
-chk "B4: statusLine key deleted" \
+chk "B2: no model key invented on an empty dir" \
+  '[ "$(jq "has(\"model\")" "$B_DIR/settings.json")" = "false" ]'
+chk "B3: no effortLevel key invented on an empty dir" \
+  '[ "$(jq "has(\"effortLevel\")" "$B_DIR/settings.json")" = "false" ]'
+chk "B4: no statusLine key invented on an empty dir" \
   '[ "$(jq "has(\"statusLine\")" "$B_DIR/settings.json")" = "false" ]'
 chk "B5: no leftover empty permissions object" \
   '[ "$(jq "has(\"permissions\")" "$B_DIR/settings.json")" = "false" ]'
+chk "B6: no leftover empty env object after uninstall" \
+  '[ "$(jq "has(\"env\")" "$B_DIR/settings.json")" = "false" ]'
+chk "B7: settings.json round-trips back to an empty object" \
+  '[ "$(jq -c "." "$B_DIR/settings.json")" = "{}" ]'
 
 # =============================================================================
 # Case C — symlinked settings.json
@@ -176,7 +196,7 @@ chk "C2: settings.json is still a symlink after install" '[ -L "$C_DIR/settings.
 chk "C3: symlink still points at the original target file" \
   '[ "$(readlink "$C_DIR/settings.json")" = "$C_REAL" ]'
 chk "C4: the symlink target received the merge" \
-  '[ "$(jq -r ".model" "$C_REAL")" = "opus[1m]" ]'
+  '[ "$(jq -r ".env.CLAUDE_CODE_SUBAGENT_MODEL" "$C_REAL")" = "claude-opus-5" ]'
 
 # =============================================================================
 # Case D — invalid settings.json: install must abort before ANY mutation
@@ -255,10 +275,15 @@ chk "F3: settings.json byte-identical after --dry-run" \
 chk "F4: no preinstall snapshot written" '[ ! -f "$F_DIR/triage-preinstall.json" ]'
 chk "F5: no agent files copied" '[ ! -f "$F_DIR/agents/triage-quick-task.md" ]'
 chk "F6: no statusline.sh copied" '[ ! -f "$F_DIR/statusline.sh" ]'
-chk "F7: plan output mentions model key" 'grep -q "model:" "$F_OUT_FILE"'
-chk "F8: plan output mentions effortLevel key" 'grep -q "effortLevel:" "$F_OUT_FILE"'
-chk "F9: plan output mentions statusLine key" 'grep -q "statusLine:" "$F_OUT_FILE"'
+chk "F7: plan output says model/effortLevel/statusLine are NOT touched" \
+  'grep -q "model / effortLevel / statusLine: NOT touched" "$F_OUT_FILE"'
+chk "F8: plan output mentions the subagent-model env key" \
+  'grep -q "env.CLAUDE_CODE_SUBAGENT_MODEL" "$F_OUT_FILE"'
+chk "F9: plan output mentions the subagent prompt-cache TTL key" \
+  'grep -q "subagentPromptCacheTtl" "$F_OUT_FILE"'
 chk "F10: plan output mentions the @triage.md append" 'grep -q "@triage.md" "$F_OUT_FILE"'
+chk "F11: --dry-run writes no preinstall snapshot and no settings backup" \
+  '[ ! -f "$F_DIR/triage-preinstall.json" ] && [ ! -f "$F_DIR/settings.json.triage-preinstall.bak" ]'
 
 # =============================================================================
 # Case G — install.sh --files-only skips a driftignored, differing fork
@@ -278,7 +303,7 @@ G_RC=$?
 chk "G1: --files-only exits 0" '[ "$G_RC" -eq 0 ]'
 chk "G2: agents copied" '[ -f "$G_DIR/agents/triage-quick-task.md" ]'
 chk "G3: statusline.sh copied and executable" '[ -x "$G_DIR/statusline.sh" ]'
-chk "G4: workflows/triage-run.js copied" '[ -f "$G_DIR/workflows/triage-run.js" ]'
+chk "G4: workflows/triage-exec.js copied" '[ -f "$G_DIR/workflows/triage-exec.js" ]'
 chk "G5: scripts/triage-usage.sh copied and executable" '[ -x "$G_DIR/scripts/triage-usage.sh" ]'
 chk "G6: skip notice printed for triage.md" 'grep -q "skipped (expected fork): triage.md" "$G_OUT_FILE"'
 chk "G7: sandbox triage.md left untouched (fork preserved)" \
@@ -311,7 +336,6 @@ ALL_TMP="$ALL_TMP $H_OLD_OUT"
 PATH="$H_STUB_DIR:/usr/bin:/bin" CLAUDE_DIR="$H_OLD_DIR" "$REPO_DIR/install.sh" --dry-run >"$H_OLD_OUT" 2>&1
 chk "H1: old claude version warns about per-agent memory" 'grep -q "per-agent memory" "$H_OLD_OUT"'
 chk "H2: old claude version warns about permission rules no-op" 'grep -q "permission rules" "$H_OLD_OUT"'
-chk "H3: old claude version warns about /triage-run classify loop" 'grep -q "classify stage can loop" "$H_OLD_OUT"'
 
 # H-absent: no `claude` anywhere on PATH
 H_ABSENT_DIR=$(new_sandbox)
@@ -376,6 +400,65 @@ J_MISSING_RC=$?
 chk "J3: drift.sh reports MISSING for the deleted checked file" \
   'grep -q "MISSING (not installed): scripts/triage-usage.sh" "$J_MISSING_OUT"'
 chk "J4: drift.sh exits non-zero once a checked file is missing" '[ "$J_MISSING_RC" -ne 0 ]'
+
+# =============================================================================
+# Case K — the two settings keys this layer owns are set only when UNSET and
+# removed only while they still hold OUR value. A user who repointed either one
+# must get it back untouched from both install and uninstall.
+# =============================================================================
+K_DIR=$(new_sandbox)
+mkdir -p "$K_DIR"
+cat > "$K_DIR/settings.json" <<'EOF'
+{
+  "env": {"CLAUDE_CODE_SUBAGENT_MODEL": "claude-sonnet-5", "MY_OWN_VAR": "keepme"},
+  "subagentPromptCacheTtl": "5m"
+}
+EOF
+
+run_install "$K_DIR" >/dev/null 2>&1
+chk "K1: a user-set subagent model is NOT overwritten by install" \
+  '[ "$(jq -r ".env.CLAUDE_CODE_SUBAGENT_MODEL" "$K_DIR/settings.json")" = "claude-sonnet-5" ]'
+chk "K2: a user-set prompt-cache TTL is NOT overwritten by install" \
+  '[ "$(jq -r ".subagentPromptCacheTtl" "$K_DIR/settings.json")" = "5m" ]'
+
+run_uninstall "$K_DIR" >/dev/null 2>&1
+chk "K3: a user-set subagent model survives uninstall (not ours to delete)" \
+  '[ "$(jq -r ".env.CLAUDE_CODE_SUBAGENT_MODEL" "$K_DIR/settings.json")" = "claude-sonnet-5" ]'
+chk "K4: a user-set prompt-cache TTL survives uninstall (not ours to delete)" \
+  '[ "$(jq -r ".subagentPromptCacheTtl" "$K_DIR/settings.json")" = "5m" ]'
+chk "K5: unrelated env vars survive the round-trip" \
+  '[ "$(jq -r ".env.MY_OWN_VAR" "$K_DIR/settings.json")" = "keepme" ]'
+
+# =============================================================================
+# Case L — the superseded workflows/triage-run.js: removed on install when its
+# bytes match a version this repo shipped, kept (with a note) when hand-modified.
+# =============================================================================
+# test/fixtures/legacy/triage-run.js is a byte-exact copy of the last shipped
+# triage-run.js, so its SHA-256 is one of the entries in install.sh's
+# SHIPPED_TRIAGE_RUN_SHA256 list — that list is what this case exercises. Kept as a
+# checked-in fixture rather than read from git history: the mutation harness runs
+# this suite from a .git-less copy of the repo.
+L_DIR=$(new_sandbox)
+mkdir -p "$L_DIR/workflows"
+cp "$REPO_DIR/test/fixtures/legacy/triage-run.js" "$L_DIR/workflows/triage-run.js"
+L_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $L_OUT"
+CLAUDE_DIR="$L_DIR" "$REPO_DIR/install.sh" --files-only >"$L_OUT" 2>&1
+chk "L1: an unmodified shipped triage-run.js is removed on install" \
+  '[ ! -f "$L_DIR/workflows/triage-run.js" ]'
+chk "L2: the removal is announced" 'grep -q "removed superseded workflow" "$L_OUT"'
+chk "L3: triage-exec.js is installed in its place" '[ -f "$L_DIR/workflows/triage-exec.js" ]'
+
+L2_DIR=$(new_sandbox)
+mkdir -p "$L2_DIR/workflows"
+printf '// my own hand-edited triage-run workflow\n' > "$L2_DIR/workflows/triage-run.js"
+L2_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $L2_OUT"
+CLAUDE_DIR="$L2_DIR" "$REPO_DIR/install.sh" --files-only >"$L2_OUT" 2>&1
+chk "L4: a hand-modified triage-run.js is NOT deleted" '[ -f "$L2_DIR/workflows/triage-run.js" ]'
+chk "L5: keeping it is announced with a note" 'grep -q "is modified (or unhashable) — left in place" "$L2_OUT"'
+chk "L6: the hand-modified file is left byte-for-byte alone" \
+  '[ "$(cat "$L2_DIR/workflows/triage-run.js")" = "// my own hand-edited triage-run workflow" ]'
 
 # =============================================================================
 # Statusline checks (direct, no install needed)

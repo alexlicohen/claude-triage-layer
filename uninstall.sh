@@ -1,14 +1,21 @@
 #!/bin/bash
-# Remove the Claude Code model-triage layer from ~/.claude (or $CLAUDE_DIR)
-# and restore the statusLine captured at install time. model/effortLevel are
-# intentionally left as you have them (this layer's opinionated defaults are
-# not auto-reverted) — adjust those two manually if you want your old values back.
+# Remove the Claude Code model-triage layer from ~/.claude (or $CLAUDE_DIR).
+#
+# Mirrors install.sh exactly: it removes only what the installer wrote. `model`,
+# `effortLevel`, and `statusLine` are NEVER touched — the installer does not write
+# them, so there is nothing of ours to revert. The two settings keys it does own
+# (env.CLAUDE_CODE_SUBAGENT_MODEL, subagentPromptCacheTtl) are removed only while
+# they still hold the values we set; a value you changed is yours and is left alone.
 set -euo pipefail
 
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
 SETTINGS="$CLAUDE_DIR/settings.json"
-PREINSTALL="$CLAUDE_DIR/triage-preinstall.json"
+PREINSTALL="$CLAUDE_DIR/triage-preinstall.json"   # legacy artifact of pre-wave-9 installs
 AGENTS="triage-quick-task triage-builder triage-deep-reasoner triage-reviewer triage-cross-reviewer triage-fable-architect"
+
+# The two settings.json keys this layer owns — must match install.sh.
+SUBAGENT_MODEL="claude-opus-5"
+SUBAGENT_CACHE_TTL="1h"
 
 tmp=""
 trap 'rm -f "${tmp:-}"' EXIT
@@ -44,15 +51,22 @@ for a in $AGENTS; do
   rm -rf "$CLAUDE_DIR/agent-memory/$a"
 done
 rm -f "$CLAUDE_DIR/triage.md" "$CLAUDE_DIR/statusline.sh"
-rm -f "$CLAUDE_DIR/workflows/triage-run.js" "$CLAUDE_DIR/scripts/triage-usage.sh" "$CLAUDE_DIR/scripts/triage-stats.sh" "$CLAUDE_DIR/hooks/triage-verify.sh"
+rm -f "$CLAUDE_DIR/workflows/triage-exec.js" "$CLAUDE_DIR/workflows/triage-run.js" \
+      "$CLAUDE_DIR/scripts/triage-usage.sh" "$CLAUDE_DIR/scripts/triage-stats.sh" \
+      "$CLAUDE_DIR/hooks/triage-verify.sh"
 
 # 2b. Remove the triage routing rules from settings.permissions (leaves your other
 #     rules and permissions.defaultMode intact). Also drops the Fable rule whether it
 #     was left as `ask` or converted to `deny`, and any stale SubagentStop entry from
 #     the retired verify hook (for older local checkouts that wired one).
+# 2c. Remove the two settings keys the installer owns — but ONLY while they still hold
+#     the values it wrote. Repoint the subagent model or change the cache TTL and it is
+#     your setting now, so it stays. An `env` object left empty by the removal is
+#     deleted rather than left behind as `{}`.
 if [ -f "$SETTINGS" ]; then
   tmp=$(mktemp)
-  jq --arg hook "$CLAUDE_DIR/hooks/triage-verify.sh" '
+  jq --arg hook "$CLAUDE_DIR/hooks/triage-verify.sh" \
+     --arg m "$SUBAGENT_MODEL" --arg ttl "$SUBAGENT_CACHE_TTL" '
     ["Agent(triage-quick-task)","Agent(triage-builder)","Agent(triage-deep-reasoner)","Agent(triage-reviewer)","Agent(triage-cross-reviewer)"] as $workers
     | ["Agent(triage-fable-architect)"] as $fable
     | (if .permissions.allow then .permissions.allow -= $workers else . end)
@@ -65,34 +79,25 @@ if [ -f "$SETTINGS" ]; then
     | (if .hooks.SubagentStop then .hooks.SubagentStop |= map(select((.hooks // [] | map(.command) | index($hook)) | not)) else . end)
     | (if (.hooks.SubagentStop // []) == [] then del(.hooks.SubagentStop) else . end)
     | (if (.hooks // {}) == {} then del(.hooks) else . end)
+    | (if (.env.CLAUDE_CODE_SUBAGENT_MODEL // null) == $m then del(.env.CLAUDE_CODE_SUBAGENT_MODEL) else . end)
+    | (if (.env // null) == {} then del(.env) else . end)
+    | (if (.subagentPromptCacheTtl // null) == $ttl then del(.subagentPromptCacheTtl) else . end)
   ' "$SETTINGS" > "$tmp" && apply_file "$tmp" "$SETTINGS"
 fi
 
-# 3. Restore statusLine from the pre-install snapshot — its script was just deleted in
-#    step 2, so leaving a stale command there would break the statusline if not restored.
-#    model/effortLevel are intentionally NOT restored: this layer's opinionated defaults
-#    are left as you have them, on purpose — adjust those two manually if you want your
-#    pre-install values back. (An older snapshot may still contain a model/effortLevel
-#    field from a prior version of this script; it's simply ignored here.) A null
-#    statusLine in the snapshot means it was unset pre-install, so delete it (don't write
-#    a null). On a jq failure, keep the snapshot and warn rather than silently losing it.
-if [ -f "$SETTINGS" ] && [ -f "$PREINSTALL" ]; then
-  tmp=$(mktemp)
-  if jq --slurpfile pre "$PREINSTALL" '
-    $pre[0] as $p
-    | (if $p.statusLine == null then del(.statusLine) else .statusLine = $p.statusLine end)
-  ' "$SETTINGS" > "$tmp"; then
-    apply_file "$tmp" "$SETTINGS"
-    rm -f "$PREINSTALL" "$SETTINGS.triage-preinstall.bak"
-    echo "Restored statusLine from pre-install snapshot. (model/effortLevel left as you have them — adjust manually if you want the old values back.)"
+# 3. statusLine / model / effortLevel are NEVER touched — the installer no longer
+#    writes them, so there is nothing of ours to revert. One migration courtesy: an
+#    OLD install DID set statusLine to the script we just deleted in step 2, which
+#    would leave a broken statusline. Say so loudly and point at the snapshot that
+#    old installer saved; restoring it is your call, not ours, so nothing is edited
+#    and the snapshot is left in place.
+if [ -f "$SETTINGS" ] && [ "$(jq -r '.statusLine.command // ""' "$SETTINGS")" = "$CLAUDE_DIR/statusline.sh" ]; then
+  echo "note: settings.json statusLine still points at the just-removed $CLAUDE_DIR/statusline.sh."
+  if [ -f "$PREINSTALL" ]; then
+    echo "      your pre-install value is in $PREINSTALL — restore or clear the key by hand (snapshot left in place)."
   else
-    rm -f "$tmp"
-    echo "ERROR: could not restore statusLine from $PREINSTALL — left it in place; restore manually if needed." >&2
+    echo "      clear or repoint the statusLine key by hand."
   fi
-elif [ -f "$PREINSTALL" ]; then
-  echo "settings.json is missing but a snapshot exists at $PREINSTALL — restore statusLine from it manually if needed (left in place)."
-else
-  echo "No pre-install snapshot found — statusLine may still point at the now-removed triage script; check $SETTINGS if your statusline looks broken. (model/effortLevel are left as you have them, by design.)"
 fi
 
 echo "Uninstalled. New Claude Code sessions will no longer use the triage layer."
