@@ -4,6 +4,78 @@ Reverse-chronological. Each entry cites the commit(s) it corresponds to and,
 where known, the test-count delta. See `test/roundtrip.sh` and `test/lint.sh`
 for the current check catalog.
 
+## Wave 9 — `triage-run` → `triage-exec`: the plan comes in, only execution goes out
+
+`0c7c396`
+
+- **Classification moved to the orchestrator.** The main loop is now a frontier
+  model that already holds the task context and is the best classifier in the
+  system, so spending a spawn on a classify agent was pure waste.
+  `workflows/triage-run.js` → `workflows/triage-exec.js`: the classify agent and
+  its `PLAN_SCHEMA` are deleted, the `Classify` phase is gone, and the workflow
+  is a pure executor for a plan handed in via `args`.
+- **Entry contract, validated in plain JS before any spawn**:
+  `{subtasks:[{id?, brief, tier, files?, acceptance, danger?, effort?}],
+  checks?: string[], review?: auto|always|never, crossReview?: boolean}`.
+  Malformed args throw with the expected shape in the message — never a
+  half-executed, billed run. Missing ids are assigned positionally.
+- **`danger` is now enforced, not merely suggested.** A `danger: true` subtask
+  planned onto `quick`/`builder` is upgraded to `deep` in JS and logged; before,
+  the rule lived only in the classify prompt, where a mis-classification could
+  silently route correctness-critical work to Sonnet.
+- **Per-command objective gates.** `checks` is a list, one quick-task gate per
+  command, so a FAIL is attributable to the command that produced it and the
+  return value carries `{cmd, pass}` per check. `effort` is passed through to
+  `agent()`, and every `agent()` call sets `agentType` (an omitted one would
+  inherit the orchestrator's model — the most expensive possible worker).
+- **Optional cross-vendor stage.** `crossReview: true` runs
+  `triage-cross-reviewer` with the data-boundary-cleared brief; findings are
+  logged and returned but deliberately never reach `assess()`, remediation, or
+  the verdict. Closes the wave-7 deferred item ("the workflow does NOT route to
+  the new tier").
+- **The return value is a distillate** — `{subtasks:[{id,tier,status,attempts}],
+  checks:[{cmd,pass}], review, crossReview?, escalations, …}`. Worker prose no
+  longer enters the orchestrator's context, which is the point of delegating.
+- **Reused unchanged** (single owners preserved): `TIER_AGENT`, `spawn()` as the
+  one budget gate, the Fable→deep@`max` availability fallback, `assess()` as the
+  one verdict parser, file-attribution remediation, one-tier-up escalation,
+  `RESERVE`.
+- **Installer slimmed to what the layer actually needs.** `install.sh` no longer
+  writes `model`, `effortLevel`, or `statusLine` — your orchestrator and your
+  statusline are yours. The preinstall snapshot and its restore are gone with
+  them (nothing is overwritten, so there is nothing to restore); `statusline.sh`
+  is still copied but unwired, and the installer prints the exact JSON to wire
+  it. It now sets `env.CLAUDE_CODE_SUBAGENT_MODEL` and `subagentPromptCacheTtl`
+  **only when unset**, and `uninstall.sh` removes them **only while they still
+  hold the values we wrote**.
+- **Legacy retirement.** Install removes a superseded
+  `~/.claude/workflows/triage-run.js` when its SHA-256 matches one of the seven
+  revisions this repo shipped (`SHIPPED_TRIAGE_RUN_SHA256` in `install.sh`,
+  fixture at `test/fixtures/legacy/triage-run.js`); a copy you edited is kept
+  with a note rather than silently deleted.
+- **Rubric (`triage.md`)** ported to the new flow: scout-minimally/plan-inline,
+  reading legs never run in the main loop, the `CLAUDE_CODE_SUBAGENT_MODEL`
+  default, Fable's two hard exclusions (retention-constrained material and
+  security work), `crossReview` on `triage-exec`, and an on-request-only usage
+  line. The per-escalation post-mortem rule was dropped with the classify stage.
+- **Checks: 140 → 214** — roundtrip 70 → 88 (new case K: user-set settings keys
+  survive install *and* uninstall; new case L: legacy-workflow retirement, both
+  branches; the `model`/`effortLevel`/`statusLine` assertions inverted from
+  "installed value" to "never touched"; `H3` removed with the obsolete
+  `< 2.1.187` classify-loop warning), scenarios 46 → 102 (entry-contract
+  validation ×15, id assignment, effort passthrough, `agentType` always set,
+  review modes, ungated-run INCOMPLETE, danger upgrade, multi-check attribution,
+  Fable fallback, cross-review, distillate). usage-tally unchanged at 24.
+- **Mutation catalog 10 → 11**, all killed: #7 re-anchored onto `assess()`'s
+  `incomplete` tri-state (its old anchor died with the per-type verification
+  shape), #11 added for the new args-validation guard (`bad()` made a no-op).
+- Deferred, honestly: `test/fixtures/legacy/triage-run.js` is a 20 KB byte-copy
+  kept only so case L can run from the mutation harness's `.git`-less repo copy
+  — a checksum-only fixture would be smaller but would no longer prove the real
+  file's bytes hash to a listed value. `install.sh`/`uninstall.sh`/`roundtrip.sh`
+  still contain the string `triage-run` by necessity: the migration path has to
+  name the file it retires.
+
 ## Wave 8 — routing-rubric refinements (builder/deep tie-breaker, per-project danger zones, quiet empty tally)
 
 - **Rule 1 (triage.md)**: explicit builder/deep tie-breaker at the boundary
