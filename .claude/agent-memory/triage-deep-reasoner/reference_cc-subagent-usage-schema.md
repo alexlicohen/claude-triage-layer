@@ -38,7 +38,7 @@ timezone-ambiguous and mutated by copies/rsync/git/backups (a sampled file's mti
 by hours). jq can bucket to ISO week directly: `.[0:10]|strptime("%Y-%m-%d")|mktime|strftime("%G-W%V")`.
 
 **Escalation is NOT reliably derivable from on-disk data (verified 2026-07-01):** the only
-escalation signal is free text in `meta.json .description` (the /triage-run `redo:` /
+escalation signal is free text in `meta.json .description` (the triage-exec `redo:` /
 `deep←fable:` labels, or orchestrator hints `escalate`/`retry`/`prior attempt`). But only a
 minority of subagents carry ANY `.description`, and escalation markers are near-absent among
 those that do. So any escalation-rate stat must be an explicitly-labelled LOWER BOUND, never a

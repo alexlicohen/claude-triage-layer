@@ -1,6 +1,6 @@
 #!/bin/bash
 # Compare the installed copies under ~/.claude (or $CLAUDE_DIR) against this
-# repo, file-by-file, for: the 5 agents, statusline.sh, workflows/triage-run.js,
+# repo, file-by-file, for: the 6 agents, statusline.sh, workflows/triage-exec.js,
 # triage.md. Prints one of `same` / `MISSING (not installed)` / `FORKED` per
 # file (or `forked (expected)` for files listed in .driftignore).
 #
@@ -59,7 +59,7 @@ for f in "$REPO_DIR"/agents/triage-*.md; do
 done
 
 check_file "statusline.sh" "$CLAUDE_DIR/statusline.sh"
-check_file "workflows/triage-run.js" "$CLAUDE_DIR/workflows/triage-run.js"
+check_file "workflows/triage-exec.js" "$CLAUDE_DIR/workflows/triage-exec.js"
 check_file "scripts/triage-usage.sh" "$CLAUDE_DIR/scripts/triage-usage.sh"
 check_file "scripts/triage-stats.sh" "$CLAUDE_DIR/scripts/triage-stats.sh"
 check_file "triage.md" "$CLAUDE_DIR/triage.md"

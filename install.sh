@@ -5,19 +5,29 @@
 # Flags:
 #   --dry-run     print the full mutation plan, write NOTHING.
 #   --files-only  copy/chmod the installed FILES only (agents, statusline.sh,
-#                 workflows/triage-run.js, scripts/triage-usage.sh, triage.md).
-#                 Skips CLAUDE.md, settings.json, permissions, and the
-#                 preinstall snapshot entirely. Files listed in .driftignore
-#                 (deliberate personal forks, e.g. triage.md) are skipped
-#                 rather than clobbered. This is the "make sync" primitive.
+#                 workflows/triage-exec.js, scripts/triage-usage.sh, triage.md).
+#                 Skips CLAUDE.md, settings.json, and permissions entirely.
+#                 Files listed in .driftignore (deliberate personal forks, e.g.
+#                 triage.md) are skipped rather than clobbered. This is the
+#                 "make sync" primitive.
+#
+# This installer is deliberately NARROW about settings.json: it never writes
+# `model`, `effortLevel`, or `statusLine`. Those are your session preferences,
+# not this layer's to own — pick your orchestrator model yourself. It writes only
+# what the layer actually needs to function (subagent default model, subagent
+# prompt-cache TTL, the Agent(...) permission rules), and only when unset.
 # The two flags compose: --dry-run --files-only plans only the file ops.
 set -euo pipefail
 
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 SETTINGS="$CLAUDE_DIR/settings.json"
-PREINSTALL="$CLAUDE_DIR/triage-preinstall.json"
 DRIFTIGNORE="$REPO_DIR/.driftignore"
+
+# The two settings.json keys this layer owns. Both are written ONLY when unset, and
+# uninstall removes them ONLY when they still equal these values.
+SUBAGENT_MODEL="claude-opus-5"
+SUBAGENT_CACHE_TTL="1h"
 
 DRY_RUN=0
 FILES_ONLY=0
@@ -75,9 +85,6 @@ check_version_compat() {
   fi
   if [ "$(version_lt "$ver" "2.1.186")" = "1" ]; then
     echo "⚠ WARNING: Claude Code $ver < 2.1.186 — the installer's permission rules (Agent(...) allow/ask) are a no-op on this version."
-  fi
-  if [ "$(version_lt "$ver" "2.1.187")" = "1" ]; then
-    echo "⚠ WARNING: Claude Code $ver < 2.1.187 — /triage-run's classify stage can loop on schema-validation retries on this version."
   fi
 }
 check_version_compat
@@ -144,8 +151,51 @@ install_file() {
   fi
 }
 
+# --- retiring the pre-wave-9 /triage-run workflow ----------------------------
+# triage-exec.js replaced triage-run.js (classification moved to the orchestrator).
+# An old install leaves triage-run.js behind, where it still registers as a second,
+# stale /triage-run command. Remove it — but ONLY when the installed bytes match a
+# version this repo actually shipped. A copy you edited yourself is yours: it is left
+# alone with a note, never silently deleted. Checksums are of every triage-run.js
+# revision in this repo's history (`git log --all -- workflows/triage-run.js`).
+SHIPPED_TRIAGE_RUN_SHA256="
+3736f0238457f0ca4ee0ecae098d980f806feba1f61b668d5bc89221fa9ee237
+393e07dd9e10d5bf60a22ae406c2816ccf529ef80181968b7dc940da23c37ad4
+44ad66222c641ddcbf811a7b4883e28d457f1c3e8f088501f3b03d246be023c0
+4843fd5ac4caab33ec2a8de8b4c8b6d04c7cfd71fd7d982896e7dff14a33b3dc
+627fbfe326ff53a1880edebb191d08d38e2303f86074cbcbc6ecc8362a356993
+bbc1769308f6f239062fe05c79d598c19cc8292cabc339328bfd9cf0380b7979
+dba7a06f59eaddbaa1fb78b9f81a91b8372af01b21166c3775304c49c0174308
+"
+
+# Portable sha256 (macOS ships `shasum`, most Linux images ship `sha256sum`).
+# Prints nothing when neither exists — the caller then declines to delete.
+file_sha256() { # $1 = file
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" 2>/dev/null | cut -d' ' -f1
+  fi
+}
+
+retire_triage_run() {
+  old="$CLAUDE_DIR/workflows/triage-run.js"
+  [ -f "$old" ] || return 0
+  sha=$(file_sha256 "$old")
+  if [ -n "$sha" ] && printf '%s' "$SHIPPED_TRIAGE_RUN_SHA256" | grep -qxF "$sha"; then
+    if [ "$DRY_RUN" -eq 1 ]; then
+      echo "  remove (superseded by triage-exec.js, unmodified): $old"
+    else
+      rm -f "$old"
+      echo "  removed superseded workflow: $old (replaced by triage-exec.js)"
+    fi
+  else
+    echo "  note: $old is modified (or unhashable) — left in place. /triage-run will keep appearing alongside /triage-exec until you delete it."
+  fi
+}
+
 # =============================================================================
-# 1. Installed files (agents, statusline, /triage-run workflow, usage script,
+# 1. Installed files (agents, statusline, /triage-exec workflow, usage script,
 #    triage.md rubric) — the only step --files-only performs.
 # =============================================================================
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -162,9 +212,10 @@ for f in "$REPO_DIR"/agents/triage-*.md; do
 done
 install_file "triage.md" "$CLAUDE_DIR/triage.md"
 install_file "statusline.sh" "$CLAUDE_DIR/statusline.sh" x
-install_file "workflows/triage-run.js" "$CLAUDE_DIR/workflows/triage-run.js"
+install_file "workflows/triage-exec.js" "$CLAUDE_DIR/workflows/triage-exec.js"
 install_file "scripts/triage-usage.sh" "$CLAUDE_DIR/scripts/triage-usage.sh" x
 install_file "scripts/triage-stats.sh" "$CLAUDE_DIR/scripts/triage-stats.sh" x
+retire_triage_run
 
 if [ "$FILES_ONLY" -eq 1 ]; then
   if [ "$DRY_RUN" -eq 0 ]; then
@@ -197,7 +248,10 @@ else
 fi
 
 # =============================================================================
-# 3. Merge settings (model, effortLevel, statusLine) + 3b. permission rules
+# 3. Merge settings (subagent default model + prompt-cache TTL) + 3b. permissions
+#
+#    NOT written, ever: model, effortLevel, statusLine. Your orchestrator model and
+#    your statusline are yours; this layer works with whatever you have chosen.
 # =============================================================================
 if [ "$DRY_RUN" -eq 1 ]; then
   CUR_SETTINGS_JSON="{}"
@@ -205,23 +259,18 @@ if [ "$DRY_RUN" -eq 1 ]; then
 
   echo ""
   echo "settings.json ($SETTINGS):"
-  cur_model=$(printf '%s' "$CUR_SETTINGS_JSON" | jq -r '.model // "null"')
-  if [ "$cur_model" = "opus[1m]" ]; then
-    echo "  model: already opus[1m]"
+  echo "  model / effortLevel / statusLine: NOT touched (yours to set)"
+  cur_sub=$(printf '%s' "$CUR_SETTINGS_JSON" | jq -r '.env.CLAUDE_CODE_SUBAGENT_MODEL // "null"')
+  if [ "$cur_sub" = "null" ]; then
+    echo "  env.CLAUDE_CODE_SUBAGENT_MODEL: would set -> $SUBAGENT_MODEL"
   else
-    echo "  model: would set $cur_model -> opus[1m]"
+    echo "  env.CLAUDE_CODE_SUBAGENT_MODEL: already set to $cur_sub — left as is"
   fi
-  cur_effort=$(printf '%s' "$CUR_SETTINGS_JSON" | jq -r '.effortLevel // "null"')
-  if [ "$cur_effort" = "high" ]; then
-    echo "  effortLevel: already high"
+  cur_ttl=$(printf '%s' "$CUR_SETTINGS_JSON" | jq -r '.subagentPromptCacheTtl // "null"')
+  if [ "$cur_ttl" = "null" ]; then
+    echo "  subagentPromptCacheTtl: would set -> $SUBAGENT_CACHE_TTL"
   else
-    echo "  effortLevel: would set $cur_effort -> high"
-  fi
-  cur_statusline=$(printf '%s' "$CUR_SETTINGS_JSON" | jq -r '.statusLine.command // "null"')
-  if [ "$cur_statusline" = "$CLAUDE_DIR/statusline.sh" ]; then
-    echo "  statusLine: already $CLAUDE_DIR/statusline.sh"
-  else
-    echo "  statusLine: would set $cur_statusline -> {type: command, command: $CLAUDE_DIR/statusline.sh}"
+    echo "  subagentPromptCacheTtl: already set to $cur_ttl — left as is"
   fi
 
   for w in triage-quick-task triage-builder triage-deep-reasoner triage-reviewer triage-cross-reviewer; do
@@ -240,36 +289,26 @@ if [ "$DRY_RUN" -eq 1 ]; then
   fi
 
   echo ""
-  echo "Preinstall snapshot ($PREINSTALL):"
-  if [ -f "$PREINSTALL" ]; then
-    echo "  already exists — would NOT be overwritten"
-  else
-    echo "  would be created, capturing current statusLine=$cur_statusline"
-    echo "  (model/effortLevel are NOT captured — uninstall leaves them as you set them, it never reverts them)"
-  fi
-
-  echo ""
   echo "No changes were made (--dry-run)."
   exit 0
 fi
 
-# 3. Merge settings (model, effortLevel, statusLine), saving prior statusLine first
-#    (settings.json was already validated as JSON upfront, above). Only statusLine is
-#    snapshotted/restorable: its script gets deleted on uninstall (step 2 there), so a
-#    stale command would break the statusline if not restored. model/effortLevel are
-#    this layer's opinionated defaults — uninstall intentionally leaves them as you set
-#    them rather than reverting, so there's nothing to capture for those two.
+# 3. Merge the two settings keys this layer owns (settings.json was already validated
+#    as JSON upfront, above). Both are set ONLY when absent, so an existing choice of
+#    yours always wins and a re-run never overwrites it:
+#      env.CLAUDE_CODE_SUBAGENT_MODEL — the default model for any subagent spawn that
+#        does not pin one. This is what keeps an un-pinned Agent()/workflow agent()
+#        call off the (expensive) orchestrator tier.
+#      subagentPromptCacheTtl — extended prompt-cache lifetime for subagents, so a
+#        fan-out of workers sharing a brief re-reads a warm cache.
+#    No snapshot is taken: nothing here overwrites a pre-existing value, so there is
+#    nothing to restore. model/effortLevel/statusLine are never written at all.
 [ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
-if [ ! -f "$PREINSTALL" ]; then
-  jq '{statusLine: (.statusLine // null)}' "$SETTINGS" > "$PREINSTALL"
-  cp "$SETTINGS" "$SETTINGS.triage-preinstall.bak"   # full backup, for rolling back a bad merge
-  echo "Saved pre-install statusLine to $PREINSTALL"
-fi
 tmp=$(mktemp)
-jq --arg cmd "$CLAUDE_DIR/statusline.sh" \
-  '.model = "opus[1m]" | .effortLevel = "high"
-   | .statusLine = {type: "command", command: $cmd}' \
-  "$SETTINGS" > "$tmp" && apply_settings "$tmp"
+jq --arg m "$SUBAGENT_MODEL" --arg ttl "$SUBAGENT_CACHE_TTL" '
+  (if (.env.CLAUDE_CODE_SUBAGENT_MODEL // null) == null then .env.CLAUDE_CODE_SUBAGENT_MODEL = $m else . end)
+  | (if (.subagentPromptCacheTtl // null) == null then .subagentPromptCacheTtl = $ttl else . end)
+' "$SETTINGS" > "$tmp" && apply_settings "$tmp"
 
 # 3b. Harness-level routing rules (idempotent; appends only what's missing and
 #     preserves existing rules + order). Enforces the rubric at the permission layer:
@@ -295,7 +334,9 @@ if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
 fi
 
 echo "Installed. Start a NEW Claude Code session to activate."
-echo "  - On a Pro plan (not Max), Opus 1M bills extra usage credits:"
-echo "    change \"model\" to \"opus\" in $SETTINGS to stay on 200K context."
+echo "  - Your orchestrator model/effortLevel and statusLine were NOT changed."
+echo "    Pick the orchestrator with /model — a frontier model plans best; the tiers do the volume."
+echo "  - statusline.sh was copied but NOT wired. To use it, set in $SETTINGS:"
+echo "      \"statusLine\": {\"type\": \"command\", \"command\": \"$CLAUDE_DIR/statusline.sh\"}"
 echo "  - Kill switch: remove the @triage.md line from $CLAUDE_DIR/CLAUDE.md."
 echo "  - Full removal: ./uninstall.sh"

@@ -43,7 +43,7 @@
 #
 # ESCALATION IS A LABELLED LOWER BOUND, NOT A CENSUS
 #   Escalation chains are NOT reliably recorded on disk. The only escalation signal available
-#   is free-text in meta.json .description (the /triage-run "redo:" / "deep<-fable:" labels,
+#   is free-text in meta.json .description (the triage-exec "redo:" / "deep<-fable:" labels,
 #   or orchestrator hints like "escalate"/"retry"/"prior attempt"). But most subagents carry
 #   NO description at all (on this machine: ~24% do), and the markers are near-absent in
 #   practice. So this script scans the description-bearing minority for those markers and

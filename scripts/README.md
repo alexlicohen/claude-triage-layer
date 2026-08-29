@@ -168,7 +168,7 @@ compares this spawn date against a BSD-`date` cutoff.
 
 - **The escalation stat is an explicitly-labelled LOWER BOUND, not an escalation rate.**
   Escalation chains are **not reliably recorded on disk.** The only signal is free text in
-  `meta.json .description` — the `/triage-run` `redo:` / `deep<-fable:` labels, or orchestrator
+  `meta.json .description` — the `triage-exec` `redo:` / `deep<-fable:` labels, or orchestrator
   hints like `escalate` / `retry` / `prior attempt`. But **most subagents carry no description at
   all** (on the development machine, only ~24% did), and in practice these markers are almost
   entirely absent (≈3 hits across ~745 descriptions / ~3100 subagents). So the script scans the

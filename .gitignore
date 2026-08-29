@@ -1,3 +1,4 @@
 # Editor / OS cruft (not part of the triage layer)
 .vscode/
 .DS_Store
+.playwright-mcp/

@@ -47,7 +47,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-ALL_IDS="1 2 3 4 5 6 7 8 9 10"
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -78,10 +78,11 @@ mut_file() {
     4) echo "uninstall.sh" ;;
     5) echo "uninstall.sh" ;;
     6) echo "statusline.sh" ;;
-    7) echo "workflows/triage-run.js" ;;
-    8) echo "workflows/triage-run.js" ;;
-    9) echo "workflows/triage-run.js" ;;
+    7) echo "workflows/triage-exec.js" ;;
+    8) echo "workflows/triage-exec.js" ;;
+    9) echo "workflows/triage-exec.js" ;;
     10) echo "drift.sh" ;;
+    11) echo "workflows/triage-exec.js" ;;
     *) echo "" ;;
   esac
 }
@@ -94,10 +95,11 @@ mut_desc() {
     4) echo "uninstall.sh: revert per-name agent removal to the triage-*.md glob" ;;
     5) echo "uninstall.sh: drop the permissions.deny Fable-rule cleanup line" ;;
     6) echo "statusline.sh: remove the non-numeric PCT case-guard" ;;
-    7) echo "triage-run.js: revert incomplete:true -> incomplete:false on the objective null branch" ;;
-    8) echo "triage-run.js: remove the runGate retry (gate tried once, null returned immediately)" ;;
-    9) echo "triage-run.js: make matchedFiles() always return [] (attribution always fails)" ;;
+    7) echo "triage-exec.js: assess() always reports incomplete:false (a dead/absent gate passes silently)" ;;
+    8) echo "triage-exec.js: remove the runGate retry (gate tried once, null returned immediately)" ;;
+    9) echo "triage-exec.js: make matchedFiles() always return [] (attribution always fails)" ;;
     10) echo "drift.sh: remove UNEXPECTED_DRIFT=1 from the MISSING branch" ;;
+    11) echo "triage-exec.js: make bad() a no-op (malformed plan args no longer throw before spawning)" ;;
     *) echo "" ;;
   esac
 }
@@ -107,7 +109,7 @@ mut_desc() {
 mut_suite() {
   case "$1" in
     1|2|3|4|5|6|10) echo "roundtrip" ;;
-    7|8|9) echo "scenarios" ;;
+    7|8|9|11) echo "scenarios" ;;
     *) echo "" ;;
   esac
 }
@@ -230,13 +232,14 @@ MUT6
       mut_replace_block "$target" 'case "$PCT" in' 9 "$rep"
       ;;
     7)
-      # triage-run.js: incomplete:true -> incomplete:false on the objective null branch.
-      printf "    if (v.result == null) return { text: '', failed: false, isEscalate: false, incomplete: false }\n" > "$rep"
+      # triage-exec.js: assess()'s tri-state incomplete flag -> always false, so a dead
+      # gate (or a plan that gated nothing at all) is reported as a clean pass.
+      printf '    incomplete: false, // MUTATED: incomplete tri-state disabled\n' > "$rep"
       mut_replace_block "$target" \
-        "    if (v.result == null) return { text: '', failed: false, isEscalate: false, incomplete: true }" 1 "$rep"
+        '    incomplete: v.checks.some(c => c.result == null)' 1 "$rep"
       ;;
     8)
-      # triage-run.js: disable the gate retry surgically — the retry condition
+      # triage-exec.js: disable the gate retry surgically — the retry condition
       # becomes `if (false)`, so the gate is tried once and null is returned
       # immediately. 1-line replace: robust to surrounding runGate changes
       # (a 9-line block replace went stale when budget logic reshaped runGate).
@@ -244,7 +247,7 @@ MUT6
       mut_replace_block "$target" '    if (out == null && !ceilinged) {' 1 "$rep"
       ;;
     9)
-      # triage-run.js: matchedFiles() -> always [] (3 lines -> 3 lines).
+      # triage-exec.js: matchedFiles() -> always [] (3 lines -> 3 lines).
       {
         printf 'function matchedFiles(r, text) {\n'
         printf '  return []\n'
@@ -256,6 +259,16 @@ MUT6
       # drift.sh: drop UNEXPECTED_DRIFT=1 from the MISSING branch (first occurrence
       # only — the FORKED branch's own UNEXPECTED_DRIFT=1 must survive untouched).
       mut_delete_block "$target" '      UNEXPECTED_DRIFT=1' 1
+      ;;
+    11)
+      # triage-exec.js: bad() stops throwing, so a malformed plan is no longer
+      # rejected before any spawn (3 lines -> 3 lines).
+      {
+        printf 'function bad(msg) {\n'
+        printf '  return  // MUTATED: args validation disabled\n'
+        printf '}\n'
+      } > "$rep"
+      mut_replace_block "$target" 'function bad(msg) {' 3 "$rep"
       ;;
     *)
       return 1
@@ -279,10 +292,11 @@ verify_mutation() {
     4) grep -qF 'rm -f "$CLAUDE_DIR"/agents/triage-*.md' "$target" && ! grep -qF 'for a in $AGENTS; do' "$target" ;;
     5) ! grep -qF '.permissions.deny  -= $fable' "$target" ;;
     6) ! grep -qF 'case "$PCT" in' "$target" && grep -qF 'if [ "$PCT" -ge 60 ]; then' "$target" ;;
-    7) grep -qF "incomplete: false }" "$target" && ! grep -qF "if (v.result == null) return { text: '', failed: false, isEscalate: false, incomplete: true }" "$target" ;;
+    7) grep -qF 'MUTATED: incomplete tri-state disabled' "$target" && ! grep -qF 'incomplete: v.checks.some(c => c.result == null)' "$target" ;;
     8) grep -qF 'MUTATED: retry disabled' "$target" ;;
     9) grep -qF 'function matchedFiles(r, text) {' "$target" && ! grep -qF 'fileMentioned(f, text)' "$target" ;;
     10) [ "$(grep -cF 'UNEXPECTED_DRIFT=1' "$target")" -eq 1 ] ;;
+    11) grep -qF 'MUTATED: args validation disabled' "$target" && ! grep -qF 'throw new Error(`triage-exec:' "$target" ;;
     *) return 1 ;;
   esac
 }
