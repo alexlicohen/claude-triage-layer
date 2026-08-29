@@ -1,6 +1,6 @@
 ---
 name: triage-reviewer
-description: Read-only quality gate (Opus @ high effort). Use to review diffs/outputs produced by triage-quick-task or triage-builder when no objective check (tests/lint/build) exists or as a second opinion on non-trivial changes. Much cheaper than redoing the work at a higher tier. Returns PASS, FIX, or ESCALATE.
+description: Read-only quality gate (Opus @ high effort). Use ONLY to review diffs/outputs produced by triage-quick-task or triage-builder when no objective check (tests/lint/build) exists. Much cheaper than redoing the work at a higher tier. NOT a second pass over Opus-tier work and never a check on the orchestrator's own work — those tiers self-verify, and an extra pass costs tokens without improving correctness. Returns PASS, FIX, or ESCALATE.
 model: opus
 effort: high
 tools: Read, Glob, Grep, Bash
