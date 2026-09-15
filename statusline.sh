@@ -104,6 +104,18 @@ else
   printf '%s' "$SUB" > "$CACHE_FILE" 2>/dev/null
 fi
 
+# --- prompt-cache segment -----------------------------------------------------
+# Single-owner helper (scripts/triage-cache-segment.sh) — same degrade-to-empty
+# contract as everything else here. Resolved relative to this script's own dir
+# first (repo checkout), then the installed path.
+CACHE=""
+CACHE_SELF_DIR=$(cd "$(dirname "$0")" && pwd)
+CACHE_SH="$CACHE_SELF_DIR/scripts/triage-cache-segment.sh"
+if [ ! -f "$CACHE_SH" ]; then CACHE_SH="$HOME/.claude/scripts/triage-cache-segment.sh"; fi
+if [ -f "$CACHE_SH" ]; then
+  CACHE=$(printf '%s' "$input" | bash "$CACHE_SH" 2>/dev/null)
+fi
+
 OUT=""
 if [ -n "$CC" ]; then
   OUT="$CC"
@@ -112,4 +124,5 @@ else
 fi
 if [ -n "$CTX" ]; then OUT="$OUT · $CTX"; fi
 if [ -n "$SUB" ]; then OUT="$OUT · $SUB"; fi
+if [ -n "$CACHE" ]; then OUT="$OUT · $CACHE"; fi
 printf '%s' "$OUT"

@@ -53,6 +53,7 @@ done
 rm -f "$CLAUDE_DIR/triage.md" "$CLAUDE_DIR/statusline.sh"
 rm -f "$CLAUDE_DIR/workflows/triage-exec.js" "$CLAUDE_DIR/workflows/triage-run.js" \
       "$CLAUDE_DIR/scripts/triage-usage.sh" "$CLAUDE_DIR/scripts/triage-stats.sh" \
+      "$CLAUDE_DIR/scripts/triage-cache-segment.sh" \
       "$CLAUDE_DIR/hooks/triage-verify.sh"
 
 # 2b. Remove the triage routing rules from settings.permissions (leaves your other

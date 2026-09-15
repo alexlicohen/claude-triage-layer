@@ -47,7 +47,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11"
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -83,6 +83,7 @@ mut_file() {
     9) echo "workflows/triage-exec.js" ;;
     10) echo "drift.sh" ;;
     11) echo "workflows/triage-exec.js" ;;
+    12) echo "scripts/triage-cache-segment.sh" ;;
     *) echo "" ;;
   esac
 }
@@ -100,6 +101,7 @@ mut_desc() {
     9) echo "triage-exec.js: make matchedFiles() always return [] (attribution always fails)" ;;
     10) echo "drift.sh: remove UNEXPECTED_DRIFT=1 from the MISSING branch" ;;
     11) echo "triage-exec.js: make bad() a no-op (malformed plan args no longer throw before spawning)" ;;
+    12) echo "triage-cache-segment.sh: revert the warm-boolean jq filter to '// empty' (jq's // swallows a literal false, so a cold cache silently renders nothing)" ;;
     *) echo "" ;;
   esac
 }
@@ -108,7 +110,7 @@ mut_desc() {
 # "scenarios" (test/workflow-scenarios.mjs).
 mut_suite() {
   case "$1" in
-    1|2|3|4|5|6|10) echo "roundtrip" ;;
+    1|2|3|4|5|6|10|12) echo "roundtrip" ;;
     7|8|9|11) echo "scenarios" ;;
     *) echo "" ;;
   esac
@@ -270,6 +272,16 @@ MUT6
       } > "$rep"
       mut_replace_block "$target" 'function bad(msg) {' 3 "$rep"
       ;;
+    12)
+      # triage-cache-segment.sh: WARM_RAW's explicit true/false jq filter ->
+      # `// empty`, which jq treats a literal `false` as absent under — a cold
+      # cache (warm:false) is then indistinguishable from warm being missing,
+      # so the segment silently renders nothing instead of "cache N% cold".
+      printf "WARM_RAW=\$(printf '%%s' \"\$input\" | jq -r '.prompt_cache.warm // empty' 2>/dev/null) # MUTATED: swallows false\n" > "$rep"
+      mut_replace_block "$target" \
+        "WARM_RAW=\$(printf '%s' \"\$input\" | jq -r 'if .prompt_cache.warm == true then \"true\" elif .prompt_cache.warm == false then \"false\" else empty end' 2>/dev/null)" \
+        1 "$rep"
+      ;;
     *)
       return 1
       ;;
@@ -297,6 +309,7 @@ verify_mutation() {
     9) grep -qF 'function matchedFiles(r, text) {' "$target" && ! grep -qF 'fileMentioned(f, text)' "$target" ;;
     10) [ "$(grep -cF 'UNEXPECTED_DRIFT=1' "$target")" -eq 1 ] ;;
     11) grep -qF 'MUTATED: args validation disabled' "$target" && ! grep -qF 'throw new Error(`triage-exec:' "$target" ;;
+    12) grep -qF 'MUTATED: swallows false' "$target" && ! grep -qF 'elif .prompt_cache.warm == false' "$target" ;;
     *) return 1 ;;
   esac
 }

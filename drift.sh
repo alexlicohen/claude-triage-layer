@@ -62,6 +62,7 @@ check_file "statusline.sh" "$CLAUDE_DIR/statusline.sh"
 check_file "workflows/triage-exec.js" "$CLAUDE_DIR/workflows/triage-exec.js"
 check_file "scripts/triage-usage.sh" "$CLAUDE_DIR/scripts/triage-usage.sh"
 check_file "scripts/triage-stats.sh" "$CLAUDE_DIR/scripts/triage-stats.sh"
+check_file "scripts/triage-cache-segment.sh" "$CLAUDE_DIR/scripts/triage-cache-segment.sh"
 check_file "triage.md" "$CLAUDE_DIR/triage.md"
 
 if [ "$UNEXPECTED_DRIFT" -ne 0 ]; then

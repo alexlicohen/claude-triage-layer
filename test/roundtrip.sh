@@ -497,6 +497,61 @@ chk "S3: statusline appends '· sub Nk' from real subagent data (haiku 2k+sonnet
   '[ "$STATUS_WITH_SUB" = "Opus · ctx 42% · sub 58k" ]'
 
 # =============================================================================
+# Prompt-cache segment checks (scripts/triage-cache-segment.sh, direct + wired
+# through statusline.sh). Field names verified against the installed Claude
+# Code binary's own statusline help text (checked 2026-09-15, v2.1.272:
+# `strings "$(which claude)" | grep -A2 last_miss_cause.causes`) and
+# https://code.claude.com/docs/en/statusline's "Prompt cache fields" table:
+# prompt_cache.{caching_observed,warm,hit_ratio,last_miss_cause.causes[]}.
+# =============================================================================
+CACHE_SH="$REPO_DIR/scripts/triage-cache-segment.sh"
+
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+CS_WARM=$(printf '%s' '{"prompt_cache":{"caching_observed":true,"warm":true,"hit_ratio":0.873}}' \
+  | PATH=/usr/bin:/bin bash "$CACHE_SH")
+chk "T1: warm cache with hit_ratio 0.873 renders 'cache 87% warm'" '[ "$CS_WARM" = "cache 87% warm" ]'
+
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+CS_COLD=$(printf '%s' '{"prompt_cache":{"caching_observed":true,"warm":false,"hit_ratio":0.42,"last_miss_cause":{"causes":["tool_result_pruning"]}}}' \
+  | PATH=/usr/bin:/bin bash "$CACHE_SH")
+chk "T2: cold cache with a diagnosed miss cause renders 'cache 42% cold (tool_result_pruning)'" \
+  '[ "$CS_COLD" = "cache 42% cold (tool_result_pruning)" ]'
+# jq's `//` treats a literal `false` as absent — warm:false must still render "cold",
+# not be silently dropped as if warm were missing.
+chk "T2b: warm:false is read as an explicit boolean, not swallowed by jq's // empty" \
+  '[ "$CS_COLD" != "" ]'
+
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+CS_NOPC=$(printf '%s' '{"model":{"display_name":"Opus"}}' | PATH=/usr/bin:/bin bash "$CACHE_SH")
+chk "T3: no prompt_cache field at all renders nothing" '[ "$CS_NOPC" = "" ]'
+
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+CS_NOTOBS=$(printf '%s' '{"prompt_cache":{"caching_observed":false}}' | PATH=/usr/bin:/bin bash "$CACHE_SH")
+chk "T4: caching_observed:false renders nothing (provider/gateway doesn't report cache tokens)" \
+  '[ "$CS_NOTOBS" = "" ]'
+
+CS_MALFORMED_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $CS_MALFORMED_OUT"
+printf 'not json at all' | PATH=/usr/bin:/bin bash "$CACHE_SH" >"$CS_MALFORMED_OUT" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+CS_MALFORMED_RC=$?
+chk "T5: malformed JSON on stdin exits 0" '[ "$CS_MALFORMED_RC" -eq 0 ]'
+chk "T6: malformed JSON on stdin prints nothing" '[ ! -s "$CS_MALFORMED_OUT" ]'
+
+# --- wired through statusline.sh -------------------------------------------
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+STATUS_WITH_CACHE=$(printf '%s' '{"model":{"display_name":"Opus"},"context_window":{"used_percentage":42.7},"session_id":"test-statusline-s4","transcript_path":"'"$NO_SUB_TRANSCRIPT"'","prompt_cache":{"caching_observed":true,"warm":true,"hit_ratio":0.873}}' \
+  | PATH=/usr/bin:/bin bash "$STATUSLINE")
+chk "S4: statusline appends '· cache 87% warm' after the model/ctx tail" \
+  '[ "$STATUS_WITH_CACHE" = "Opus · ctx 42% · cache 87% warm" ]'
+
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+STATUS_NO_CACHE=$(printf '%s' '{"model":{"display_name":"Opus"},"context_window":{"used_percentage":42.7},"session_id":"test-statusline-s5","transcript_path":"'"$NO_SUB_TRANSCRIPT"'"}' \
+  | PATH=/usr/bin:/bin bash "$STATUSLINE")
+chk "S5: statusline with no prompt_cache field renders identically to before (no dangling separator)" \
+  '[ "$STATUS_NO_CACHE" = "Opus · ctx 42%" ]'
+
+# =============================================================================
 # Result
 # =============================================================================
 echo ""

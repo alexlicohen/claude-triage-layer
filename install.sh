@@ -215,6 +215,7 @@ install_file "statusline.sh" "$CLAUDE_DIR/statusline.sh" x
 install_file "workflows/triage-exec.js" "$CLAUDE_DIR/workflows/triage-exec.js"
 install_file "scripts/triage-usage.sh" "$CLAUDE_DIR/scripts/triage-usage.sh" x
 install_file "scripts/triage-stats.sh" "$CLAUDE_DIR/scripts/triage-stats.sh" x
+install_file "scripts/triage-cache-segment.sh" "$CLAUDE_DIR/scripts/triage-cache-segment.sh" x
 retire_triage_run
 
 if [ "$FILES_ONLY" -eq 1 ]; then

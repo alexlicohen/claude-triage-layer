@@ -44,7 +44,13 @@ $SH_FILES
 EOF
 fi
 
-# --- 2. node --check on every *.js under workflows/ --------------------------
+# --- 2. node syntax-check on every *.js under workflows/ ---------------------
+# Workflow-DSL scripts have `export const meta = {...}` plus top-level await
+# and a top-level `return` — the DSL runs them as an async function body (with
+# `meta` extracted). Plain `node --check` parses the file as a module/script
+# and rejects the top-level return, so instead strip the leading `export` off
+# the meta declaration and parse the remainder with the AsyncFunction
+# constructor, mirroring how the DSL actually executes the script.
 if command -v node >/dev/null 2>&1; then
   JS_FILES=$(find workflows -name '*.js' 2>/dev/null)
   if [ -z "$JS_FILES" ]; then
@@ -52,10 +58,22 @@ if command -v node >/dev/null 2>&1; then
   else
     while IFS= read -r f; do
       [ -z "$f" ] && continue
-      if node --check "$f" 2>"$LINT_ERR"; then
-        ok "node --check $f"
+      if node -e '
+        const fs = require("fs");
+        const path = process.argv[1];
+        const src = fs.readFileSync(path, "utf8")
+          .replace(/^export\s+const\s+meta\b/m, "const meta");
+        const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+        try {
+          new AsyncFunction(src);
+        } catch (e) {
+          console.error(e.stack || String(e));
+          process.exit(1);
+        }
+      ' "$f" 2>"$LINT_ERR"; then
+        ok "node syntax-check $f"
       else
-        fail "node --check $f"
+        fail "node syntax-check $f"
         cat "$LINT_ERR" >&2
       fi
     done <<EOF

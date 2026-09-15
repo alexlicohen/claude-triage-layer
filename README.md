@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/alexlicohen/claude-triage-layer/actions/workflows/ci.yml/badge.svg)](https://github.com/alexlicohen/claude-triage-layer/actions/workflows/ci.yml)
 
-A drop-in config layer for [Claude Code](https://code.claude.com) that routes every task to the **cheapest adequate Claude model** (Haiku → Sonnet → Opus → Fable 5), escalates automatically when a cheaper tier's output fails verification, and reports per-tier usage — **all billed to your Claude Pro/Max subscription**, not the pay-per-token API.
+A drop-in config layer for [Claude Code](https://code.claude.com) that routes every task to the **cheapest adequate Claude model** (Haiku → Sonnet → Opus → Fable 5.1), escalates automatically when a cheaper tier's output fails verification, and reports per-tier usage — **all billed to your Claude Pro/Max subscription**, not the pay-per-token API.
 
 No app, no server, no API keys. It's six subagent definitions, one instructions file, a statusline script, a `triage-exec` workflow, and three settings keys.
 
@@ -10,7 +10,7 @@ No app, no server, no API keys. It's six subagent definitions, one instructions 
 
 ## Why this exists
 
-Top-tier models (Fable 5) are excellent but burn subscription quota ~3–5× faster than Sonnet. Two facts shape the design:
+Top-tier models (Fable 5.1) are excellent but burn subscription quota ~3–5× faster than Sonnet. Two facts shape the design:
 
 1. **A standalone router (Agent SDK / API) cannot use subscription auth** — Anthropic's policy requires API keys for SDK-built agents. The only subscription-billed implementation is configuration *inside* Claude Code.
 2. **Claude Code has no automatic prompt router** — nothing can swap the main-loop model per prompt. So triage is done by the orchestrating model itself, following a rubric, delegating to subagents pinned to cheaper/stronger models.
@@ -47,7 +47,7 @@ You ──► Main loop: your session model (your choice — the installer never
 - Claude Code with a **Pro or Max subscription** login (this is what makes it subscription-billed)
 - `jq` (for the installer and statusline): `brew install jq`
 - **Your orchestrator model is your choice** — the installer no longer sets `model` or `effortLevel`. Pick with `/model`: a frontier model plans best, and the tiers absorb the volume either way. On a Pro plan, note that 1M-context Opus variants bill extra usage credits.
-- **Version**: built and verified against Claude Code **2.1.195**. The harness permission gate needs **≥ 2.1.186** and per-agent memory needs **≥ 2.1.172**; on older builds the permission rules simply no-op and per-agent memory is ignored. `install.sh` checks `claude --version` itself and prints a specific warning per shortfall (or "could not verify" if `claude` is missing/unparseable) — warn-only, it never blocks the install.
+- **Version**: built and verified against Claude Code **2.1.272**. The harness permission gate needs **≥ 2.1.186** and per-agent memory needs **≥ 2.1.172**; on older builds the permission rules simply no-op and per-agent memory is ignored. `install.sh` checks `claude --version` itself and prints a specific warning per shortfall (or "could not verify" if `claude` is missing/unparseable) — warn-only, it never blocks the install.
 
 ## Install
 
@@ -105,6 +105,7 @@ Two flags, composable: `./install.sh --dry-run` prints the full mutation plan (e
 ## Customizing
 
 - **Tier models/effort**: edit the frontmatter in `~/.claude/agents/triage-*.md` (`model:` takes `haiku|sonnet|opus|fable|inherit` or full IDs; `effort:` takes `low|medium|high|xhigh|max`). Aliases track the latest models automatically.
+- **Quick-task agent**: ships with `omitClaudeMd: true` (harness ≥ 2.1.271) because its work is mechanical and the brief carries everything it needs; builder/deep keep CLAUDE.md so project conventions (AGENTS.md, make verify) still load.
 - **Routing behavior**: edit `~/.claude/triage.md`. The installer already adds an `ask`-gate before Fable; change it to `deny` in `settings.json` → `permissions` to hard-block, or remove the rule to go back to notify-only.
 - **Per project**: a project's own `CLAUDE.md` (or `AGENTS.md` via an `@AGENTS.md` wrapper — the pattern this repo itself uses) can override or opt out.
 - **Context-warning threshold**: edit the `60` in `~/.claude/statusline.sh`.
@@ -132,4 +133,4 @@ make verify   # lint -> drift -> test, fail-fast; the single green gate
 - **`ANTHROPIC_API_KEY` silently overrides subscription billing.** If it's set in your environment, Claude Code bills the API instead of your plan. Unset it.
 - The rubric is **instructions, not enforcement** — the orchestrator follows it reliably but it isn't a hard gate. The deterministic parts (per-agent model/effort pins, statusline) don't depend on model compliance.
 - Per-model subscription quota weighting is undocumented; expect savings as *more usable hours per week* rather than a number on a dashboard.
-- Built and verified against Claude Code **2.1.195** (June 2026): statusline `context_window.used_percentage`, `effort:` agent frontmatter, `Agent(type)` permission rules, and the Workflow DSL (`agent`/`parallel`/`budget`). If a future version changes these, the affected piece degrades gracefully — see Disable above.
+- Built and verified against Claude Code **2.1.272** (September 2026): statusline `context_window.used_percentage`, `effort:` agent frontmatter, `Agent(type)` permission rules, and the Workflow DSL (`agent`/`parallel`/`budget`). If a future version changes these, the affected piece degrades gracefully — see Disable above.
