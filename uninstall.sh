@@ -11,7 +11,7 @@ set -euo pipefail
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
 SETTINGS="$CLAUDE_DIR/settings.json"
 PREINSTALL="$CLAUDE_DIR/triage-preinstall.json"   # legacy artifact of pre-wave-9 installs
-AGENTS="triage-quick-task triage-builder triage-deep-reasoner triage-reviewer triage-cross-reviewer triage-fable-architect"
+AGENTS="triage-quick-task triage-builder triage-deep-reasoner triage-reviewer triage-cross-reviewer triage-fable-architect triage-overflow"
 
 # The two settings.json keys this layer owns — must match install.sh.
 SUBAGENT_MODEL="claude-opus-5"
@@ -42,7 +42,7 @@ if [ -f "$CLAUDE_DIR/CLAUDE.md" ]; then
 fi
 
 # 2. Remove installed files (agents, rubric, statusline, workflow, per-agent memory).
-#    Remove the six agents by name — never `rm triage-*.md` by glob, which would
+#    Remove the seven agents by name — never `rm triage-*.md` by glob, which would
 #    also delete any unrelated triage-* agents you authored yourself.
 #    triage-verify.sh is a retired hook current installs no longer ship — remove any
 #    stale copy left behind by an older local checkout.
@@ -54,6 +54,7 @@ rm -f "$CLAUDE_DIR/triage.md" "$CLAUDE_DIR/statusline.sh"
 rm -f "$CLAUDE_DIR/workflows/triage-exec.js" "$CLAUDE_DIR/workflows/triage-run.js" \
       "$CLAUDE_DIR/scripts/triage-usage.sh" "$CLAUDE_DIR/scripts/triage-stats.sh" \
       "$CLAUDE_DIR/scripts/triage-cache-segment.sh" \
+      "$CLAUDE_DIR/scripts/agy-run.sh" \
       "$CLAUDE_DIR/hooks/triage-verify.sh"
 
 # 2b. Remove the triage routing rules from settings.permissions (leaves your other
@@ -68,7 +69,7 @@ if [ -f "$SETTINGS" ]; then
   tmp=$(mktemp)
   jq --arg hook "$CLAUDE_DIR/hooks/triage-verify.sh" \
      --arg m "$SUBAGENT_MODEL" --arg ttl "$SUBAGENT_CACHE_TTL" '
-    ["Agent(triage-quick-task)","Agent(triage-builder)","Agent(triage-deep-reasoner)","Agent(triage-reviewer)","Agent(triage-cross-reviewer)"] as $workers
+    ["Agent(triage-quick-task)","Agent(triage-builder)","Agent(triage-deep-reasoner)","Agent(triage-reviewer)","Agent(triage-cross-reviewer)","Agent(triage-overflow)"] as $workers
     | ["Agent(triage-fable-architect)"] as $fable
     | (if .permissions.allow then .permissions.allow -= $workers else . end)
     | (if .permissions.ask   then .permissions.ask   -= $fable   else . end)

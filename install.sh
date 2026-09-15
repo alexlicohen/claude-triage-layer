@@ -89,6 +89,26 @@ check_version_compat() {
 }
 check_version_compat
 
+# --- forced-subagent-model warning (runs in every mode; NEVER fails the install) ---
+# CLAUDE_CODE_SUBAGENT_MODEL_FORCE overrides EVERY subagent's own `model:`, collapsing
+# all tiers onto one model. The layer keeps working but stops being a triage layer: a
+# Haiku brief and a Fable brief cost the same and the tally goes flat. Warn loudly and
+# never edit it — if it is set, it was set on purpose, and only you should unset it.
+# Safe to read $SETTINGS here: jq presence and `jq empty` validity were both checked above.
+check_force_override() {
+  if [ -n "${CLAUDE_CODE_SUBAGENT_MODEL_FORCE:-}" ]; then
+    echo "⚠ WARNING: CLAUDE_CODE_SUBAGENT_MODEL_FORCE is set in your environment (${CLAUDE_CODE_SUBAGENT_MODEL_FORCE})."
+    echo "  It overrides every tier agent's model: — all tiers collapse onto that one model"
+    echo "  and this layer stops routing by cost. Unset it to restore per-tier models."
+  fi
+  if [ -f "$SETTINGS" ] && [ "$(jq -r '.env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE // "null"' "$SETTINGS")" != "null" ]; then
+    echo "⚠ WARNING: env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE is set in $SETTINGS."
+    echo "  It overrides every tier agent's model: — all tiers collapse onto that one model."
+    echo "  Remove that key to restore per-tier models (the installer will not touch it)."
+  fi
+}
+check_force_override
+
 # Files where a live ~/.claude fork is EXPECTED (config-as-data, shared with drift.sh) —
 # --files-only skips these instead of clobbering a deliberate personal fork.
 is_ignored() { # $1 = repo-relative path
@@ -216,6 +236,7 @@ install_file "workflows/triage-exec.js" "$CLAUDE_DIR/workflows/triage-exec.js"
 install_file "scripts/triage-usage.sh" "$CLAUDE_DIR/scripts/triage-usage.sh" x
 install_file "scripts/triage-stats.sh" "$CLAUDE_DIR/scripts/triage-stats.sh" x
 install_file "scripts/triage-cache-segment.sh" "$CLAUDE_DIR/scripts/triage-cache-segment.sh" x
+install_file "scripts/agy-run.sh" "$CLAUDE_DIR/scripts/agy-run.sh" x
 retire_triage_run
 
 if [ "$FILES_ONLY" -eq 1 ]; then
@@ -274,7 +295,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
     echo "  subagentPromptCacheTtl: already set to $cur_ttl — left as is"
   fi
 
-  for w in triage-quick-task triage-builder triage-deep-reasoner triage-reviewer triage-cross-reviewer; do
+  for w in triage-quick-task triage-builder triage-deep-reasoner triage-reviewer triage-cross-reviewer triage-overflow; do
     rule="Agent($w)"
     if printf '%s' "$CUR_SETTINGS_JSON" | jq -e --arg r "$rule" '.permissions.allow // [] | index($r)' >/dev/null 2>&1; then
       echo "  permissions.allow: already present: $rule"
@@ -321,7 +342,7 @@ jq --arg m "$SUBAGENT_MODEL" --arg ttl "$SUBAGENT_CACHE_TTL" '
 #     unverified. Switch the `ask` to `deny` below to hard-block Fable instead.
 tmp=$(mktemp)
 jq '
-  ["Agent(triage-quick-task)","Agent(triage-builder)","Agent(triage-deep-reasoner)","Agent(triage-reviewer)","Agent(triage-cross-reviewer)"] as $workers
+  ["Agent(triage-quick-task)","Agent(triage-builder)","Agent(triage-deep-reasoner)","Agent(triage-reviewer)","Agent(triage-cross-reviewer)","Agent(triage-overflow)"] as $workers
   | ["Agent(triage-fable-architect)"] as $fable
   | .permissions.allow = ((.permissions.allow // []) + ($workers - (.permissions.allow // [])))
   | .permissions.ask   = ((.permissions.ask   // []) + ($fable   - (.permissions.ask   // [])))

@@ -4,7 +4,7 @@
 
 A drop-in config layer for [Claude Code](https://code.claude.com) that routes every task to the **cheapest adequate Claude model** (Haiku → Sonnet → Opus → Fable 5.1), escalates automatically when a cheaper tier's output fails verification, and reports per-tier usage — **all billed to your Claude Pro/Max subscription**, not the pay-per-token API.
 
-No app, no server, no API keys. It's six subagent definitions, one instructions file, a statusline script, a `triage-exec` workflow, and three settings keys.
+No app, no server, no API keys. It's seven subagent definitions, one instructions file, a statusline script, `scripts/agy-run.sh` (the single owner of the external-CLI tiers), a `triage-exec` workflow, and three settings keys.
 
 **The split:** your session model — whatever frontier model you point at it — does the part only it can do (classify, decompose, write briefs, integrate). It writes the plan *inline*, then hands it to the `triage-exec` workflow, which spawns the tier agents, runs your tests, re-runs only the subtasks a failure implicates, and escalates one tier up when the reviewer says so. What comes back is a distillate — per-subtask status, per-check pass/fail, the review verdict — so worker prose never lands in the expensive context.
 
@@ -30,7 +30,8 @@ You ──► Main loop: your session model (your choice — the installer never
                      ├──► triage-deep-reasoner   Opus   · xhigh  hard debugging, design, fan-out
                      ├──► triage-fable-architect Fable  · xhigh  hardest problems (with ⚠ notice)
                      ├──► triage-reviewer        Opus   · high   read-only quality gate
-                     └──► triage-cross-reviewer  → external CLI  cross-vendor second opinion
+                     ├──► triage-cross-reviewer  → external CLI  cross-vendor second opinion (5 read-only modes)
+                     └──► triage-overflow        → external CLI  overflow worker (edits the repo)
                      ▼
               returns a distillate: per-subtask status · per-check pass/fail · verdict · escalations
 ```
@@ -58,7 +59,7 @@ git clone <this-repo> && cd claude-triage-layer
 
 Then **start a new Claude Code session** (config loads at startup). The installer:
 
-- copies the 6 agents to `~/.claude/agents/`, the rubric to `~/.claude/triage.md`, the statusline script, the usage/stats scripts, and the `triage-exec` workflow (`~/.claude/workflows/`)
+- copies the 7 agents to `~/.claude/agents/`, the rubric to `~/.claude/triage.md`, the statusline script, the usage/stats scripts, `scripts/agy-run.sh`, and the `triage-exec` workflow (`~/.claude/workflows/`)
 - appends one line — `@triage.md` — to your global `~/.claude/CLAUDE.md` (append-only; never overwrites)
 - adds the Fable confirm-gate / worker-allowlist `permissions` rules, and sets two keys **only if they are unset**: `env.CLAUDE_CODE_SUBAGENT_MODEL` (so an un-pinned subagent spawn runs on Opus, not on your — possibly much pricier — session model) and `subagentPromptCacheTtl: "1h"`
 - removes a superseded `~/.claude/workflows/triage-run.js` from an older install, but only when its bytes match a version this repo shipped; a copy you edited is left alone with a note
@@ -66,7 +67,7 @@ Then **start a new Claude Code session** (config loads at startup). The installe
 
 **What it does NOT touch**: `model`, `effortLevel`, and `statusLine` are never written, so there is no snapshot to restore and nothing for uninstall to revert. `statusline.sh` is copied but not wired — point `statusLine` at it yourself if you want it (the installer prints the exact JSON).
 
-Two flags, composable: `./install.sh --dry-run` prints the full mutation plan (every file's create/overwrite/unchanged status, the CLAUDE.md append, the settings keys and permission rules) and writes nothing; `./install.sh --files-only` copies/chmods just the installed files — agents, `statusline.sh`, the `triage-exec` workflow, `scripts/triage-usage.sh`, `triage.md` — skipping anything listed in `.driftignore` (e.g. a hand-forked `triage.md`) instead of clobbering it, and leaves `CLAUDE.md`, `settings.json`, and permissions untouched. This is the primitive behind `make sync` for re-pulling repo file updates without re-running the settings merge.
+Two flags, composable: `./install.sh --dry-run` prints the full mutation plan (every file's create/overwrite/unchanged status, the CLAUDE.md append, the settings keys and permission rules) and writes nothing; `./install.sh --files-only` copies/chmods just the installed files — agents, `statusline.sh`, the `triage-exec` workflow, `scripts/triage-usage.sh`, `scripts/agy-run.sh`, `triage.md` — skipping anything listed in `.driftignore` (e.g. a hand-forked `triage.md`) instead of clobbering it, and leaves `CLAUDE.md`, `settings.json`, and permissions untouched. This is the primitive behind `make sync` for re-pulling repo file updates without re-running the settings merge.
 
 <details>
 <summary>Manual install (no script)</summary>
@@ -83,7 +84,7 @@ Two flags, composable: `./install.sh --dry-run` prints the full mutation plan (e
    }
    ```
 6. Optional: wire the statusline, using your real home path (tilde is not expanded inside JSON) — `"statusLine": { "type": "command", "command": "/Users/<you>/.claude/statusline.sh" }`
-7. Optional (harness ≥ 2.1.186): to enforce the rubric at the permission layer, add `permissions` rules — an `ask` on `Agent(triage-fable-architect)` and an `allow` for the five cheaper `Agent(triage-*)` spawns. `install.sh` does this for you.
+7. Optional (harness ≥ 2.1.186): to enforce the rubric at the permission layer, add `permissions` rules — an `ask` on `Agent(triage-fable-architect)` and an `allow` for the six cheaper `Agent(triage-*)` spawns. `install.sh` does this for you.
 </details>
 
 ## Using it
@@ -109,11 +110,18 @@ Two flags, composable: `./install.sh --dry-run` prints the full mutation plan (e
 - **Routing behavior**: edit `~/.claude/triage.md`. The installer already adds an `ask`-gate before Fable; change it to `deny` in `settings.json` → `permissions` to hard-block, or remove the rule to go back to notify-only.
 - **Per project**: a project's own `CLAUDE.md` (or `AGENTS.md` via an `@AGENTS.md` wrapper — the pattern this repo itself uses) can override or opt out.
 - **Context-warning threshold**: edit the `60` in `~/.claude/statusline.sh`.
+- **Cross-vendor deny-list**: `AGY_DENY_REPOS` (default `engram clip-creator`), or drop an empty `.agy-deny` marker file anywhere from a repo up to `$HOME` to opt that tree out with no script edit. Either way `AGY_BOUNDARY_CLEARED=1` must also be set by the calling agent, attesting the data boundary (no clinical/BCH/PHI, no COI material) was checked — its absence refuses the run before anything is sent externally.
+
+## External CLI tiers
+
+Two tiers — `triage-cross-reviewer` (read-only: `review`/`read`/`verify`/`critique`/`fuzz`) and `triage-overflow` (writes: `build`) — are thin Haiku wrappers around Google's Antigravity CLI (`agy`), a non-Claude model. Both route through `scripts/agy-run.sh`, the single owner of the model table, the sandbox flags, the repo deny-list, and the exit-code contract (0 OK, 2 USAGE, 3 REFUSED, 4 UNAVAILABLE, 5 SCHEMA); nothing else in the repo, and no agent, calls `agy` directly. `agy` is an **optional** dependency — if it isn't installed, both tiers return `UNAVAILABLE` and nothing else in the layer degrades. Read-only modes run against a throwaway staging workspace; `build` runs against a disposable git worktree of the target repo and applies the result back as a patch, so `agy` itself never has write access to your actual working tree.
+
+**FORCE warning**: if `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` is set (in your environment or in `settings.json`), it silently overrides every tier agent's `model:` — including the external-CLI tiers' Haiku wrapper — collapsing all routing onto one model. `install.sh` and `drift.sh` both warn loudly when they see it set but never edit it: if it's set, it was set on purpose, and only you should unset it.
 
 ## Disable / uninstall
 
 - **Kill switch** (keep files, stop routing): delete the `@triage.md` line from `~/.claude/CLAUDE.md`.
-- **Full uninstall**: `./uninstall.sh` — removes the six agents by name, the rubric, the scripts, and the workflow; strips the triage `permissions` rules; and drops `env.CLAUDE_CODE_SUBAGENT_MODEL` / `subagentPromptCacheTtl` **only while they still hold the values it wrote**. `model`, `effortLevel`, and `statusLine` are never touched, because the installer never wrote them.
+- **Full uninstall**: `./uninstall.sh` — removes the seven agents by name, the rubric, the scripts (including `scripts/agy-run.sh`), and the workflow; strips the triage `permissions` rules; and drops `env.CLAUDE_CODE_SUBAGENT_MODEL` / `subagentPromptCacheTtl` **only while they still hold the values it wrote**. `model`, `effortLevel`, and `statusLine` are never touched, because the installer never wrote them.
 
 Every piece degrades independently: unknown frontmatter keys are ignored, a broken statusline shows nothing, agents fall back to inheriting the session model.
 
@@ -123,9 +131,9 @@ Every piece degrades independently: unknown frontmatter keys are ignored, a brok
 make verify   # lint -> drift -> test, fail-fast; the single green gate
 ```
 
-- `make lint` — `bash -n` on every `*.sh`, `node --check` on `workflows/*.js`, `shellcheck` (if installed) at `--severity=warning`, and a docs-consistency check (every path this README's install sections cite must exist; the "six subagent definitions" claim above must match `agents/triage-*.md` on disk).
-- `make test` — three suites. `test/roundtrip.sh` is an install/uninstall round-trip that never touches your real `~/.claude` (every case runs in its own `mktemp -d` sandbox via `$CLAUDE_DIR`): idempotent re-install, empty-dir install, symlinked `settings.json`, invalid `settings.json` (install must abort with zero mutation), a hand-converted Fable `ask`→`deny` rule surviving uninstall cleanup, user-set settings keys surviving both directions, retirement of a superseded `triage-run.js`, and the statusline render paths. `test/usage-tally.sh` covers the per-tier accounting. `test/workflow-scenarios.mjs` executes the real `triage-exec.js` body under mocked DSL globals — entry-contract validation, effort passthrough, seam gating, targeted remediation, escalation, budget refusal/ceiling, and the cross-review stage.
-- `make drift` — `./drift.sh` compares your **installed** `~/.claude` copies against this repo file-by-file (6 agents, `statusline.sh`, `workflows/triage-exec.js`, the scripts, `triage.md`) and reports `same` / `MISSING (not installed)` / `FORKED`. A fork you've made on purpose (e.g. a hand-tuned `triage.md`) goes in `.driftignore` and reports `forked (expected)` instead of failing. Run it with `CLAUDE_DIR=/path/to/other/.claude ./drift.sh` to check a non-default install.
+- `make lint` — `bash -n` on every `*.sh`, `node --check` on `workflows/*.js`, `shellcheck` (if installed) at `--severity=warning`, and a docs-consistency check (every path this README's install sections cite must exist; the "seven subagent definitions" claim above must match `agents/triage-*.md` on disk).
+- `make test` — four suites. `test/roundtrip.sh` is an install/uninstall round-trip that never touches your real `~/.claude` (every case runs in its own `mktemp -d` sandbox via `$CLAUDE_DIR`): idempotent re-install, empty-dir install, symlinked `settings.json`, invalid `settings.json` (install must abort with zero mutation), a hand-converted Fable `ask`→`deny` rule surviving uninstall cleanup, user-set settings keys surviving both directions, retirement of a superseded `triage-run.js`, and the statusline render paths. `test/usage-tally.sh` covers the per-tier accounting. `test/agy-run.sh` exercises `scripts/agy-run.sh` end-to-end against a stub `agy`: the mode table, the deny-list, the exit-code contract (including the F1/F7 exit-0-with-nothing-produced regression case), and the build-mode worktree/patch-back path. `test/workflow-scenarios.mjs` executes the real `triage-exec.js` body under mocked DSL globals — entry-contract validation, effort passthrough, seam gating, targeted remediation, escalation, budget refusal/ceiling, and the cross-review stage.
+- `make drift` — `./drift.sh` compares your **installed** `~/.claude` copies against this repo file-by-file (7 agents, `statusline.sh`, `workflows/triage-exec.js`, the scripts including `scripts/agy-run.sh`, `triage.md`) and reports `same` / `MISSING (not installed)` / `FORKED`. A fork you've made on purpose (e.g. a hand-tuned `triage.md`) goes in `.driftignore` and reports `forked (expected)` instead of failing. Run it with `CLAUDE_DIR=/path/to/other/.claude ./drift.sh` to check a non-default install.
 - CI (`.github/workflows/ci.yml`) runs `make verify` on macOS + Linux for every push/PR, with `shellcheck` installed so lint is never running in `SKIP` mode there.
 
 ## Caveats
