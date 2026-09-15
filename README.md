@@ -110,7 +110,7 @@ Two flags, composable: `./install.sh --dry-run` prints the full mutation plan (e
 - **Routing behavior**: edit `~/.claude/triage.md`. The installer already adds an `ask`-gate before Fable; change it to `deny` in `settings.json` → `permissions` to hard-block, or remove the rule to go back to notify-only.
 - **Per project**: a project's own `CLAUDE.md` (or `AGENTS.md` via an `@AGENTS.md` wrapper — the pattern this repo itself uses) can override or opt out.
 - **Context-warning threshold**: edit the `60` in `~/.claude/statusline.sh`.
-- **Cross-vendor deny-list**: `AGY_DENY_REPOS` (default `engram clip-creator`), or drop an empty `.agy-deny` marker file anywhere from a repo up to `$HOME` to opt that tree out with no script edit. Either way `AGY_BOUNDARY_CLEARED=1` must also be set by the calling agent, attesting the data boundary (no clinical/BCH/PHI, no COI material) was checked — its absence refuses the run before anything is sent externally.
+- **Cross-vendor deny-list**: `AGY_DENY_REPOS` (default `clip-creator`), or drop an empty `.agy-deny` marker file anywhere from a repo up to `$HOME` to opt that tree out with no script edit. Either way `AGY_BOUNDARY_CLEARED=1` must also be set by the calling agent, attesting the data boundary (no clinical/BCH/PHI, no COI material) was checked — its absence refuses the run before anything is sent externally.
 
 ## External CLI tiers
 

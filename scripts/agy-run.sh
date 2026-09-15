@@ -43,7 +43,9 @@
 # Environment:
 #   AGY_BIN               agy executable (default: agy on PATH)
 #   AGY_DENY_REPOS        space-separated repo/dir names agy must never see.
-#                         Default: "engram clip-creator" (standing decision).
+#                         Default: "clip-creator" (standing decision 2026-07-10,
+#                         narrowed from two repos to one on 2026-09-15 — see
+#                         CHANGELOG.md, Wave 10).
 #   AGY_BOUNDARY_CLEARED  must be 1. The caller attests the data boundary was
 #                         checked (no clinical/BCH/PHI, no COI material, not a
 #                         deny-listed repo). Absent => REFUSED, nothing runs.
@@ -86,7 +88,7 @@
 set -uo pipefail
 
 AGY_BIN="${AGY_BIN:-agy}"
-AGY_DENY_REPOS="${AGY_DENY_REPOS:-engram clip-creator}"
+AGY_DENY_REPOS="${AGY_DENY_REPOS:-clip-creator}"
 
 E_USAGE=2
 E_REFUSED=3
@@ -158,7 +160,7 @@ mode_writes() { [ "$1" = "build" ]; }
 # ---------------------------------------------------------------------------
 # Deny-list. Enforced on the resolved, symlink-free path of the workdir, of every
 # --input source, and of every --add-dir. Component equality (not substring), so
-# ".../engram/notes" is refused and ".../engrams-lab" is not. A `.agy-deny`
+# ".../clip-creator/media" is refused and ".../clip-creators-lab" is not. A `.agy-deny`
 # marker file anywhere from the path up to $HOME also refuses, so a repo can opt
 # itself out without editing this script.
 # ---------------------------------------------------------------------------

@@ -110,7 +110,7 @@ mut_desc() {
     12) echo "triage-cache-segment.sh: revert the warm-boolean jq filter to '// empty' (jq's // swallows a literal false, so a cold cache silently renders nothing)" ;;
     13) echo "agy-run.sh: drop the denied_actions gate (a run whose tool calls were all denied is reported as a pass)" ;;
     14) echo "agy-run.sh: drop the empty-response gate (exit 0 + status SUCCESS alone is treated as usable output)" ;;
-    15) echo "agy-run.sh: weaken the deny-list path match from path-component equality to substring (engrams-lab refused, engram/notes allowed)" ;;
+    15) echo "agy-run.sh: weaken the deny-list path match from path-component equality to substring (a sibling repo such as clip-creators-lab is refused too)" ;;
     16) echo "triage-exec.js: danger-zone routing no longer covers the overflow tier, so overflow:true sends danger subtasks off-vendor" ;;
     17) echo "triage-exec.js: a failed overflow subtask is retried sideways on builder instead of up on the Claude deep tier" ;;
     18) echo "install.sh: neuter check_force_override (the CLAUDE_CODE_SUBAGENT_MODEL_FORCE warning never prints)" ;;

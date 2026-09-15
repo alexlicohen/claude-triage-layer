@@ -291,7 +291,7 @@ Applied to the resolved path of `--prompt-file`, `--workdir` (and its repo top l
 every `--input`:
 
 1. refuse if any **path component equals** a name in `AGY_DENY_REPOS` — component equality,
-   not substring, so `…/engram/notes` refuses and `…/engrams-lab` does not;
+   not substring, so `…/clip-creator/media` refuses and `…/clip-creators-lab` does not;
 2. refuse if a `.agy-deny` marker exists anywhere from that path up to `$HOME` — a per-repo
    opt-out that needs no edit to this script;
 3. refuse unless `AGY_BOUNDARY_CLEARED=1` — clinical/BCH/PHI and COI material is not a path
@@ -310,7 +310,7 @@ not consciously cleared.
 | Var | Effect |
 |---|---|
 | `AGY_BIN` | agy executable (default: `agy` on PATH) |
-| `AGY_DENY_REPOS` | space-separated names agy must never see (default `engram clip-creator`) |
+| `AGY_DENY_REPOS` | space-separated names agy must never see (default `clip-creator`) |
 | `AGY_BOUNDARY_CLEARED` | must be `1`, else REFUSED before anything runs |
 | `AGY_STAGE_KEEP` | `1` keeps the staging dir (its path is printed on stderr). Never keeps the build worktree |
 

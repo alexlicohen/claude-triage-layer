@@ -186,16 +186,24 @@ chk "R1 missing AGY_BOUNDARY_CLEARED refuses before anything runs (exit 3)" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "REFUSED" && [ ! -s "$STUB_LOG" ]'
 
 DENY=$(new_tmp)
-mkdir -p "$DENY/engram/inner"
-new_repo "$DENY/engram/inner"
-AGY_BOUNDARY_CLEARED=1 run_agy build --prompt-file "$BRIEF" --workdir "$DENY/engram/inner"
-chk "R2 a path component equal to a deny-listed repo refuses (exit 3, names engram)" \
-  '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "engram"'
+mkdir -p "$DENY/clip-creator/inner"
+new_repo "$DENY/clip-creator/inner"
+AGY_BOUNDARY_CLEARED=1 run_agy build --prompt-file "$BRIEF" --workdir "$DENY/clip-creator/inner"
+chk "R2 a path component equal to a deny-listed repo refuses (exit 3, names clip-creator)" \
+  '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "clip-creator"'
 
-mkdir -p "$DENY/engrams-lab"
-new_repo "$DENY/engrams-lab"
-AGY_BOUNDARY_CLEARED=1 run_agy build --prompt-file "$BRIEF" --workdir "$DENY/engrams-lab" --output "$DENY/out.patch"
-chk "R3 engrams-lab is NOT refused — component equality, not substring" \
+mkdir -p "$DENY/clip-creators-lab"
+new_repo "$DENY/clip-creators-lab"
+AGY_BOUNDARY_CLEARED=1 run_agy build --prompt-file "$BRIEF" --workdir "$DENY/clip-creators-lab" --output "$DENY/out.patch"
+chk "R3 clip-creators-lab is NOT refused — component equality, not substring" \
+  '[ "$RC" -ne 3 ] && ! printf "%s" "$ERR" | grep -q "REFUSED"'
+
+# Regression: engram left the deny-list on 2026-09-15 (its content is already on
+# Google Drive), so a path under it must now run like any other repo.
+mkdir -p "$DENY/engram/notes"
+new_repo "$DENY/engram/notes"
+AGY_BOUNDARY_CLEARED=1 run_agy build --prompt-file "$BRIEF" --workdir "$DENY/engram/notes" --output "$DENY/out-engram.patch"
+chk "R3b engram is NOT deny-listed any more (2026-09-15) — a path under it runs" \
   '[ "$RC" -ne 3 ] && ! printf "%s" "$ERR" | grep -q "REFUSED"'
 
 MARKED=$(new_tmp)

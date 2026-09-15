@@ -23,6 +23,11 @@ for the current check catalog.
   `.agy-deny` marker file and an `AGY_BOUNDARY_CLEARED=1` attestation the
   caller must set. The list is default-allow: anything not on it runs unless
   marked.
+- **Deny-list narrowed to `clip-creator` alone (2026-09-15).** `engram` came
+  off the list: its content already lives on Google Drive, so routing it to agy
+  adds no exposure. Mechanism unchanged (component match + `.agy-deny` marker +
+  `AGY_BOUNDARY_CLEARED=1`); `test/agy-run.sh` grows an explicit R3b regression
+  check that a path under `engram` is no longer refused (63 → 64 checks).
 - **`build` mode stages in a disposable git worktree** and applies the result
   back as a patch; exit 6 means the patch didn't apply.
 - **Seventh agent: `triage-overflow`** (Haiku wrapper). `triage-cross-reviewer`
