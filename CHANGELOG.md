@@ -4,6 +4,57 @@ Reverse-chronological. Each entry cites the commit(s) it corresponds to and,
 where known, the test-count delta. See `test/roundtrip.sh` and `test/lint.sh`
 for the current check catalog.
 
+## Wave 10 — agy tiers: overflow build worker + five read-only cross-vendor modes
+
+`e399233`, `7c2baac`
+
+- **Wave 9 follow-ups** (`e399233`): Fable 5.1 strings, a node-26 lint check,
+  a prompt-cache statusline segment (`scripts/triage-cache-segment.sh`),
+  `omitClaudeMd` on `triage-quick-task`, and a rule-4 note on
+  `CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS` for fan-out.
+- **`scripts/agy-run.sh` is the single owner of every Antigravity CLI
+  invocation.** Modes: `review|read|verify|critique|fuzz|build`, each pinned
+  to an explicit Gemini model — no mode ever falls back to a default model.
+  Success requires exit code 0 **and** empty `denied_actions` **and** a
+  non-empty response; agy reports `SUCCESS` with empty output when tools are
+  auto-denied or on timeout, so exit-code-only checks would have passed on
+  nothing.
+- **Deny-list by repo-name component** (`engram`, `clip-creator`) plus a
+  `.agy-deny` marker file and an `AGY_BOUNDARY_CLEARED=1` attestation the
+  caller must set. The list is default-allow: anything not on it runs unless
+  marked.
+- **`build` mode stages in a disposable git worktree** and applies the result
+  back as a patch; exit 6 means the patch didn't apply.
+- **Seventh agent: `triage-overflow`** (Haiku wrapper). `triage-cross-reviewer`
+  generalised from its single review mode to all five read-only agy modes.
+  Both set `omitClaudeMd`.
+- **`triage-exec` overflow tier.** A plan-level `overflow: true` rewrites the
+  `builder` tier only — `danger` always wins over it, unavailable falls
+  sideways to `builder`, a failure escalates up to `deep`. `report().overflow`
+  is derived, not separately tracked.
+- **Install/uninstall/drift cover the 7th agent and script**, plus a new
+  warning when `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` is set (agy modes pin their
+  own model per-call; a global force would silently fight that). Rubric and
+  README updated; lint count 7.
+- **Checks: 214 → 266** (roundtrip 114 + usage-tally 24 + workflow-scenarios
+  128) plus a new standalone 63-check `test/agy-run.sh` suite that prints its
+  own summary. Verified against Claude Code 2.1.272.
+- **Mutation catalog 11 → 12** at `e399233`; the count after this wave's
+  mutation packet lands is **12 → 18 (see `qc/mutate.sh`)**.
+- Deferred, honestly: no cron/unattended agy (OAuth persistence is flaky under
+  cron); no runtime quota polling inside the workflow (overflow is a
+  plan-time call only); agy-side allow-rules instead of
+  `--dangerously-skip-permissions` (would mean owning another vendor's config
+  — revisit if agy grows a `--permissions-file`); `fuzz` mode has no
+  `triage-exec` wiring yet; `read` mode ships but isn't recommended — agy
+  loops on `run_command` for single-file reads (revisit if a `--workspace`
+  flag lands); vendor spend is not added to `scripts/triage-usage.sh` (its
+  contract is Claude transcripts only; per-run count is relayed on stderr
+  instead); `--add-dir` is never caller-supplied; the deny-list is
+  default-allow (drop `.agy-deny` into repos not consciously cleared); agy
+  persists plan/walkthrough artifacts under
+  `~/.gemini/antigravity-cli/brain/`, outside the workspace.
+
 ## Wave 9 — `triage-run` → `triage-exec`: the plan comes in, only execution goes out
 
 `0c7c396`

@@ -47,7 +47,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12"
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -84,6 +84,12 @@ mut_file() {
     10) echo "drift.sh" ;;
     11) echo "workflows/triage-exec.js" ;;
     12) echo "scripts/triage-cache-segment.sh" ;;
+    13) echo "scripts/agy-run.sh" ;;
+    14) echo "scripts/agy-run.sh" ;;
+    15) echo "scripts/agy-run.sh" ;;
+    16) echo "workflows/triage-exec.js" ;;
+    17) echo "workflows/triage-exec.js" ;;
+    18) echo "install.sh" ;;
     *) echo "" ;;
   esac
 }
@@ -102,16 +108,34 @@ mut_desc() {
     10) echo "drift.sh: remove UNEXPECTED_DRIFT=1 from the MISSING branch" ;;
     11) echo "triage-exec.js: make bad() a no-op (malformed plan args no longer throw before spawning)" ;;
     12) echo "triage-cache-segment.sh: revert the warm-boolean jq filter to '// empty' (jq's // swallows a literal false, so a cold cache silently renders nothing)" ;;
+    13) echo "agy-run.sh: drop the denied_actions gate (a run whose tool calls were all denied is reported as a pass)" ;;
+    14) echo "agy-run.sh: drop the empty-response gate (exit 0 + status SUCCESS alone is treated as usable output)" ;;
+    15) echo "agy-run.sh: weaken the deny-list path match from path-component equality to substring (engrams-lab refused, engram/notes allowed)" ;;
+    16) echo "triage-exec.js: danger-zone routing no longer covers the overflow tier, so overflow:true sends danger subtasks off-vendor" ;;
+    17) echo "triage-exec.js: a failed overflow subtask is retried sideways on builder instead of up on the Claude deep tier" ;;
+    18) echo "install.sh: neuter check_force_override (the CLAUDE_CODE_SUBAGENT_MODEL_FORCE warning never prints)" ;;
     *) echo "" ;;
   esac
 }
 
-# Which suite exercises this mutation's file: "roundtrip" (test/roundtrip.sh) or
-# "scenarios" (test/workflow-scenarios.mjs).
+# Which suite exercises this mutation's file: "roundtrip" (test/roundtrip.sh),
+# "scenarios" (test/workflow-scenarios.mjs) or "agyrun" (test/agy-run.sh).
 mut_suite() {
   case "$1" in
-    1|2|3|4|5|6|10|12) echo "roundtrip" ;;
-    7|8|9|11) echo "scenarios" ;;
+    1|2|3|4|5|6|10|12|18) echo "roundtrip" ;;
+    7|8|9|11|16|17) echo "scenarios" ;;
+    13|14|15) echo "agyrun" ;;
+    *) echo "" ;;
+  esac
+}
+
+# The test file behind a suite name — single owner of that mapping, used by the
+# baseline-red reporting below as well as run_suite.
+suite_file() {
+  case "$1" in
+    roundtrip) echo "test/roundtrip.sh" ;;
+    scenarios) echo "test/workflow-scenarios.mjs" ;;
+    agyrun) echo "test/agy-run.sh" ;;
     *) echo "" ;;
   esac
 }
@@ -282,6 +306,61 @@ MUT6
         "WARM_RAW=\$(printf '%s' \"\$input\" | jq -r 'if .prompt_cache.warm == true then \"true\" elif .prompt_cache.warm == false then \"false\" else empty end' 2>/dev/null)" \
         1 "$rep"
       ;;
+    13)
+      # agy-run.sh: delete the 3-line denied_actions gate. agy reports
+      # status:SUCCESS with an empty .response when every tool call was denied,
+      # so without this gate a denied run is indistinguishable from a good one.
+      mut_delete_block "$target" 'if [ -n "$DENIED" ]; then' 3
+      ;;
+    14)
+      # agy-run.sh: delete the 3-line empty-response gate — exit 0 and
+      # status SUCCESS are NOT sufficient (a timed-out run looks exactly so).
+      mut_delete_block "$target" 'if [ -z "$RESPONSE" ]; then' 3
+      ;;
+    15)
+      # agy-run.sh: deny_check's path match goes from component equality
+      # (*/"$name"/*) to substring (*"$name"*) — the classic over-broad-glob bug.
+      # A sibling repo whose name merely CONTAINS a deny-listed name is then
+      # refused, and the deny-list stops meaning "this repo" and starts meaning
+      # "any path spelling it anywhere".
+      cat > "$rep" <<'MUT15'
+      *"$name"*) die "REFUSED: $p is under a deny-listed repo ('$name') - agy must never read it." "$E_REFUSED" ;; # MUTATED: substring match
+MUT15
+      mut_replace_block "$target" \
+        '      */"$name"/*) die "REFUSED: $p is under a deny-listed repo' 1 "$rep"
+      ;;
+    16)
+      # triage-exec.js: drop `wanted === 'overflow'` from the danger-zone guard.
+      # Because the overflow rewrite runs BEFORE this line, a danger builder
+      # subtask under overflow:true already reads as 'overflow' here — so losing
+      # that arm silently sends correctness-critical work off-vendor.
+      cat > "$rep" <<'MUT16'
+  const tier = (danger && (wanted === 'quick' || wanted === 'builder')) ? 'deep' : wanted // MUTATED: overflow dropped from the danger guard
+MUT16
+      mut_replace_block "$target" \
+        "  const tier = (danger && (wanted === 'quick' || wanted === 'builder' || wanted === 'overflow')) ? 'deep' : wanted" 1 "$rep"
+      ;;
+    17)
+      # triage-exec.js: a failed overflow subtask is re-run on builder (sideways,
+      # still a cheap tier) instead of returning to the Claude deep tier. The
+      # objective check has already said the off-vendor model got it wrong.
+      cat > "$rep" <<'MUT17'
+    const tier = r.tier === 'overflow' ? 'builder' : (isEscalate ? nextTier(r.tier) : r.tier) // MUTATED: sideways to builder
+MUT17
+      mut_replace_block "$target" \
+        "    const tier = r.tier === 'overflow' ? 'deep' : (isEscalate ? nextTier(r.tier) : r.tier)" 1 "$rep"
+      ;;
+    18)
+      # install.sh: check_force_override returns before warning about either
+      # source of CLAUDE_CODE_SUBAGENT_MODEL_FORCE. Mutating the function's
+      # OPENING line (not its body) keeps the anchor stable across later edits
+      # to the warning text itself.
+      cat > "$rep" <<'MUT18'
+check_force_override() { # MUTATED: FORCE warning suppressed
+  return 0
+MUT18
+      mut_replace_block "$target" 'check_force_override() {' 1 "$rep"
+      ;;
     *)
       return 1
       ;;
@@ -310,6 +389,12 @@ verify_mutation() {
     10) [ "$(grep -cF 'UNEXPECTED_DRIFT=1' "$target")" -eq 1 ] ;;
     11) grep -qF 'MUTATED: args validation disabled' "$target" && ! grep -qF 'throw new Error(`triage-exec:' "$target" ;;
     12) grep -qF 'MUTATED: swallows false' "$target" && ! grep -qF 'elif .prompt_cache.warm == false' "$target" ;;
+    13) ! grep -qF 'agy tool calls were denied' "$target" && grep -qF 'RESPONSE=$(jq -r' "$target" ;;
+    14) ! grep -qF 'agy returned an empty response' "$target" && grep -qF 'agy tool calls were denied' "$target" ;;
+    15) grep -qF 'MUTATED: substring match' "$target" && ! grep -qF '*/"$name"/*)' "$target" ;;
+    16) grep -qF 'MUTATED: overflow dropped from the danger guard' "$target" && ! grep -qF "wanted === 'builder' || wanted === 'overflow'" "$target" ;;
+    17) grep -qF 'MUTATED: sideways to builder' "$target" && ! grep -qF "r.tier === 'overflow' ? 'deep'" "$target" ;;
+    18) grep -qF 'MUTATED: FORCE warning suppressed' "$target" ;;
     *) return 1 ;;
   esac
 }
@@ -335,13 +420,14 @@ copy_repo() { # $1 = dest dir
   rsync -a --files-from="$FILELIST" "$REPO_DIR/" "$dest/" >/dev/null
 }
 
-run_suite() { # $1 = repo copy dir, $2 = suite name ("roundtrip"|"scenarios") -> exit code
+run_suite() { # $1 = repo copy dir, $2 = suite name (see suite_file) -> exit code
   local copy suite
   copy="$1"
   suite="$2"
   case "$suite" in
     roundtrip) ( cd "$copy" && bash test/roundtrip.sh ) >"$WORK_ROOT/last-suite.log" 2>&1 ;;
     scenarios) ( cd "$copy" && node test/workflow-scenarios.mjs ) >"$WORK_ROOT/last-suite.log" 2>&1 ;;
+    agyrun) ( cd "$copy" && bash test/agy-run.sh ) >"$WORK_ROOT/last-suite.log" 2>&1 ;;
     *) return 1 ;;
   esac
 }
@@ -359,17 +445,24 @@ copy_repo "$BASELINE_DIR"
 
 BASELINE_ROUNDTRIP_OK=1
 BASELINE_SCENARIOS_OK=1
+BASELINE_AGYRUN_OK=1
 if run_suite "$BASELINE_DIR" roundtrip; then
   BASELINE_ROUNDTRIP_OK=0
 else
   BASELINE_ROUNDTRIP_OK=1
-  echo "  ⚠ baseline test/roundtrip.sh is already RED on unmutated code — mutations using it will be reported ERROR (baseline-red), not KILLED/SURVIVOR."
+  echo "  ⚠ baseline $(suite_file roundtrip) is already RED on unmutated code — mutations using it will be reported ERROR (baseline-red), not KILLED/SURVIVOR."
 fi
 if run_suite "$BASELINE_DIR" scenarios; then
   BASELINE_SCENARIOS_OK=0
 else
   BASELINE_SCENARIOS_OK=1
-  echo "  ⚠ baseline test/workflow-scenarios.mjs is already RED on unmutated code — mutations using it will be reported ERROR (baseline-red), not KILLED/SURVIVOR."
+  echo "  ⚠ baseline $(suite_file scenarios) is already RED on unmutated code — mutations using it will be reported ERROR (baseline-red), not KILLED/SURVIVOR."
+fi
+if run_suite "$BASELINE_DIR" agyrun; then
+  BASELINE_AGYRUN_OK=0
+else
+  BASELINE_AGYRUN_OK=1
+  echo "  ⚠ baseline $(suite_file agyrun) is already RED on unmutated code — mutations using it will be reported ERROR (baseline-red), not KILLED/SURVIVOR."
 fi
 echo ""
 
@@ -400,12 +493,13 @@ for id in $RUN_IDS; do
   case "$suite" in
     roundtrip) baseline_ok=$BASELINE_ROUNDTRIP_OK ;;
     scenarios) baseline_ok=$BASELINE_SCENARIOS_OK ;;
+    agyrun) baseline_ok=$BASELINE_AGYRUN_OK ;;
     *) baseline_ok=1 ;;
   esac
 
   if [ "$baseline_ok" -ne 0 ]; then
     printf '[%-2s] %-26s %-9s %-7s %s\n' "$id" "$file" "$suite" "ERROR" "$desc"
-    echo "      -> baseline test/$( [ "$suite" = roundtrip ] && echo roundtrip.sh || echo workflow-scenarios.mjs ) is already RED without this mutation; cannot assess."
+    echo "      -> baseline $(suite_file "$suite") is already RED without this mutation; cannot assess."
     ERRORS=$((ERRORS + 1))
     ERROR_LIST="$ERROR_LIST\n  [$id] $desc — baseline suite already RED, cannot assess"
     continue
