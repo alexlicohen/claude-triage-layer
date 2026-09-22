@@ -6,6 +6,7 @@ lint:
 test:
 	./test/roundtrip.sh
 	./test/usage-tally.sh
+	./test/agy-run.sh
 	node test/workflow-scenarios.mjs
 
 drift:

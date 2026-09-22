@@ -30,6 +30,9 @@
 #       never overwritten by install and never deleted by uninstall.
 #   L - the superseded workflows/triage-run.js is removed on install when it
 #       matches a shipped version, and kept (with a note) when hand-modified.
+#   M - CLAUDE_CODE_SUBAGENT_MODEL_FORCE (collapses every tier onto one model):
+#       install warns from the environment AND from settings.json env, never
+#       edits the key, and drift.sh warns without changing its exit code.
 #   Plus two direct statusline.sh checks (non-numeric / numeric pct).
 set -u
 
@@ -41,6 +44,11 @@ if ! command -v jq >/dev/null 2>&1; then
   echo "INCOMPLETE: jq is required to run this suite (brew install jq) — cannot verify settings.json merges." >&2
   exit 1
 fi
+
+# Case M sets CLAUDE_CODE_SUBAGENT_MODEL_FORCE explicitly per invocation; clear any
+# ambient value so every OTHER case sees a clean environment (H5 asserts a current
+# `claude` produces no WARNING line at all, which an inherited FORCE would break).
+unset CLAUDE_CODE_SUBAGENT_MODEL_FORCE
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -116,8 +124,8 @@ chk "A6c: env.CLAUDE_CODE_SUBAGENT_MODEL set (was unset)" \
   '[ "$(jq -r ".env.CLAUDE_CODE_SUBAGENT_MODEL" "$A_DIR/settings.json")" = "claude-opus-5" ]'
 chk "A6d: subagentPromptCacheTtl set (was unset)" \
   '[ "$(jq -r ".subagentPromptCacheTtl" "$A_DIR/settings.json")" = "1h" ]'
-chk "A7: permissions.allow has 6 entries after install (1 pre-existing + 5 workers)" \
-  '[ "$(jq ".permissions.allow | length" "$A_DIR/settings.json")" -eq 6 ]'
+chk "A7: permissions.allow has 7 entries after install (1 pre-existing + 6 workers)" \
+  '[ "$(jq ".permissions.allow | length" "$A_DIR/settings.json")" -eq 7 ]'
 chk "A8: pre-existing allow entry retained" \
   'jq -e ".permissions.allow | index(\"Bash(ls:*)\")" "$A_DIR/settings.json" >/dev/null'
 chk "A9: no preinstall snapshot is written any more (nothing is overwritten)" \
@@ -130,8 +138,8 @@ A_REINSTALL_RC=$?
 chk "A10: re-install exits 0" '[ "$A_REINSTALL_RC" -eq 0 ]'
 chk "A11: re-install does not duplicate @triage.md" \
   '[ "$(grep -cxF "@triage.md" "$A_DIR/CLAUDE.md")" -eq 1 ]'
-chk "A12: re-install does not duplicate permissions.allow entries (still 6)" \
-  '[ "$(jq ".permissions.allow | length" "$A_DIR/settings.json")" -eq 6 ]'
+chk "A12: re-install does not duplicate permissions.allow entries (still 7)" \
+  '[ "$(jq ".permissions.allow | length" "$A_DIR/settings.json")" -eq 7 ]'
 
 # Uninstall: restore
 run_uninstall "$A_DIR" >/dev/null 2>&1
@@ -311,6 +319,7 @@ chk "G7: sandbox triage.md left untouched (fork preserved)" \
 chk "G8: no .bak-triage backup created for the skipped fork" '[ ! -f "$G_DIR/triage.md.bak-triage" ]'
 chk "G9: CLAUDE.md not created (files-only leaves it alone)" '[ ! -f "$G_DIR/CLAUDE.md" ]'
 chk "G10: settings.json not created (files-only leaves it alone)" '[ ! -f "$G_DIR/settings.json" ]'
+chk "G11: scripts/agy-run.sh copied and executable" '[ -x "$G_DIR/scripts/agy-run.sh" ]'
 
 # =============================================================================
 # Case H — version-compat warnings (stub `claude` on PATH; --dry-run so a
@@ -355,13 +364,16 @@ PATH="$H_STUB_DIR:/usr/bin:/bin" CLAUDE_DIR="$H_NEW_DIR" "$REPO_DIR/install.sh" 
 chk "H5: new claude version prints no version WARNING lines" '! grep -q "WARNING" "$H_NEW_OUT"'
 
 # =============================================================================
-# Case I — uninstall must remove only the six shipped agents by name, never
-# a user-authored triage-*.md agent (a glob-based revert would delete it)
+# Case I — uninstall must remove only the seven shipped agents by name, never
+# a user-authored triage-*.md agent (a glob-based revert would delete it).
+# M1 rides along: the external-CLI script scripts/agy-run.sh is installed and
+# removed by name too.
 # =============================================================================
 I_DIR=$(new_sandbox)
 mkdir -p "$I_DIR/agents"
 
 run_install "$I_DIR" >/dev/null 2>&1
+chk "M1a: install placed scripts/agy-run.sh (executable)" '[ -x "$I_DIR/scripts/agy-run.sh" ]'
 printf 'my own agent, not shipped by this repo\n' > "$I_DIR/agents/triage-mine.md"
 
 run_uninstall "$I_DIR" >/dev/null 2>&1
@@ -369,8 +381,9 @@ run_uninstall "$I_DIR" >/dev/null 2>&1
 I_RC=$?
 chk "I1: uninstall exits 0" '[ "$I_RC" -eq 0 ]'
 chk "I2: user-authored triage-mine.md survives uninstall" '[ -f "$I_DIR/agents/triage-mine.md" ]'
-chk "I3: all six shipped agents removed" \
-  '[ ! -f "$I_DIR/agents/triage-quick-task.md" ] && [ ! -f "$I_DIR/agents/triage-builder.md" ] && [ ! -f "$I_DIR/agents/triage-deep-reasoner.md" ] && [ ! -f "$I_DIR/agents/triage-reviewer.md" ] && [ ! -f "$I_DIR/agents/triage-cross-reviewer.md" ] && [ ! -f "$I_DIR/agents/triage-fable-architect.md" ]'
+chk "I3: all seven shipped agents removed" \
+  '[ ! -f "$I_DIR/agents/triage-quick-task.md" ] && [ ! -f "$I_DIR/agents/triage-builder.md" ] && [ ! -f "$I_DIR/agents/triage-deep-reasoner.md" ] && [ ! -f "$I_DIR/agents/triage-reviewer.md" ] && [ ! -f "$I_DIR/agents/triage-cross-reviewer.md" ] && [ ! -f "$I_DIR/agents/triage-fable-architect.md" ] && [ ! -f "$I_DIR/agents/triage-overflow.md" ]'
+chk "M1b: uninstall removes scripts/agy-run.sh" '[ ! -f "$I_DIR/scripts/agy-run.sh" ]'
 
 # =============================================================================
 # Case J — drift.sh: a checked file missing from an installed sandbox is
@@ -390,7 +403,9 @@ chk "J1: freshly installed sandbox drifts clean (exit 0)" '[ "$J_SAME_RC" -eq 0 
 chk "J2: freshly installed sandbox has no MISSING/FORKED lines" \
   '! grep -qE "MISSING|FORKED" "$J_SAME_OUT"'
 
-rm -f "$J_DIR/scripts/triage-usage.sh"
+# Delete two checked files — one long-standing, one added with the external-CLI tier —
+# so drift.sh's per-file list is exercised for both.
+rm -f "$J_DIR/scripts/triage-usage.sh" "$J_DIR/scripts/agy-run.sh"
 
 J_MISSING_OUT=$(mktemp)
 ALL_TMP="$ALL_TMP $J_MISSING_OUT"
@@ -400,6 +415,8 @@ J_MISSING_RC=$?
 chk "J3: drift.sh reports MISSING for the deleted checked file" \
   'grep -q "MISSING (not installed): scripts/triage-usage.sh" "$J_MISSING_OUT"'
 chk "J4: drift.sh exits non-zero once a checked file is missing" '[ "$J_MISSING_RC" -ne 0 ]'
+chk "J5: drift.sh also reports MISSING for the deleted scripts/agy-run.sh" \
+  'grep -q "MISSING (not installed): scripts/agy-run.sh" "$J_MISSING_OUT"'
 
 # =============================================================================
 # Case K — the two settings keys this layer owns are set only when UNSET and
@@ -461,6 +478,78 @@ chk "L6: the hand-modified file is left byte-for-byte alone" \
   '[ "$(cat "$L2_DIR/workflows/triage-run.js")" = "// my own hand-edited triage-run workflow" ]'
 
 # =============================================================================
+# Case M2/M3/M4 — CLAUDE_CODE_SUBAGENT_MODEL_FORCE overrides every agent's own
+# `model:`, collapsing all tiers onto one model: the layer still runs but stops
+# routing by cost. install.sh and drift.sh must SAY so and change nothing — the
+# key was set on purpose and only its owner should unset it.
+# =============================================================================
+M2_DIR=$(new_sandbox)
+mkdir -p "$M2_DIR"
+M2_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $M2_OUT"
+CLAUDE_CODE_SUBAGENT_MODEL_FORCE=claude-haiku-5 CLAUDE_DIR="$M2_DIR" "$REPO_DIR/install.sh" --dry-run >"$M2_OUT" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+M2_RC=$?
+chk "M2a: --dry-run with FORCE set in the environment still exits 0 (warn, never fail)" \
+  '[ "$M2_RC" -eq 0 ]'
+chk "M2b: the environment-variant warning fires and names the offending value" \
+  'grep -q "CLAUDE_CODE_SUBAGENT_MODEL_FORCE is set in your environment (claude-haiku-5)" "$M2_OUT"'
+chk "M2c: --dry-run with FORCE set still mutates nothing" \
+  '[ ! -f "$M2_DIR/settings.json" ] && [ ! -f "$M2_DIR/agents/triage-quick-task.md" ]'
+
+# M3 — the same key in settings.json `env`: warn, and never delete it.
+M3_DIR=$(new_sandbox)
+mkdir -p "$M3_DIR"
+cat > "$M3_DIR/settings.json" <<'EOF'
+{
+  "env": {"CLAUDE_CODE_SUBAGENT_MODEL_FORCE": "claude-haiku-5", "MY_OWN_VAR": "keepme"},
+  "customKey": "keepme"
+}
+EOF
+M3_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $M3_OUT"
+CLAUDE_DIR="$M3_DIR" "$REPO_DIR/install.sh" >"$M3_OUT" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+M3_RC=$?
+chk "M3a: install exits 0 with env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE in settings.json" \
+  '[ "$M3_RC" -eq 0 ]'
+chk "M3b: the settings-file variant of the warning fires" \
+  'grep -q "env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE is set in" "$M3_OUT"'
+chk "M3c: install does NOT remove or rewrite the FORCE key" \
+  '[ "$(jq -r ".env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE" "$M3_DIR/settings.json")" = "claude-haiku-5" ]'
+chk "M3d: unrelated env var and top-level key survive the install" \
+  '[ "$(jq -r ".env.MY_OWN_VAR" "$M3_DIR/settings.json")" = "keepme" ] && [ "$(jq -r ".customKey" "$M3_DIR/settings.json")" = "keepme" ]'
+
+run_uninstall "$M3_DIR" >/dev/null 2>&1
+chk "M3e: uninstall leaves the FORCE key alone too (never ours to remove)" \
+  '[ "$(jq -r ".env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE" "$M3_DIR/settings.json")" = "claude-haiku-5" ]'
+
+# M4 — drift.sh warns jq-free and leaves its exit code alone.
+M4_DIR=$(new_sandbox)
+mkdir -p "$M4_DIR"
+run_install "$M4_DIR" >/dev/null 2>&1
+M4_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $M4_OUT"
+CLAUDE_CODE_SUBAGENT_MODEL_FORCE=claude-haiku-5 CLAUDE_DIR="$M4_DIR" "$REPO_DIR/drift.sh" >"$M4_OUT" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+M4_RC=$?
+chk "M4a: drift.sh with FORCE set still exits 0 on a clean install" '[ "$M4_RC" -eq 0 ]'
+chk "M4b: drift.sh prints the FORCE warning" \
+  'grep -q "CLAUDE_CODE_SUBAGENT_MODEL_FORCE is set" "$M4_OUT"'
+chk "M4c: the FORCE warning is not reported as drift" '! grep -qE "MISSING|FORKED" "$M4_OUT"'
+
+# The settings.json half of drift's jq-free check must not fire on the layer's OWN
+# env.CLAUDE_CODE_SUBAGENT_MODEL key, which every install writes.
+M4B_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $M4B_OUT"
+CLAUDE_DIR="$M4_DIR" "$REPO_DIR/drift.sh" >"$M4B_OUT" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+M4D_RC=$?
+chk "M4d: with FORCE unset the warning stays silent (env.CLAUDE_CODE_SUBAGENT_MODEL must not match)" \
+  '! grep -q "CLAUDE_CODE_SUBAGENT_MODEL_FORCE" "$M4B_OUT"'
+chk "M4e: that silent run still exits 0" '[ "$M4D_RC" -eq 0 ]'
+
+# =============================================================================
 # Statusline checks (direct, no install needed)
 #
 # statusline.sh appends a live "· sub Nk" subagent-spend suffix (scripts/triage-
@@ -495,6 +584,61 @@ STATUS_WITH_SUB=$(printf '%s' '{"model":{"display_name":"Opus"},"context_window"
   | PATH=/usr/bin:/bin bash "$STATUSLINE")
 chk "S3: statusline appends '· sub Nk' from real subagent data (haiku 2k+sonnet 50k+fable 6k=58k)" \
   '[ "$STATUS_WITH_SUB" = "Opus · ctx 42% · sub 58k" ]'
+
+# =============================================================================
+# Prompt-cache segment checks (scripts/triage-cache-segment.sh, direct + wired
+# through statusline.sh). Field names verified against the installed Claude
+# Code binary's own statusline help text (checked 2026-09-15, v2.1.272:
+# `strings "$(which claude)" | grep -A2 last_miss_cause.causes`) and
+# https://code.claude.com/docs/en/statusline's "Prompt cache fields" table:
+# prompt_cache.{caching_observed,warm,hit_ratio,last_miss_cause.causes[]}.
+# =============================================================================
+CACHE_SH="$REPO_DIR/scripts/triage-cache-segment.sh"
+
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+CS_WARM=$(printf '%s' '{"prompt_cache":{"caching_observed":true,"warm":true,"hit_ratio":0.873}}' \
+  | PATH=/usr/bin:/bin bash "$CACHE_SH")
+chk "T1: warm cache with hit_ratio 0.873 renders 'cache 87% warm'" '[ "$CS_WARM" = "cache 87% warm" ]'
+
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+CS_COLD=$(printf '%s' '{"prompt_cache":{"caching_observed":true,"warm":false,"hit_ratio":0.42,"last_miss_cause":{"causes":["tool_result_pruning"]}}}' \
+  | PATH=/usr/bin:/bin bash "$CACHE_SH")
+chk "T2: cold cache with a diagnosed miss cause renders 'cache 42% cold (tool_result_pruning)'" \
+  '[ "$CS_COLD" = "cache 42% cold (tool_result_pruning)" ]'
+# jq's `//` treats a literal `false` as absent — warm:false must still render "cold",
+# not be silently dropped as if warm were missing.
+chk "T2b: warm:false is read as an explicit boolean, not swallowed by jq's // empty" \
+  '[ "$CS_COLD" != "" ]'
+
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+CS_NOPC=$(printf '%s' '{"model":{"display_name":"Opus"}}' | PATH=/usr/bin:/bin bash "$CACHE_SH")
+chk "T3: no prompt_cache field at all renders nothing" '[ "$CS_NOPC" = "" ]'
+
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+CS_NOTOBS=$(printf '%s' '{"prompt_cache":{"caching_observed":false}}' | PATH=/usr/bin:/bin bash "$CACHE_SH")
+chk "T4: caching_observed:false renders nothing (provider/gateway doesn't report cache tokens)" \
+  '[ "$CS_NOTOBS" = "" ]'
+
+CS_MALFORMED_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $CS_MALFORMED_OUT"
+printf 'not json at all' | PATH=/usr/bin:/bin bash "$CACHE_SH" >"$CS_MALFORMED_OUT" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+CS_MALFORMED_RC=$?
+chk "T5: malformed JSON on stdin exits 0" '[ "$CS_MALFORMED_RC" -eq 0 ]'
+chk "T6: malformed JSON on stdin prints nothing" '[ ! -s "$CS_MALFORMED_OUT" ]'
+
+# --- wired through statusline.sh -------------------------------------------
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+STATUS_WITH_CACHE=$(printf '%s' '{"model":{"display_name":"Opus"},"context_window":{"used_percentage":42.7},"session_id":"test-statusline-s4","transcript_path":"'"$NO_SUB_TRANSCRIPT"'","prompt_cache":{"caching_observed":true,"warm":true,"hit_ratio":0.873}}' \
+  | PATH=/usr/bin:/bin bash "$STATUSLINE")
+chk "S4: statusline appends '· cache 87% warm' after the model/ctx tail" \
+  '[ "$STATUS_WITH_CACHE" = "Opus · ctx 42% · cache 87% warm" ]'
+
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+STATUS_NO_CACHE=$(printf '%s' '{"model":{"display_name":"Opus"},"context_window":{"used_percentage":42.7},"session_id":"test-statusline-s5","transcript_path":"'"$NO_SUB_TRANSCRIPT"'"}' \
+  | PATH=/usr/bin:/bin bash "$STATUSLINE")
+chk "S5: statusline with no prompt_cache field renders identically to before (no dangling separator)" \
+  '[ "$STATUS_NO_CACHE" = "Opus · ctx 42%" ]'
 
 # =============================================================================
 # Result

@@ -8,7 +8,7 @@
 #      never masquerade as a silent pass, hence the loud message).
 #   4. Docs-consistency check: every file path referenced in README.md's
 #      install / manual-install sections must exist on disk, and README's
-#      claim of "six subagent definitions" must match the real agent count.
+#      claim of "seven subagent definitions" must match the real agent count.
 #
 # Fail-loud: accumulates all failures, exits non-zero if any hard failure
 # occurred (shellcheck's absence is NOT a hard failure — it's an explicit,
@@ -44,7 +44,13 @@ $SH_FILES
 EOF
 fi
 
-# --- 2. node --check on every *.js under workflows/ --------------------------
+# --- 2. node syntax-check on every *.js under workflows/ ---------------------
+# Workflow-DSL scripts have `export const meta = {...}` plus top-level await
+# and a top-level `return` — the DSL runs them as an async function body (with
+# `meta` extracted). Plain `node --check` parses the file as a module/script
+# and rejects the top-level return, so instead strip the leading `export` off
+# the meta declaration and parse the remainder with the AsyncFunction
+# constructor, mirroring how the DSL actually executes the script.
 if command -v node >/dev/null 2>&1; then
   JS_FILES=$(find workflows -name '*.js' 2>/dev/null)
   if [ -z "$JS_FILES" ]; then
@@ -52,10 +58,22 @@ if command -v node >/dev/null 2>&1; then
   else
     while IFS= read -r f; do
       [ -z "$f" ] && continue
-      if node --check "$f" 2>"$LINT_ERR"; then
-        ok "node --check $f"
+      if node -e '
+        const fs = require("fs");
+        const path = process.argv[1];
+        const src = fs.readFileSync(path, "utf8")
+          .replace(/^export\s+const\s+meta\b/m, "const meta");
+        const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+        try {
+          new AsyncFunction(src);
+        } catch (e) {
+          console.error(e.stack || String(e));
+          process.exit(1);
+        }
+      ' "$f" 2>"$LINT_ERR"; then
+        ok "node syntax-check $f"
       else
-        fail "node --check $f"
+        fail "node syntax-check $f"
         cat "$LINT_ERR" >&2
       fi
     done <<EOF
@@ -88,7 +106,7 @@ if [ ! -f "$README" ]; then
   fail "README.md not found — cannot run docs-consistency check"
 else
   # Paths the README's install / manual-install sections claim exist.
-  DOC_PATHS="statusline.sh triage.md workflows/triage-exec.js install.sh uninstall.sh"
+  DOC_PATHS="statusline.sh triage.md workflows/triage-exec.js install.sh uninstall.sh scripts/agy-run.sh"
   for p in $DOC_PATHS; do
     if [ -e "$p" ]; then
       ok "docs-consistency: $p exists"
@@ -98,16 +116,16 @@ else
   done
 
   AGENT_COUNT=$(find agents -maxdepth 1 -name 'triage-*.md' | wc -l | tr -d ' ')
-  if [ "$AGENT_COUNT" -eq 6 ]; then
-    ok "docs-consistency: agents/triage-*.md count is 6, matches README"
+  if [ "$AGENT_COUNT" -eq 7 ]; then
+    ok "docs-consistency: agents/triage-*.md count is 7, matches README"
   else
-    fail "docs-consistency: agents/triage-*.md count is $AGENT_COUNT, README claims 6 (drift)"
+    fail "docs-consistency: agents/triage-*.md count is $AGENT_COUNT, README claims 7 (drift)"
   fi
 
-  if grep -qi 'six subagent definitions' "$README"; then
-    ok "docs-consistency: README still claims 'six subagent definitions'"
+  if grep -qi 'seven subagent definitions' "$README"; then
+    ok "docs-consistency: README still claims 'seven subagent definitions'"
   else
-    fail "docs-consistency: README no longer says 'six subagent definitions' — update the doc-consistency check or the README"
+    fail "docs-consistency: README no longer says 'seven subagent definitions' — update the doc-consistency check or the README"
   fi
 fi
 

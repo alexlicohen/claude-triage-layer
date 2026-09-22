@@ -1,7 +1,7 @@
 export const meta = {
   name: 'triage-exec',
   description: 'Execute a pre-built triage plan: delegate each subtask to its tier agent, run the objective checks, remediate and escalate',
-  whenToUse: 'Run a plan the orchestrator has ALREADY classified: /triage-exec with args = {subtasks:[{brief,tier,files,acceptance,danger,effort}], checks:[shell commands], review, crossReview}. It executes, verifies, re-runs only the implicated subtasks on failure, and escalates one tier up on ESCALATE. It never classifies — a malformed plan throws before any spawn.',
+  whenToUse: 'Run a plan the orchestrator has ALREADY classified: /triage-exec with args = {subtasks:[{brief,tier,files,acceptance,danger,effort}], checks:[shell commands], review, crossReview, overflow}. It executes, verifies, re-runs only the implicated subtasks on failure, and escalates one tier up on ESCALATE. It never classifies — a malformed plan throws before any spawn.',
   phases: [
     { title: 'Execute' },
     { title: 'Verify' },
@@ -14,13 +14,14 @@ export const meta = {
 // plan was pure waste. What arrives is a finished plan, validated in plain JS BEFORE
 // any agent() call — a malformed plan is a caller bug and must fail loudly and for
 // free, never half-execute and bill for it.
-const TIERS = ['quick', 'builder', 'deep', 'fable']
+const TIERS = ['quick', 'builder', 'deep', 'fable', 'overflow']
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 const REVIEW_MODES = ['auto', 'always', 'never']
 
 const USAGE = 'Expected args = {\n' +
   `  subtasks: [{ id?, brief, tier: ${TIERS.join('|')}, files?: string[], acceptance, danger?: bool, effort?: ${EFFORTS.join('|')} }]  // at least one\n` +
   '  checks?:      string[]   // shell commands run as objective gates\n' +
+  '  overflow?:    boolean    // default: false — rewrite builder subtasks onto the external CLI tier\n' +
   `  review?:      ${REVIEW_MODES.join('|')}   // default: auto\n` +
   '  crossReview?: boolean    // default: false\n}'
 
@@ -36,6 +37,8 @@ if (!Array.isArray(args.subtasks) || args.subtasks.length === 0) bad('args.subta
 if (args.checks != null && !(Array.isArray(args.checks) && args.checks.every(isStr))) bad('args.checks must be an array of non-empty shell-command strings.')
 if (args.review != null && !REVIEW_MODES.includes(args.review)) bad(`args.review must be one of ${REVIEW_MODES.join('|')} (got ${JSON.stringify(args.review)}).`)
 if (args.crossReview != null && typeof args.crossReview !== 'boolean') bad('args.crossReview must be a boolean.')
+if (args.overflow != null && typeof args.overflow !== 'boolean') bad('args.overflow must be a boolean.')
+const wantsOverflow = args.overflow === true
 
 const seenIds = new Set()
 const subtasks = args.subtasks.map((raw, i) => {
@@ -54,10 +57,17 @@ const subtasks = args.subtasks.map((raw, i) => {
   if (seenIds.has(id)) bad(`duplicate subtask id "${id}" — ids must be unique.`)
   seenIds.add(id)
   const danger = raw.danger === true
+  // Plan-level overflow: builder-tier work moves to the external CLI tier so it does
+  // not spend Claude quota. ONLY builder — quick work is too cheap to be worth the
+  // external round-trip and its boundary attestation, and deep/fable work is exactly
+  // what must not run on a weaker off-vendor model.
+  const wanted = (wantsOverflow && raw.tier === 'builder') ? 'overflow' : raw.tier
   // Danger-zone routing, ENFORCED here rather than trusted to the caller: correctness-
-  // critical work never runs on quick/builder (rubric routing rule). The plan is
-  // well-formed, only mis-routed — so upgrade loudly instead of throwing.
-  const tier = (danger && (raw.tier === 'quick' || raw.tier === 'builder')) ? 'deep' : raw.tier
+  // critical work never runs on quick/builder/overflow (rubric routing rule; overflow
+  // has a second reason — the workspace leaves the machine). Applied AFTER the overflow
+  // rewrite, so overflow:true + danger:true still lands on deep. The plan is well-formed,
+  // only mis-routed — so upgrade loudly instead of throwing.
+  const tier = (danger && (wanted === 'quick' || wanted === 'builder' || wanted === 'overflow')) ? 'deep' : wanted
   return {
     id,
     brief: raw.brief.trim(),
@@ -75,13 +85,16 @@ const reviewMode = args.review || 'auto'
 const wantsCrossReview = args.crossReview === true
 
 for (const st of subtasks) {
-  if (st.tier !== st.plannedTier) {
-    log(`⚠ Danger-zone routing: "${st.id}" was planned as ${st.plannedTier} but danger=true — running it on ${st.tier} instead (correctness-critical work never goes to quick/builder).`)
+  if (st.tier === 'overflow') {
+    log(`⚠ Overflow routing: "${st.id}" runs on the EXTERNAL CLI tier (agy) instead of ${st.plannedTier} — its workspace leaves this machine.`)
+  } else if (st.tier !== st.plannedTier) {
+    log(`⚠ Danger-zone routing: "${st.id}" was planned as ${st.plannedTier} but danger=true — running it on ${st.tier} instead (correctness-critical work never goes to quick/builder/overflow).`)
   }
 }
 
-// escalations — every tier change this run made, for the returned report. Two kinds:
-// a verdict-driven one-tier-up remediation, and the Fable→deep@max availability fallback.
+// escalations — every tier change this run made, for the returned report. Three kinds:
+// a verdict-driven one-tier-up remediation, the Fable→deep@max availability fallback, and
+// the overflow pair (→builder when the external CLI is unavailable, →deep when it failed).
 const escalations = []
 
 // ─── Budget awareness ───────────────────────────────────────────────────────
@@ -142,7 +155,7 @@ function budgetReport() {
 }
 
 phase('Execute')
-const TIER_AGENT = { quick: 'triage-quick-task', builder: 'triage-builder', deep: 'triage-deep-reasoner', fable: 'triage-fable-architect' }
+const TIER_AGENT = { quick: 'triage-quick-task', builder: 'triage-builder', deep: 'triage-deep-reasoner', fable: 'triage-fable-architect', overflow: 'triage-overflow' }
 
 function brief(st, extra) {
   return `${st.brief}\n\nRelevant files: ${st.files.join(', ') || '(discover)'}\n` +
@@ -177,6 +190,19 @@ async function runSubtask(st) {
       const fb = await agent(brief(st), { phase: 'Execute', agentType: 'triage-deep-reasoner', effort: 'max', label: `deep←fable:${st.id}` })
       return fb ? { subtask: st, output: fb, tier: 'deep', attempts: 1 } : null
     }
+    // Overflow availability fallback: unavailable → SIDEWAYS to builder, not up.
+    // An external CLI that never started has taught us nothing about the task — it is
+    // still well-specified builder work. (A FAILED one has; that path goes up to deep,
+    // in remediation below.) Spending Claude quota beats discarding finished planning,
+    // and is logged loudly rather than hidden.
+    if (st.tier === 'overflow') {
+      const ov = await agent(brief(st), agentOpts(st, 'triage-overflow', 'Execute', `overflow:${st.id}`))
+      if (ov) return { subtask: st, output: ov, tier: 'overflow', attempts: 1 }
+      log(`⚠ Overflow unavailable — falling back to triage-builder for ${st.id} (this SPENDS Claude quota).`)
+      escalations.push({ id: st.id, from: 'overflow', to: 'builder', reason: 'external CLI tier unavailable — original builder tier restored' })
+      const fb = await agent(brief(st), agentOpts(st, 'triage-builder', 'Execute', `builder←overflow:${st.id}`))
+      return fb ? { subtask: st, output: fb, tier: 'builder', attempts: 1 } : null
+    }
     const agentType = TIER_AGENT[st.tier] || 'triage-builder'
     const out = await agent(brief(st), agentOpts(st, agentType, 'Execute', `${st.tier}:${st.id}`))
     return out ? { subtask: st, output: out, tier: st.tier, attempts: 1 } : null
@@ -186,6 +212,25 @@ async function runSubtask(st) {
 const results = (await parallel(subtasks.map(st => () => runSubtask(st)))).filter(Boolean)
 const dropped = subtasks.length - results.length
 if (dropped > 0) log(`⚠ ${dropped} of ${subtasks.length} subtask(s) failed or were dropped — results are incomplete`)
+
+// overflowReport() — the overflow half of the distillate, defined immediately above
+// report() (which remains its single owner). DERIVED from the plan and the escalation
+// log, NOT read off `results`: remediation rewrites `results` in place (results.length
+// = 0; results.push(...merged)), so by the time report() runs, a subtask that really did
+// run on agy and was then redone on deep reads back as tier 'deep'. Filtering `results`
+// for tier === 'overflow' would therefore report ranExternally: [] for exactly the case
+// the field exists to describe. Ids only: bounded size, no worker prose.
+function overflowReport() {
+  const routed = subtasks.filter(st => st.tier === 'overflow').map(st => st.id)
+  // from:'overflow' to:'builder' is the ONE escalation meaning it never actually reached
+  // the external CLI (spawn unavailable); to:'deep' means it ran there and failed.
+  const neverRan = new Set(escalations.filter(e => e.from === 'overflow' && e.to === 'builder').map(e => e.id))
+  return {
+    routed,
+    ranExternally: routed.filter(id => !neverRan.has(id)),
+    returnedToClaude: escalations.filter(e => e.from === 'overflow').map(e => `${e.id}→${e.to}`),
+  }
+}
 
 // report() — the SINGLE place the compact return value is built. Only distillate
 // leaves this workflow: worker prose stays out of the orchestrator's context (that
@@ -201,6 +246,10 @@ function report(extra) {
     }),
     escalations,
     budget: budgetReport(),
+    // Present only when overflow was in play — mirroring how crossReview is absent
+    // when not requested. The wantsOverflow arm keeps the field honest when every
+    // candidate was pulled back by the danger rule (routed: []).
+    ...(wantsOverflow || subtasks.some(st => st.tier === 'overflow') ? { overflow: overflowReport() } : {}),
   }, extra)
 }
 
@@ -223,7 +272,15 @@ if (budgeted && results.length === 0 &&
 
 phase('Verify')
 const TIER_ORDER = ['quick', 'builder', 'deep', 'fable']
-const nextTier = t => { const i = TIER_ORDER.indexOf(t); return i >= 0 && i < TIER_ORDER.length - 1 ? TIER_ORDER[i + 1] : t }
+// overflow is NOT a rung: it is a lateral, external-vendor substitute for builder.
+// Work that fails there comes back to Claude at the DEEP tier — never to builder,
+// and never round-trips to overflow again.
+const NEXT_TIER_OVERRIDE = { overflow: 'deep' }
+const nextTier = t => {
+  if (NEXT_TIER_OVERRIDE[t]) return NEXT_TIER_OVERRIDE[t]
+  const i = TIER_ORDER.indexOf(t)
+  return i >= 0 && i < TIER_ORDER.length - 1 ? TIER_ORDER[i + 1] : t
+}
 
 // Review policy — the ONE place the reviewer's presence is decided.
 //   never  : the reviewer never runs (the caller has its own gate).
@@ -389,8 +446,18 @@ if (failed && results.length) {
   // with a ceiling catch, via spawn(). A budget-skipped redo drops from redoResults
   // (filter(Boolean)); the original result stays in the merged re-verify set below.
   const redo = await parallel(targets.map(r => () => spawn(RESERVE, `Remediate:${r.tier}`, r.subtask.id, async () => {
-    const tier = isEscalate ? nextTier(r.tier) : r.tier
-    if (tier !== r.tier) escalations.push({ id: r.subtask.id, from: r.tier, to: tier, reason: 'reviewer returned ESCALATE' })
+    // An overflow subtask that failed verification is NOT retried externally: the
+    // objective check already says the off-vendor model got it wrong, so it returns to
+    // Claude at the deep tier with the failure text — on FIX and ESCALATE alike. (The
+    // explicit ternary is what makes a plain FIX escalate too; nextTier('overflow')
+    // agrees via NEXT_TIER_OVERRIDE, but `isEscalate ? … : r.tier` alone would not.)
+    const tier = r.tier === 'overflow' ? 'deep' : (isEscalate ? nextTier(r.tier) : r.tier)
+    if (tier !== r.tier) escalations.push({
+      id: r.subtask.id, from: r.tier, to: tier,
+      reason: r.tier === 'overflow'
+        ? 'overflow output failed verification — returned to the Claude deep tier'
+        : 'reviewer returned ESCALATE',
+    })
     const agentType = TIER_AGENT[tier] || 'triage-builder'
     const extra = `A prior attempt did not pass verification. Verifier feedback:\n${vtext.slice(0, 2000)}\nAddress it and complete the task.`
     const out = await agent(brief(r.subtask, extra), agentOpts(r.subtask, agentType, 'Verify', `redo:${r.subtask.id}`))

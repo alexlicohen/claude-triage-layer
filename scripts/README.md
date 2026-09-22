@@ -203,3 +203,125 @@ from the `INCOMPLETE` case, which never prints zeros as if measured.
 
 `bash` (3.2+, macOS default) and `jq`. BSD-safe: uses BSD `date -v`; no `stat -c`, `readlink -f`,
 GNU-only flags, or associative arrays.
+
+---
+
+## `agy-run.sh` — the single owner of every `agy` (Antigravity CLI) invocation
+
+Nothing else in this repo, and no agent, may call `agy` directly. The mode table, the
+deny-list, the known-good flag combination, the `</dev/null` workaround, the timeouts,
+the build staging worktree and the exit-code contract all live in this one script.
+
+```
+Usage: agy-run.sh <review|read|verify|critique|fuzz|build> --prompt-file FILE [options]
+```
+
+### Modes
+
+| Mode | Model (effort is the id suffix) | Extra agy flags | cwd / `--add-dir` | Timeout | Writes |
+|---|---|---|---|---|---|
+| `review` | `gemini-3.1-pro-high` | — | staging dir | 8m | no |
+| `read` | `gemini-3.8-flash-low` | `--json-schema` with `--schema` | staging dir | 5m | no |
+| `verify` | `gemini-3.8-flash-medium` | — | staging dir | 5m | no |
+| `critique` | `gemini-3.1-pro-high` | `--mode plan` | staging dir | 8m | no |
+| `fuzz` | `gemini-3.1-pro-high` | — | staging dir | 8m | no |
+| `build` | `gemini-3.1-pro-high` | `--mode accept-edits` | **disposable git worktree** | 20m | **yes** |
+
+Every mode, always: an explicit non-Claude `--model`, `--sandbox`,
+`--dangerously-skip-permissions`, `--output-format json`, `--print-timeout`, a
+script-computed `--add-dir`, and `</dev/null`. Never `--effort` — agy encodes effort in
+the model id and rejects the two together, so this script's `--effort low|medium|high`
+rewrites the model-id **suffix** instead (`gemini-3.1-pro` has no `medium` rung, so
+medium resolves to high there).
+
+Options: `--prompt-file FILE` (required), `--input FILE` (repeatable), `--schema FILE|JSON`
+(read only), `--workdir DIR` and `--output FILE` (build only), `--model`, `--effort`,
+`--timeout`, `--raw`.
+
+Data — diffs, logs, corpora — goes in with `--input`, never inlined into the brief: the
+prompt reaches agy as `-p "$(cat FILE)"` and is therefore `ARG_MAX`-bounded. A prompt file
+over 256 KB is a usage error that names `--input`. Staged inputs are copied into the
+workspace and named in a `--- Workspace ---` prompt footer by **absolute** path.
+
+### Build mode never touches the caller's working tree
+
+agy runs with `--dangerously-skip-permissions` (headless runs have every tool auto-denied
+without it) and `--mode plan` is *not* a write guard, so "which files it may change" cannot
+be expressed as a flag. Build mode therefore:
+
+1. `git worktree add --detach <stage> HEAD` — a disposable checkout of `--workdir`'s repo;
+2. carries the caller's uncommitted work in (`git diff HEAD --binary` applied with
+   `--index`, plus every untracked file from `git ls-files --others --exclude-standard`);
+3. commits that carried state as the stage base, so the result patch is the **pure agy
+   delta** rather than a re-application of the caller's own changes;
+4. points `--add-dir` and the process cwd at the worktree — never at the real repo;
+5. captures `git add -A && git diff --cached --binary` into `--output` (a `mktemp` file
+   when `--output` is omitted; the path is always printed on stderr). `add -A` honours
+   `.gitignore`, so a deliverable at an ignored path comes back as "no changes";
+6. applies that patch back with `git apply` (and `git apply --3way` as a fallback for a
+   tree that drifted while agy ran). `--index` is deliberately *not* used: it refuses any
+   path whose worktree copy differs from the index, which is the normal case for a caller
+   with unstaged changes;
+7. removes the worktree on every exit path, including failures — `AGY_STAGE_KEEP` cannot
+   defeat that.
+
+The patch is captured before the result gates, so a failed run still leaves something
+inspectable, and it is applied only if every gate passes.
+
+### Exit codes (the contract every caller keys off)
+
+| Code | Meaning | Caller action |
+|---|---|---|
+| 0 | OK — stdout is the model's answer (the full envelope with `--raw`) | relay |
+| 2 | USAGE — bad mode/flags/missing file; nothing ran | caller bug, fail loud |
+| 3 | REFUSED — deny-list hit or boundary not attested; nothing ran | return `REFUSED: …` |
+| 4 | UNAVAILABLE — agy missing, non-zero exit, unparseable envelope, denied tools, non-SUCCESS status, empty response, or the build stage could not be prepared | return `UNAVAILABLE: …`; never substitute your own work, never read as "no findings" |
+| 5 | SCHEMA — `--schema` given and `.response` is not valid JSON | retry once or report INCOMPLETE |
+| 6 | APPLY — build only: the patch did not apply to the real repo. The patch is left at `--output`; the answer still went to stdout | resolve by hand, or re-run |
+
+**Exit 0 alone is never proof of work.** A headless run whose tools were auto-denied exits
+0 and reports `{"status":"SUCCESS","response":"","denied_actions":[…]}` — both the process
+status and the envelope's own status say success. A `--print-timeout` expiry looks the same.
+Success is therefore gated on three independent things: exit code 0, `.denied_actions`
+empty, and `.response` non-empty.
+
+### Deny-list and the data boundary
+
+Applied to the resolved path of `--prompt-file`, `--workdir` (and its repo top level) and
+every `--input`:
+
+1. refuse if any **path component equals** a name in `AGY_DENY_REPOS` — component equality,
+   not substring, so `…/clip-creator/media` refuses and `…/clip-creators-lab` does not;
+2. refuse if a `.agy-deny` marker exists anywhere from that path up to `$HOME` — a per-repo
+   opt-out that needs no edit to this script;
+3. refuse unless `AGY_BOUNDARY_CLEARED=1` — clinical/BCH/PHI and COI material is not a path
+   pattern, so it stays an explicit caller attestation.
+
+`--add-dir` is **not** exposed as a caller option: the script supplies exactly one value,
+its own run directory, after that path has passed the deny check.
+
+This is a default-ALLOW list. In build mode agy may read any file in the repo, and it
+persists its own plan/walkthrough artifacts under `~/.gemini/antigravity-cli/brain/…`,
+outside anything this script can clean up. Drop an empty `.agy-deny` into any tree you have
+not consciously cleared.
+
+### Environment
+
+| Var | Effect |
+|---|---|
+| `AGY_BIN` | agy executable (default: `agy` on PATH) |
+| `AGY_DENY_REPOS` | space-separated names agy must never see (default `clip-creator`) |
+| `AGY_BOUNDARY_CLEARED` | must be `1`, else REFUSED before anything runs |
+| `AGY_STAGE_KEEP` | `1` keeps the staging dir (its path is printed on stderr). Never keeps the build worktree |
+
+Vendor-side token spend is invisible to `triage-usage.sh`, so each run echoes
+`agy-run: <N> tokens (<S>s, <model>)` to **stderr**.
+
+### Requirements and tests
+
+`bash` (3.2+, macOS default), `jq`, and `git` for build mode.
+
+`test/agy-run.sh` (wired into `make test`) is hermetic: a stub `agy` first on `PATH`
+replays canned envelopes and logs its cwd and argv, so the flag table, the deny-list, the
+exit-code contract and the whole build-worktree round trip are asserted without ever
+reaching the real CLI or the network.

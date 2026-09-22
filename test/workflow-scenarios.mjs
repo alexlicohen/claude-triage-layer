@@ -500,6 +500,113 @@ const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).
     ['subtasks', 'checks', 'review', 'escalations'].every(k => k in result))
 }
 
+// ---- Scenario 22 (wave 10): plan-level overflow rewrites ONLY builder subtasks onto
+// the external CLI tier; quick/deep are untouched.
+{
+  const { result, logs, calls } = await run(
+    { overflow: true, subtasks: [ST('b1', 'builder', ['a.js']), ST('d1', 'deep', ['b.js']), ST('q1', 'quick', ['c.js'])], checks: ['make test'], review: 'never' },
+    {
+      'overflow:': ['did b1 externally'],
+      'deep:': ['did d1'],
+      'quick:': ['did q1'],
+      'verify:objective-check': ['ok\nPASS'],
+    })
+  chk('S22: exactly one overflow spawn, on triage-overflow',
+    countCalls(calls, 'overflow:') === 1 &&
+    calls.find(c => c.label === 'overflow:b1').opts.agentType === 'triage-overflow')
+  chk('S22: deep and quick subtasks were NOT rewritten',
+    calls.find(c => c.label === 'deep:d1').opts.agentType === 'triage-deep-reasoner' &&
+    calls.find(c => c.label === 'quick:q1').opts.agentType === 'triage-quick-task')
+  chk('S22: report shows the tier that actually ran b1',
+    result.subtasks.find(s => s.id === 'b1').tier === 'overflow' &&
+    result.subtasks.find(s => s.id === 'd1').tier === 'deep')
+  chk('S22: overflow routing is logged loudly and names the subtask',
+    logs.some(l => l.includes('Overflow routing') && l.includes('b1')))
+  // An overflow rewrite also makes tier !== plannedTier, but it is NOT a danger upgrade —
+  // the danger log asserts danger=true and claims the opposite of the rule, so it must
+  // stay silent here (see the else-if in the routing log loop).
+  chk('S22: the overflow rewrite does NOT fire the danger-zone log',
+    !logs.some(l => l.includes('Danger-zone routing')))
+  chk('S22: overflow report is ids-only and accurate',
+    JSON.stringify(result.overflow) === JSON.stringify({ routed: ['b1'], ranExternally: ['b1'], returnedToClaude: [] }))
+  chk('S22: round is green with no remediation', result.failed === false && result.remediation === null)
+}
+
+// ---- Scenario 23 (wave 10): an overflow subtask that fails its objective check goes
+// back to the CLAUDE deep tier — not builder, and never externally again.
+{
+  const { result, calls } = await run(
+    { overflow: true, subtasks: [ST('b1', 'builder', ['a.js'])], checks: ['make test'], review: 'never' },
+    {
+      'overflow:': ['did b1 externally'],
+      'redo:b1': ['fixed it on deep'],
+      'verify:objective-check': ['a.js is broken\nFAIL'],
+      'verify:recheck': ['ok\nPASS'],
+    })
+  chk('S23: the redo ran on triage-deep-reasoner',
+    countCalls(calls, 'redo:b1') === 1 &&
+    calls.find(c => c.label === 'redo:b1').opts.agentType === 'triage-deep-reasoner')
+  chk('S23: no second external spawn', countCalls(calls, 'overflow:') === 1)
+  chk('S23: escalation recorded overflow -> deep',
+    result.escalations.some(e => e.id === 'b1' && e.from === 'overflow' && e.to === 'deep'))
+  chk('S23: subtask reports the tier that finished it, with 2 attempts',
+    result.subtasks[0].tier === 'deep' && result.subtasks[0].attempts === 2)
+  chk('S23: ranExternally still credits the external run (derived, not read off results)',
+    result.overflow.ranExternally.includes('b1') && result.overflow.returnedToClaude.includes('b1→deep'))
+  chk('S23: second round is green', result.failed === false && result.incomplete === false)
+}
+
+// ---- Scenario 24 (wave 10): (a) danger work NEVER goes off-vendor; (b) an unavailable
+// external tier falls back sideways to builder, loudly.
+{
+  const { result, logs, calls } = await run(
+    { overflow: true, subtasks: [ST('core', 'builder', ['core.js'], { danger: true })], checks: ['make test'], review: 'never' },
+    { 'deep:': ['did core on deep'], 'verify:objective-check': ['ok\nPASS'] })
+  chk('S24a: zero external spawns for a danger subtask', countCalls(calls, 'overflow:') === 0)
+  chk('S24a: it ran on deep', calls.find(c => c.label === 'deep:core').opts.agentType === 'triage-deep-reasoner')
+  chk('S24a: the danger upgrade is logged', logs.some(l => l.includes('Danger-zone routing') && l.includes('core')))
+  chk('S24a: overflow report shows nothing routed', result.overflow.routed.length === 0)
+
+  const { result: rX, calls: cX } = await run(
+    { subtasks: [ST('core2', 'overflow', ['core.js'], { danger: true })], checks: ['make test'], review: 'never' },
+    { 'deep:': ['did core2 on deep'], 'verify:objective-check': ['ok\nPASS'] })
+  chk('S24a: an EXPLICIT tier:overflow + danger is also upgraded to deep',
+    countCalls(cX, 'overflow:') === 0 && rX.subtasks[0].tier === 'deep')
+
+  const { result: r2, logs: l2, calls: c2 } = await run(
+    { overflow: true, subtasks: [ST('b1', 'builder', ['a.js'])], checks: ['make test'], review: 'never' },
+    {
+      'overflow:': [null],
+      'builder←overflow:': ['did it on builder'],
+      'verify:objective-check': ['ok\nPASS'],
+    })
+  chk('S24b: fallback spawned on triage-builder',
+    c2.find(c => c.label === 'builder←overflow:b1').opts.agentType === 'triage-builder')
+  chk('S24b: the quota cost is announced loudly',
+    l2.some(l => l.includes('Overflow unavailable') && l.includes('SPENDS Claude quota')))
+  chk('S24b: escalation records overflow -> builder',
+    r2.escalations.some(e => e.id === 'b1' && e.from === 'overflow' && e.to === 'builder'))
+  chk('S24b: subtask reported ok on the tier that ran it',
+    statusOf(r2, 'b1') === 'ok' && r2.subtasks[0].tier === 'builder')
+  chk('S24b: routed records the PLAN, ranExternally records what actually reached the CLI',
+    JSON.stringify(r2.overflow) === JSON.stringify({ routed: ['b1'], ranExternally: [], returnedToClaude: ['b1→builder'] }))
+}
+
+// ---- Scenario 25 (wave 10): entry contract for the overflow flag/tier.
+{
+  const badOverflow = await runExpectingThrow({ subtasks: [ST('t1', 'builder', ['a.js'])], overflow: 'yes' })
+  chk('S25: non-boolean overflow throws before any spawn',
+    badOverflow.threw && /args\.overflow must be a boolean/.test(badOverflow.message) && badOverflow.calls.length === 0)
+  chk('S25: the usage text advertises the overflow tier', /overflow/.test(badOverflow.message))
+
+  const { result } = await run(
+    { subtasks: [ST('t1', 'overflow', ['a.js'])], checks: ['make test'], review: 'never' },
+    { 'overflow:': ['ok'], 'verify:objective-check': ['ok\nPASS'] })
+  chk('S25: an explicit tier:"overflow" is accepted without the plan flag',
+    result.subtasks[0].tier === 'overflow' && result.overflow.routed[0] === 't1')
+}
+
+
 console.log('')
 console.log(`RESULT: ${pass} passed, ${fail} failed`)
 process.exit(fail > 0 ? 1 : 0)

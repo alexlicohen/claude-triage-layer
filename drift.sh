@@ -1,6 +1,6 @@
 #!/bin/bash
 # Compare the installed copies under ~/.claude (or $CLAUDE_DIR) against this
-# repo, file-by-file, for: the 6 agents, statusline.sh, workflows/triage-exec.js,
+# repo, file-by-file, for: the 7 agents, statusline.sh, workflows/triage-exec.js,
 # triage.md. Prints one of `same` / `MISSING (not installed)` / `FORKED` per
 # file (or `forked (expected)` for files listed in .driftignore).
 #
@@ -62,7 +62,18 @@ check_file "statusline.sh" "$CLAUDE_DIR/statusline.sh"
 check_file "workflows/triage-exec.js" "$CLAUDE_DIR/workflows/triage-exec.js"
 check_file "scripts/triage-usage.sh" "$CLAUDE_DIR/scripts/triage-usage.sh"
 check_file "scripts/triage-stats.sh" "$CLAUDE_DIR/scripts/triage-stats.sh"
+check_file "scripts/triage-cache-segment.sh" "$CLAUDE_DIR/scripts/triage-cache-segment.sh"
+check_file "scripts/agy-run.sh" "$CLAUDE_DIR/scripts/agy-run.sh"
 check_file "triage.md" "$CLAUDE_DIR/triage.md"
+
+# Warn-only: a forced subagent model silently collapses every tier onto one model, so
+# the installed files can be byte-identical while the routing they encode is inert. This
+# is NOT drift — it never touches UNEXPECTED_DRIFT or the exit code. Deliberately jq-free
+# (drift.sh has no jq dependency): a grep for the key name in settings.json is enough.
+if [ -n "${CLAUDE_CODE_SUBAGENT_MODEL_FORCE:-}" ] || \
+   { [ -f "$CLAUDE_DIR/settings.json" ] && grep -q 'CLAUDE_CODE_SUBAGENT_MODEL_FORCE' "$CLAUDE_DIR/settings.json"; }; then
+  echo "⚠ CLAUDE_CODE_SUBAGENT_MODEL_FORCE is set — every tier collapses onto one model; per-tier routing is inert."
+fi
 
 if [ "$UNEXPECTED_DRIFT" -ne 0 ]; then
   echo ""
