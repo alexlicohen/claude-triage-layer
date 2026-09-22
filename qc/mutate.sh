@@ -47,7 +47,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18"
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -90,6 +90,11 @@ mut_file() {
     16) echo "workflows/triage-exec.js" ;;
     17) echo "workflows/triage-exec.js" ;;
     18) echo "install.sh" ;;
+    19) echo "install.sh" ;;
+    20) echo "install.sh" ;;
+    21) echo "uninstall.sh" ;;
+    22) echo "workflows/triage-exec.js" ;;
+    23) echo "workflows/triage-exec.js" ;;
     *) echo "" ;;
   esac
 }
@@ -114,6 +119,11 @@ mut_desc() {
     16) echo "triage-exec.js: danger-zone routing no longer covers the overflow tier, so overflow:true sends danger subtasks off-vendor" ;;
     17) echo "triage-exec.js: a failed overflow subtask is retried sideways on builder instead of up on the Claude deep tier" ;;
     18) echo "install.sh: neuter check_force_override (the CLAUDE_CODE_SUBAGENT_MODEL_FORCE warning never prints)" ;;
+    19) echo "install.sh: neuter is_legacy_subagent_model (a previous installer default is never upgraded, dry-run never says so)" ;;
+    20) echo "install.sh: the settings merge reverts to set-only-when-unset (dry-run promises an upgrade the write never makes)" ;;
+    21) echo "uninstall.sh: drop LEGACY_SUBAGENT_MODELS from the removal set (an old install's subagent model is left behind)" ;;
+    22) echo "triage-exec.js: remove the deep@max rung (an ESCALATE on a below-max deep attempt goes straight to Fable)" ;;
+    23) echo "triage-exec.js: runFable() always takes the deep@max fallback (Fable unavailable after a failed deep@max re-runs it)" ;;
     *) echo "" ;;
   esac
 }
@@ -122,8 +132,8 @@ mut_desc() {
 # "scenarios" (test/workflow-scenarios.mjs) or "agyrun" (test/agy-run.sh).
 mut_suite() {
   case "$1" in
-    1|2|3|4|5|6|10|12|18) echo "roundtrip" ;;
-    7|8|9|11|16|17) echo "scenarios" ;;
+    1|2|3|4|5|6|10|12|18|19|20|21) echo "roundtrip" ;;
+    7|8|9|11|16|17|22|23) echo "scenarios" ;;
     13|14|15) echo "agyrun" ;;
     *) echo "" ;;
   esac
@@ -344,11 +354,12 @@ MUT16
       # triage-exec.js: a failed overflow subtask is re-run on builder (sideways,
       # still a cheap tier) instead of returning to the Claude deep tier. The
       # objective check has already said the off-vendor model got it wrong.
+      # Anchor: redoStep()'s overflow arm (the ladder's single owner since wave 11).
       cat > "$rep" <<'MUT17'
-    const tier = r.tier === 'overflow' ? 'builder' : (isEscalate ? nextTier(r.tier) : r.tier) // MUTATED: sideways to builder
+  if (r.tier === 'overflow') return { tier: 'builder', effort: r.subtask.effort, reason: 'mutated' } // MUTATED: sideways to builder
 MUT17
       mut_replace_block "$target" \
-        "    const tier = r.tier === 'overflow' ? 'deep' : (isEscalate ? nextTier(r.tier) : r.tier)" 1 "$rep"
+        "  if (r.tier === 'overflow') return { tier: 'deep'," 1 "$rep"
       ;;
     18)
       # install.sh: check_force_override returns before warning about either
@@ -360,6 +371,48 @@ check_force_override() { # MUTATED: FORCE warning suppressed
   return 0
 MUT18
       mut_replace_block "$target" 'check_force_override() {' 1 "$rep"
+      ;;
+    19)
+      # install.sh: the single owner of the legacy-default decision always answers
+      # "not legacy", so a settings.json still at an old installer default keeps it
+      # forever. Opening-line anchor, as in 18, so the loop body can change freely.
+      cat > "$rep" <<'MUT19'
+is_legacy_subagent_model() { # MUTATED: legacy upgrade disabled
+  return 1
+MUT19
+      mut_replace_block "$target" 'is_legacy_subagent_model() {' 1 "$rep"
+      ;;
+    20)
+      # install.sh: the jq merge loses its upgrade arm and goes back to the
+      # pre-migration "only when unset" line. The helper still says "legacy", so
+      # --dry-run keeps promising an upgrade the real write never performs.
+      cat > "$rep" <<'MUT20'
+  (if (.env.CLAUDE_CODE_SUBAGENT_MODEL // null) == null then .env.CLAUDE_CODE_SUBAGENT_MODEL = $m else . end)
+MUT20
+      mut_replace_block "$target" \
+        '  (if (.env.CLAUDE_CODE_SUBAGENT_MODEL // null) == null or $up == "1" then' 1 "$rep"
+      ;;
+    21)
+      # uninstall.sh: the removal set shrinks to the CURRENT default only, so an
+      # install made by an older installer leaves its subagent model behind.
+      cat > "$rep" <<'MUT21'
+    | [$m] as $ours_sub
+MUT21
+      mut_replace_block "$target" \
+        '    | ([$m] + ($legacy | split(" ") | map(select(length > 0)))) as $ours_sub' 1 "$rep"
+      ;;
+    22)
+      # triage-exec.js: delete redoStep()'s deep@max arm. An ESCALATE on a deep
+      # attempt below max effort then falls through to nextTier() and spawns Fable
+      # directly — the rubric's "only from a failed Opus@max attempt" is lost.
+      mut_delete_block "$target" "  if (r.tier === 'deep' && !ranMax(r)) return { tier: 'deep', effort: 'max'," 1
+      ;;
+    23)
+      # triage-exec.js: runFable()'s afterMax guard never fires, so Fable being
+      # unavailable after a failed deep@max attempt re-runs that same deep@max
+      # attempt as the "fallback" (the duplicate the guard exists to prevent).
+      printf '  if (false) { // MUTATED: deep@max fallback always taken\n' > "$rep"
+      mut_replace_block "$target" '  if (afterMax) {' 1 "$rep"
       ;;
     *)
       return 1
@@ -393,8 +446,13 @@ verify_mutation() {
     14) ! grep -qF 'agy returned an empty response' "$target" && grep -qF 'agy tool calls were denied' "$target" ;;
     15) grep -qF 'MUTATED: substring match' "$target" && ! grep -qF '*/"$name"/*)' "$target" ;;
     16) grep -qF 'MUTATED: overflow dropped from the danger guard' "$target" && ! grep -qF "wanted === 'builder' || wanted === 'overflow'" "$target" ;;
-    17) grep -qF 'MUTATED: sideways to builder' "$target" && ! grep -qF "r.tier === 'overflow' ? 'deep'" "$target" ;;
+    17) grep -qF 'MUTATED: sideways to builder' "$target" && ! grep -qF "if (r.tier === 'overflow') return { tier: 'deep'," "$target" ;;
     18) grep -qF 'MUTATED: FORCE warning suppressed' "$target" ;;
+    19) grep -qF 'MUTATED: legacy upgrade disabled' "$target" ;;
+    20) ! grep -qF 'or $up == "1"' "$target" && grep -qF '(if (.env.CLAUDE_CODE_SUBAGENT_MODEL // null) == null then .env.CLAUDE_CODE_SUBAGENT_MODEL = $m else . end)' "$target" ;;
+    21) grep -qF '| [$m] as $ours_sub' "$target" && ! grep -qF '($legacy | split(" ")' "$target" ;;
+    22) ! grep -qF "effort: 'max', owesFable: true" "$target" && grep -qF 'function redoStep(r, isEscalate) {' "$target" ;;
+    23) grep -qF 'MUTATED: deep@max fallback always taken' "$target" && ! grep -qF '  if (afterMax) {' "$target" ;;
     *) return 1 ;;
   esac
 }

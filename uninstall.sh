@@ -5,7 +5,8 @@
 # `effortLevel`, and `statusLine` are NEVER touched — the installer does not write
 # them, so there is nothing of ours to revert. The two settings keys it does own
 # (env.CLAUDE_CODE_SUBAGENT_MODEL, subagentPromptCacheTtl) are removed only while
-# they still hold the values we set; a value you changed is yours and is left alone.
+# they still hold a value we set (for the subagent model: the current default or any
+# previous one); a value you changed is yours and is left alone.
 set -euo pipefail
 
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
@@ -13,9 +14,11 @@ SETTINGS="$CLAUDE_DIR/settings.json"
 PREINSTALL="$CLAUDE_DIR/triage-preinstall.json"   # legacy artifact of pre-wave-9 installs
 AGENTS="triage-quick-task triage-builder triage-deep-reasoner triage-reviewer triage-cross-reviewer triage-fable-architect triage-overflow"
 
-# The two settings.json keys this layer owns — must match install.sh.
-SUBAGENT_MODEL="claude-opus-5"
+# The two settings.json keys this layer owns, and every previous installer default
+# of the subagent model — must match install.sh (test/roundtrip.sh case N asserts it).
+SUBAGENT_MODEL="claude-opus-5-5"
 SUBAGENT_CACHE_TTL="1h"
+LEGACY_SUBAGENT_MODELS="claude-opus-5"
 
 tmp=""
 trap 'rm -f "${tmp:-}"' EXIT
@@ -62,13 +65,15 @@ rm -f "$CLAUDE_DIR/workflows/triage-exec.js" "$CLAUDE_DIR/workflows/triage-run.j
 #     was left as `ask` or converted to `deny`, and any stale SubagentStop entry from
 #     the retired verify hook (for older local checkouts that wired one).
 # 2c. Remove the two settings keys the installer owns — but ONLY while they still hold
-#     the values it wrote. Repoint the subagent model or change the cache TTL and it is
-#     your setting now, so it stays. An `env` object left empty by the removal is
+#     the values it wrote (current or a previous installer default, for the subagent
+#     model). Repoint the subagent model or change the cache TTL and it is your
+#     setting now, so it stays. An `env` object left empty by the removal is
 #     deleted rather than left behind as `{}`.
 if [ -f "$SETTINGS" ]; then
   tmp=$(mktemp)
   jq --arg hook "$CLAUDE_DIR/hooks/triage-verify.sh" \
-     --arg m "$SUBAGENT_MODEL" --arg ttl "$SUBAGENT_CACHE_TTL" '
+     --arg m "$SUBAGENT_MODEL" --arg ttl "$SUBAGENT_CACHE_TTL" \
+     --arg legacy "$LEGACY_SUBAGENT_MODELS" '
     ["Agent(triage-quick-task)","Agent(triage-builder)","Agent(triage-deep-reasoner)","Agent(triage-reviewer)","Agent(triage-cross-reviewer)","Agent(triage-overflow)"] as $workers
     | ["Agent(triage-fable-architect)"] as $fable
     | (if .permissions.allow then .permissions.allow -= $workers else . end)
@@ -81,7 +86,9 @@ if [ -f "$SETTINGS" ]; then
     | (if .hooks.SubagentStop then .hooks.SubagentStop |= map(select((.hooks // [] | map(.command) | index($hook)) | not)) else . end)
     | (if (.hooks.SubagentStop // []) == [] then del(.hooks.SubagentStop) else . end)
     | (if (.hooks // {}) == {} then del(.hooks) else . end)
-    | (if (.env.CLAUDE_CODE_SUBAGENT_MODEL // null) == $m then del(.env.CLAUDE_CODE_SUBAGENT_MODEL) else . end)
+    | ([$m] + ($legacy | split(" ") | map(select(length > 0)))) as $ours_sub
+    | (.env.CLAUDE_CODE_SUBAGENT_MODEL // null) as $cur_sub
+    | (if any($ours_sub[]; . == $cur_sub) then del(.env.CLAUDE_CODE_SUBAGENT_MODEL) else . end)
     | (if (.env // null) == {} then del(.env) else . end)
     | (if (.subagentPromptCacheTtl // null) == $ttl then del(.subagentPromptCacheTtl) else . end)
   ' "$SETTINGS" > "$tmp" && apply_file "$tmp" "$SETTINGS"

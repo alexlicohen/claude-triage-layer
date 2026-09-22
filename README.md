@@ -10,7 +10,7 @@ No app, no server, no API keys. It's seven subagent definitions, one instruction
 
 ## Why this exists
 
-Top-tier models (Fable 5.1) are excellent but burn subscription quota ~3–5× faster than Sonnet. Two facts shape the design:
+Frontier models burn subscription quota several times faster than Sonnet (Fable 5.1 lists at 5× Sonnet 5's price, Opus 5.5 at 2×), and every orchestrator turn re-reads its whole context. Two facts shape the design:
 
 1. **A standalone router (Agent SDK / API) cannot use subscription auth** — Anthropic's policy requires API keys for SDK-built agents. The only subscription-billed implementation is configuration *inside* Claude Code.
 2. **Claude Code has no automatic prompt router** — nothing can swap the main-loop model per prompt. So triage is done by the orchestrating model itself, following a rubric, delegating to subagents pinned to cheaper/stronger models.
@@ -27,9 +27,9 @@ You ──► Main loop: your session model (your choice — the installer never
                      │  executes, verifies, remediates, escalates
                      ├──► triage-quick-task      Haiku  · low    renames, lookups, boilerplate
                      ├──► triage-builder         Sonnet · medium well-specified features/fixes
-                     ├──► triage-deep-reasoner   Opus   · xhigh  hard debugging, design, fan-out
-                     ├──► triage-fable-architect Fable  · xhigh  hardest problems (with ⚠ notice)
-                     ├──► triage-reviewer        Opus   · high   read-only quality gate
+                     ├──► triage-deep-reasoner   Opus   · high   hard debugging, design, fan-out
+                     ├──► triage-fable-architect Fable  · xhigh  last resort after deep@max (with ⚠ notice)
+                     ├──► triage-reviewer        Opus   · medium read-only quality gate
                      ├──► triage-cross-reviewer  → external CLI  cross-vendor second opinion (5 read-only modes)
                      └──► triage-overflow        → external CLI  overflow worker (edits the repo)
                      ▼
@@ -38,7 +38,7 @@ You ──► Main loop: your session model (your choice — the installer never
 
 - **Routing**: the orchestrator classifies each task by difficulty *before* delegating (no wasteful "try cheap first" ladder-climbing) and parallelizes independent subtasks. Classification stays in the main loop — it is the best classifier in the system and already holds the context, so no spawn is spent re-deriving a plan.
 - **Verification**: after a worker returns code, the orchestrator runs the project's own tests/lint/build before accepting. No objective check available? The read-only Opus reviewer reads the diff — far cheaper than redoing the work.
-- **Escalation**: workers reply `ESCALATE:` when out of their depth; failed verification escalates one tier up with the failed attempt as context. Escalation to Fable is automatic but always announced: `⚠ Escalating to Fable: <reason>`.
+- **Escalation**: workers reply `ESCALATE:` when out of their depth; failed verification escalates one tier up with the failed attempt as context. Escalation to Fable is automatic but always announced (`⚠ Escalating to Fable: <reason>`), and `triage-exec` first re-runs a deep-tier subtask once at `max` effort unless the plan already set `max`.
 - **Seam checks & targeted remediation**: `triage-exec` runs both the test/lint gates and a reviewer on correctness-critical (`danger`) subtasks, and on failure re-runs only the subtasks implicated by the failure output — re-running everything only when it can't attribute the failure. A `danger` subtask planned onto a cheap tier is upgraded to the deep tier, loudly.
 - **Visibility**: a one-line per-tier token tally on request (say `usage report`) — computed deterministically from the session's on-disk subagent transcripts by `scripts/triage-usage.sh`, not recalled from model memory — and an optional statusline (copied, not wired — see Install) showing `model · ctx N%` that turns red at ≥60% context, plus live `ccusage` cost/burn when `ccusage` is installed.
 - **Conveniences**: each implementation tier (not the read-only reviewer) carries `memory: project` (per-codebase memory across sessions); `triage-exec` runs delegate→verify→remediate→escalate as one workflow call; and the installer adds harness-level `permissions` rules — an `ask` confirm-gate before any Fable spawn, plus an allowlist for the cheaper worker spawns so fan-out doesn't prompt. See `triage.md`.
@@ -47,7 +47,7 @@ You ──► Main loop: your session model (your choice — the installer never
 
 - Claude Code with a **Pro or Max subscription** login (this is what makes it subscription-billed)
 - `jq` (for the installer and statusline): `brew install jq`
-- **Your orchestrator model is your choice** — the installer no longer sets `model` or `effortLevel`. Pick with `/model`: a frontier model plans best, and the tiers absorb the volume either way. On a Pro plan, note that 1M-context Opus variants bill extra usage credits.
+- **Your orchestrator model is your choice** — the installer no longer sets `model` or `effortLevel`. Pick with `/model`: Opus 5.5 is the recommended orchestrator (Fable 5.1-level on most work at 40% of its per-token price, no 30-day retention requirement); the tiers absorb the volume either way. On a Pro plan, note that 1M-context Opus variants bill extra usage credits.
 - **Version**: built and verified against Claude Code **2.1.272**. The harness permission gate needs **≥ 2.1.186** and per-agent memory needs **≥ 2.1.172**; on older builds the permission rules simply no-op and per-agent memory is ignored. `install.sh` checks `claude --version` itself and prints a specific warning per shortfall (or "could not verify" if `claude` is missing/unparseable) — warn-only, it never blocks the install.
 
 ## Install
@@ -61,7 +61,7 @@ Then **start a new Claude Code session** (config loads at startup). The installe
 
 - copies the 7 agents to `~/.claude/agents/`, the rubric to `~/.claude/triage.md`, the statusline script, the usage/stats scripts, `scripts/agy-run.sh`, and the `triage-exec` workflow (`~/.claude/workflows/`)
 - appends one line — `@triage.md` — to your global `~/.claude/CLAUDE.md` (append-only; never overwrites)
-- adds the Fable confirm-gate / worker-allowlist `permissions` rules, and sets two keys **only if they are unset**: `env.CLAUDE_CODE_SUBAGENT_MODEL` (so an un-pinned subagent spawn runs on Opus, not on your — possibly much pricier — session model) and `subagentPromptCacheTtl: "1h"`
+- adds the Fable confirm-gate / worker-allowlist `permissions` rules, and sets two keys **only if they are unset**: `env.CLAUDE_CODE_SUBAGENT_MODEL` (`claude-opus-5-5`, so an un-pinned subagent spawn runs on Opus, not on your — possibly much pricier — session model; a value still holding an earlier installer default such as `claude-opus-5` is upgraded, any other value is left alone) and `subagentPromptCacheTtl: "1h"`
 - removes a superseded `~/.claude/workflows/triage-run.js` from an older install, but only when its bytes match a version this repo shipped; a copy you edited is left alone with a note
 - warns if `ANTHROPIC_API_KEY` is set (see Caveats)
 
@@ -79,7 +79,7 @@ Two flags, composable: `./install.sh --dry-run` prints the full mutation plan (e
 5. In `~/.claude/settings.json`:
    ```json
    {
-     "env": { "CLAUDE_CODE_SUBAGENT_MODEL": "claude-opus-5" },
+     "env": { "CLAUDE_CODE_SUBAGENT_MODEL": "claude-opus-5-5" },
      "subagentPromptCacheTtl": "1h"
    }
    ```

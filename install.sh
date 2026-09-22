@@ -15,7 +15,9 @@
 # `model`, `effortLevel`, or `statusLine`. Those are your session preferences,
 # not this layer's to own — pick your orchestrator model yourself. It writes only
 # what the layer actually needs to function (subagent default model, subagent
-# prompt-cache TTL, the Agent(...) permission rules), and only when unset.
+# prompt-cache TTL, the Agent(...) permission rules), and only when unset — the one
+# exception being a subagent model still at a PREVIOUS installer default, which is
+# upgraded (see LEGACY_SUBAGENT_MODELS).
 # The two flags compose: --dry-run --files-only plans only the file ops.
 set -euo pipefail
 
@@ -26,8 +28,23 @@ DRIFTIGNORE="$REPO_DIR/.driftignore"
 
 # The two settings.json keys this layer owns. Both are written ONLY when unset, and
 # uninstall removes them ONLY when they still equal these values.
-SUBAGENT_MODEL="claude-opus-5"
+SUBAGENT_MODEL="claude-opus-5-5"
 SUBAGENT_CACHE_TTL="1h"
+# Every PREVIOUS value of SUBAGENT_MODEL this installer shipped (space-separated).
+# A settings.json still holding one of these was written by us, not chosen by you,
+# so install upgrades it to SUBAGENT_MODEL and uninstall removes it. Append the old
+# default here whenever SUBAGENT_MODEL changes. uninstall.sh keeps an identical copy
+# (test/roundtrip.sh case N asserts the two match).
+LEGACY_SUBAGENT_MODELS="claude-opus-5"
+
+# Single owner of the legacy-default decision: is $1 a previous installer default?
+is_legacy_subagent_model() {
+  local v
+  for v in $LEGACY_SUBAGENT_MODELS; do
+    [ "$1" = "$v" ] && return 0
+  done
+  return 1
+}
 
 DRY_RUN=0
 FILES_ONLY=0
@@ -285,6 +302,8 @@ if [ "$DRY_RUN" -eq 1 ]; then
   cur_sub=$(printf '%s' "$CUR_SETTINGS_JSON" | jq -r '.env.CLAUDE_CODE_SUBAGENT_MODEL // "null"')
   if [ "$cur_sub" = "null" ]; then
     echo "  env.CLAUDE_CODE_SUBAGENT_MODEL: would set -> $SUBAGENT_MODEL"
+  elif is_legacy_subagent_model "$cur_sub"; then
+    echo "  env.CLAUDE_CODE_SUBAGENT_MODEL: would upgrade $cur_sub -> $SUBAGENT_MODEL (previous installer default)"
   else
     echo "  env.CLAUDE_CODE_SUBAGENT_MODEL: already set to $cur_sub — left as is"
   fi
@@ -320,17 +339,25 @@ fi
 #    yours always wins and a re-run never overwrites it:
 #      env.CLAUDE_CODE_SUBAGENT_MODEL — the default model for any subagent spawn that
 #        does not pin one. This is what keeps an un-pinned Agent()/workflow agent()
-#        call off the (expensive) orchestrator tier.
+#        call off the (expensive) orchestrator tier. One exception: a value equal to
+#        a PREVIOUS installer default (LEGACY_SUBAGENT_MODELS) was ours, not yours,
+#        and is upgraded to SUBAGENT_MODEL.
 #      subagentPromptCacheTtl — extended prompt-cache lifetime for subagents, so a
 #        fan-out of workers sharing a brief re-reads a warm cache.
-#    No snapshot is taken: nothing here overwrites a pre-existing value, so there is
-#    nothing to restore. model/effortLevel/statusLine are never written at all.
+#    No snapshot is taken: the only value ever overwritten is one this installer
+#    wrote itself. model/effortLevel/statusLine are never written at all.
 [ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
+cur_sub=$(jq -r '.env.CLAUDE_CODE_SUBAGENT_MODEL // "null"' "$SETTINGS")
+upgrade_sub=0
+if is_legacy_subagent_model "$cur_sub"; then upgrade_sub=1; fi
 tmp=$(mktemp)
-jq --arg m "$SUBAGENT_MODEL" --arg ttl "$SUBAGENT_CACHE_TTL" '
-  (if (.env.CLAUDE_CODE_SUBAGENT_MODEL // null) == null then .env.CLAUDE_CODE_SUBAGENT_MODEL = $m else . end)
+jq --arg m "$SUBAGENT_MODEL" --arg ttl "$SUBAGENT_CACHE_TTL" --arg up "$upgrade_sub" '
+  (if (.env.CLAUDE_CODE_SUBAGENT_MODEL // null) == null or $up == "1" then .env.CLAUDE_CODE_SUBAGENT_MODEL = $m else . end)
   | (if (.subagentPromptCacheTtl // null) == null then .subagentPromptCacheTtl = $ttl else . end)
 ' "$SETTINGS" > "$tmp" && apply_settings "$tmp"
+if [ "$upgrade_sub" -eq 1 ]; then
+  echo "env.CLAUDE_CODE_SUBAGENT_MODEL: upgraded $cur_sub -> $SUBAGENT_MODEL (previous installer default)"
+fi
 
 # 3b. Harness-level routing rules (idempotent; appends only what's missing and
 #     preserves existing rules + order). Enforces the rubric at the permission layer:

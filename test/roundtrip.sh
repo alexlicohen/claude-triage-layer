@@ -33,6 +33,9 @@
 #   M - CLAUDE_CODE_SUBAGENT_MODEL_FORCE (collapses every tier onto one model):
 #       install warns from the environment AND from settings.json env, never
 #       edits the key, and drift.sh warns without changing its exit code.
+#   N - a subagent model still at a PREVIOUS installer default (claude-opus-5)
+#       is upgraded by install (dry-run says "would upgrade"), removed by
+#       uninstall, and install.sh/uninstall.sh carry identical owned values.
 #   Plus two direct statusline.sh checks (non-numeric / numeric pct).
 set -u
 
@@ -121,7 +124,7 @@ chk "A6: effortLevel left exactly as the user had it (never written)" \
 chk "A6b: statusLine left exactly as the user had it (never written)" \
   '[ "$(jq -r ".statusLine.command" "$A_DIR/settings.json")" = "/old/statusline.sh" ]'
 chk "A6c: env.CLAUDE_CODE_SUBAGENT_MODEL set (was unset)" \
-  '[ "$(jq -r ".env.CLAUDE_CODE_SUBAGENT_MODEL" "$A_DIR/settings.json")" = "claude-opus-5" ]'
+  '[ "$(jq -r ".env.CLAUDE_CODE_SUBAGENT_MODEL" "$A_DIR/settings.json")" = "claude-opus-5-5" ]'
 chk "A6d: subagentPromptCacheTtl set (was unset)" \
   '[ "$(jq -r ".subagentPromptCacheTtl" "$A_DIR/settings.json")" = "1h" ]'
 chk "A7: permissions.allow has 7 entries after install (1 pre-existing + 6 workers)" \
@@ -204,7 +207,7 @@ chk "C2: settings.json is still a symlink after install" '[ -L "$C_DIR/settings.
 chk "C3: symlink still points at the original target file" \
   '[ "$(readlink "$C_DIR/settings.json")" = "$C_REAL" ]'
 chk "C4: the symlink target received the merge" \
-  '[ "$(jq -r ".env.CLAUDE_CODE_SUBAGENT_MODEL" "$C_REAL")" = "claude-opus-5" ]'
+  '[ "$(jq -r ".env.CLAUDE_CODE_SUBAGENT_MODEL" "$C_REAL")" = "claude-opus-5-5" ]'
 
 # =============================================================================
 # Case D — invalid settings.json: install must abort before ANY mutation
@@ -548,6 +551,72 @@ M4D_RC=$?
 chk "M4d: with FORCE unset the warning stays silent (env.CLAUDE_CODE_SUBAGENT_MODEL must not match)" \
   '! grep -q "CLAUDE_CODE_SUBAGENT_MODEL_FORCE" "$M4B_OUT"'
 chk "M4e: that silent run still exits 0" '[ "$M4D_RC" -eq 0 ]'
+
+# =============================================================================
+# Case N — a subagent model still at a PREVIOUS installer default. A value in
+# LEGACY_SUBAGENT_MODELS was written by an older install.sh, not chosen by the
+# user: install upgrades it (dry-run announces it), uninstall removes it even with
+# no re-install in between. Any other value is the user's and stays (case K; N6
+# pins the dry-run wording for it). The two scripts keep separate copies of the
+# owned values, so N8 asserts they match.
+# =============================================================================
+N_DIR=$(new_sandbox)
+mkdir -p "$N_DIR"
+cat > "$N_DIR/settings.json" <<'EOF'
+{
+  "env": {"CLAUDE_CODE_SUBAGENT_MODEL": "claude-opus-5", "MY_OWN_VAR": "keepme"}
+}
+EOF
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+N_SETTINGS_BEFORE=$(cat "$N_DIR/settings.json")
+N_DRY_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $N_DRY_OUT"
+CLAUDE_DIR="$N_DIR" "$REPO_DIR/install.sh" --dry-run >"$N_DRY_OUT" 2>&1
+chk "N1: --dry-run over a previous installer default prints the upgrade line" \
+  'grep -qF "env.CLAUDE_CODE_SUBAGENT_MODEL: would upgrade claude-opus-5 -> claude-opus-5-5" "$N_DRY_OUT"'
+chk "N2: that --dry-run still writes nothing" \
+  '[ "$(cat "$N_DIR/settings.json")" = "$N_SETTINGS_BEFORE" ]'
+
+N_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $N_OUT"
+CLAUDE_DIR="$N_DIR" "$REPO_DIR/install.sh" >"$N_OUT" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+N_RC=$?
+chk "N3: install exits 0 over a previous installer default" '[ "$N_RC" -eq 0 ]'
+chk "N4: a previous installer default (claude-opus-5) is upgraded to claude-opus-5-5" \
+  '[ "$(jq -r ".env.CLAUDE_CODE_SUBAGENT_MODEL" "$N_DIR/settings.json")" = "claude-opus-5-5" ]'
+chk "N5: the upgrade is announced" \
+  'grep -qF "upgraded claude-opus-5 -> claude-opus-5-5" "$N_OUT"'
+chk "N5b: an unrelated env var survives the upgrade" \
+  '[ "$(jq -r ".env.MY_OWN_VAR" "$N_DIR/settings.json")" = "keepme" ]'
+
+# A user-chosen (non-legacy) value: the dry-run keeps the "left as is" wording and
+# never claims an upgrade. (Install/uninstall leaving it alone is K1/K3.)
+N6_DIR=$(new_sandbox)
+mkdir -p "$N6_DIR"
+echo '{"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "claude-sonnet-5"}}' > "$N6_DIR/settings.json"
+N6_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $N6_OUT"
+CLAUDE_DIR="$N6_DIR" "$REPO_DIR/install.sh" --dry-run >"$N6_OUT" 2>&1
+chk "N6: --dry-run over a user value says 'already set ... left as is', never 'would upgrade'" \
+  'grep -qF "env.CLAUDE_CODE_SUBAGENT_MODEL: already set to claude-sonnet-5" "$N6_OUT" && ! grep -q "would upgrade" "$N6_OUT"'
+
+# Uninstall straight over an OLD install's settings (no re-install in between).
+N7_DIR=$(new_sandbox)
+mkdir -p "$N7_DIR"
+echo '{"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "claude-opus-5"}, "subagentPromptCacheTtl": "1h"}' > "$N7_DIR/settings.json"
+run_uninstall "$N7_DIR" >/dev/null 2>&1
+chk "N7: uninstall removes a previous installer default (and the env object it empties)" \
+  '[ "$(jq "has(\"env\")" "$N7_DIR/settings.json")" = "false" ]'
+
+# install.sh and uninstall.sh each define the owned values; they must agree exactly.
+owned_lines() { grep -E '^(SUBAGENT_MODEL|SUBAGENT_CACHE_TTL|LEGACY_SUBAGENT_MODELS)=' "$1" | sort; }
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+N_INSTALL_OWNED=$(owned_lines "$REPO_DIR/install.sh")
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+N_UNINSTALL_OWNED=$(owned_lines "$REPO_DIR/uninstall.sh")
+chk "N8: install.sh and uninstall.sh define identical SUBAGENT_MODEL / SUBAGENT_CACHE_TTL / LEGACY_SUBAGENT_MODELS" \
+  '[ "$(printf "%s\n" "$N_INSTALL_OWNED" | grep -c .)" -eq 3 ] && [ "$N_INSTALL_OWNED" = "$N_UNINSTALL_OWNED" ]'
 
 # =============================================================================
 # Statusline checks (direct, no install needed)

@@ -35,10 +35,12 @@ const NO_BUDGET = { total: null, remaining: () => Infinity, spent: () => 0 }
 // array of queued responses; a queue exhausting falls back to its last entry. A
 // queued value that is an Error instance is THROWN by agent() instead of returned —
 // simulating the DSL's hard budget ceiling. `budget` overrides the mocked DSL budget
-// global (default: none). Returns {result, logs, calls}.
+// global (default: none). Returns {result, logs, calls, events}; `events` interleaves
+// logs and spawns in order ('log:<msg>' / 'agent:<label>') for announce-before-spawn checks.
 async function run(plan, script, budget = NO_BUDGET) {
   const logs = []
   const calls = [] // { label, prompt, opts }
+  const events = []
   const queues = new Map(Object.entries(script).map(([k, v]) => [k, [...v]]))
 
   function scripted(key) {
@@ -50,6 +52,7 @@ async function run(plan, script, budget = NO_BUDGET) {
   async function agent(prompt, opts = {}) {
     const label = opts.label || '(none)'
     calls.push({ label, prompt, opts })
+    events.push(`agent:${label}`)
     // longest-prefix match against the script keys
     let best
     for (const key of queues.keys()) {
@@ -71,7 +74,7 @@ async function run(plan, script, budget = NO_BUDGET) {
     }
     return out
   }
-  const log = m => logs.push(String(m))
+  const log = m => { logs.push(String(m)); events.push(`log:${m}`) }
   const phase = () => {}
 
   const fn = new AsyncFunction('args', 'log', 'phase', 'agent', 'parallel', 'pipeline', 'budget', src)
@@ -84,7 +87,7 @@ async function run(plan, script, budget = NO_BUDGET) {
     if (e && typeof e === 'object') e.calls = calls
     throw e
   }
-  return { result, logs, calls }
+  return { result, logs, calls, events }
 }
 
 // Capture the throw from a malformed-args run (validation must fire BEFORE any spawn).
@@ -604,6 +607,158 @@ const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).
     { 'overflow:': ['ok'], 'verify:objective-check': ['ok\nPASS'] })
   chk('S25: an explicit tier:"overflow" is accepted without the plan flag',
     result.subtasks[0].tier === 'overflow' && result.overflow.routed[0] === 't1')
+}
+
+// ---- Scenario 26 (wave 11): the deep@max rung. The rubric escalates to Fable only from
+// a failed/escalated Opus@max attempt, and the deep tier defaults below max — so an
+// ESCALATE on a below-max deep attempt buys ONE deep@max attempt before any Fable spawn.
+const deepMaxCalls = calls => calls.filter(c => c.opts.agentType === 'triage-deep-reasoner' && c.opts.effort === 'max')
+const escChain = result => result.escalations.map(e => `${e.from}->${e.to}`).join(',')
+const REVIEW_ESCALATE = 'ESCALATE: core.js approach is wrong'
+
+// (a) deep at its default effort → ESCALATE → deep@max → PASS: Fable is never spawned.
+{
+  const { result, logs, calls } = await run(
+    { subtasks: [ST('core', 'deep', ['core.js'])] },
+    {
+      'deep:': ['did core'],
+      'verify:reviewer': [REVIEW_ESCALATE],
+      'redo:deep@max:': ['redone at max'],
+      'verify:re-review': ['PASS'],
+    })
+  const mx = deepMaxCalls(calls)
+  chk('S26a: exactly one deep@max re-run, on triage-deep-reasoner at effort max',
+    mx.length === 1 && mx[0].label === 'redo:deep@max:core')
+  chk('S26a: the deep@max brief carries the verifier feedback Fable would have got', mx.length > 0 && mx[0].prompt.includes(REVIEW_ESCALATE))
+  chk('S26a: no Fable spawn and no Fable announcement',
+    !calls.some(c => c.opts.agentType === 'triage-fable-architect') && !logs.some(l => l.includes('Escalating to Fable')))
+  chk('S26a: the step is its own escalation entry, deep -> deep@max', escChain(result) === 'deep->deep@max' && result.escalations[0].id === 'core')
+  chk('S26a: green after ONE round; subtask reports deep with 2 attempts',
+    result.failed === false && result.remediation.rounds === 1 &&
+    result.subtasks[0].tier === 'deep' && result.subtasks[0].attempts === 2)
+}
+
+// (b) deep@high → ESCALATE → deep@max still fails (a plain FIX counts) → Fable, announced first.
+{
+  const { result, events, calls } = await run(
+    { subtasks: [ST('core', 'deep', ['core.js'], { effort: 'high' })] },
+    {
+      'deep:': ['did core'],
+      'verify:reviewer': [REVIEW_ESCALATE],
+      'redo:deep@max:': ['redone at max'],
+      'verify:re-review': ['FIX: core.js still drops the edge case', 'PASS'],
+      'redo:fable:': ['fable fixed it'],
+    })
+  const iMax = events.indexOf('agent:redo:deep@max:core')
+  const iFable = events.indexOf('agent:redo:fable:core')
+  const iWarn = events.findIndex(e => e.startsWith('log:⚠ Escalating to Fable: core'))
+  const fable = calls.find(c => c.label === 'redo:fable:core')
+  chk('S26b: the plan ran deep at effort high, then deep@max, then Fable — in that order',
+    (calls.find(c => c.label === 'deep:core') || { opts: {} }).opts.effort === 'high' && iMax > 0 && iFable > iMax)
+  chk('S26b: Fable ran on triage-fable-architect', fable && fable.opts.agentType === 'triage-fable-architect')
+  chk('S26b: ⚠ Escalating to Fable printed AFTER deep@max and BEFORE the Fable spawn', iWarn > iMax && iWarn < iFable)
+  chk('S26b: the Fable brief carries the deep@max attempt\'s failure feedback', !!fable && fable.prompt.includes('still drops the edge case'))
+  chk('S26b: escalations = deep->deep@max, then deep@max->fable', escChain(result) === 'deep->deep@max,deep@max->fable')
+  chk('S26b: the Fable round is re-verified; final green on fable with 3 attempts',
+    countCalls(calls, 'verify:re-review') === 2 && result.failed === false && result.remediation.rounds === 2 &&
+    result.subtasks[0].tier === 'fable' && result.subtasks[0].attempts === 3)
+}
+
+// (c) the plan already set effort:'max' on the deep subtask → straight to Fable.
+{
+  const { result, logs, calls } = await run(
+    { subtasks: [ST('core', 'deep', ['core.js'], { effort: 'max' })] },
+    {
+      'deep:': ['did core at max'],
+      'verify:reviewer': [REVIEW_ESCALATE],
+      'redo:fable:': ['fable did it'],
+      'verify:re-review': ['PASS'],
+    })
+  chk('S26c: no extra deep@max step — deep-reasoner ran once (the plan\'s own max attempt)',
+    countCalls(calls, 'redo:deep@max:') === 0 && calls.filter(c => c.opts.agentType === 'triage-deep-reasoner').length === 1)
+  chk('S26c: straight to Fable, announced', countCalls(calls, 'redo:fable:core') === 1 && logs.some(l => l.startsWith('⚠ Escalating to Fable: core')))
+  chk('S26c: one escalation, recorded from the max rung', escChain(result) === 'deep@max->fable')
+  chk('S26c: one round, green on fable', result.remediation.rounds === 1 && result.failed === false && result.subtasks[0].tier === 'fable')
+}
+
+// (d) Fable unavailable after the deep@max step. Contract: the unavailable→deep@max
+// fallback is SKIPPED (deep@max is the attempt that just failed), logged, and recorded as
+// fable->none; nothing new ran, so there is no re-verify and the deep@max verdict stands.
+{
+  const { result, logs, calls } = await run(
+    { subtasks: [ST('core', 'deep', ['core.js'])] },
+    {
+      'deep:': ['did core'],
+      'verify:reviewer': [REVIEW_ESCALATE],
+      'redo:deep@max:': ['redone at max'],
+      'verify:re-review': ['FIX: core.js still wrong'],
+      'redo:fable:': [null],
+      'redo:deep←fable:': ['MUST NOT RUN'],
+    })
+  chk('S26d: deep@max ran exactly once — the fallback did not re-run it',
+    deepMaxCalls(calls).length === 1 && countCalls(calls, 'redo:deep←fable:') === 0)
+  chk('S26d: Fable was announced and attempted once; the skip is logged',
+    countCalls(calls, 'redo:fable:core') === 1 && logs.some(l => l.startsWith('⚠ Escalating to Fable: core')) &&
+    logs.some(l => l.includes('Fable unavailable') && l.includes('NOT re-run')))
+  chk('S26d: escalations record the skip (to:none), so the report never reads as if Fable ran',
+    escChain(result) === 'deep->deep@max,deep@max->fable,fable->none')
+  chk('S26d: no re-verify of unchanged work — the deep@max verdict stands, failed loudly',
+    countCalls(calls, 'verify:re-review') === 1 && result.failed === true && result.review.verdict === 'FIX')
+  chk('S26d: subtask keeps its deep@max output: deep, 2 attempts, 2 rounds',
+    result.subtasks[0].tier === 'deep' && result.subtasks[0].attempts === 2 && result.remediation.rounds === 2)
+
+  // Same contract from the other entry: a plan-time fable subtask whose Execute spawn fell
+  // back to deep@max, then ESCALATEd → Fable again (no extra max step: it already ran at
+  // max) → unavailable → no second deep@max.
+  const { result: r2, calls: c2 } = await run(
+    { subtasks: [ST('arch', 'fable', ['x.js'])] },
+    {
+      'fable:': [null],
+      'deep←fable:': ['did it on deep at max'],
+      'verify:reviewer': ['ESCALATE: x.js is wrong'],
+      'redo:fable:': [null],
+      'redo:deep←fable:': ['MUST NOT RUN'],
+      'verify:re-review': ['ESCALATE: x.js is wrong'],
+    })
+  chk('S26d: after the Execute fallback, deep@max still runs only once in total',
+    deepMaxCalls(c2).length === 1 && countCalls(c2, 'redo:deep←fable:') === 0 && countCalls(c2, 'redo:fable:arch') === 1)
+  chk('S26d: fallback, re-escalation and skip all on record',
+    escChain(r2) === 'fable->deep,deep@max->fable,fable->none' && r2.failed === true)
+}
+
+// (e) a plain FIX on a below-max deep attempt is a same-rung retry — no deep@max step.
+{
+  const { result, calls } = await run(
+    { subtasks: [ST('core', 'deep', ['core.js'])] },
+    {
+      'deep:': ['did core'],
+      'verify:reviewer': ['FIX: core.js off by one'],
+      'redo:': ['fixed'],
+      'verify:re-review': ['PASS'],
+    })
+  chk('S26e: FIX retries deep at the plan\'s effort, not max, with no escalation entry',
+    countCalls(calls, 'redo:core') === 1 && (calls.find(c => c.label === 'redo:core') || { opts: { effort: '?' } }).opts.effort === undefined &&
+    deepMaxCalls(calls).length === 0 && result.escalations.length === 0 && result.failed === false)
+}
+
+// (f) round 2 is targeted: when the post-deep@max failure names only ANOTHER subtask's
+// file, the deep@max subtask is not sent to Fable (its one extra round would be wasted).
+{
+  const { result, logs, calls } = await run(
+    { subtasks: [ST('core', 'deep', ['core.js']), ST('ui', 'builder', ['ui.js'])] },
+    {
+      'deep:': ['did core'],
+      'builder:': ['did ui'],
+      'verify:reviewer': ['ESCALATE: the approach is wrong overall'],
+      'redo:deep@max:': ['core at max'],
+      'redo:ui': ['ui on deep'],
+      'verify:re-review': ['FIX: ui.js still renders nothing'],
+    })
+  chk('S26f: round 1 took core to deep@max and ui one tier up',
+    escChain(result) === 'deep->deep@max,builder->deep' && deepMaxCalls(calls).length === 1)
+  chk('S26f: failure pinned on ui.js only → no Fable spawn, one round, failed loudly',
+    !calls.some(c => c.opts.agentType === 'triage-fable-architect') && result.remediation.rounds === 1 &&
+    result.failed === true && logs.some(l => l.includes('attributed only to other subtasks')))
 }
 
 
