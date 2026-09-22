@@ -7,3 +7,7 @@
 - **Tests must have teeth:** new guards get a mutation in `qc/mutate.sh`'s catalog plus a covering test. Anchors in the catalog are content-based — refresh them when refactoring an anchored region.
 - **CHANGELOG.md by wave**, with commit hashes, check-count deltas, and honest deferred-items lists.
 - **Direct pushes to `main` are blocked** by the local permission mode — merge via PR (`gh pr create` + `gh pr merge`).
+
+## Memory
+Durable context: `PROJECT_MEMORY.md` at the repo root (local-only, untracked — see `.gitignore`).
+Operational facts, decisions and rationale only. Read before editing; append dated entries.
