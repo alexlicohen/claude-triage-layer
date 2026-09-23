@@ -47,7 +47,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27"
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -99,6 +99,9 @@ mut_file() {
     25) echo "scripts/ext-run.sh" ;;
     26) echo "scripts/ext-run.sh" ;;
     27) echo "scripts/ext-run.sh" ;;
+    28) echo "workflows/triage-exec.js" ;;
+    29) echo "workflows/triage-exec.js" ;;
+    30) echo "workflows/triage-exec.js" ;;
     *) echo "" ;;
   esac
 }
@@ -120,8 +123,8 @@ mut_desc() {
     13) echo "ext-run.sh: drop the denied_actions gate (a run whose tool calls were all denied is reported as a pass)" ;;
     14) echo "ext-run.sh: drop the empty-response gate (exit 0 + status SUCCESS alone is treated as usable output)" ;;
     15) echo "ext-run.sh: weaken the deny-list path match from path-component equality to substring (a sibling repo such as clip-creators-lab is refused too)" ;;
-    16) echo "triage-exec.js: danger-zone routing no longer covers the overflow tier, so overflow:true sends danger subtasks off-vendor" ;;
-    17) echo "triage-exec.js: a failed overflow subtask is retried sideways on builder instead of up on the Claude deep tier" ;;
+    16) echo "triage-exec.js: danger-zone routing no longer reroutes agy, so overflow:true / vendor agy sends danger subtasks off-vendor" ;;
+    17) echo "triage-exec.js: an external subtask whose CLI produced no work falls back to Claude builder instead of the SAME level" ;;
     18) echo "install.sh: neuter check_force_override (the CLAUDE_CODE_SUBAGENT_MODEL_FORCE warning never prints)" ;;
     19) echo "install.sh: neuter is_legacy_subagent_model (a previous installer default is never upgraded, dry-run never says so)" ;;
     20) echo "install.sh: the settings merge reverts to set-only-when-unset (dry-run promises an upgrade the write never makes)" ;;
@@ -132,6 +135,9 @@ mut_desc() {
     25) echo "ext-run.sh: drop the codex empty-response gate (rc 0 with an empty -o final message is treated as usable output)" ;;
     26) echo "ext-run.sh: the deny check is skipped for codex (clip-creator / .codex-deny no longer refuse)" ;;
     27) echo "ext-run.sh: drop -c sandbox_workspace_write.exclude_slash_tmp=true (codex workspace-write can write anywhere under /tmp)" ;;
+    28) echo "triage-exec.js: the codex danger effort floor is dropped (danger work runs on codex below effort high)" ;;
+    29) echo "triage-exec.js: a failed external subtask is retried sideways on the same vendor instead of on Claude" ;;
+    30) echo "triage-exec.js: crossReview 'both' spawns only one cross-reviewer (codex never asked)" ;;
     *) echo "" ;;
   esac
 }
@@ -141,7 +147,7 @@ mut_desc() {
 mut_suite() {
   case "$1" in
     1|2|3|4|5|6|10|12|18|19|20|21) echo "roundtrip" ;;
-    7|8|9|11|16|17|22|23) echo "scenarios" ;;
+    7|8|9|11|16|17|22|23|28|29|30) echo "scenarios" ;;
     13|14|15|24|25|26|27) echo "extrun" ;;
     *) echo "" ;;
   esac
@@ -348,26 +354,25 @@ MUT15
         '      */"$name"/*) die "REFUSED: $p is under a deny-listed repo' 1 "$rep"
       ;;
     16)
-      # triage-exec.js: drop `wanted === 'overflow'` from the danger-zone guard.
-      # Because the overflow rewrite runs BEFORE this line, a danger builder
-      # subtask under overflow:true already reads as 'overflow' here — so losing
-      # that arm silently sends correctness-critical work off-vendor.
+      # triage-exec.js: the danger guard's agy arm never fires. A danger builder
+      # subtask on agy (overflow:true, tier overflow, vendor agy) then falls through
+      # to the Claude arm, which lifts the LEVEL to deep but leaves the vendor on
+      # agy — correctness-critical work goes off-vendor.
       cat > "$rep" <<'MUT16'
-  const tier = (danger && (wanted === 'quick' || wanted === 'builder')) ? 'deep' : wanted // MUTATED: overflow dropped from the danger guard
+    if (false) { vendor = 'claude'; level = 'deep' } // MUTATED: agy dropped from the danger guard
 MUT16
       mut_replace_block "$target" \
-        "  const tier = (danger && (wanted === 'quick' || wanted === 'builder' || wanted === 'overflow')) ? 'deep' : wanted" 1 "$rep"
+        "    if (vendor === 'agy') { vendor = 'claude'; level = 'deep' }" 1 "$rep"
       ;;
     17)
-      # triage-exec.js: a failed overflow subtask is re-run on builder (sideways,
-      # still a cheap tier) instead of returning to the Claude deep tier. The
-      # objective check has already said the off-vendor model got it wrong.
-      # Anchor: redoStep()'s overflow arm (the ladder's single owner since wave 11).
+      # triage-exec.js: runOn()'s no-work fallback is hard-coded to builder (the
+      # pre-Wave-12 overflow->builder rule) instead of the external step's own level,
+      # so a codex quick/deep/top subtask comes back on the wrong Claude agent.
       cat > "$rep" <<'MUT17'
-  if (r.tier === 'overflow') return { tier: 'builder', effort: r.subtask.effort, reason: 'mutated' } // MUTATED: sideways to builder
+    const onClaude = { level: 'builder', vendor: 'claude', effort: step.effort } // MUTATED: fallback hard-coded to builder
 MUT17
       mut_replace_block "$target" \
-        "  if (r.tier === 'overflow') return { tier: 'deep'," 1 "$rep"
+        "    const onClaude = { level: step.level, vendor: 'claude', effort: step.effort }" 1 "$rep"
       ;;
     18)
       # install.sh: check_force_override returns before warning about either
@@ -413,7 +418,7 @@ MUT21
       # triage-exec.js: delete redoStep()'s deep@max arm. An ESCALATE on a deep
       # attempt below max effort then falls through to nextTier() and spawns Fable
       # directly — the rubric's "only from a failed Opus@max attempt" is lost.
-      mut_delete_block "$target" "  if (r.tier === 'deep' && !ranMax(r)) return { tier: 'deep', effort: 'max'," 1
+      mut_delete_block "$target" "  if (r.level === 'deep' && !ranMax(r)) return { level: 'deep', vendor, effort: 'max'," 1
       ;;
     23)
       # triage-exec.js: runFable()'s afterMax guard never fires, so Fable being
@@ -450,6 +455,33 @@ MUT26
       # codex's workspace-write sandbox can write anywhere under /tmp.
       mut_delete_block "$target" '  set -- "$@" -c sandbox_workspace_write.exclude_slash_tmp=true' 1
       ;;
+    28)
+      # triage-exec.js: the codex arm of the danger guard keeps its level lift but
+      # loses codexDangerEffort(), so danger work runs on codex at whatever effort the
+      # plan (or the tiers default) says — quick@low becomes deep@low.
+      cat > "$rep" <<'MUT28'
+    else if (vendor === 'codex') { level = atLeast(level, 'deep') } // MUTATED: codex danger effort floor dropped
+MUT28
+      mut_replace_block "$target" \
+        "    else if (vendor === 'codex') { level = atLeast(level, 'deep'); effort = codexDangerEffort(level, effort) }" 1 "$rep"
+      ;;
+    29)
+      # triage-exec.js: redoStep() keeps the failed result's vendor, so a codex/agy
+      # attempt that failed verification is re-run on the SAME external vendor —
+      # the sideways retry the ladder forbids.
+      cat > "$rep" <<'MUT29'
+  const vendor = r.vendor // MUTATED: retried sideways on the same vendor
+MUT29
+      mut_replace_block "$target" "  const vendor = 'claude' // every redo runs on Claude" 1 "$rep"
+      ;;
+    30)
+      # triage-exec.js: crossReview 'both' maps to agy alone — one spawn, and the
+      # codex second opinion the plan asked for silently never happens.
+      cat > "$rep" <<'MUT30'
+const CROSS_REVIEW_VENDORS = { agy: ['agy'], codex: ['codex'], both: ['agy'] } // MUTATED: 'both' spawns one
+MUT30
+      mut_replace_block "$target" "const CROSS_REVIEW_VENDORS = { agy: ['agy'], codex: ['codex'], both: ['agy', 'codex'] }" 1 "$rep"
+      ;;
     *)
       return 1
       ;;
@@ -481,8 +513,8 @@ verify_mutation() {
     13) ! grep -qF 'agy tool calls were denied' "$target" && grep -qF 'RESPONSE=$(jq -r' "$target" ;;
     14) ! grep -qF 'agy returned an empty response' "$target" && grep -qF 'agy tool calls were denied' "$target" ;;
     15) grep -qF 'MUTATED: substring match' "$target" && ! grep -qF '*/"$name"/*)' "$target" ;;
-    16) grep -qF 'MUTATED: overflow dropped from the danger guard' "$target" && ! grep -qF "wanted === 'builder' || wanted === 'overflow'" "$target" ;;
-    17) grep -qF 'MUTATED: sideways to builder' "$target" && ! grep -qF "if (r.tier === 'overflow') return { tier: 'deep'," "$target" ;;
+    16) grep -qF 'MUTATED: agy dropped from the danger guard' "$target" && ! grep -qF "if (vendor === 'agy') { vendor = 'claude'; level = 'deep' }" "$target" ;;
+    17) grep -qF 'MUTATED: fallback hard-coded to builder' "$target" && ! grep -qF "const onClaude = { level: step.level," "$target" ;;
     18) grep -qF 'MUTATED: FORCE warning suppressed' "$target" ;;
     19) grep -qF 'MUTATED: legacy upgrade disabled' "$target" ;;
     20) ! grep -qF 'or $up == "1"' "$target" && grep -qF '(if (.env.CLAUDE_CODE_SUBAGENT_MODEL // null) == null then .env.CLAUDE_CODE_SUBAGENT_MODEL = $m else . end)' "$target" ;;
@@ -493,6 +525,9 @@ verify_mutation() {
     25) ! grep -qF 'codex wrote no final message' "$target" && grep -qF 'RESPONSE=$(cat "$LASTMSG")' "$target" ;;
     26) grep -qF 'MUTATED: deny check skipped for codex' "$target" ;;
     27) ! grep -qF 'set -- "$@" -c sandbox_workspace_write.exclude_slash_tmp=true' "$target" && grep -qF 'set -- "$@" -c sandbox_workspace_write.exclude_tmpdir_env_var=true' "$target" ;;
+    28) grep -qF 'MUTATED: codex danger effort floor dropped' "$target" && ! grep -qF 'effort = codexDangerEffort(level, effort)' "$target" ;;
+    29) grep -qF 'MUTATED: retried sideways on the same vendor' "$target" && ! grep -qF "const vendor = 'claude' // every redo runs on Claude" "$target" ;;
+    30) grep -qF "MUTATED: 'both' spawns one" "$target" && ! grep -qF "both: ['agy', 'codex']" "$target" ;;
     *) return 1 ;;
   esac
 }

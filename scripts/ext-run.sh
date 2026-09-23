@@ -53,7 +53,7 @@
 #   --effort E           agy: low|medium|high — rewrites the SUFFIX of the model
 #                        id (agy encodes effort in the id and rejects --effort
 #                        next to such an id, so agy NEVER receives --effort).
-#                        codex: minimal|low|medium|high|xhigh — overrides the
+#                        codex: minimal|low|medium|high|xhigh|max — overrides the
 #                        tiers effort (passed as -c model_reasoning_effort=E).
 #   --timeout DURATION   override the mode's timeout. agy: its --print-timeout
 #                        (Go duration). codex: the wall-clock watchdog (N, Ns,
@@ -397,8 +397,8 @@ case "$VENDOR" in
     [ -n "$EFFORT" ] || EFFORT="$TIER_EFFORT"
     [ -n "$EFFORT" ] || die "USAGE: $TIERS gives no effort for this codex entry and --effort was not passed" "$E_USAGE"
     case "$EFFORT" in
-      minimal|low|medium|high|xhigh) ;;
-      *) die "USAGE: --effort must be minimal|low|medium|high|xhigh for codex (got '$EFFORT')" "$E_USAGE" ;;
+      minimal|low|medium|high|xhigh|max) ;;  # gpt-6-* list max (~/.codex/models_cache.json); 'ultra' auto-delegates, excluded
+      *) die "USAGE: --effort must be minimal|low|medium|high|xhigh|max for codex (got '$EFFORT')" "$E_USAGE" ;;
     esac
     [ -n "$(to_seconds "$TIMEOUT")" ] || die "USAGE: --timeout for codex must be N, Ns, Nm or Nh (got '$TIMEOUT')" "$E_USAGE"
     ;;

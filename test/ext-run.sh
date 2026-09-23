@@ -640,6 +640,12 @@ AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_agy review --v
 chk "C3 review uses the fixture review model; --effort overrides the tiers effort" \
   '[ "$RC" -eq 0 ] && grep -qx "MODEL=gpt-fx-review" "$STUB_LOG" && grep -qx "CFG=model_reasoning_effort=xhigh" "$STUB_LOG" && ! grep -q "CFG=model_reasoning_effort=high" "$STUB_LOG"'
 
+AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_agy review --vendor codex --prompt-file "$BRIEF" --effort max
+chk "C3a codex accepts --effort max and passes it through unchanged" \
+  '[ "$RC" -eq 0 ] && grep -qx "CFG=model_reasoning_effort=max" "$STUB_LOG"'
+AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_agy review --vendor codex --prompt-file "$BRIEF" --effort ultra
+chk "C3a2 codex refuses --effort ultra (auto-delegating mode) as a usage error" '[ "$RC" -eq 2 ] && [ ! -s "$STUB_LOG" ]'
+
 AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_agy review --vendor codex --prompt-file "$BRIEF" --effort ludicrous
 chk "C3b an invalid codex --effort is a usage error (exit 2)" '[ "$RC" -eq 2 ] && [ ! -s "$STUB_LOG" ]'
 

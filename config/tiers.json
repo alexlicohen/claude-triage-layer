@@ -25,7 +25,7 @@
   "agents": {
     "triage-reviewer": {"model": "opus", "effort": "medium"},
     "triage-cross-reviewer": {"model": "haiku", "effort": "low"},
-    "triage-overflow": {"model": "haiku", "effort": "low"}
+    "triage-external": {"model": "haiku", "effort": "low"}
   },
   "modes": {
     "agy": {

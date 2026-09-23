@@ -12,7 +12,8 @@ set -euo pipefail
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
 SETTINGS="$CLAUDE_DIR/settings.json"
 PREINSTALL="$CLAUDE_DIR/triage-preinstall.json"   # legacy artifact of pre-wave-9 installs
-AGENTS="triage-quick-task triage-builder triage-deep-reasoner triage-reviewer triage-cross-reviewer triage-fable-architect triage-overflow"
+# triage-overflow is the pre-Wave-12 name of triage-external; an old install may still hold it.
+AGENTS="triage-quick-task triage-builder triage-deep-reasoner triage-reviewer triage-cross-reviewer triage-fable-architect triage-external triage-overflow"
 
 # The two settings.json keys this layer owns, and every previous installer default
 # of the subagent model — must match install.sh (test/roundtrip.sh case N asserts it).
@@ -45,8 +46,9 @@ if [ -f "$CLAUDE_DIR/CLAUDE.md" ]; then
 fi
 
 # 2. Remove installed files (agents, rubric, statusline, workflow, per-agent memory).
-#    Remove the seven agents by name — never `rm triage-*.md` by glob, which would
-#    also delete any unrelated triage-* agents you authored yourself.
+#    Remove the seven agents (plus the legacy triage-overflow) by name — never
+#    `rm triage-*.md` by glob, which would also delete any unrelated triage-* agents
+#    you authored yourself.
 #    triage-verify.sh is a retired hook current installs no longer ship — remove any
 #    stale copy left behind by an older local checkout. scripts/agy-run.sh is the
 #    pre-Wave-12 name of ext-run.sh, removed for the same reason.
@@ -77,7 +79,7 @@ if [ -f "$SETTINGS" ]; then
   jq --arg hook "$CLAUDE_DIR/hooks/triage-verify.sh" \
      --arg m "$SUBAGENT_MODEL" --arg ttl "$SUBAGENT_CACHE_TTL" \
      --arg legacy "$LEGACY_SUBAGENT_MODELS" '
-    ["Agent(triage-quick-task)","Agent(triage-builder)","Agent(triage-deep-reasoner)","Agent(triage-reviewer)","Agent(triage-cross-reviewer)","Agent(triage-overflow)"] as $workers
+    ["Agent(triage-quick-task)","Agent(triage-builder)","Agent(triage-deep-reasoner)","Agent(triage-reviewer)","Agent(triage-cross-reviewer)","Agent(triage-external)","Agent(triage-overflow)"] as $workers
     | ["Agent(triage-fable-architect)"] as $fable
     | (if .permissions.allow then .permissions.allow -= $workers else . end)
     | (if .permissions.ask   then .permissions.ask   -= $fable   else . end)

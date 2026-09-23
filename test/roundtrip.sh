@@ -36,6 +36,9 @@
 #   N - a subagent model still at a PREVIOUS installer default (claude-opus-5)
 #       is upgraded by install (dry-run says "would upgrade"), removed by
 #       uninstall, and install.sh/uninstall.sh carry identical owned values.
+#   O - the Wave 12 rename triage-overflow -> triage-external: install removes
+#       the legacy agent file and its Agent(triage-overflow) allow rule and adds
+#       triage-external; uninstall removes both names (agents + permissions).
 #   Plus two direct statusline.sh checks (non-numeric / numeric pct).
 set -u
 
@@ -396,7 +399,7 @@ I_RC=$?
 chk "I1: uninstall exits 0" '[ "$I_RC" -eq 0 ]'
 chk "I2: user-authored triage-mine.md survives uninstall" '[ -f "$I_DIR/agents/triage-mine.md" ]'
 chk "I3: all seven shipped agents removed" \
-  '[ ! -f "$I_DIR/agents/triage-quick-task.md" ] && [ ! -f "$I_DIR/agents/triage-builder.md" ] && [ ! -f "$I_DIR/agents/triage-deep-reasoner.md" ] && [ ! -f "$I_DIR/agents/triage-reviewer.md" ] && [ ! -f "$I_DIR/agents/triage-cross-reviewer.md" ] && [ ! -f "$I_DIR/agents/triage-fable-architect.md" ] && [ ! -f "$I_DIR/agents/triage-overflow.md" ]'
+  '[ ! -f "$I_DIR/agents/triage-quick-task.md" ] && [ ! -f "$I_DIR/agents/triage-builder.md" ] && [ ! -f "$I_DIR/agents/triage-deep-reasoner.md" ] && [ ! -f "$I_DIR/agents/triage-reviewer.md" ] && [ ! -f "$I_DIR/agents/triage-cross-reviewer.md" ] && [ ! -f "$I_DIR/agents/triage-fable-architect.md" ] && [ ! -f "$I_DIR/agents/triage-external.md" ]'
 chk "M1b: uninstall removes scripts/ext-run.sh, triage-tiers.sh and triage-tiers.json" \
   '[ ! -f "$I_DIR/scripts/ext-run.sh" ] && [ ! -f "$I_DIR/scripts/triage-tiers.sh" ] && [ ! -f "$I_DIR/scripts/triage-tiers.json" ]'
 chk "M1e: uninstall also removes a legacy scripts/agy-run.sh" '[ ! -e "$I_DIR/scripts/agy-run.sh" ]'
@@ -632,6 +635,42 @@ N_INSTALL_OWNED=$(owned_lines "$REPO_DIR/install.sh")
 N_UNINSTALL_OWNED=$(owned_lines "$REPO_DIR/uninstall.sh")
 chk "N8: install.sh and uninstall.sh define identical SUBAGENT_MODEL / SUBAGENT_CACHE_TTL / LEGACY_SUBAGENT_MODELS" \
   '[ "$(printf "%s\n" "$N_INSTALL_OWNED" | grep -c .)" -eq 3 ] && [ "$N_INSTALL_OWNED" = "$N_UNINSTALL_OWNED" ]'
+
+# =============================================================================
+# Case O — Wave 12 rename: triage-overflow -> triage-external. An install made
+# before the rename holds agents/triage-overflow.md and an Agent(triage-overflow)
+# allow rule; install must retire both (a leftover would be an eighth, agy-only
+# agent), and uninstall must remove both names whatever state it finds.
+# =============================================================================
+O_DIR=$(new_sandbox)
+mkdir -p "$O_DIR/agents"
+printf -- '---\nname: triage-overflow\n---\nlegacy\n' > "$O_DIR/agents/triage-overflow.md"
+echo '{"permissions": {"allow": ["Bash(ls:*)", "Agent(triage-overflow)"]}}' > "$O_DIR/settings.json"
+
+O_DRY_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $O_DRY_OUT"
+CLAUDE_DIR="$O_DIR" "$REPO_DIR/install.sh" --dry-run >"$O_DRY_OUT" 2>&1
+chk "O1: --dry-run announces removing the legacy agent and its allow rule, adding triage-external, and changes nothing" \
+  'grep -qF "remove (renamed to agents/triage-external.md)" "$O_DRY_OUT" && grep -qF "would remove legacy: Agent(triage-overflow)" "$O_DRY_OUT" && grep -qF "would add: Agent(triage-external)" "$O_DRY_OUT" && [ -f "$O_DIR/agents/triage-overflow.md" ]'
+
+run_install "$O_DIR" >/dev/null 2>&1
+chk "O2: install removed the legacy agents/triage-overflow.md and placed triage-external.md" \
+  '[ ! -e "$O_DIR/agents/triage-overflow.md" ] && [ -f "$O_DIR/agents/triage-external.md" ]'
+chk "O3: install removed the legacy Agent(triage-overflow) allow rule and added Agent(triage-external)" \
+  '! jq -e ".permissions.allow | index(\"Agent(triage-overflow)\")" "$O_DIR/settings.json" >/dev/null && jq -e ".permissions.allow | index(\"Agent(triage-external)\")" "$O_DIR/settings.json" >/dev/null'
+chk "O4: exactly the 6 worker rules plus the user rule remain (7), none duplicated" \
+  '[ "$(jq ".permissions.allow | length" "$O_DIR/settings.json")" -eq 7 ] && [ "$(jq ".permissions.allow | unique | length" "$O_DIR/settings.json")" -eq 7 ]'
+chk "O5: exactly 7 triage-*.md agents installed (the rename keeps the count)" \
+  '[ "$(find "$O_DIR/agents" -name "triage-*.md" | wc -l | tr -d " ")" -eq 7 ]'
+
+# Re-seed the legacy state next to the current one, then uninstall: both names go.
+printf -- '---\nname: triage-overflow\n---\nlegacy\n' > "$O_DIR/agents/triage-overflow.md"
+jq '.permissions.allow += ["Agent(triage-overflow)"]' "$O_DIR/settings.json" > "$O_DIR/settings.tmp" && mv "$O_DIR/settings.tmp" "$O_DIR/settings.json"
+run_uninstall "$O_DIR" >/dev/null 2>&1
+chk "O6: uninstall removes triage-external.md and the legacy triage-overflow.md" \
+  '[ ! -e "$O_DIR/agents/triage-external.md" ] && [ ! -e "$O_DIR/agents/triage-overflow.md" ]'
+chk "O7: uninstall removes both Agent(triage-external) and Agent(triage-overflow), keeping the user rule" \
+  '[ "$(jq -c ".permissions.allow" "$O_DIR/settings.json")" = "[\"Bash(ls:*)\"]" ]'
 
 # =============================================================================
 # Statusline checks (direct, no install needed)

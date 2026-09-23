@@ -1,7 +1,7 @@
 export const meta = {
   name: 'triage-exec',
-  description: 'Execute a pre-built triage plan: delegate each subtask to its tier agent, run the objective checks, remediate and escalate',
-  whenToUse: 'Run a plan the orchestrator has ALREADY classified: /triage-exec with args = {subtasks:[{brief,tier,files,acceptance,danger,effort}], checks:[shell commands], review, crossReview, overflow}. It executes, verifies, re-runs only the implicated subtasks on failure, and escalates one rung up on ESCALATE (deep below max effort gets one deep@max attempt before Fable). It never classifies — a malformed plan throws before any spawn.',
+  description: 'Execute a pre-built triage plan: delegate each subtask to its level agent (Claude, or an external vendor), run the objective checks, remediate and escalate',
+  whenToUse: 'Run a plan the orchestrator has ALREADY classified: /triage-exec with args = {subtasks:[{brief,level,vendor,files,acceptance,danger,effort}], checks:[shell commands], review, crossReview, overflow, vendor}. level is quick|builder|deep|top (tier is an alias; fable = top on Claude, overflow = builder on agy); vendor is claude|codex|agy. It executes, verifies, re-runs only the implicated subtasks on failure (always on Claude), and escalates one rung up on ESCALATE (deep below max effort gets one deep@max attempt before Fable). It never classifies — a malformed plan throws before any spawn.',
   phases: [
     { title: 'Execute' },
     { title: 'Verify' },
@@ -14,16 +14,35 @@ export const meta = {
 // plan was pure waste. What arrives is a finished plan, validated in plain JS BEFORE
 // any agent() call — a malformed plan is a caller bug and must fail loudly and for
 // free, never half-execute and bill for it.
-const TIERS = ['quick', 'builder', 'deep', 'fable', 'overflow']
+//
+// Two axes (Wave 12): LEVEL describes the task (quick|builder|deep|top, never a model)
+// and VENDOR says who serves it (claude|codex|agy). Which models serve a level is data
+// in config/tiers.json (ext-run.sh reads it for the external vendors); the routing
+// POLICY — defaults, danger floors, fallbacks — lives here.
+const LEVELS = ['quick', 'builder', 'deep', 'top']
+// Legacy tier names that are really a level + a vendor. `fable` was the top level's
+// Claude slot; `overflow` was builder work moved onto agy.
+const LEVEL_ALIASES = { fable: { level: 'top', vendor: 'claude' }, overflow: { level: 'builder', vendor: 'agy' } }
+const LEVEL_NAMES = [...LEVELS, ...Object.keys(LEVEL_ALIASES)]
+const VENDORS = ['claude', 'codex', 'agy']
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 const REVIEW_MODES = ['auto', 'always', 'never']
+// crossReview → the external reviewers spawned. `true` keeps its pre-Wave-12 meaning
+// (agy); false/absent = none.
+const CROSS_REVIEW_VENDORS = { agy: ['agy'], codex: ['codex'], both: ['agy', 'codex'] }
+// The Claude agent serving each level. test/lint.sh checks this map against
+// config/tiers.json levels.*.claude.agent. `top` is listed for that check only: its
+// one spawn path is runFable().
+const CLAUDE_AGENT = { quick: 'triage-quick-task', builder: 'triage-builder', deep: 'triage-deep-reasoner', top: 'triage-fable-architect' }
 
 const USAGE = 'Expected args = {\n' +
-  `  subtasks: [{ id?, brief, tier: ${TIERS.join('|')}, files?: string[], acceptance, danger?: bool, effort?: ${EFFORTS.join('|')} }]  // at least one\n` +
+  `  subtasks: [{ id?, brief, level: ${LEVELS.join('|')} (alias tier; ${Object.keys(LEVEL_ALIASES).join('|')} also accepted), vendor?: ${VENDORS.join('|')},\n` +
+  `               files?: string[], acceptance, danger?: bool, effort?: ${EFFORTS.join('|')} }]  // at least one\n` +
   '  checks?:      string[]   // shell commands run as objective gates\n' +
-  '  overflow?:    boolean    // default: false — rewrite builder subtasks onto the external CLI tier\n' +
+  `  vendor?:      ${VENDORS.join('|')}   // default vendor for subtasks that omit one (default: claude)\n` +
+  '  overflow?:    boolean    // default: false — builder-level subtasks without a vendor run on agy\n' +
   `  review?:      ${REVIEW_MODES.join('|')}   // default: auto\n` +
-  '  crossReview?: boolean    // default: false\n}'
+  `  crossReview?: boolean|${Object.keys(CROSS_REVIEW_VENDORS).join('|')}   // default: false (true = agy)\n}`
 
 function bad(msg) {
   throw new Error(`triage-exec: ${msg}\n${USAGE}`)
@@ -31,24 +50,57 @@ function bad(msg) {
 
 const isStr = v => typeof v === 'string' && v.trim().length > 0
 const typeName = v => (v === null ? 'null' : Array.isArray(v) ? 'an array' : typeof v)
+const atLeast = (level, floor) => (LEVELS.indexOf(level) >= LEVELS.indexOf(floor) ? level : floor)
+// tierName() — the rung label used in labels, logs, escalations and the report: the
+// pre-Wave-12 tier name on Claude (top on Claude IS Fable), `<vendor>:<level>` off it.
+const tierName = (level, vendor) => (vendor === 'claude' ? (level === 'top' ? 'fable' : level) : `${vendor}:${level}`)
 
 if (!args || typeof args !== 'object' || Array.isArray(args)) bad(`args must be a plan object (got ${typeName(args)}).`)
 if (!Array.isArray(args.subtasks) || args.subtasks.length === 0) bad('args.subtasks must be a non-empty array.')
 if (args.checks != null && !(Array.isArray(args.checks) && args.checks.every(isStr))) bad('args.checks must be an array of non-empty shell-command strings.')
 if (args.review != null && !REVIEW_MODES.includes(args.review)) bad(`args.review must be one of ${REVIEW_MODES.join('|')} (got ${JSON.stringify(args.review)}).`)
-if (args.crossReview != null && typeof args.crossReview !== 'boolean') bad('args.crossReview must be a boolean.')
+if (args.crossReview != null && typeof args.crossReview !== 'boolean' && !Object.keys(CROSS_REVIEW_VENDORS).includes(args.crossReview)) {
+  bad(`args.crossReview must be a boolean or one of ${Object.keys(CROSS_REVIEW_VENDORS).join('|')} (got ${JSON.stringify(args.crossReview)}).`)
+}
 if (args.overflow != null && typeof args.overflow !== 'boolean') bad('args.overflow must be a boolean.')
+if (args.vendor != null && !VENDORS.includes(args.vendor)) bad(`args.vendor must be one of ${VENDORS.join('|')} (got ${JSON.stringify(args.vendor)}).`)
 const wantsOverflow = args.overflow === true
+const planVendor = args.vendor || null
+
+// codexDangerEffort() — the danger floor for codex: effort at least `high`. An unset
+// effort would otherwise fall to the tiers.json default, which is data and may drop;
+// the floor is policy, so it is written into the header explicitly. At `top` an unset
+// effort becomes xhigh rather than high, so the floor never LOWERS the level's default.
+function codexDangerEffort(level, effort) {
+  if (!effort) return level === 'top' ? 'xhigh' : 'high'
+  return EFFORTS.indexOf(effort) >= EFFORTS.indexOf('high') ? effort : 'high'
+}
 
 const seenIds = new Set()
 const subtasks = args.subtasks.map((raw, i) => {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) bad(`subtasks[${i}] must be an object (got ${typeName(raw)}).`)
   if (!isStr(raw.brief)) bad(`subtasks[${i}].brief must be a non-empty string.`)
-  if (!TIERS.includes(raw.tier)) bad(`subtasks[${i}].tier must be one of ${TIERS.join('|')} (got ${JSON.stringify(raw.tier)}).`)
+  // level, with `tier` as its alias. Each is resolved through LEVEL_ALIASES; when both
+  // are given they must name the same level (and the same vendor, if either implies one).
+  const resolveLevel = field => {
+    const v = raw[field]
+    if (!LEVEL_NAMES.includes(v)) bad(`subtasks[${i}].${field} must be one of ${LEVELS.join('|')} (aliases: ${Object.keys(LEVEL_ALIASES).join('|')}) (got ${JSON.stringify(v)}).`)
+    return LEVEL_ALIASES[v] || { level: v, vendor: null }
+  }
+  if (raw.level == null && raw.tier == null) bad(`subtasks[${i}].level (or its alias tier) must be one of ${LEVELS.join('|')} (got none).`)
+  const byLevel = raw.level != null ? resolveLevel('level') : null
+  const byTier = raw.tier != null ? resolveLevel('tier') : null
+  if (byLevel && byTier && (byLevel.level !== byTier.level || (byLevel.vendor && byTier.vendor && byLevel.vendor !== byTier.vendor))) {
+    bad(`subtasks[${i}]: level ${JSON.stringify(raw.level)} and tier ${JSON.stringify(raw.tier)} disagree — give one, or the same level in both.`)
+  }
+  const plannedLevel = (byLevel || byTier).level
+  const aliasVendor = (byLevel && byLevel.vendor) || (byTier && byTier.vendor) || null
   if (!isStr(raw.acceptance)) bad(`subtasks[${i}].acceptance must be a non-empty string — verification has nothing to check against without it.`)
   if (raw.files != null && !(Array.isArray(raw.files) && raw.files.every(isStr))) bad(`subtasks[${i}].files must be an array of path strings.`)
   if (raw.danger != null && typeof raw.danger !== 'boolean') bad(`subtasks[${i}].danger must be a boolean.`)
   if (raw.effort != null && !EFFORTS.includes(raw.effort)) bad(`subtasks[${i}].effort must be one of ${EFFORTS.join('|')} (got ${JSON.stringify(raw.effort)}).`)
+  if (raw.vendor != null && !VENDORS.includes(raw.vendor)) bad(`subtasks[${i}].vendor must be one of ${VENDORS.join('|')} (got ${JSON.stringify(raw.vendor)}).`)
+  if (raw.vendor != null && aliasVendor && raw.vendor !== aliasVendor) bad(`subtasks[${i}]: ${byLevel && byLevel.vendor ? `level ${JSON.stringify(raw.level)}` : `tier ${JSON.stringify(raw.tier)}`} implies vendor ${aliasVendor}, but vendor is ${JSON.stringify(raw.vendor)}.`)
   if (raw.id != null && !isStr(raw.id)) bad(`subtasks[${i}].id must be a non-empty string when given.`)
   // Ids are the handle everything downstream uses (logs, skip records, remediation
   // attribution, the returned report), so they are assigned here when absent and
@@ -57,47 +109,74 @@ const subtasks = args.subtasks.map((raw, i) => {
   if (seenIds.has(id)) bad(`duplicate subtask id "${id}" — ids must be unique.`)
   seenIds.add(id)
   const danger = raw.danger === true
-  // Plan-level overflow: builder-tier work moves to the external CLI tier so it does
-  // not spend Claude quota. ONLY builder — quick work is too cheap to be worth the
-  // external round-trip and its boundary attestation, and deep/fable work is exactly
-  // what must not run on a weaker off-vendor model.
-  const wanted = (wantsOverflow && raw.tier === 'builder') ? 'overflow' : raw.tier
-  // Danger-zone routing, ENFORCED here rather than trusted to the caller: correctness-
-  // critical work never runs on quick/builder/overflow (rubric routing rule; overflow
-  // has a second reason — the workspace leaves the machine). Applied AFTER the overflow
-  // rewrite, so overflow:true + danger:true still lands on deep. The plan is well-formed,
-  // only mis-routed — so upgrade loudly instead of throwing.
-  const tier = (danger && (wanted === 'quick' || wanted === 'builder' || wanted === 'overflow')) ? 'deep' : wanted
+  // Vendor precedence, most specific first: the subtask's own vendor, the vendor its
+  // alias implies, plan-level overflow (builder-level work only — quick work is too cheap
+  // to be worth the external round-trip, and deep/top was never overflow's remit), the
+  // plan-level vendor default, then Claude.
+  const plannedVendor = raw.vendor || aliasVendor ||
+    (wantsOverflow && plannedLevel === 'builder' ? 'agy' : null) || planVendor || 'claude'
+  if (plannedVendor === 'agy' && plannedLevel !== 'builder') {
+    bad(`subtasks[${i}] ("${id}"): vendor agy serves the builder level only (got level ${plannedLevel}${raw.vendor ? '' : ', from the plan-level vendor'}).`)
+  }
+  const plannedEffort = raw.effort || null
+  // Danger-zone routing, ENFORCED here rather than trusted to the caller. The plan is
+  // well-formed, only mis-routed — so upgrade loudly instead of throwing:
+  //   agy    → Claude deep. Correctness-critical work never runs on agy (the builder-
+  //            only overflow vendor), exactly as overflow+danger always did.
+  //   codex  → allowed (parity is data in tiers.json), but lifted to at least deep and
+  //            to at least effort high (codexDangerEffort()).
+  //   claude → quick/builder lifted to deep.
+  let level = plannedLevel
+  let vendor = plannedVendor
+  let effort = plannedEffort
+  if (danger) {
+    if (vendor === 'agy') { vendor = 'claude'; level = 'deep' }
+    else if (vendor === 'codex') { level = atLeast(level, 'deep'); effort = codexDangerEffort(level, effort) }
+    else level = atLeast(level, 'deep')
+  }
   return {
     id,
     brief: raw.brief.trim(),
-    tier,
-    plannedTier: raw.tier,
+    level,
+    vendor,
+    plannedLevel,
+    plannedVendor,
+    plannedEffort,
     files: raw.files ? raw.files.map(f => f.trim()) : [],
     acceptance: raw.acceptance.trim(),
     danger,
-    effort: raw.effort || null,
+    effort,
   }
 })
 
 const checks = (args.checks || []).map(c => c.trim())
 const reviewMode = args.review || 'auto'
-const wantsCrossReview = args.crossReview === true
+const crossVendors = args.crossReview === true ? CROSS_REVIEW_VENDORS.agy : (CROSS_REVIEW_VENDORS[args.crossReview] || [])
+const isExternal = v => v !== 'claude'
 
 for (const st of subtasks) {
-  if (st.tier === 'overflow') {
-    log(`⚠ Overflow routing: "${st.id}" runs on the EXTERNAL CLI tier (agy) instead of ${st.plannedTier} — its workspace leaves this machine.`)
-  } else if (st.tier !== st.plannedTier) {
-    log(`⚠ Danger-zone routing: "${st.id}" was planned as ${st.plannedTier} but danger=true — running it on ${st.tier} instead (correctness-critical work never goes to quick/builder/overflow).`)
+  const planned = `${tierName(st.plannedLevel, st.plannedVendor)}${st.plannedEffort ? `@${st.plannedEffort}` : ''}`
+  const now = `${tierName(st.level, st.vendor)}${st.effort ? `@${st.effort}` : ''}`
+  if (planned !== now) {
+    log(`⚠ Danger-zone routing: "${st.id}" was planned as ${planned} but danger=true — running it on ${now} instead (correctness-critical work never runs below deep, never below effort high off-vendor, and never on agy).`)
+  }
+  if (isExternal(st.vendor)) {
+    log(`⚠ External routing: "${st.id}" runs on ${st.vendor} at level ${st.level}${st.effort ? ` (effort ${st.effort})` : ''} instead of Claude — its workspace leaves this machine.`)
   }
 }
 
 // escalations — every rung change this run made, for the returned report. Kinds: a
-// verdict-driven one-rung-up remediation (deep→deep@max→fable: see redoStep()), the
-// Fable→deep@max availability fallback or, when deep@max already failed, its recorded
-// skip (to:'none', see runFable()), and the overflow pair (→builder when the external CLI
-// is unavailable, →deep when it failed).
+// verdict-driven remediation step (same rung on FIX, one up on ESCALATE, deep→deep@max→
+// fable: see redoStep()), the Fable→deep@max availability fallback or, when deep@max
+// already failed, its recorded skip (to:'none', see runFable()), and an external
+// subtask coming back to Claude: from '<vendor>:<level>' to the same level's Claude
+// rung, either because the external CLI never produced work (runOn()) or because its
+// work failed verification (redoStep()).
 const escalations = []
+// Ids whose external spawn produced no work (null, UNAVAILABLE or REFUSED) and so ran
+// on Claude instead — the one fact report()'s ranExternally cannot derive from the
+// escalation log, since a verification failure records the same from/to pair.
+const neverRanExternally = new Set()
 
 // ─── Budget awareness ───────────────────────────────────────────────────────
 // The DSL exposes `budget = {total, spent(), remaining()}`. total === null means
@@ -157,7 +236,6 @@ function budgetReport() {
 }
 
 phase('Execute')
-const TIER_AGENT = { quick: 'triage-quick-task', builder: 'triage-builder', deep: 'triage-deep-reasoner', fable: 'triage-fable-architect', overflow: 'triage-overflow' }
 
 function brief(st, extra) {
   return `${st.brief}\n\nRelevant files: ${st.files.join(', ') || '(discover)'}\n` +
@@ -175,18 +253,19 @@ function agentOpts(st, agentType, ph, label, effort = st.effort) {
   return o
 }
 
-// runFable() — SINGLE OWNER of every triage-fable-architect spawn: a plan-time fable
-// subtask (Execute) and any remediation step that lands on fable. Rubric rule 6: announce
+// runFable() — SINGLE OWNER of every triage-fable-architect spawn: a plan-time top-level
+// Claude subtask (Execute), an external top-level subtask coming back to Claude, and any
+// remediation step that lands on top. Rubric rule 6: announce
 // it first; if the spawn hard-fails (agent() → null — e.g. a stale model registry), fall
 // back to triage-deep-reasoner at max effort. EXCEPT when the attempt being escalated
 // already WAS deep@max (`afterMax`): the fallback would re-run exactly the attempt that
 // just failed. The subtask keeps its last output instead, and the skip is logged and
 // recorded (to:'none') so the report never reads as if Fable ran. `prefix` namespaces the
-// labels ('' in Execute, 'redo:' in remediation). Returns {output, tier, effort} or null.
+// labels ('' in Execute, 'redo:' in remediation). Returns {output, level, vendor, effort} or null.
 async function runFable(st, prompt, ph, prefix, afterMax) {
   log(`⚠ Escalating to Fable: ${st.id} — ${st.brief.slice(0, 80)}`)
-  const out = await agent(prompt, agentOpts(st, 'triage-fable-architect', ph, `${prefix}fable:${st.id}`))
-  if (out) return { output: out, tier: 'fable', effort: st.effort }
+  const out = await agent(prompt, agentOpts(st, CLAUDE_AGENT.top, ph, `${prefix}fable:${st.id}`))
+  if (out) return { output: out, level: 'top', vendor: 'claude', effort: st.effort }
   if (afterMax) {
     log(`⚠ Fable unavailable — ${st.id} already failed at deep@max, so the deep@max fallback is NOT re-run; it keeps its last output.`)
     escalations.push({ id: st.id, from: 'fable', to: 'none', reason: 'fable spawn unavailable — deep@max fallback skipped: that attempt already ran and failed' })
@@ -194,39 +273,61 @@ async function runFable(st, prompt, ph, prefix, afterMax) {
   }
   log(`⚠ Fable unavailable — using triage-deep-reasoner at max effort: ${st.id}`)
   escalations.push({ id: st.id, from: 'fable', to: 'deep', reason: 'fable spawn unavailable — deep-reasoner at max effort' })
-  const fb = await agent(prompt, agentOpts(st, 'triage-deep-reasoner', ph, `${prefix}deep←fable:${st.id}`, 'max'))
-  return fb ? { output: fb, tier: 'deep', effort: 'max' } : null
+  const fb = await agent(prompt, agentOpts(st, CLAUDE_AGENT.deep, ph, `${prefix}deep←fable:${st.id}`, 'max'))
+  return fb ? { output: fb, level: 'deep', vendor: 'claude', effort: 'max' } : null
+}
+
+// The first line of an external wrapper's reply says whether the vendor produced work.
+// UNAVAILABLE/REFUSED (triage-external's exit-code mapping) means it did not: there is
+// nothing to verify, so it is treated like a null spawn. This is availability, not a
+// verification verdict — those stay in assess().
+const externalProducedNothing = out => /^\s*(UNAVAILABLE|REFUSED)\b/i.test(String(out || '').trimStart())
+
+// The one header line triage-external reads before the brief. EFFORT is omitted when
+// the plan set none, so ext-run.sh takes the tiers.json default for the level.
+const externalHeader = step => `VENDOR=${step.vendor} LEVEL=${step.level}` + (step.effort ? ` EFFORT=${step.effort}` : '')
+
+// runOn(st, step, prompt, ph, prefix, afterMax, label) — SINGLE place a work step
+// {level, vendor, effort} is spawned, in Execute and in remediation alike. Returns
+// {output, level, vendor, effort} (what actually ran) or null.
+//   external (codex|agy): triage-external with the header line. Its own effort stays
+//     the wrapper's default — EFFORT in the header is the external model's effort.
+//     No work (null, UNAVAILABLE, REFUSED) → the SAME level on Claude, logged
+//     '<vendor>→claude' and recorded. An external CLI that never ran has taught us
+//     nothing about the task, so it is not a reason to climb; it is also never retried
+//     on the same vendor, and there is no automatic hop to another vendor.
+//   claude: top goes through runFable() only; every other level spawns its agent.
+// Labels: `prefix` is '' in Execute ('<tier>:<id>') and 'redo:' / 'redo:deep@max:' in
+// remediation ('<prefix><id>'); `label` overrides both (the external fallback's
+// '<tier>←<vendor>:<id>').
+async function runOn(st, step, prompt, ph, prefix, afterMax, label) {
+  if (isExternal(step.vendor)) {
+    const out = await agent(`${externalHeader(step)}\n\n${prompt}`,
+      { phase: ph, agentType: 'triage-external', label: `${prefix}${step.vendor}:${step.level}:${st.id}` })
+    if (out && !externalProducedNothing(out)) return { output: out, level: step.level, vendor: step.vendor, effort: step.effort }
+    const claudeTier = tierName(step.level, 'claude')
+    log(`⚠ ${step.vendor}→claude: ${step.vendor} produced no work for ${st.id} (${out ? String(out).trimStart().split('\n')[0].slice(0, 120) : 'spawn returned nothing'}) — re-running the same level on Claude (${claudeTier}); this SPENDS Claude quota.`)
+    escalations.push({ id: st.id, from: tierName(step.level, step.vendor), to: claudeTier, reason: `${step.vendor} unavailable — same level on Claude` })
+    neverRanExternally.add(st.id)
+    const onClaude = { level: step.level, vendor: 'claude', effort: step.effort }
+    return runOn(st, onClaude, prompt, ph, prefix, afterMax, `${prefix}${claudeTier}←${step.vendor}:${st.id}`)
+  }
+  if (step.level === 'top') return runFable(st, prompt, ph, prefix, afterMax)
+  const lbl = label || (prefix ? `${prefix}${st.id}` : `${tierName(step.level, 'claude')}:${st.id}`)
+  const out = await agent(prompt, agentOpts(st, CLAUDE_AGENT[step.level], ph, lbl, step.effort))
+  return out ? { output: out, level: step.level, vendor: 'claude', effort: step.effort } : null
 }
 
 // Run one subtask, budget-gated (WORK floor = RESERVE) via spawn(): one budget
 // decision per subtask, before it starts, plus a hard-ceiling catch around the
-// agent() call(s). A plan-time fable subtask goes through runFable() (announce +
-// deep@max fallback). Every result records the effort it actually ran at — redoStep()
-// needs it to know whether a deep attempt was already at max. Returns null if the
-// subtask is budget-skipped, hits the ceiling, or even the fallback dies — so
-// filter(Boolean) drops it (rather than leaking a `null` output).
+// agent() call(s). Every result records the level, vendor and effort it actually ran
+// at — redoStep() needs them. Returns null if the subtask is budget-skipped, hits the
+// ceiling, or even the fallback dies — so filter(Boolean) drops it (rather than
+// leaking a `null` output).
 async function runSubtask(st) {
-  return spawn(RESERVE, `Execute:${st.tier}`, st.id, async () => {
-    if (st.tier === 'fable') {
-      const f = await runFable(st, brief(st), 'Execute', '', false)
-      return f ? { subtask: st, ...f, attempts: 1 } : null
-    }
-    // Overflow availability fallback: unavailable → SIDEWAYS to builder, not up.
-    // An external CLI that never started has taught us nothing about the task — it is
-    // still well-specified builder work. (A FAILED one has; that path goes up to deep,
-    // in remediation below.) Spending Claude quota beats discarding finished planning,
-    // and is logged loudly rather than hidden.
-    if (st.tier === 'overflow') {
-      const ov = await agent(brief(st), agentOpts(st, 'triage-overflow', 'Execute', `overflow:${st.id}`))
-      if (ov) return { subtask: st, output: ov, tier: 'overflow', effort: st.effort, attempts: 1 }
-      log(`⚠ Overflow unavailable — falling back to triage-builder for ${st.id} (this SPENDS Claude quota).`)
-      escalations.push({ id: st.id, from: 'overflow', to: 'builder', reason: 'external CLI tier unavailable — original builder tier restored' })
-      const fb = await agent(brief(st), agentOpts(st, 'triage-builder', 'Execute', `builder←overflow:${st.id}`))
-      return fb ? { subtask: st, output: fb, tier: 'builder', effort: st.effort, attempts: 1 } : null
-    }
-    const agentType = TIER_AGENT[st.tier] || 'triage-builder'
-    const out = await agent(brief(st), agentOpts(st, agentType, 'Execute', `${st.tier}:${st.id}`))
-    return out ? { subtask: st, output: out, tier: st.tier, effort: st.effort, attempts: 1 } : null
+  return spawn(RESERVE, `Execute:${tierName(st.level, st.vendor)}`, st.id, async () => {
+    const r = await runOn(st, { level: st.level, vendor: st.vendor, effort: st.effort }, brief(st), 'Execute', '', false)
+    return r ? { subtask: st, ...r, attempts: 1 } : null
   })
 }
 
@@ -234,23 +335,23 @@ const results = (await parallel(subtasks.map(st => () => runSubtask(st)))).filte
 const dropped = subtasks.length - results.length
 if (dropped > 0) log(`⚠ ${dropped} of ${subtasks.length} subtask(s) failed or were dropped — results are incomplete`)
 
-// overflowReport() — the overflow half of the distillate, defined immediately above
-// report() (which remains its single owner). DERIVED from the plan and the escalation
-// log, NOT read off `results`: remediation rewrites `results` in place (results.length
-// = 0; results.push(...merged)), so by the time report() runs, a subtask that really did
-// run on agy and was then redone on deep reads back as tier 'deep'. Filtering `results`
-// for tier === 'overflow' would therefore report ranExternally: [] for exactly the case
-// the field exists to describe. Ids only: bounded size, no worker prose.
-function overflowReport() {
-  const routed = subtasks.filter(st => st.tier === 'overflow').map(st => st.id)
-  // from:'overflow' to:'builder' is the ONE escalation meaning it never actually reached
-  // the external CLI (spawn unavailable); to:'deep' means it ran there and failed.
-  const neverRan = new Set(escalations.filter(e => e.from === 'overflow' && e.to === 'builder').map(e => e.id))
-  return {
-    routed,
-    ranExternally: routed.filter(id => !neverRan.has(id)),
-    returnedToClaude: escalations.filter(e => e.from === 'overflow').map(e => `${e.id}→${e.to}`),
+// externalReport() — the external half of the distillate, defined immediately above
+// report() (which remains its single owner). DERIVED from the plan, the escalation log
+// and neverRanExternally, NOT read off `results`: remediation rewrites `results` in
+// place (results.length = 0; results.push(...merged)), so by the time report() runs, a
+// subtask that really did run on codex and was then redone on Claude reads back as a
+// Claude result. Ids only: bounded size, no worker prose.
+function externalReport() {
+  const byVendor = {}
+  for (const v of VENDORS.filter(isExternal)) {
+    const routed = subtasks.filter(st => st.vendor === v).map(st => st.id)
+    byVendor[v] = {
+      routed,
+      ranExternally: routed.filter(id => !neverRanExternally.has(id)),
+      returnedToClaude: escalations.filter(e => e.from.startsWith(`${v}:`)).map(e => `${e.id}→${e.to}`),
+    }
   }
+  return byVendor
 }
 
 // report() — the SINGLE place the compact return value is built. Only distillate
@@ -259,18 +360,24 @@ function overflowReport() {
 function report(extra) {
   const ran = new Map(results.map(r => [r.subtask.id, r]))
   const skippedIds = new Set(skipped.filter(s => s.stage.startsWith('Execute') || s.stage.startsWith('Remediate')).map(s => s.desc))
+  // Present only when an external vendor was in play — mirroring how crossReview is
+  // absent when not requested. The plan-flag arms keep the field honest when every
+  // candidate was pulled back by the danger rule (routed: []). `overflow` mirrors
+  // external.agy for consumers written before Wave 12.
+  const externalInPlay = wantsOverflow || (planVendor && isExternal(planVendor)) ||
+    subtasks.some(st => isExternal(st.plannedVendor) || isExternal(st.vendor))
+  const external = externalInPlay ? externalReport() : null
   return Object.assign({
     subtasks: subtasks.map(st => {
       const r = ran.get(st.id)
       const status = r ? 'ok' : (skippedIds.has(st.id) ? 'skipped' : 'failed')
-      return { id: st.id, tier: r ? r.tier : st.tier, status, attempts: r ? r.attempts : 0 }
+      const level = r ? r.level : st.level
+      const vendor = r ? r.vendor : st.vendor
+      return { id: st.id, tier: tierName(level, vendor), level, vendor, status, attempts: r ? r.attempts : 0 }
     }),
     escalations,
     budget: budgetReport(),
-    // Present only when overflow was in play — mirroring how crossReview is absent
-    // when not requested. The wantsOverflow arm keeps the field honest when every
-    // candidate was pulled back by the danger rule (routed: []).
-    ...(wantsOverflow || subtasks.some(st => st.tier === 'overflow') ? { overflow: overflowReport() } : {}),
+    ...(external ? { external, overflow: external.agy } : {}),
   }, extra)
 }
 
@@ -292,39 +399,43 @@ if (budgeted && results.length === 0 &&
 }
 
 phase('Verify')
-const TIER_ORDER = ['quick', 'builder', 'deep', 'fable']
-// overflow is NOT a rung: it is a lateral, external-vendor substitute for builder.
-// Work that fails there comes back to Claude at the DEEP tier — never to builder,
-// and never round-trips to overflow again.
-const NEXT_TIER_OVERRIDE = { overflow: 'deep' }
-const nextTier = t => {
-  if (NEXT_TIER_OVERRIDE[t]) return NEXT_TIER_OVERRIDE[t]
-  const i = TIER_ORDER.indexOf(t)
-  return i >= 0 && i < TIER_ORDER.length - 1 ? TIER_ORDER[i + 1] : t
+const nextLevel = l => {
+  const i = LEVELS.indexOf(l)
+  return i >= 0 && i < LEVELS.length - 1 ? LEVELS[i + 1] : l
 }
 
 // ─── Escalation ladder: SINGLE OWNER of "where does a failed result re-run?" ───────
-// A rung is a tier, except that deep at max effort is its own rung. The rubric escalates
-// to Fable only from a FAILED or ESCALATED Opus@max attempt, and the deep tier's default
-// effort is below max — so an ESCALATE on a below-max deep attempt buys one deep@max
-// attempt first (cheaper than Fable and likelier to fix it). That step owes the Fable
-// escalation it stood in for: if the deep@max attempt fails verification too (FIX, FAIL
-// or ESCALATE alike), the second round below sends it on to Fable. A plan that already
-// set effort:'max' on a deep subtask has had its Opus@max attempt and goes straight on.
-const ranMax = r => r.tier === 'deep' && r.effort === 'max'
-const rung = r => (ranMax(r) ? 'deep@max' : r.tier)
+// A rung is a level on a vendor, except that Claude deep at max effort is its own rung.
+// The rubric escalates to Fable only from a FAILED or ESCALATED Opus@max attempt, and the
+// deep level's default effort is below max — so an ESCALATE on a below-max deep attempt
+// buys one Claude deep@max attempt first (cheaper than Fable and likelier to fix it).
+// That step owes the Fable escalation it stood in for: if the deep@max attempt fails
+// verification too (FIX, FAIL or ESCALATE alike), the second round below sends it on to
+// Fable. A plan that already set effort:'max' on a Claude deep subtask has had its
+// Opus@max attempt and goes straight on. An EXTERNAL deep attempt at max is not an
+// Opus@max attempt, so it never counts as one.
+const ranMax = r => r.vendor === 'claude' && r.level === 'deep' && r.effort === 'max'
+const rung = r => (ranMax(r) ? 'deep@max' : tierName(r.level, r.vendor))
 
-// redoStep(r, isEscalate) → { tier, effort, reason?, owesFable? } for one failed result.
-// Any rung change it implies is logged to `escalations` by remediate().
+// redoStep(r, isEscalate) → { level, vendor, effort, reason?, owesFable? } for one failed
+// result. Any rung change it implies is logged to `escalations` by remediate().
 function redoStep(r, isEscalate) {
-  // An overflow subtask that failed verification is NOT retried externally: the
-  // objective check already says the off-vendor model got it wrong, so it returns to
-  // Claude at the deep tier with the failure text — on FIX and ESCALATE alike.
-  if (r.tier === 'overflow') return { tier: 'deep', effort: r.subtask.effort, reason: 'overflow output failed verification — returned to the Claude deep tier' }
-  if (r.owesFable) return { tier: 'fable', effort: r.subtask.effort, reason: 'the deep@max attempt failed verification too — the deferred Fable escalation goes ahead' }
-  if (!isEscalate) return { tier: r.tier, effort: r.effort }
-  if (r.tier === 'deep' && !ranMax(r)) return { tier: 'deep', effort: 'max', owesFable: true, reason: 'reviewer returned ESCALATE — one deep@max attempt before any Fable spawn' }
-  return { tier: nextTier(r.tier), effort: r.subtask.effort, reason: 'reviewer returned ESCALATE' }
+  // Every redo runs on CLAUDE. An external (codex/agy) result that failed verification
+  // comes back onto the Claude ladder FROM ITS OWN LEVEL, exactly as a Claude result at
+  // that level would: FIX / objective FAIL → the same level on Claude, ESCALATE → one
+  // level up (deep → deep@max first). Choice, replacing pre-Wave-12 overflow's "any
+  // failure → deep": a failed builder-level check condemns the vendor's attempt, not the
+  // plan's classification — the task is still well-specified builder work, so Claude
+  // builder gets it with the failure text, and a reviewer ESCALATE still climbs. Never
+  // sideways on the same vendor (the check already says it got this wrong), and never
+  // an automatic hop to another vendor: runFable() stays the only way up to top.
+  const vendor = 'claude' // every redo runs on Claude — never sideways on the same vendor
+  if (r.owesFable) return { level: 'top', vendor, effort: r.subtask.effort, reason: 'the deep@max attempt failed verification too — the deferred Fable escalation goes ahead' }
+  if (!isEscalate) {
+    return { level: r.level, vendor, effort: r.effort, reason: isExternal(r.vendor) ? `${r.vendor} output failed verification — same level on Claude` : undefined }
+  }
+  if (r.level === 'deep' && !ranMax(r)) return { level: 'deep', vendor, effort: 'max', owesFable: true, reason: 'reviewer returned ESCALATE — one deep@max attempt before any Fable spawn' }
+  return { level: nextLevel(r.level), vendor, effort: r.subtask.effort, reason: 'reviewer returned ESCALATE' }
 }
 
 // Review policy — the ONE place the reviewer's presence is decided.
@@ -495,19 +606,13 @@ async function remediate(pool, a, round) {
   // Remediation redos are WORK → budget-gated on the RESERVE floor (same as Execute),
   // with a ceiling catch, via spawn(). A budget-skipped redo drops from redoResults
   // (filter(Boolean)); the original result stays in the merged re-verify set below.
-  const redo = await parallel(targets.map(r => () => spawn(RESERVE, `Remediate:${r.tier}`, r.subtask.id, async () => {
+  const redo = await parallel(targets.map(r => () => spawn(RESERVE, `Remediate:${rung(r)}`, r.subtask.id, async () => {
     const id = r.subtask.id
     const step = redoStep(r, a.isEscalate)
     if (rung(step) !== rung(r)) escalations.push({ id, from: rung(r), to: rung(step), reason: step.reason })
-    const prompt = brief(r.subtask, extra)
-    if (step.tier === 'fable') {
-      const f = await runFable(r.subtask, prompt, 'Verify', 'redo:', ranMax(r))
-      return f ? { subtask: r.subtask, ...f, attempts: r.attempts + 1 } : null
-    }
-    const agentType = TIER_AGENT[step.tier] || 'triage-builder'
-    const label = step.owesFable ? `redo:deep@max:${id}` : `redo:${id}`
-    const out = await agent(prompt, agentOpts(r.subtask, agentType, 'Verify', label, step.effort))
-    return out ? { subtask: r.subtask, output: out, tier: step.tier, effort: step.effort, attempts: r.attempts + 1, owesFable: !!step.owesFable } : null
+    const prefix = step.owesFable ? 'redo:deep@max:' : 'redo:'
+    const out = await runOn(r.subtask, step, brief(r.subtask, extra), 'Verify', prefix, ranMax(r))
+    return out ? { subtask: r.subtask, ...out, attempts: r.attempts + 1, owesFable: !!step.owesFable } : null
   })))
   const redoResults = redo.filter(Boolean)
   // Re-verify the WHOLE task, not just the re-run subset: merge latest output per subtask
@@ -549,20 +654,28 @@ if (first.failed && results.length) {
 // it has been cleared — the tier refuses otherwise. Findings are SIGNAL: logged and
 // returned for the orchestrator to weigh, and deliberately NOT fed into assess(),
 // remediation, or the pass/fail verdict. The objective checks remain the gate.
+//
+// One spawn per requested vendor (crossReview 'both' → agy AND codex, in parallel),
+// each told its vendor on a VENDOR= first line. findings is keyed by vendor and holds
+// only the vendors that returned something; ran = at least one did.
 let crossReview = null
-if (wantsCrossReview) {
+if (crossVendors.length) {
   const dangerNames = subtasks.filter(st => st.danger).map(st => st.id)
   const files = [...new Set(subtasks.flatMap(st => st.files))]
-  const out = await spawn(0, 'CrossReview', 'cross-vendor second opinion', () => agent(
+  const outs = await parallel(crossVendors.map(v => () => spawn(0, 'CrossReview', `cross-vendor second opinion (${v})`, () => agent(
+    `VENDOR=${v}\n` +
     `Cross-vendor review of the working-tree diff in this repo. The data boundary has been cleared by the orchestrator for this repository.\n` +
     `Run \`git diff\` (and \`git status\`) from the repo root${files.length ? ` — focus on: ${files.join(', ')}` : ''} and relay the external reviewer's findings verbatim.\n` +
     (dangerNames.length ? `Danger-flagged subtasks needing seam scrutiny: ${dangerNames.join(', ')}\n` : '') +
     `Findings are advisory signal for the orchestrator, not a merge verdict.`,
-    { label: 'verify:cross-review', phase: 'Verify', agentType: 'triage-cross-reviewer' }
-  ))
-  crossReview = { ran: out != null, findings: out == null ? '' : String(out).slice(0, 4000) }
-  log(out == null ? '⚠ Cross-review produced no findings (unavailable, refused, or budget-skipped) — advisory only, verdict unchanged.'
-                  : 'Cross-review returned findings (advisory signal only — the objective checks remain the gate).')
+    { label: `verify:cross-review:${v}`, phase: 'Verify', agentType: 'triage-cross-reviewer' }
+  ))))
+  const findings = {}
+  crossVendors.forEach((v, i) => { if (outs[i] != null) findings[v] = String(outs[i]).slice(0, 4000) })
+  crossReview = { ran: Object.keys(findings).length > 0, findings }
+  const missing = crossVendors.filter(v => !(v in findings))
+  log(missing.length ? `⚠ Cross-review produced no findings from ${missing.join(', ')} (unavailable, refused, or budget-skipped) — advisory only, verdict unchanged.`
+                     : `Cross-review returned findings from ${crossVendors.join(', ')} (advisory signal only — the objective checks remain the gate).`)
 }
 
 // Tri-state, fail-loud: whatever verification object we're returning (initial or

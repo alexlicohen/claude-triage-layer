@@ -11,6 +11,8 @@
 #      claim of "seven subagent definitions" must match the real agent count.
 #   5. Tiers sync: every agent's model:/effort: frontmatter equals
 #      config/tiers.json (scripts/tiers-sync.sh --check).
+#   6. Level map: triage-exec.js's CLAUDE_AGENT (level -> Claude agent) equals
+#      config/tiers.json levels.*.claude.agent, key for key.
 #
 # Fail-loud: accumulates all failures, exits non-zero if any hard failure
 # occurred (shellcheck's absence is NOT a hard failure — it's an explicit,
@@ -139,6 +141,29 @@ if TIERS_OUT=$(./scripts/tiers-sync.sh --check 2>&1); then
 else
   fail "tiers-sync: agents/*.md frontmatter differs from config/tiers.json — run make tiers (or fix tiers.json)"
   printf '%s\n' "$TIERS_OUT" >&2
+fi
+
+# --- 6. level map: triage-exec.js CLAUDE_AGENT == tiers.json levels.*.claude.agent --
+# The workflow cannot read tiers.json at run time (the DSL has no fs), so it carries
+# its own level -> Claude agent map. This keeps the two from drifting apart.
+if command -v node >/dev/null 2>&1; then
+  if LEVEL_OUT=$(node -e '
+    const fs = require("fs");
+    const src = fs.readFileSync("workflows/triage-exec.js", "utf8");
+    const m = src.match(/^const CLAUDE_AGENT = (\{[^}\n]*\})/m);
+    if (!m) { console.error("no single-line `const CLAUDE_AGENT = {...}` in workflows/triage-exec.js"); process.exit(1); }
+    const wf = Function(`"use strict"; return (${m[1]})`)();
+    const tiers = JSON.parse(fs.readFileSync("config/tiers.json", "utf8"));
+    const want = Object.fromEntries(Object.entries(tiers.levels || {}).map(([l, v]) => [l, v && v.claude && v.claude.agent]));
+    const keys = [...new Set([...Object.keys(wf), ...Object.keys(want)])].sort();
+    const bad = keys.filter(k => wf[k] !== want[k]).map(k => `${k}: triage-exec.js=${wf[k]} tiers.json=${want[k]}`);
+    if (bad.length) { console.error(bad.join("\n")); process.exit(1); }
+  ' 2>&1); then
+    ok "level-map: triage-exec.js CLAUDE_AGENT matches config/tiers.json levels.*.claude.agent"
+  else
+    fail "level-map: triage-exec.js CLAUDE_AGENT differs from config/tiers.json levels.*.claude.agent"
+    printf '%s\n' "$LEVEL_OUT" >&2
+  fi
 fi
 
 echo ""

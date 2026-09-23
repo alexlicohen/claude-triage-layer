@@ -248,6 +248,22 @@ retire_agy_run() {
   fi
 }
 
+# --- retiring agents/triage-overflow.md (renamed to triage-external in Wave 12) ---
+# triage-external is the external build worker for every vendor now. A leftover
+# triage-overflow.md would be an eighth, stale agent that knows only agy and none of
+# the VENDOR/LEVEL/EFFORT header, so it is removed (the layer shipped it; it was never
+# a place for local edits). Its Agent(triage-overflow) allow rule goes in step 3b.
+retire_overflow_agent() {
+  old="$CLAUDE_DIR/agents/triage-overflow.md"
+  [ -f "$old" ] || return 0
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "  remove (renamed to agents/triage-external.md): $old"
+  else
+    rm -f "$old"
+    echo "  removed legacy agent: $old (renamed to agents/triage-external.md)"
+  fi
+}
+
 # =============================================================================
 # 1. Installed files (agents, statusline, /triage-exec workflow, usage script,
 #    triage.md rubric) — the only step --files-only performs.
@@ -275,6 +291,7 @@ install_file "scripts/triage-tiers.sh" "$CLAUDE_DIR/scripts/triage-tiers.sh" x
 install_file "config/tiers.json" "$CLAUDE_DIR/scripts/triage-tiers.json"
 retire_triage_run
 retire_agy_run
+retire_overflow_agent
 
 if [ "$FILES_ONLY" -eq 1 ]; then
   if [ "$DRY_RUN" -eq 0 ]; then
@@ -334,7 +351,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
     echo "  subagentPromptCacheTtl: already set to $cur_ttl — left as is"
   fi
 
-  for w in triage-quick-task triage-builder triage-deep-reasoner triage-reviewer triage-cross-reviewer triage-overflow; do
+  for w in triage-quick-task triage-builder triage-deep-reasoner triage-reviewer triage-cross-reviewer triage-external; do
     rule="Agent($w)"
     if printf '%s' "$CUR_SETTINGS_JSON" | jq -e --arg r "$rule" '.permissions.allow // [] | index($r)' >/dev/null 2>&1; then
       echo "  permissions.allow: already present: $rule"
@@ -342,6 +359,9 @@ if [ "$DRY_RUN" -eq 1 ]; then
       echo "  permissions.allow: would add: $rule"
     fi
   done
+  if printf '%s' "$CUR_SETTINGS_JSON" | jq -e '.permissions.allow // [] | index("Agent(triage-overflow)")' >/dev/null 2>&1; then
+    echo "  permissions.allow: would remove legacy: Agent(triage-overflow) (renamed to triage-external)"
+  fi
   fable_rule="Agent(triage-fable-architect)"
   if printf '%s' "$CUR_SETTINGS_JSON" | jq -e --arg r "$fable_rule" '.permissions.ask // [] | index($r)' >/dev/null 2>&1; then
     echo "  permissions.ask: already present: $fable_rule"
@@ -384,14 +404,17 @@ fi
 #       - `ask` before any Fable spawn → confirms the costly tier (the ⚠ rule, enforced)
 #       - `allow` the worker spawns    → fan-out never prompts (a worker's OWN Bash/Edit
 #                                         calls stay gated by your normal permissions)
+#     The pre-Wave-12 Agent(triage-overflow) allow rule is removed: that agent is now
+#     triage-external, and a rule for an agent that no longer exists is only noise.
 #     Gate by agent TYPE, not `model:` — `Agent(type)` enforcement for named subagent
 #     spawns landed in Claude Code 2.1.186; matching a frontmatter-set `model:` is
 #     unverified. Switch the `ask` to `deny` below to hard-block Fable instead.
 tmp=$(mktemp)
 jq '
-  ["Agent(triage-quick-task)","Agent(triage-builder)","Agent(triage-deep-reasoner)","Agent(triage-reviewer)","Agent(triage-cross-reviewer)","Agent(triage-overflow)"] as $workers
+  ["Agent(triage-quick-task)","Agent(triage-builder)","Agent(triage-deep-reasoner)","Agent(triage-reviewer)","Agent(triage-cross-reviewer)","Agent(triage-external)"] as $workers
+  | ["Agent(triage-overflow)"] as $legacy_workers
   | ["Agent(triage-fable-architect)"] as $fable
-  | .permissions.allow = ((.permissions.allow // []) + ($workers - (.permissions.allow // [])))
+  | .permissions.allow = (((.permissions.allow // []) - $legacy_workers) + ($workers - (.permissions.allow // [])))
   | .permissions.ask   = ((.permissions.ask   // []) + ($fable   - (.permissions.ask   // [])))
 ' "$SETTINGS" > "$tmp" && apply_settings "$tmp"
 
