@@ -322,7 +322,12 @@ chk "G7: sandbox triage.md left untouched (fork preserved)" \
 chk "G8: no .bak-triage backup created for the skipped fork" '[ ! -f "$G_DIR/triage.md.bak-triage" ]'
 chk "G9: CLAUDE.md not created (files-only leaves it alone)" '[ ! -f "$G_DIR/CLAUDE.md" ]'
 chk "G10: settings.json not created (files-only leaves it alone)" '[ ! -f "$G_DIR/settings.json" ]'
-chk "G11: scripts/agy-run.sh copied and executable" '[ -x "$G_DIR/scripts/agy-run.sh" ]'
+chk "G11: scripts/ext-run.sh copied and executable" '[ -x "$G_DIR/scripts/ext-run.sh" ]'
+chk "G12: config/tiers.json installed as scripts/triage-tiers.json (byte-identical)" \
+  'cmp -s "$REPO_DIR/config/tiers.json" "$G_DIR/scripts/triage-tiers.json"'
+chk "G13: scripts/triage-tiers.sh copied and executable" '[ -x "$G_DIR/scripts/triage-tiers.sh" ]'
+chk "G14: the installed triage-tiers.sh reads the installed tiers file next to it, not the repo copy" \
+  '"$G_DIR/scripts/triage-tiers.sh" | grep -q "tiers: $G_DIR/scripts/triage-tiers.json"'
 
 # =============================================================================
 # Case H — version-compat warnings (stub `claude` on PATH; --dry-run so a
@@ -369,14 +374,20 @@ chk "H5: new claude version prints no version WARNING lines" '! grep -q "WARNING
 # =============================================================================
 # Case I — uninstall must remove only the seven shipped agents by name, never
 # a user-authored triage-*.md agent (a glob-based revert would delete it).
-# M1 rides along: the external-CLI script scripts/agy-run.sh is installed and
-# removed by name too.
+# M1 rides along: the external-CLI script scripts/ext-run.sh, triage-tiers.sh and
+# the installed tiers file are installed and removed by name too; the legacy
+# pre-Wave-12 scripts/agy-run.sh is removed by install AND by uninstall.
 # =============================================================================
 I_DIR=$(new_sandbox)
-mkdir -p "$I_DIR/agents"
+mkdir -p "$I_DIR/agents" "$I_DIR/scripts"
+printf '#!/bin/bash\necho legacy\n' > "$I_DIR/scripts/agy-run.sh"
 
 run_install "$I_DIR" >/dev/null 2>&1
-chk "M1a: install placed scripts/agy-run.sh (executable)" '[ -x "$I_DIR/scripts/agy-run.sh" ]'
+chk "M1a: install placed scripts/ext-run.sh (executable)" '[ -x "$I_DIR/scripts/ext-run.sh" ]'
+chk "M1c: install placed scripts/triage-tiers.json and scripts/triage-tiers.sh" \
+  '[ -f "$I_DIR/scripts/triage-tiers.json" ] && [ -x "$I_DIR/scripts/triage-tiers.sh" ]'
+chk "M1d: install removed the legacy scripts/agy-run.sh (renamed to ext-run.sh)" '[ ! -e "$I_DIR/scripts/agy-run.sh" ]'
+printf '#!/bin/bash\necho legacy\n' > "$I_DIR/scripts/agy-run.sh"
 printf 'my own agent, not shipped by this repo\n' > "$I_DIR/agents/triage-mine.md"
 
 run_uninstall "$I_DIR" >/dev/null 2>&1
@@ -386,7 +397,9 @@ chk "I1: uninstall exits 0" '[ "$I_RC" -eq 0 ]'
 chk "I2: user-authored triage-mine.md survives uninstall" '[ -f "$I_DIR/agents/triage-mine.md" ]'
 chk "I3: all seven shipped agents removed" \
   '[ ! -f "$I_DIR/agents/triage-quick-task.md" ] && [ ! -f "$I_DIR/agents/triage-builder.md" ] && [ ! -f "$I_DIR/agents/triage-deep-reasoner.md" ] && [ ! -f "$I_DIR/agents/triage-reviewer.md" ] && [ ! -f "$I_DIR/agents/triage-cross-reviewer.md" ] && [ ! -f "$I_DIR/agents/triage-fable-architect.md" ] && [ ! -f "$I_DIR/agents/triage-overflow.md" ]'
-chk "M1b: uninstall removes scripts/agy-run.sh" '[ ! -f "$I_DIR/scripts/agy-run.sh" ]'
+chk "M1b: uninstall removes scripts/ext-run.sh, triage-tiers.sh and triage-tiers.json" \
+  '[ ! -f "$I_DIR/scripts/ext-run.sh" ] && [ ! -f "$I_DIR/scripts/triage-tiers.sh" ] && [ ! -f "$I_DIR/scripts/triage-tiers.json" ]'
+chk "M1e: uninstall also removes a legacy scripts/agy-run.sh" '[ ! -e "$I_DIR/scripts/agy-run.sh" ]'
 
 # =============================================================================
 # Case J — drift.sh: a checked file missing from an installed sandbox is
@@ -408,7 +421,7 @@ chk "J2: freshly installed sandbox has no MISSING/FORKED lines" \
 
 # Delete two checked files — one long-standing, one added with the external-CLI tier —
 # so drift.sh's per-file list is exercised for both.
-rm -f "$J_DIR/scripts/triage-usage.sh" "$J_DIR/scripts/agy-run.sh"
+rm -f "$J_DIR/scripts/triage-usage.sh" "$J_DIR/scripts/ext-run.sh" "$J_DIR/scripts/triage-tiers.json"
 
 J_MISSING_OUT=$(mktemp)
 ALL_TMP="$ALL_TMP $J_MISSING_OUT"
@@ -418,8 +431,10 @@ J_MISSING_RC=$?
 chk "J3: drift.sh reports MISSING for the deleted checked file" \
   'grep -q "MISSING (not installed): scripts/triage-usage.sh" "$J_MISSING_OUT"'
 chk "J4: drift.sh exits non-zero once a checked file is missing" '[ "$J_MISSING_RC" -ne 0 ]'
-chk "J5: drift.sh also reports MISSING for the deleted scripts/agy-run.sh" \
-  'grep -q "MISSING (not installed): scripts/agy-run.sh" "$J_MISSING_OUT"'
+chk "J5: drift.sh also reports MISSING for the deleted scripts/ext-run.sh" \
+  'grep -q "MISSING (not installed): scripts/ext-run.sh" "$J_MISSING_OUT"'
+chk "J6: drift.sh reports MISSING for the deleted installed tiers file (config/tiers.json)" \
+  'grep -q "MISSING (not installed): config/tiers.json" "$J_MISSING_OUT"'
 
 # =============================================================================
 # Case K — the two settings keys this layer owns are set only when UNSET and

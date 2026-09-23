@@ -9,6 +9,8 @@
 #   4. Docs-consistency check: every file path referenced in README.md's
 #      install / manual-install sections must exist on disk, and README's
 #      claim of "seven subagent definitions" must match the real agent count.
+#   5. Tiers sync: every agent's model:/effort: frontmatter equals
+#      config/tiers.json (scripts/tiers-sync.sh --check).
 #
 # Fail-loud: accumulates all failures, exits non-zero if any hard failure
 # occurred (shellcheck's absence is NOT a hard failure — it's an explicit,
@@ -106,7 +108,7 @@ if [ ! -f "$README" ]; then
   fail "README.md not found — cannot run docs-consistency check"
 else
   # Paths the README's install / manual-install sections claim exist.
-  DOC_PATHS="statusline.sh triage.md workflows/triage-exec.js install.sh uninstall.sh scripts/agy-run.sh"
+  DOC_PATHS="statusline.sh triage.md workflows/triage-exec.js install.sh uninstall.sh scripts/ext-run.sh"
   for p in $DOC_PATHS; do
     if [ -e "$p" ]; then
       ok "docs-consistency: $p exists"
@@ -127,6 +129,16 @@ else
   else
     fail "docs-consistency: README no longer says 'seven subagent definitions' — update the doc-consistency check or the README"
   fi
+fi
+
+# --- 5. tiers sync: agents/*.md model:/effort: must equal config/tiers.json ------
+# tiers.json is the one place a model or effort is edited; `make tiers` writes it
+# into the frontmatter. A hand edit to either side without the other fails here.
+if TIERS_OUT=$(./scripts/tiers-sync.sh --check 2>&1); then
+  ok "tiers-sync: agents/*.md frontmatter matches config/tiers.json"
+else
+  fail "tiers-sync: agents/*.md frontmatter differs from config/tiers.json — run make tiers (or fix tiers.json)"
+  printf '%s\n' "$TIERS_OUT" >&2
 fi
 
 echo ""

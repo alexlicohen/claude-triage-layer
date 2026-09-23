@@ -1,0 +1,47 @@
+{
+  "asOf": "2026-09-23",
+  "parity": [
+    {"date": "2026-09-23", "by": "alex", "note": "gpt-6-astra ~ Fable 5.1; Opus 5.5 top tier"}
+  ],
+  "levels": {
+    "quick": {
+      "claude": {"agent": "triage-quick-task", "model": "haiku", "effort": "low"},
+      "codex": {"model": "gpt-6-luna", "effort": "low", "basis": "guess"}
+    },
+    "builder": {
+      "claude": {"agent": "triage-builder", "model": "sonnet", "effort": "medium"},
+      "codex": {"model": "gpt-6-sol", "effort": "medium", "basis": "guess"},
+      "agy": {"model": "gemini-3.1-pro-high", "basis": "incumbent 2026-09-15"}
+    },
+    "deep": {
+      "claude": {"agent": "triage-deep-reasoner", "model": "opus", "effort": "high"},
+      "codex": {"model": "gpt-6-astra", "effort": "high", "basis": "alex 2026-09-23"}
+    },
+    "top": {
+      "claude": {"agent": "triage-fable-architect", "model": "fable", "effort": "xhigh"},
+      "codex": {"model": "gpt-6-astra", "effort": "xhigh", "basis": "alex 2026-09-23"}
+    }
+  },
+  "agents": {
+    "triage-reviewer": {"model": "opus", "effort": "medium"},
+    "triage-cross-reviewer": {"model": "haiku", "effort": "low"},
+    "triage-overflow": {"model": "haiku", "effort": "low"}
+  },
+  "modes": {
+    "agy": {
+      "review": {"model": "gemini-3.1-pro-high", "basis": "incumbent 2026-09-15"},
+      "critique": {"model": "gemini-3.1-pro-high", "basis": "incumbent 2026-09-15"},
+      "fuzz": {"model": "gemini-3.1-pro-high", "basis": "incumbent 2026-09-15"},
+      "build": {"model": "gemini-3.1-pro-high", "basis": "incumbent 2026-09-15"},
+      "verify": {"model": "gemini-3.8-flash-medium", "basis": "incumbent 2026-09-15"},
+      "read": {"model": "gemini-3.8-flash-low", "basis": "incumbent 2026-09-15"}
+    },
+    "codex": {
+      "review": {"model": "gpt-6-astra", "effort": "high", "basis": "alex 2026-09-23"},
+      "critique": {"model": "gpt-6-astra", "effort": "high", "basis": "alex 2026-09-23"},
+      "fuzz": {"model": "gpt-6-astra", "effort": "high", "basis": "alex 2026-09-23"},
+      "read": {"model": "gpt-6-sol", "effort": "low", "basis": "guess"},
+      "verify": {"model": "gpt-6-sol", "effort": "medium", "basis": "guess"}
+    }
+  }
+}

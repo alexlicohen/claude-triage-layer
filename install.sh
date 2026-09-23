@@ -5,7 +5,8 @@
 # Flags:
 #   --dry-run     print the full mutation plan, write NOTHING.
 #   --files-only  copy/chmod the installed FILES only (agents, statusline.sh,
-#                 workflows/triage-exec.js, scripts/triage-usage.sh, triage.md).
+#                 workflows/triage-exec.js, scripts/*, the tiers file as
+#                 scripts/triage-tiers.json, triage.md).
 #                 Skips CLAUDE.md, settings.json, and permissions entirely.
 #                 Files listed in .driftignore (deliberate personal forks, e.g.
 #                 triage.md) are skipped rather than clobbered. This is the
@@ -231,6 +232,22 @@ retire_triage_run() {
   fi
 }
 
+# --- retiring scripts/agy-run.sh (renamed to ext-run.sh in Wave 12) ----------
+# ext-run.sh is the single owner of every external-CLI call now. A leftover
+# agy-run.sh would be a second, stale owner with hard-coded model ids and none of
+# the per-vendor deny rules, so it is removed (the layer shipped it; it was never
+# a place for local edits).
+retire_agy_run() {
+  old="$CLAUDE_DIR/scripts/agy-run.sh"
+  [ -f "$old" ] || return 0
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "  remove (renamed to scripts/ext-run.sh): $old"
+  else
+    rm -f "$old"
+    echo "  removed legacy script: $old (renamed to scripts/ext-run.sh)"
+  fi
+}
+
 # =============================================================================
 # 1. Installed files (agents, statusline, /triage-exec workflow, usage script,
 #    triage.md rubric) — the only step --files-only performs.
@@ -253,8 +270,11 @@ install_file "workflows/triage-exec.js" "$CLAUDE_DIR/workflows/triage-exec.js"
 install_file "scripts/triage-usage.sh" "$CLAUDE_DIR/scripts/triage-usage.sh" x
 install_file "scripts/triage-stats.sh" "$CLAUDE_DIR/scripts/triage-stats.sh" x
 install_file "scripts/triage-cache-segment.sh" "$CLAUDE_DIR/scripts/triage-cache-segment.sh" x
-install_file "scripts/agy-run.sh" "$CLAUDE_DIR/scripts/agy-run.sh" x
+install_file "scripts/ext-run.sh" "$CLAUDE_DIR/scripts/ext-run.sh" x
+install_file "scripts/triage-tiers.sh" "$CLAUDE_DIR/scripts/triage-tiers.sh" x
+install_file "config/tiers.json" "$CLAUDE_DIR/scripts/triage-tiers.json"
 retire_triage_run
+retire_agy_run
 
 if [ "$FILES_ONLY" -eq 1 ]; then
   if [ "$DRY_RUN" -eq 0 ]; then

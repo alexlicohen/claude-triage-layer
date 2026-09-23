@@ -1,7 +1,8 @@
 #!/bin/bash
 # Compare the installed copies under ~/.claude (or $CLAUDE_DIR) against this
 # repo, file-by-file, for: the 7 agents, statusline.sh, workflows/triage-exec.js,
-# triage.md. Prints one of `same` / `MISSING (not installed)` / `FORKED` per
+# the scripts (incl. ext-run.sh), config/tiers.json (installed as
+# scripts/triage-tiers.json), triage.md. Prints one of `same` / `MISSING (not installed)` / `FORKED` per
 # file (or `forked (expected)` for files listed in .driftignore).
 #
 # Exit non-zero only on UNEXPECTED drift (FORKED on a file not in
@@ -63,7 +64,9 @@ check_file "workflows/triage-exec.js" "$CLAUDE_DIR/workflows/triage-exec.js"
 check_file "scripts/triage-usage.sh" "$CLAUDE_DIR/scripts/triage-usage.sh"
 check_file "scripts/triage-stats.sh" "$CLAUDE_DIR/scripts/triage-stats.sh"
 check_file "scripts/triage-cache-segment.sh" "$CLAUDE_DIR/scripts/triage-cache-segment.sh"
-check_file "scripts/agy-run.sh" "$CLAUDE_DIR/scripts/agy-run.sh"
+check_file "scripts/ext-run.sh" "$CLAUDE_DIR/scripts/ext-run.sh"
+check_file "scripts/triage-tiers.sh" "$CLAUDE_DIR/scripts/triage-tiers.sh"
+check_file "config/tiers.json" "$CLAUDE_DIR/scripts/triage-tiers.json"
 check_file "triage.md" "$CLAUDE_DIR/triage.md"
 
 # Warn-only: a forced subagent model silently collapses every tier onto one model, so

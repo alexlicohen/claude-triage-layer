@@ -48,7 +48,8 @@ fi
 #    Remove the seven agents by name — never `rm triage-*.md` by glob, which would
 #    also delete any unrelated triage-* agents you authored yourself.
 #    triage-verify.sh is a retired hook current installs no longer ship — remove any
-#    stale copy left behind by an older local checkout.
+#    stale copy left behind by an older local checkout. scripts/agy-run.sh is the
+#    pre-Wave-12 name of ext-run.sh, removed for the same reason.
 for a in $AGENTS; do
   rm -f "$CLAUDE_DIR/agents/$a.md"
   rm -rf "$CLAUDE_DIR/agent-memory/$a"
@@ -57,6 +58,8 @@ rm -f "$CLAUDE_DIR/triage.md" "$CLAUDE_DIR/statusline.sh"
 rm -f "$CLAUDE_DIR/workflows/triage-exec.js" "$CLAUDE_DIR/workflows/triage-run.js" \
       "$CLAUDE_DIR/scripts/triage-usage.sh" "$CLAUDE_DIR/scripts/triage-stats.sh" \
       "$CLAUDE_DIR/scripts/triage-cache-segment.sh" \
+      "$CLAUDE_DIR/scripts/ext-run.sh" "$CLAUDE_DIR/scripts/triage-tiers.sh" \
+      "$CLAUDE_DIR/scripts/triage-tiers.json" \
       "$CLAUDE_DIR/scripts/agy-run.sh" \
       "$CLAUDE_DIR/hooks/triage-verify.sh"
 

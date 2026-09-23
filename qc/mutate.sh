@@ -47,7 +47,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23"
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -84,9 +84,9 @@ mut_file() {
     10) echo "drift.sh" ;;
     11) echo "workflows/triage-exec.js" ;;
     12) echo "scripts/triage-cache-segment.sh" ;;
-    13) echo "scripts/agy-run.sh" ;;
-    14) echo "scripts/agy-run.sh" ;;
-    15) echo "scripts/agy-run.sh" ;;
+    13) echo "scripts/ext-run.sh" ;;
+    14) echo "scripts/ext-run.sh" ;;
+    15) echo "scripts/ext-run.sh" ;;
     16) echo "workflows/triage-exec.js" ;;
     17) echo "workflows/triage-exec.js" ;;
     18) echo "install.sh" ;;
@@ -95,6 +95,10 @@ mut_file() {
     21) echo "uninstall.sh" ;;
     22) echo "workflows/triage-exec.js" ;;
     23) echo "workflows/triage-exec.js" ;;
+    24) echo "scripts/ext-run.sh" ;;
+    25) echo "scripts/ext-run.sh" ;;
+    26) echo "scripts/ext-run.sh" ;;
+    27) echo "scripts/ext-run.sh" ;;
     *) echo "" ;;
   esac
 }
@@ -113,9 +117,9 @@ mut_desc() {
     10) echo "drift.sh: remove UNEXPECTED_DRIFT=1 from the MISSING branch" ;;
     11) echo "triage-exec.js: make bad() a no-op (malformed plan args no longer throw before spawning)" ;;
     12) echo "triage-cache-segment.sh: revert the warm-boolean jq filter to '// empty' (jq's // swallows a literal false, so a cold cache silently renders nothing)" ;;
-    13) echo "agy-run.sh: drop the denied_actions gate (a run whose tool calls were all denied is reported as a pass)" ;;
-    14) echo "agy-run.sh: drop the empty-response gate (exit 0 + status SUCCESS alone is treated as usable output)" ;;
-    15) echo "agy-run.sh: weaken the deny-list path match from path-component equality to substring (a sibling repo such as clip-creators-lab is refused too)" ;;
+    13) echo "ext-run.sh: drop the denied_actions gate (a run whose tool calls were all denied is reported as a pass)" ;;
+    14) echo "ext-run.sh: drop the empty-response gate (exit 0 + status SUCCESS alone is treated as usable output)" ;;
+    15) echo "ext-run.sh: weaken the deny-list path match from path-component equality to substring (a sibling repo such as clip-creators-lab is refused too)" ;;
     16) echo "triage-exec.js: danger-zone routing no longer covers the overflow tier, so overflow:true sends danger subtasks off-vendor" ;;
     17) echo "triage-exec.js: a failed overflow subtask is retried sideways on builder instead of up on the Claude deep tier" ;;
     18) echo "install.sh: neuter check_force_override (the CLAUDE_CODE_SUBAGENT_MODEL_FORCE warning never prints)" ;;
@@ -124,17 +128,21 @@ mut_desc() {
     21) echo "uninstall.sh: drop LEGACY_SUBAGENT_MODELS from the removal set (an old install's subagent model is left behind)" ;;
     22) echo "triage-exec.js: remove the deep@max rung (an ESCALATE on a below-max deep attempt goes straight to Fable)" ;;
     23) echo "triage-exec.js: runFable() always takes the deep@max fallback (Fable unavailable after a failed deep@max re-runs it)" ;;
+    24) echo "ext-run.sh: a level/mode missing from tiers.json falls back to a default model instead of refusing" ;;
+    25) echo "ext-run.sh: drop the codex empty-response gate (rc 0 with an empty -o final message is treated as usable output)" ;;
+    26) echo "ext-run.sh: the deny check is skipped for codex (clip-creator / .codex-deny no longer refuse)" ;;
+    27) echo "ext-run.sh: drop -c sandbox_workspace_write.exclude_slash_tmp=true (codex workspace-write can write anywhere under /tmp)" ;;
     *) echo "" ;;
   esac
 }
 
 # Which suite exercises this mutation's file: "roundtrip" (test/roundtrip.sh),
-# "scenarios" (test/workflow-scenarios.mjs) or "agyrun" (test/agy-run.sh).
+# "scenarios" (test/workflow-scenarios.mjs) or "extrun" (test/ext-run.sh).
 mut_suite() {
   case "$1" in
     1|2|3|4|5|6|10|12|18|19|20|21) echo "roundtrip" ;;
     7|8|9|11|16|17|22|23) echo "scenarios" ;;
-    13|14|15) echo "agyrun" ;;
+    13|14|15|24|25|26|27) echo "extrun" ;;
     *) echo "" ;;
   esac
 }
@@ -145,7 +153,7 @@ suite_file() {
   case "$1" in
     roundtrip) echo "test/roundtrip.sh" ;;
     scenarios) echo "test/workflow-scenarios.mjs" ;;
-    agyrun) echo "test/agy-run.sh" ;;
+    extrun) echo "test/ext-run.sh" ;;
     *) echo "" ;;
   esac
 }
@@ -317,24 +325,24 @@ MUT6
         1 "$rep"
       ;;
     13)
-      # agy-run.sh: delete the 3-line denied_actions gate. agy reports
+      # ext-run.sh: delete agy's 3-line denied_actions gate. agy reports
       # status:SUCCESS with an empty .response when every tool call was denied,
       # so without this gate a denied run is indistinguishable from a good one.
       mut_delete_block "$target" 'if [ -n "$DENIED" ]; then' 3
       ;;
     14)
-      # agy-run.sh: delete the 3-line empty-response gate — exit 0 and
+      # ext-run.sh: delete agy's 3-line empty-response gate — exit 0 and
       # status SUCCESS are NOT sufficient (a timed-out run looks exactly so).
       mut_delete_block "$target" 'if [ -z "$RESPONSE" ]; then' 3
       ;;
     15)
-      # agy-run.sh: deny_check's path match goes from component equality
+      # ext-run.sh: deny_check's path match goes from component equality
       # (*/"$name"/*) to substring (*"$name"*) — the classic over-broad-glob bug.
       # A sibling repo whose name merely CONTAINS a deny-listed name is then
       # refused, and the deny-list stops meaning "this repo" and starts meaning
       # "any path spelling it anywhere".
       cat > "$rep" <<'MUT15'
-      *"$name"*) die "REFUSED: $p is under a deny-listed repo ('$name') - agy must never read it." "$E_REFUSED" ;; # MUTATED: substring match
+      *"$name"*) die "REFUSED: $p is under a deny-listed repo ('$name') - $VENDOR must never read it." "$E_REFUSED" ;; # MUTATED: substring match
 MUT15
       mut_replace_block "$target" \
         '      */"$name"/*) die "REFUSED: $p is under a deny-listed repo' 1 "$rep"
@@ -414,6 +422,34 @@ MUT21
       printf '  if (false) { // MUTATED: deep@max fallback always taken\n' > "$rep"
       mut_replace_block "$target" '  if (afterMax) {' 1 "$rep"
       ;;
+    24)
+      # ext-run.sh: resolve_tier's refusal for an absent tiers entry becomes a
+      # per-vendor default model — exactly the "never fall back to a default"
+      # the tiers contract forbids (a level removed for lost parity would still run).
+      cat > "$rep" <<'MUT24'
+    case "$VENDOR" in agy) TIER_MODEL=gemini-3.1-pro-high ;; codex) TIER_MODEL=gpt-6-sol; TIER_EFFORT=medium ;; esac # MUTATED: default model fallback
+MUT24
+      mut_replace_block "$target" '    die "REFUSED: $TIERS has no $where entry' 1 "$rep"
+      ;;
+    25)
+      # ext-run.sh: delete codex's 3-line empty-final-message gate. rc 0 with an
+      # empty -o file is then reported as a pass with an empty answer.
+      mut_delete_block "$target" '  if [ ! -s "$LASTMSG" ]; then' 3
+      ;;
+    26)
+      # ext-run.sh: deny_check returns early for codex — clip-creator, the
+      # CODEX_DENY_REPOS names and .codex-deny markers all stop refusing.
+      # Opening-line anchor, as in 18, so the body can change freely.
+      cat > "$rep" <<'MUT26'
+deny_check() { [ "$VENDOR" = "codex" ] && return 0 # MUTATED: deny check skipped for codex
+MUT26
+      mut_replace_block "$target" 'deny_check() { # $1 = path. exits E_REFUSED on a hit.' 1 "$rep"
+      ;;
+    27)
+      # ext-run.sh: drop the exclude_slash_tmp override. Verified live: without it
+      # codex's workspace-write sandbox can write anywhere under /tmp.
+      mut_delete_block "$target" '  set -- "$@" -c sandbox_workspace_write.exclude_slash_tmp=true' 1
+      ;;
     *)
       return 1
       ;;
@@ -453,6 +489,10 @@ verify_mutation() {
     21) grep -qF '| [$m] as $ours_sub' "$target" && ! grep -qF '($legacy | split(" ")' "$target" ;;
     22) ! grep -qF "effort: 'max', owesFable: true" "$target" && grep -qF 'function redoStep(r, isEscalate) {' "$target" ;;
     23) grep -qF 'MUTATED: deep@max fallback always taken' "$target" && ! grep -qF '  if (afterMax) {' "$target" ;;
+    24) grep -qF 'MUTATED: default model fallback' "$target" && ! grep -qF 'an absent entry is a refusal, never a default model' "$target" ;;
+    25) ! grep -qF 'codex wrote no final message' "$target" && grep -qF 'RESPONSE=$(cat "$LASTMSG")' "$target" ;;
+    26) grep -qF 'MUTATED: deny check skipped for codex' "$target" ;;
+    27) ! grep -qF 'set -- "$@" -c sandbox_workspace_write.exclude_slash_tmp=true' "$target" && grep -qF 'set -- "$@" -c sandbox_workspace_write.exclude_tmpdir_env_var=true' "$target" ;;
     *) return 1 ;;
   esac
 }
@@ -485,7 +525,7 @@ run_suite() { # $1 = repo copy dir, $2 = suite name (see suite_file) -> exit cod
   case "$suite" in
     roundtrip) ( cd "$copy" && bash test/roundtrip.sh ) >"$WORK_ROOT/last-suite.log" 2>&1 ;;
     scenarios) ( cd "$copy" && node test/workflow-scenarios.mjs ) >"$WORK_ROOT/last-suite.log" 2>&1 ;;
-    agyrun) ( cd "$copy" && bash test/agy-run.sh ) >"$WORK_ROOT/last-suite.log" 2>&1 ;;
+    extrun) ( cd "$copy" && bash test/ext-run.sh ) >"$WORK_ROOT/last-suite.log" 2>&1 ;;
     *) return 1 ;;
   esac
 }
@@ -503,7 +543,7 @@ copy_repo "$BASELINE_DIR"
 
 BASELINE_ROUNDTRIP_OK=1
 BASELINE_SCENARIOS_OK=1
-BASELINE_AGYRUN_OK=1
+BASELINE_EXTRUN_OK=1
 if run_suite "$BASELINE_DIR" roundtrip; then
   BASELINE_ROUNDTRIP_OK=0
 else
@@ -516,11 +556,11 @@ else
   BASELINE_SCENARIOS_OK=1
   echo "  ⚠ baseline $(suite_file scenarios) is already RED on unmutated code — mutations using it will be reported ERROR (baseline-red), not KILLED/SURVIVOR."
 fi
-if run_suite "$BASELINE_DIR" agyrun; then
-  BASELINE_AGYRUN_OK=0
+if run_suite "$BASELINE_DIR" extrun; then
+  BASELINE_EXTRUN_OK=0
 else
-  BASELINE_AGYRUN_OK=1
-  echo "  ⚠ baseline $(suite_file agyrun) is already RED on unmutated code — mutations using it will be reported ERROR (baseline-red), not KILLED/SURVIVOR."
+  BASELINE_EXTRUN_OK=1
+  echo "  ⚠ baseline $(suite_file extrun) is already RED on unmutated code — mutations using it will be reported ERROR (baseline-red), not KILLED/SURVIVOR."
 fi
 echo ""
 
@@ -551,7 +591,7 @@ for id in $RUN_IDS; do
   case "$suite" in
     roundtrip) baseline_ok=$BASELINE_ROUNDTRIP_OK ;;
     scenarios) baseline_ok=$BASELINE_SCENARIOS_OK ;;
-    agyrun) baseline_ok=$BASELINE_AGYRUN_OK ;;
+    extrun) baseline_ok=$BASELINE_EXTRUN_OK ;;
     *) baseline_ok=1 ;;
   esac
 
