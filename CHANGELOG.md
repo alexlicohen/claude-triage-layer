@@ -4,6 +4,48 @@ Reverse-chronological. Each entry cites the commit(s) it corresponds to and,
 where known, the test-count delta. See `test/roundtrip.sh` and `test/lint.sh`
 for the current check catalog.
 
+## Wave 11 — Opus 5.5 as orchestrator; effort retune; deep@max before Fable
+
+Uncommitted at time of writing (branch `wave11-opus55`).
+
+- **Orchestrator recommendation: Opus 5.5** (`claude-opus-5-5`, launched
+  2026-09-22): Anthropic places it at Fable 5.1's level on most work, ahead on
+  Terminal-Bench 4.0 / GDPval-AA / OSWorld 2.0, at $4/$20 vs $10/$50, with no
+  30-day retention requirement. `triage.md` drops "most expensive tier"
+  framing: on the deep tier's own model, delegation buys context isolation and
+  parallelism, not capability; one module may be read inline to plan.
+- **Subagent default `claude-opus-5` → `claude-opus-5-5`.** `install.sh`
+  upgrades a value equal to a previous installer default
+  (`LEGACY_SUBAGENT_MODELS`); any other user value is left alone.
+  `uninstall.sh` removes current or legacy defaults; roundtrip N8 asserts the
+  two scripts' lists match (they can't share a sourced file: shellcheck runs
+  without `-x`).
+- **Effort retune for Opus 5.5** (thinks more per level than Opus 5; its
+  `medium` beats Opus 5 `high`): `triage-deep-reasoner` xhigh → high,
+  `triage-reviewer` high → medium. Rubric now says effort is raised via the
+  `triage-exec` subtask `effort` field — the Agent tool has no effort knob and
+  brief prose doesn't change it.
+- **`triage-exec`: one deep@`max` attempt before any Fable escalation.**
+  `redoStep()` owns the decision; a deep subtask below `max` that escalates is
+  re-run at `max` (`owesFable`) and reaches Fable only if that fails too. A plan
+  with `effort:'max'` goes straight to Fable. Every Fable spawn now goes through
+  `runFable()` (⚠ print + unavailable fallback) — remediation-round Fable
+  spawns previously printed nothing and had no fallback. Fable unavailable
+  after deep@max → no duplicate deep@max, recorded `fable->none`, failed loudly.
+- **Rule 6 rewritten**: Fable 5.1 and Opus 5.5 both run a cyber classifier;
+  Opus 5.5 adds bio and `reasoning_extraction`. No tier is classifier-free — on
+  a refusal, rephrase or surface it rather than re-sending up the ladder.
+- **Checks**: roundtrip 114 → 123, workflow-scenarios 128 → 153 (266 → 300,
+  plus agy-run 64 unchanged); mutations 18 → 23 (19–21 legacy-model upgrade /
+  uninstall, 22–23 deep@max step; 17 re-anchored).
+- **Deferred**: a plan's explicit `effort` passes through to escalated tiers
+  (a deep@high subtask reaches Fable at `high`); prompt-audit findings not
+  applied (worker `ESCALATE:` not parsed by `assess()` when checks exist and no
+  reviewer runs; workers still hold the Agent tool; check-runner 1–3-sentence
+  vs quote-40-lines contract); Max weekly-quota weighting of Opus 5.5 vs Fable
+  unconfirmed; builder-tier Sonnet 5 vs Opus 5.5@low A/B; revisit tiers when
+  Sonnet 5.5 / Haiku 5.5 ship.
+
 ## Wave 10 — agy tiers: overflow build worker + five read-only cross-vendor modes
 
 `e399233`, `7c2baac`

@@ -1,6 +1,6 @@
 ---
 name: triage-fable-architect
-description: Top tier (Fable 5.1 @ xhigh effort) — the most capable and most expensive model. Reserve for architecture decisions, problems the Opus tier escalated or failed, and tasks where correctness matters far more than cost. The orchestrator MUST print "⚠ Escalating to Fable: <reason>" in user-visible text whenever invoking this agent.
+description: Reserve tier (Fable 5.1 @ xhigh effort) — the most expensive model; Opus 5.5 is at its level on most work. Reserve for a second opinion on architecture decisions, problems the Opus tier escalated or failed at max effort, and tasks where correctness matters far more than cost. The orchestrator MUST print "⚠ Escalating to Fable: <reason>" in user-visible text whenever invoking this agent.
 model: fable
 effort: xhigh
 memory: project

@@ -1,7 +1,7 @@
 export const meta = {
   name: 'triage-exec',
   description: 'Execute a pre-built triage plan: delegate each subtask to its tier agent, run the objective checks, remediate and escalate',
-  whenToUse: 'Run a plan the orchestrator has ALREADY classified: /triage-exec with args = {subtasks:[{brief,tier,files,acceptance,danger,effort}], checks:[shell commands], review, crossReview, overflow}. It executes, verifies, re-runs only the implicated subtasks on failure, and escalates one tier up on ESCALATE. It never classifies — a malformed plan throws before any spawn.',
+  whenToUse: 'Run a plan the orchestrator has ALREADY classified: /triage-exec with args = {subtasks:[{brief,tier,files,acceptance,danger,effort}], checks:[shell commands], review, crossReview, overflow}. It executes, verifies, re-runs only the implicated subtasks on failure, and escalates one rung up on ESCALATE (deep below max effort gets one deep@max attempt before Fable). It never classifies — a malformed plan throws before any spawn.',
   phases: [
     { title: 'Execute' },
     { title: 'Verify' },
@@ -92,9 +92,11 @@ for (const st of subtasks) {
   }
 }
 
-// escalations — every tier change this run made, for the returned report. Three kinds:
-// a verdict-driven one-tier-up remediation, the Fable→deep@max availability fallback, and
-// the overflow pair (→builder when the external CLI is unavailable, →deep when it failed).
+// escalations — every rung change this run made, for the returned report. Kinds: a
+// verdict-driven one-rung-up remediation (deep→deep@max→fable: see redoStep()), the
+// Fable→deep@max availability fallback or, when deep@max already failed, its recorded
+// skip (to:'none', see runFable()), and the overflow pair (→builder when the external CLI
+// is unavailable, →deep when it failed).
 const escalations = []
 
 // ─── Budget awareness ───────────────────────────────────────────────────────
@@ -165,30 +167,49 @@ function brief(st, extra) {
 // agent() options for a subtask spawn. agentType is ALWAYS set — never rely on an
 // inherited model, or the worker silently runs on the orchestrator's (expensive) tier
 // instead of the planned one. `effort` is passed through only when the plan set one,
-// so an unset effort keeps the agent definition's own default.
-function agentOpts(st, agentType, ph, label) {
+// so an unset effort keeps the agent definition's own default. `effort` overrides the
+// plan's value for a step that must run at a specific effort (the deep@max rung).
+function agentOpts(st, agentType, ph, label, effort = st.effort) {
   const o = { phase: ph, agentType, label }
-  if (st.effort) o.effort = st.effort
+  if (effort) o.effort = effort
   return o
+}
+
+// runFable() — SINGLE OWNER of every triage-fable-architect spawn: a plan-time fable
+// subtask (Execute) and any remediation step that lands on fable. Rubric rule 6: announce
+// it first; if the spawn hard-fails (agent() → null — e.g. a stale model registry), fall
+// back to triage-deep-reasoner at max effort. EXCEPT when the attempt being escalated
+// already WAS deep@max (`afterMax`): the fallback would re-run exactly the attempt that
+// just failed. The subtask keeps its last output instead, and the skip is logged and
+// recorded (to:'none') so the report never reads as if Fable ran. `prefix` namespaces the
+// labels ('' in Execute, 'redo:' in remediation). Returns {output, tier, effort} or null.
+async function runFable(st, prompt, ph, prefix, afterMax) {
+  log(`⚠ Escalating to Fable: ${st.id} — ${st.brief.slice(0, 80)}`)
+  const out = await agent(prompt, agentOpts(st, 'triage-fable-architect', ph, `${prefix}fable:${st.id}`))
+  if (out) return { output: out, tier: 'fable', effort: st.effort }
+  if (afterMax) {
+    log(`⚠ Fable unavailable — ${st.id} already failed at deep@max, so the deep@max fallback is NOT re-run; it keeps its last output.`)
+    escalations.push({ id: st.id, from: 'fable', to: 'none', reason: 'fable spawn unavailable — deep@max fallback skipped: that attempt already ran and failed' })
+    return null
+  }
+  log(`⚠ Fable unavailable — using triage-deep-reasoner at max effort: ${st.id}`)
+  escalations.push({ id: st.id, from: 'fable', to: 'deep', reason: 'fable spawn unavailable — deep-reasoner at max effort' })
+  const fb = await agent(prompt, agentOpts(st, 'triage-deep-reasoner', ph, `${prefix}deep←fable:${st.id}`, 'max'))
+  return fb ? { output: fb, tier: 'deep', effort: 'max' } : null
 }
 
 // Run one subtask, budget-gated (WORK floor = RESERVE) via spawn(): one budget
 // decision per subtask, before it starts, plus a hard-ceiling catch around the
-// agent() call(s). Fable is available and gated: announce it, and if the spawn
-// hard-fails (agent() returns null — e.g. a stale model registry), fall back to
-// triage-deep-reasoner at max effort per the rubric. Returns null if the subtask is
-// budget-skipped, hits the ceiling, or even the fallback dies — so filter(Boolean)
-// drops it (rather than leaking a `null` output).
+// agent() call(s). A plan-time fable subtask goes through runFable() (announce +
+// deep@max fallback). Every result records the effort it actually ran at — redoStep()
+// needs it to know whether a deep attempt was already at max. Returns null if the
+// subtask is budget-skipped, hits the ceiling, or even the fallback dies — so
+// filter(Boolean) drops it (rather than leaking a `null` output).
 async function runSubtask(st) {
   return spawn(RESERVE, `Execute:${st.tier}`, st.id, async () => {
     if (st.tier === 'fable') {
-      log(`⚠ Escalating to Fable: ${st.id} — ${st.brief.slice(0, 80)}`)
-      const out = await agent(brief(st), agentOpts(st, 'triage-fable-architect', 'Execute', `fable:${st.id}`))
-      if (out) return { subtask: st, output: out, tier: 'fable', attempts: 1 }
-      log(`⚠ Fable unavailable — using triage-deep-reasoner at max effort: ${st.id}`)
-      escalations.push({ id: st.id, from: 'fable', to: 'deep', reason: 'fable spawn unavailable — deep-reasoner at max effort' })
-      const fb = await agent(brief(st), { phase: 'Execute', agentType: 'triage-deep-reasoner', effort: 'max', label: `deep←fable:${st.id}` })
-      return fb ? { subtask: st, output: fb, tier: 'deep', attempts: 1 } : null
+      const f = await runFable(st, brief(st), 'Execute', '', false)
+      return f ? { subtask: st, ...f, attempts: 1 } : null
     }
     // Overflow availability fallback: unavailable → SIDEWAYS to builder, not up.
     // An external CLI that never started has taught us nothing about the task — it is
@@ -197,15 +218,15 @@ async function runSubtask(st) {
     // and is logged loudly rather than hidden.
     if (st.tier === 'overflow') {
       const ov = await agent(brief(st), agentOpts(st, 'triage-overflow', 'Execute', `overflow:${st.id}`))
-      if (ov) return { subtask: st, output: ov, tier: 'overflow', attempts: 1 }
+      if (ov) return { subtask: st, output: ov, tier: 'overflow', effort: st.effort, attempts: 1 }
       log(`⚠ Overflow unavailable — falling back to triage-builder for ${st.id} (this SPENDS Claude quota).`)
       escalations.push({ id: st.id, from: 'overflow', to: 'builder', reason: 'external CLI tier unavailable — original builder tier restored' })
       const fb = await agent(brief(st), agentOpts(st, 'triage-builder', 'Execute', `builder←overflow:${st.id}`))
-      return fb ? { subtask: st, output: fb, tier: 'builder', attempts: 1 } : null
+      return fb ? { subtask: st, output: fb, tier: 'builder', effort: st.effort, attempts: 1 } : null
     }
     const agentType = TIER_AGENT[st.tier] || 'triage-builder'
     const out = await agent(brief(st), agentOpts(st, agentType, 'Execute', `${st.tier}:${st.id}`))
-    return out ? { subtask: st, output: out, tier: st.tier, attempts: 1 } : null
+    return out ? { subtask: st, output: out, tier: st.tier, effort: st.effort, attempts: 1 } : null
   })
 }
 
@@ -280,6 +301,30 @@ const nextTier = t => {
   if (NEXT_TIER_OVERRIDE[t]) return NEXT_TIER_OVERRIDE[t]
   const i = TIER_ORDER.indexOf(t)
   return i >= 0 && i < TIER_ORDER.length - 1 ? TIER_ORDER[i + 1] : t
+}
+
+// ─── Escalation ladder: SINGLE OWNER of "where does a failed result re-run?" ───────
+// A rung is a tier, except that deep at max effort is its own rung. The rubric escalates
+// to Fable only from a FAILED or ESCALATED Opus@max attempt, and the deep tier's default
+// effort is below max — so an ESCALATE on a below-max deep attempt buys one deep@max
+// attempt first (cheaper than Fable and likelier to fix it). That step owes the Fable
+// escalation it stood in for: if the deep@max attempt fails verification too (FIX, FAIL
+// or ESCALATE alike), the second round below sends it on to Fable. A plan that already
+// set effort:'max' on a deep subtask has had its Opus@max attempt and goes straight on.
+const ranMax = r => r.tier === 'deep' && r.effort === 'max'
+const rung = r => (ranMax(r) ? 'deep@max' : r.tier)
+
+// redoStep(r, isEscalate) → { tier, effort, reason?, owesFable? } for one failed result.
+// Any rung change it implies is logged to `escalations` by remediate().
+function redoStep(r, isEscalate) {
+  // An overflow subtask that failed verification is NOT retried externally: the
+  // objective check already says the off-vendor model got it wrong, so it returns to
+  // Claude at the deep tier with the failure text — on FIX and ESCALATE alike.
+  if (r.tier === 'overflow') return { tier: 'deep', effort: r.subtask.effort, reason: 'overflow output failed verification — returned to the Claude deep tier' }
+  if (r.owesFable) return { tier: 'fable', effort: r.subtask.effort, reason: 'the deep@max attempt failed verification too — the deferred Fable escalation goes ahead' }
+  if (!isEscalate) return { tier: r.tier, effort: r.effort }
+  if (r.tier === 'deep' && !ranMax(r)) return { tier: 'deep', effort: 'max', owesFable: true, reason: 'reviewer returned ESCALATE — one deep@max attempt before any Fable spawn' }
+  return { tier: nextTier(r.tier), effort: r.subtask.effort, reason: 'reviewer returned ESCALATE' }
 }
 
 // Review policy — the ONE place the reviewer's presence is decided.
@@ -423,48 +468,48 @@ function matchedFiles(r, text) {
   return (r.subtask.files || []).filter(f => fileMentioned(f, text) || fileMentioned(basename(f), text))
 }
 
-const { text: vtext, failed, isEscalate } = assess(verification)
-
-// One bounded remediation round (rubric: retry once at the same tier on FIX / objective
-// FAIL, escalate one tier on ESCALATE), then re-verify once — but TARGETED: attribute the
-// failure to specific subtasks by matching their files against the verifier's failure text
-// and re-run only those. Fail loud: if attribution implicates nobody, re-run ALL and say so.
-let remediation = null
-if (failed && results.length) {
-  let targets = results.filter(r => matchedFiles(r, vtext).length > 0)
-  const attributionFailed = targets.length === 0
-  if (attributionFailed) {
-    targets = results
-    log('⚠ Remediation attribution matched no subtask files in the failure text — re-running ALL subtasks.')
+// remediate(pool, a, round) — one remediation round over `pool`, driven by assessment `a`
+// (rubric: retry once at the same rung on FIX / objective FAIL, one rung up on ESCALATE;
+// where to is redoStep()'s call). TARGETED: attribute the failure to specific subtasks by
+// matching their files against the failure text and re-run only those. Fail loud: if
+// attribution implicates NO subtask at all, re-run the whole pool and say so. In round 2
+// (pool = subtasks still owed a Fable escalation), a failure attributed only to OTHER
+// subtasks escalates nobody — their one round is spent, and Fable would be wasted.
+async function remediate(pool, a, round) {
+  const matched = r => matchedFiles(r, a.text).length > 0
+  const attributionFailed = !results.some(matched)
+  const targets = attributionFailed ? pool.slice() : pool.filter(matched)
+  if (round === 1) {
+    if (attributionFailed) log('⚠ Remediation attribution matched no subtask files in the failure text — re-running ALL subtasks.')
+    else log(`Remediation implicating ${targets.length} of ${results.length} subtask(s): ` +
+      targets.map(r => `"${r.subtask.id}" (matched: ${matchedFiles(r, a.text).join(', ')})`).join('; '))
+    log(a.isEscalate ? 'Verification: ESCALATE — re-running the implicated subtask(s) one rung up with the feedback.'
+                     : 'Verification did not pass — re-running the implicated subtask(s) with the feedback as context.')
+  } else if (targets.length) {
+    log(`⚠ deep@max attempt(s) failed verification — sending ${targets.map(r => `"${r.subtask.id}"`).join(', ')} on to Fable` +
+      (attributionFailed ? ' (attribution matched no subtask files: ALL deep@max subtasks).' : '.'))
   } else {
-    log(`Remediation implicating ${targets.length} of ${results.length} subtask(s): ` +
-      targets.map(r => `"${r.subtask.id}" (matched: ${matchedFiles(r, vtext).join(', ')})`).join('; '))
+    log('deep@max step: the remaining failure is attributed only to other subtasks — no Fable escalation.')
   }
-  log(isEscalate ? 'Verification: ESCALATE — re-running the implicated subtask(s) one tier up with the feedback.'
-                 : 'Verification did not pass — re-running the implicated subtask(s) with the feedback as context.')
+  const extra = `A prior attempt did not pass verification. Verifier feedback:\n${a.text.slice(0, 2000)}\nAddress it and complete the task.`
   // Remediation redos are WORK → budget-gated on the RESERVE floor (same as Execute),
   // with a ceiling catch, via spawn(). A budget-skipped redo drops from redoResults
   // (filter(Boolean)); the original result stays in the merged re-verify set below.
   const redo = await parallel(targets.map(r => () => spawn(RESERVE, `Remediate:${r.tier}`, r.subtask.id, async () => {
-    // An overflow subtask that failed verification is NOT retried externally: the
-    // objective check already says the off-vendor model got it wrong, so it returns to
-    // Claude at the deep tier with the failure text — on FIX and ESCALATE alike. (The
-    // explicit ternary is what makes a plain FIX escalate too; nextTier('overflow')
-    // agrees via NEXT_TIER_OVERRIDE, but `isEscalate ? … : r.tier` alone would not.)
-    const tier = r.tier === 'overflow' ? 'deep' : (isEscalate ? nextTier(r.tier) : r.tier)
-    if (tier !== r.tier) escalations.push({
-      id: r.subtask.id, from: r.tier, to: tier,
-      reason: r.tier === 'overflow'
-        ? 'overflow output failed verification — returned to the Claude deep tier'
-        : 'reviewer returned ESCALATE',
-    })
-    const agentType = TIER_AGENT[tier] || 'triage-builder'
-    const extra = `A prior attempt did not pass verification. Verifier feedback:\n${vtext.slice(0, 2000)}\nAddress it and complete the task.`
-    const out = await agent(brief(r.subtask, extra), agentOpts(r.subtask, agentType, 'Verify', `redo:${r.subtask.id}`))
-    return out ? { subtask: r.subtask, output: out, tier, attempts: r.attempts + 1 } : null
+    const id = r.subtask.id
+    const step = redoStep(r, a.isEscalate)
+    if (rung(step) !== rung(r)) escalations.push({ id, from: rung(r), to: rung(step), reason: step.reason })
+    const prompt = brief(r.subtask, extra)
+    if (step.tier === 'fable') {
+      const f = await runFable(r.subtask, prompt, 'Verify', 'redo:', ranMax(r))
+      return f ? { subtask: r.subtask, ...f, attempts: r.attempts + 1 } : null
+    }
+    const agentType = TIER_AGENT[step.tier] || 'triage-builder'
+    const label = step.owesFable ? `redo:deep@max:${id}` : `redo:${id}`
+    const out = await agent(prompt, agentOpts(r.subtask, agentType, 'Verify', label, step.effort))
+    return out ? { subtask: r.subtask, output: out, tier: step.tier, effort: step.effort, attempts: r.attempts + 1, owesFable: !!step.owesFable } : null
   })))
   const redoResults = redo.filter(Boolean)
-  remediation = { implicated: targets.length, attributionFailed, escalated: isEscalate }
   // Re-verify the WHOLE task, not just the re-run subset: merge latest output per subtask
   // (remediated where re-run, original otherwise) so danger flags and file focus reflect
   // ALL executed work (seam rule 4).
@@ -475,7 +520,27 @@ if (failed && results.length) {
   // in place so a remediated subtask reports its NEW tier and attempt count.
   results.length = 0
   results.push(...merged)
-  verification = await verify(merged, true)
+  return { implicated: targets.length, attributionFailed, redoResults, merged }
+}
+
+// Round 1: one bounded remediation round, then re-verify once. Round 2 exists ONLY for
+// subtasks whose round-1 step was deep@max (owesFable) and only when the re-verify still
+// fails: they go on to Fable. It re-verifies only if something new ran — Fable unavailable
+// after deep@max (runFable() skips the fallback) leaves the round-1 verification standing.
+// Nothing sets owesFable in round 2, so there is never a round 3.
+const first = assess(verification)
+let remediation = null
+if (first.failed && results.length) {
+  const r1 = await remediate(results.slice(), first, 1)
+  remediation = { implicated: r1.implicated, attributionFailed: r1.attributionFailed, escalated: first.isEscalate, rounds: 1 }
+  verification = await verify(r1.merged, true)
+  const owed = r1.redoResults.filter(r => r.owesFable)
+  const again = assess(verification)
+  if (owed.length && again.failed) {
+    const r2 = await remediate(owed, again, 2)
+    if (r2.implicated) remediation.rounds = 2
+    if (r2.redoResults.length) verification = await verify(r2.merged, true)
+  }
 }
 
 // --- Cross-vendor second opinion (optional; verification rule 6) -------------
