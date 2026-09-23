@@ -411,3 +411,38 @@ applies+fail, non-applying, empty, binary/new file, overlay visible to the check
 the diffstat and the caller's tree, caller tree/index/HEAD untouched, worktrees cleaned (also
 after a timeout), missing patch, usage errors. `qc/mutate.sh` #32 proves the cleanup assertion
 has teeth.
+
+## `stage-worktree.sh` — the staging area of a bake-off
+
+```
+stage-worktree.sh create    --repo R --base REV --count N --dir D
+stage-worktree.sh diff      --worktree W --base SHA --out FILE
+stage-worktree.sh leakcheck --repo R --dir D
+stage-worktree.sh cleanup   --repo R --dir D
+```
+
+`workflows/triage-compare.js` never gives a candidate the real repo as its working directory.
+`create` resolves REV to a sha **once**, fingerprints R (HEAD, `status --porcelain=v1 -uall`,
+and a content manifest of every tracked + untracked non-ignored path), and makes N detached
+worktrees `D/wt-1..N` at that sha (hooks off). D must be absolute, outside R, not containing R,
+and absent or empty; it prints `{sha, worktrees, fingerprint, head, repo}`. Candidate *i* works
+in `D/wt-i` — a wrapper that drops a flag, or an ext-run that applies its patch back, lands in
+a throwaway checkout, and a moving HEAD in R no longer moves anyone's base.
+
+`diff` is `git add -A` + `git diff --binary --cached SHA` in a staged worktree (new, deleted and
+binary files included; FILE removed first, so a stale patch never survives a failed diff). It
+refuses a main working tree, so it can never stage into R's index. `leakcheck` compares R with
+the fingerprint: `CLEAN` (exit 0); `LEAK` (exit 7) when, with HEAD unchanged, the status or any
+path's content changed, or, with HEAD moved, any path's content changed; `BASE_MOVED` (exit 0,
+flagged) when someone committed and nothing else changed — grading stays at the recorded sha.
+`cleanup` removes each staged worktree and its bookkeeping, prunes, and deletes D; it refuses a
+D without a fingerprint. Every step prints one JSON line; R's working tree and index are only
+ever read (`--no-optional-locks`).
+
+`test/stage-worktree.sh` (wired into `make test`): sha resolution, worktrees at the exact sha,
+refusals (D inside/containing R, populated D, relative D, unknown REV), a diff with
+new/modified/deleted/binary files that applies cleanly at the sha through `patch-check.sh`, an
+empty diff still checked, diff refusing the main tree and never leaving a stale patch, leakcheck
+CLEAN / LEAK (tracked edit, untracked file, content change to an already-dirty file) /
+BASE_MOVED (including committing pre-existing work), cleanup leaving no worktree registered, and
+R's tree, index bytes and HEAD untouched. `qc/mutate.sh` #39 proves the new-file capture has teeth.

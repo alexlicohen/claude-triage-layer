@@ -11,4 +11,8 @@ Verified 2026-09-22 on CC 2.1.280, from the tool schema and binary strings:
 - Agent definitions support tool denies. Plugin agents use a `disallowedTools: a, b` frontmatter line; the binary mentions "the agent definition's denies". Tiers without a `tools:` list (builder/deep/fable) do get the Agent tool: this deep-reasoner session had it.
 - Reading another project's subagent transcripts in bulk with jq/grep through Bash was denied by the auto-mode classifier ("Sensitive-Source Provenance"). Don't plan an audit around mining `~/.claude/projects/*/subagents` without asking first.
 
+Observed 2026-09-23 (first live triage-compare run; inferred, not re-tested):
+- Workflow `isolation:'worktree'` based the worktree on `main`, not the session branch HEAD, so a candidate on a feature branch got a stale tree.
+- A spawned agent ran an OLD `triage-external` definition: its system prompt lacked the bake-off lines, yet the installed file (mtime 18:11) already had them before the 18:17 spawn. Likely cause: agent definitions are cached at session start, so a mid-session `make sync` never reaches spawns. Never make safety depend on a wrapper agent carrying a flag.
+
 **How to apply:** when routing or writing briefs, set effort in the plan, never in prose. Re-check these after a CC version bump. Related: [[cc-subagent-usage-schema]].

@@ -749,6 +749,68 @@ AGY_BOUNDARY_CLEARED="" TRIAGE_TIERS="$FIX" run_agy read --vendor codex --prompt
 chk "C6i codex also requires AGY_BOUNDARY_CLEARED=1 (exit 3, nothing runs)" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "AGY_BOUNDARY_CLEARED" && [ ! -s "$STUB_LOG" ]'
 
+# --- C6w: a LINKED worktree outside the repo is deny-checked via its main worktree --
+# triage-compare stages candidates in linked worktrees under an outDir outside the
+# repo, so the worktree's own path never names the repo. ext-run must resolve the
+# main worktree (git-common-dir) and deny-check it too. Markers are left UNTRACKED
+# in the main repo so the linked checkout does not carry them — only the
+# common-dir check can see them.
+new_linked_wt() { # $1 = main repo (created), $2 = linked worktree path (outside it)
+  new_repo "$1"
+  git -C "$1" worktree add -q --detach "$2" HEAD
+}
+LWD=$(new_tmp); LWO=$(new_tmp)
+new_linked_wt "$LWD/clip-creator/proj" "$LWO/wt"
+AGY_BOUNDARY_CLEARED=1 AGY_STUB_MODE=buildnoop run_agy build --prompt-file "$BRIEF" --workdir "$LWO/wt" --output "$LWO/agy.patch"
+chk "C6j agy: a linked worktree outside a clip-creator repo is REFUSED (exit 3, names the main worktree), agy never runs" \
+  '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "clip-creator" && printf "%s" "$ERR" | grep -q "main worktree" && [ ! -s "$STUB_LOG" ]'
+AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildnoop \
+  run_agy build --vendor codex --level builder --prompt-file "$BRIEF" --workdir "$LWO/wt" --output "$LWO/codex.patch"
+chk "C6k codex: the same linked worktree is REFUSED (exit 3), codex never runs" \
+  '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "clip-creator" && [ ! -s "$STUB_LOG" ]'
+AGY_BOUNDARY_CLEARED=1 run_agy read --prompt-file "$BRIEF" --input "$LWO/wt/calc.txt"
+chk "C6l agy: an --input file inside that linked worktree is REFUSED (exit 3)" \
+  '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "clip-creator" && [ ! -s "$STUB_LOG" ]'
+AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_agy read --vendor codex --prompt-file "$BRIEF" --input "$LWO/wt/calc.txt"
+chk "C6m codex: an --input file inside that linked worktree is REFUSED (exit 3)" \
+  '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "clip-creator" && [ ! -s "$STUB_LOG" ]'
+
+LAM=$(new_tmp); LAO=$(new_tmp)
+new_linked_wt "$LAM/repo" "$LAO/wt"
+: > "$LAM/repo/.agy-deny"
+AGY_BOUNDARY_CLEARED=1 AGY_STUB_MODE=buildnoop run_agy build --prompt-file "$BRIEF" --workdir "$LAO/wt" --output "$LAO/agy.patch"
+chk "C6n agy: a .agy-deny marker in the MAIN repo refuses its linked worktree (exit 3, names the marker)" \
+  '[ ! -e "$LAO/wt/.agy-deny" ] && [ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "\.agy-deny" && [ ! -s "$STUB_LOG" ]'
+AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildnoop \
+  run_agy build --vendor codex --level builder --prompt-file "$BRIEF" --workdir "$LAO/wt" --output "$LAO/codex.patch"
+chk "C6o ...while codex is NOT refused by that .agy-deny marker" '[ "$RC" -eq 0 ]'
+AGY_BOUNDARY_CLEARED=1 run_agy read --prompt-file "$BRIEF" --input "$LAO/wt/calc.txt"
+chk "C6o2 agy: an --input file in that linked worktree is refused by the main repo's .agy-deny (exit 3)" \
+  '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "\.agy-deny"'
+
+LCM=$(new_tmp); LCO=$(new_tmp)
+new_linked_wt "$LCM/repo" "$LCO/wt"
+: > "$LCM/repo/.codex-deny"
+AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildnoop \
+  run_agy build --vendor codex --level builder --prompt-file "$BRIEF" --workdir "$LCO/wt" --output "$LCO/codex.patch"
+chk "C6p codex: a .codex-deny marker in the MAIN repo refuses its linked worktree (exit 3, names the marker)" \
+  '[ ! -e "$LCO/wt/.codex-deny" ] && [ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "\.codex-deny" && [ ! -s "$STUB_LOG" ]'
+AGY_BOUNDARY_CLEARED=1 AGY_STUB_MODE=buildnoop run_agy build --prompt-file "$BRIEF" --workdir "$LCO/wt" --output "$LCO/agy.patch"
+chk "C6q ...while agy is NOT refused by that .codex-deny marker" '[ "$RC" -eq 0 ]'
+
+LOM=$(new_tmp); LOO=$(new_tmp)
+new_linked_wt "$LOM/repo" "$LOO/wt"
+AGY_BOUNDARY_CLEARED=1 AGY_STUB_MODE=buildedit run_agy build --prompt-file "$BRIEF" --workdir "$LOO/wt" --output "$LOO/agy.patch"
+chk "C6r a normal (non-denied) linked worktree still builds with agy: patch applied to the linked worktree, main repo untouched" \
+  '[ "$RC" -eq 0 ] && grep -q "AGY WAS HERE" "$LOO/wt/calc.txt" && ! grep -q "AGY WAS HERE" "$LOM/repo/calc.txt"'
+git -C "$LOO/wt" checkout -q -- calc.txt; rm -f "$LOO/wt/gen.txt"
+AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildedit \
+  run_agy build --vendor codex --level builder --prompt-file "$BRIEF" --workdir "$LOO/wt" --patch-out "$LOO/codex.patch"
+chk "C6s ...and with codex (--patch-out written, the linked worktree left clean)" \
+  '[ "$RC" -eq 0 ] && grep -q "^+CODEX WAS HERE$" "$LOO/codex.patch" && [ -z "$(git -C "$LOO/wt" status --porcelain)" ]'
+AGY_BOUNDARY_CLEARED=1 run_agy read --prompt-file "$BRIEF" --input "$LOO/wt/calc.txt"
+chk "C6t an --input file from a normal linked worktree is staged and runs (exit 0)" '[ "$RC" -eq 0 ]'
+
 # --- C7-C9: levels, fixture edits, vendor/model mismatch ------------------------
 CREPO="$BUILD/crepo"
 new_repo "$CREPO"

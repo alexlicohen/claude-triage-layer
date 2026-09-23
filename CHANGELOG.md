@@ -85,6 +85,26 @@ fix — hash TBD (branch `wave12-codex`, in progress at time of writing).
   (`{date, repo, level, candidates, winner, why}` — scores only, never document
   text). A `top`-level Claude candidate still prints the `⚠ Escalating to
   Fable` line before its spawn.
+- **Compare staging fix** (after the first live run, 2026-09-23; uncommitted at
+  time of writing). The first live `triage-compare` run failed two ways: (1)
+  the `triage-external` wrapper ran `ext-run.sh build --workdir <real repo>`
+  without the header's `--patch-out`/`--check` (the session's cached agent
+  definition predated bake-off mode), so ext-run applied the codex patch to the
+  real working tree and the next candidate saw it; (2) the Claude candidate's
+  `isolation:'worktree'` was based on `main` (5575581), not the session
+  branch, so its patch carried whole Wave 12 files and failed to apply — and
+  HEAD moved mid-run anyway. Fix: new `scripts/stage-worktree.sh`
+  (`create`/`diff`/`leakcheck`/`cleanup`) resolves base to ONE sha and gives
+  each candidate its own detached worktree under `<outDir>/stage`; the real
+  repo is never a candidate workdir (Claude prompt `cd`s there, external
+  `WORKDIR=` is the staged worktree, no `PATCH_OUT`/`CHECK` in the header). One
+  grade spawn diffs each worktree (`git add -A` + `diff --binary --cached
+  <sha>`), runs `patch-check.sh` at the sha, then `leakcheck` fingerprints the
+  real repo (status + content manifest): `LEAK` voids every grade
+  (`invalid`, `⚠ LEAK` log), `BASE_MOVED` is flagged and grading stays at the
+  sha; cleanup is its own spawn on every path. Dropped: the `PATCH`-line /
+  stale-patch rules, `isolation:'worktree'`, the HEAD-only-base rule for
+  external candidates, and "repo must be the session repo".
 - **Installer fork fix** (run C): a bare `install.sh` (no `--files-only`) used
   to clobber a `.driftignore`-listed personal fork (e.g. a hand-tuned
   `triage.md`) on every run after the first, keeping only a `.bak-triage`
@@ -113,7 +133,13 @@ fix — hash TBD (branch `wave12-codex`, in progress at time of writing).
   `triage-compare.js` defects fixed after the wave: `outDir`/`overlay` not
   required to sit outside `repo`, a stale patch left in `outDir` from a
   previous run getting graded when a candidate's reply carried no `PATCH`
-  line, and external candidates running with no `args.files`).
+  line, and external candidates running with no `args.files`). Staging fix:
+  roundtrip 148 → 149, compare-scenarios 73 → 101, ext-run 139 → 151, new
+  stage-worktree suite 31; mutations 36 → 39 (#35, the no-`PATCH`-line guard,
+  retired with its rule; +#37 real repo as external `WORKDIR`, +#38 leakcheck
+  result ignored, +#39 `stage-worktree.sh diff` dropping new files, +#40
+  `ext-run.sh` git-common-dir deny check dropped — a linked worktree outside a
+  deny-listed repo bypassed the deny-list).
 - **Deferred**: `workflows/triage-parity.js` (the ranking/task-suite research
   workflow, §5 of the plan) and its `parity/tasks/` suite — not started; a live
   end-to-end `triage-exec` run with a real codex builder subtask (today's

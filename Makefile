@@ -8,6 +8,7 @@ test:
 	./test/usage-tally.sh
 	./test/ext-run.sh
 	./test/patch-check.sh
+	./test/stage-worktree.sh
 	node test/workflow-scenarios.mjs
 	node test/compare-scenarios.mjs
 
@@ -27,7 +28,7 @@ tiers:
 	./scripts/tiers-sync.sh
 
 # Mutation gate: prove the test suite has teeth (killed/survivor/error per
-# mutation). Strict since all 36 mutations have covering tests: any survivor
+# mutation). Strict since all 39 mutations have covering tests: any survivor
 # fails the gate.
 mutate:
 	./qc/mutate.sh --strict

@@ -1,8 +1,9 @@
 export const meta = {
   name: 'triage-compare',
-  description: 'Implementation bake-off: run one brief on several candidates (Claude levels, codex, agy), each producing a patch, then grade every patch independently with patch-check.sh. Never applies a patch.',
-  whenToUse: 'Compare vendors/levels/models on the SAME well-specified task: /triage-compare with args = {repo, base?, brief, files, acceptance, checks:[cmd...], outDir, overlay?, candidates:[{vendor:claude|codex|agy, level:quick|builder|deep|top, model?, effort?, label?}]}. Needs a clean tree; repo must be the session working repo (Claude candidates get an isolated worktree of it). outDir/overlay must be OUTSIDE repo, and outDir should be fresh per run — a stale leftover patch is never graded. External (non-claude) candidates require args.files. Candidates run one at a time; the grade is scripts/patch-check.sh on each patch in a fresh worktree at base (plus the hidden overlay), never the candidate self-report. Returns per-candidate status/applies/rc/diffstat/patch/tokens; the orchestrator picks and applies.',
+  description: 'Implementation bake-off: run one brief on several candidates (Claude levels, codex, agy), each in its own staged worktree outside the repo, then grade every worktree diff independently with patch-check.sh. Never applies a patch; the real repo is never a candidate workdir.',
+  whenToUse: 'Compare vendors/levels/models on the SAME well-specified task: /triage-compare with args = {repo, base?, brief, files, acceptance, checks:[cmd...], outDir, overlay?, candidates:[{vendor:claude|codex|agy, level:quick|builder|deep|top, model?, effort?, label?}]}. repo is any absolute git repo path (not necessarily the session repo) and may be dirty: base (default HEAD) is resolved to ONE sha up front and each candidate works in its own detached worktree at that sha under <outDir>/stage (scripts/stage-worktree.sh), never in repo. outDir/overlay must be OUTSIDE repo and <outDir>/stage must not already exist. External (non-claude) candidates require args.files. Candidates run one at a time; the grade is scripts/patch-check.sh on each worktree diff at the sha (plus the hidden overlay), never the candidate self-report; a leakcheck then proves repo did not change (leak:true => every candidate invalid). Returns sha/leak/baseMoved and per-candidate status/applies/rc/diffstat/patch/tokens; the orchestrator picks and applies.',
   phases: [
+    { title: 'Stage' },
     { title: 'Candidates' },
     { title: 'Grade' },
   ],
@@ -20,11 +21,13 @@ const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 // checks both against config/tiers.json levels.*.claude.agent.
 const CLAUDE_AGENT = { quick: 'triage-quick-task', builder: 'triage-builder', deep: 'triage-deep-reasoner', top: 'triage-fable-architect' }
 const PATCH_CHECK = '~/.claude/scripts/patch-check.sh'
+const STAGE_WT = '~/.claude/scripts/stage-worktree.sh'
 
 const USAGE = 'Expected args = {\n' +
-  '  repo: "/abs/repo", base?: "HEAD", brief, files?: string[] (required if any candidate is non-claude), acceptance,\n' +
+  '  repo: "/abs/repo"            // any git repo (need not be the session repo); may be dirty — candidates never see its tree\n' +
+  '  base?: "HEAD", brief, files?: string[] (required if any candidate is non-claude), acceptance,\n' +
   '  checks: string[]            // at least one; the grade\n' +
-  '  outDir: "/abs/dir"          // patches land at <outDir>/<label>.patch — must be outside repo; use a FRESH dir per run, a stale patch left over from a previous run is never graded\n' +
+  '  outDir: "/abs/dir"          // must be outside repo; worktrees are staged in <outDir>/stage (must not exist yet), patches land at <outDir>/<label>.patch\n' +
   '  overlay?: "/abs/dir"        // hidden tests copied in before the check; never shown to candidates; must be outside repo\n' +
   `  candidates: [{ vendor: ${VENDORS.join('|')}, level: ${LEVELS.join('|')}, model?, effort?: ${EFFORTS.join('|')}, label? }]\n}`
 
@@ -48,16 +51,15 @@ if (args.files != null && !(Array.isArray(args.files) && args.files.every(isStr)
 if (!Array.isArray(args.checks) || args.checks.length === 0 || !args.checks.every(isStr)) bad('args.checks must be a non-empty array of shell commands — they are the grade.')
 if (!isAbsPath(args.outDir)) bad('args.outDir must be an absolute path with no whitespace or quotes.')
 if (args.overlay != null && !isAbsPath(args.overlay)) bad('args.overlay must be an absolute path with no whitespace or quotes.')
-// A patch written under repo dirties the real tree, so ext-run --patch-out refuses
-// every later external candidate (a measurement fault reported as unavailability);
-// an overlay under repo leaks the hidden tests into candidate worktrees. Both are
-// rejected here, before any spawn. A trailing slash on either side is normalized
+// The stage (worktrees + patches) under repo would dirty the real tree — which the
+// leakcheck then reports as a LEAK, voiding the run; an overlay under repo leaks the
+// hidden tests into every candidate worktree. Both are rejected here, before any spawn. A trailing slash on either side is normalized
 // first so repo+'/sub' and repo+'/sub/' are caught the same way.
 const stripSlash = v => String(v).replace(/\/+$/, '')
 if (isAbsPath(args.repo) && isAbsPath(args.outDir)) {
   const repoC = stripSlash(args.repo.trim())
   const outDirC = stripSlash(args.outDir.trim())
-  if (outDirC === repoC || outDirC.startsWith(`${repoC}/`)) bad('args.outDir must not be inside args.repo — a patch written under the repo dirties the tree and ext-run --patch-out refuses every later external candidate.')
+  if (outDirC === repoC || outDirC.startsWith(`${repoC}/`)) bad('args.outDir must not be inside args.repo — the staged worktrees and patches would dirty the real tree.')
 }
 if (args.overlay != null && isAbsPath(args.repo) && isAbsPath(args.overlay)) {
   const repoC = stripSlash(args.repo.trim())
@@ -70,6 +72,7 @@ const repo = args.repo.trim()
 const base = (args.base || 'HEAD').trim()
 const outDir = args.outDir.trim().replace(/\/+$/, '')
 const overlay = args.overlay ? args.overlay.trim() : null
+const stageDir = `${outDir}/stage`
 const files = (args.files || []).map(f => f.trim())
 const checks = args.checks.map(c => c.trim())
 const checkCmd = checks.join(' && ')
@@ -88,13 +91,11 @@ const candidates = args.candidates.map((raw, i) => {
   if (!SAFE_TOKEN.test(label)) bad(`candidates[${i}]: label ${JSON.stringify(label)} is not file-name safe (letters, digits, . _ @ + -) — pass an explicit label.`)
   if (seen.has(label)) bad(`duplicate candidate label "${label}" — labels name the patch files and must be unique.`)
   seen.add(label)
-  return { label, vendor: raw.vendor, level: raw.level, model: raw.model || null, effort: raw.effort || null, patch: `${outDir}/${label}.patch` }
+  // Candidate i works in <stageDir>/wt-<i+1> — computed HERE, never taken from a
+  // spawn's reply, so no reply can steer a candidate into the real repo.
+  return { label, vendor: raw.vendor, level: raw.level, model: raw.model || null, effort: raw.effort || null,
+    patch: `${outDir}/${label}.patch`, worktree: `${stageDir}/wt-${i + 1}` }
 })
-// External candidates are built by ext-run.sh from the repo's clean HEAD — it has no
-// base option — so a bake-off with one grades against HEAD only.
-if (base !== 'HEAD' && candidates.some(c => c.vendor !== 'claude')) {
-  bad(`base ${JSON.stringify(base)} with an external candidate: ext-run.sh builds from HEAD, so external candidates can only be graded against base HEAD.`)
-}
 // triage-external refuses a brief without exact files, so a bake-off with any
 // non-claude candidate needs args.files up front — never discovered by the caller
 // mid-run as a per-candidate spawn failure.
@@ -106,145 +107,259 @@ if (candidates.some(c => c.vendor !== 'claude') && files.length === 0) {
 const shq = s => `'${String(s).replace(/'/g, `'\\''`)}'`
 const spentNow = () => (budget && typeof budget.spent === 'function' ? budget.spent() : null)
 const firstLine = out => String(out || '').trimStart().split('\n')[0]
+const errText = e => String((e && e.message) || e).slice(0, 200)
 // UNAVAILABLE / REFUSED as a reply's FIRST line (triage-external's exit-code
 // mapping), or no reply at all: the candidate produced nothing to grade.
 const producedNothing = out => out == null || /^\s*(UNAVAILABLE|REFUSED)\b/i.test(String(out).trimStart())
 // The accounting line ext-run.sh prints and triage-external relays:
 //   ext-run: <N> tokens (<S>s, <vendor>/<model>)[ out=<M>]
 const EXT_LINE = /ext-run:\s*(\d+)\s+tokens\s*\(([\d.]+)s,\s*([a-z]+)\/([^)\s]+)\)(?:\s+out=(\d+))?/
-// The candidate's OWN check claim — informational only (selfRc), never the grade.
+// The candidate's OWN check claim — informational only (selfRc), never the grade:
+// a `CHECK rc=<n>` line, else the external worker's `DONE exit=<n>` sentinel.
 const selfRcOf = out => {
-  const m = String(out || '').match(/(^|\n)\s*CHECK rc=(\d+)/)
+  const m = String(out || '').match(/(^|\n)\s*CHECK rc=(\d+)/) || String(out || '').match(/(^|\n)\s*DONE exit=(\d+)/)
   return m ? Number(m[2]) : null
 }
-// A candidate reply that otherwise looks fine but never reports its OWN patch path
-// leaves no way to tell a fresh write from a stale patch already sitting in outDir
-// from a previous run — so it is never graded, same as REFUSED/UNAVAILABLE.
-const escapeRe = s => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-const hasPatchLine = (out, patchPath) => new RegExp(`(^|\\n)\\s*PATCH ${escapeRe(patchPath)}\\s*($|\\n)`).test(String(out || ''))
+const SHA_RE = /^[0-9a-f]{40}([0-9a-f]{24})?$/
 
 const task = `${args.brief.trim()}\n\nRelevant files: ${files.join(', ') || '(discover)'}\nAcceptance criteria: ${args.acceptance.trim()}`
+const stageCmd = `${STAGE_WT} create --repo ${shq(repo)} --base ${shq(base)} --count ${candidates.length} --dir ${shq(stageDir)}`
+const cleanupCmd = `${STAGE_WT} cleanup --repo ${shq(repo)} --dir ${shq(stageDir)}`
 
-function claudePrompt(c) {
+// The real repo is never a candidate's working directory: each one is pointed at
+// its own staged worktree (c.worktree), and repo appears in a Claude prompt only
+// as the place it must stay out of. A subagent's Bash cwd is RESET between calls,
+// so a one-time `cd` does not persist: every shell command carries its own
+// `cd <worktree> && ` prefix, or a check would run (and leave build output) in
+// the session repo — a wrong selfRc and a false LEAK.
+function claudePrompt(c, sha) {
+  const cdPrefix = `cd ${c.worktree} && `
   return `${task}\n\n` +
     `--- Bake-off protocol (you are one candidate; others get the same brief) ---\n` +
-    `You are working in your OWN isolated git worktree of ${repo}. Change files only there.\n` +
-    (base !== 'HEAD' ? `First run: git checkout --detach ${base}\n` : '') +
-    `Run these checks from the worktree root:\n${checks.map(c2 => `  ${c2}`).join('\n')}\n` +
-    `When done:\n` +
-    `  rm -f ${c.patch}\n` +
-    `  mkdir -p ${outDir}\n` +
-    `  git add -A && git diff --binary ${base} > ${c.patch}\n` +
-    `Never apply, commit to, push, or check out anything in ${repo} itself, and write nowhere else outside your worktree.\n` +
-    `End your reply with two lines: \`CHECK rc=<exit status of the checks joined with &&>\` and \`PATCH ${c.patch}\`.`
+    `Your workspace is the staged git worktree ${c.worktree} (detached at ${sha}).\n` +
+    `Your shell's working directory is reset between commands, so a cd on its own does not stick: EVERY shell command you run MUST start with \`${cdPrefix}\` — for example \`${cdPrefix}${checks[0]}\`.\n` +
+    `Every file edit uses an absolute path under ${c.worktree}/.\n` +
+    `The repository at ${repo} is NOT your workspace: never use a path under it, and never read from, modify, or run anything in it.\n` +
+    `Run these checks, each prefixed with \`${cdPrefix}\`:\n${checks.map(c2 => `  ${c2}`).join('\n')}\n` +
+    `Leave your changes in the worktree as they are — do not commit, stash, or write a patch; they are collected from ${c.worktree} after you finish.\n` +
+    `End your reply with two lines: \`CHECK rc=<exit status of the checks joined with &&>\` and \`DONE\`.`
 }
 
-function externalPrompt(c) {
+// WORKDIR is the staged worktree, so even a wrapper that drops a flag, or an
+// ext-run that applies its patch back, lands the change in a throwaway checkout —
+// which is exactly where the grade collects it from. No PATCH_OUT: a bake-off-mode
+// run would leave the worktree untouched (nothing to grade), and triage-external
+// refuses a CHECK without one, so the check command travels in the brief instead.
+function externalPrompt(c, sha) {
   const header = `VENDOR=${c.vendor} LEVEL=${c.level}` + (c.effort ? ` EFFORT=${c.effort}` : '') + (c.model ? ` MODEL=${c.model}` : '') +
-    ` WORKDIR=${repo} PATCH_OUT=${c.patch} CHECK=${checkCmd}`
+    ` WORKDIR=${c.worktree}`
   return `${header}\n\n${task}\n\n` +
-    `Check command: ${checkCmd}\n` +
+    `Check command (run from the workdir root): ${checkCmd}\n` +
     `The data boundary has been cleared by the orchestrator for this repository.\n` +
-    `This is a bake-off: write the patch to PATCH_OUT only; nothing is applied to the repo.`
+    `This is a bake-off candidate: the workdir is a throwaway checkout at ${sha}; the change is collected from it afterwards.`
 }
 
-// ─── Candidates: strictly sequential ────────────────────────────────────────
-// One at a time, so each budget.spent() delta is that candidate's Claude output tokens
-// and nothing else (the pool is shared across the whole turn).
-phase('Candidates')
-const runs = []
-for (const c of candidates) {
-  const external = c.vendor !== 'claude'
-  if (!external && c.level === 'top') log(`⚠ Escalating to Fable: triage-compare candidate ${c.label}`)
-  if (external) log(`⚠ External candidate ${c.label}: the workspace leaves this machine for ${c.vendor}.`)
-  const opts = external
-    ? { phase: 'Candidates', agentType: 'triage-external', label: `candidate:${c.label}` }
-    : Object.assign({ phase: 'Candidates', agentType: CLAUDE_AGENT[c.level], label: `candidate:${c.label}`, isolation: 'worktree' },
-        c.model ? { model: c.model } : {}, c.effort ? { effort: c.effort } : {})
-  const before = spentNow()
-  let out = null
-  let err = null
+// cleanupStage() — SINGLE OWNER of removing the stage. Runs on every exit path
+// once staging succeeded; a failure is loud but never fatal.
+async function cleanupStage(phaseName) {
+  let r = null
   try {
-    out = await agent(external ? externalPrompt(c) : claudePrompt(c), opts)
+    r = await agent(`Run this one command exactly as written and return ok = the ok field of the JSON line it prints (false if it printed none) and rc = its exit status. Do not run anything else, and do not interpret or fix anything.\n${cleanupCmd}`,
+      { phase: phaseName, agentType: 'triage-quick-task', label: 'cleanup:stage', schema: { type: 'object', properties: { ok: { type: 'boolean' }, rc: { type: ['integer', 'null'] } }, required: ['ok'] } })
   } catch (e) {
-    err = String((e && e.message) || e)   // e.g. the budget's hard ceiling
+    r = null
   }
-  const after = spentNow()
-  const claudeOut = before != null && after != null ? after - before : null
-  let nothing = err != null || producedNothing(out)
-  let reason = err ? `spawn failed: ${err.slice(0, 200)}` : out == null ? 'spawn returned nothing' : nothing ? firstLine(out).slice(0, 200) : null
-  if (!nothing && !hasPatchLine(out, c.patch)) {
-    nothing = true
-    reason = external ? 'no patch reported' : 'no PATCH line'
-  }
-  const ext = external && out ? String(out).match(EXT_LINE) : null
-  const run = {
-    c,
-    available: !nothing,
-    reason,
-    selfRc: nothing ? null : selfRcOf(out),
-    model: c.model || (ext ? ext[4] : null),
-    // Claude: the output tokens this candidate cost (budget delta). External: the
-    // vendor's own output count from the ext-run line (null when it gave none).
-    outTokens: external ? (ext && ext[5] != null ? Number(ext[5]) : null) : claudeOut,
-    totalTokens: external && ext ? Number(ext[1]) : null,
-    seconds: external && ext ? Number(ext[2]) : null,
-  }
-  if (!run.available) log(`⚠ ${c.label} unavailable (${run.reason}) — reported, not graded as a fail.`)
-  runs.push(run)
+  const ok = !!(r && r.ok === true)
+  if (!ok) log(`⚠ Staged worktrees may remain under ${stageDir} — run: ${cleanupCmd}`)
+  return ok
 }
 
-// ─── Grade: ONE independent patch-check over every produced patch ───────────
-// This is THE grade. The candidates' own CHECK rc claims are kept as selfRc for the
-// reader, and ignored here.
-phase('Grade')
-const RESULT_SCHEMA = {
+// ─── Stage: ONE sha, one worktree per candidate, fingerprint of repo ─────────
+phase('Stage')
+const STAGE_SCHEMA = {
   type: 'object',
-  properties: {
-    results: {
-      type: 'array',
-      items: {
+  properties: { sha: { type: 'string' }, worktrees: { type: 'array', items: { type: 'string' } }, fingerprint: { type: 'string' } },
+  required: ['sha', 'worktrees', 'fingerprint'],
+}
+let staged = null
+let stageErr = null
+try {
+  staged = await agent(`Run this one command exactly as written and return its stdout JSON object field for field. Do not run anything else, and do not interpret or fix anything.\n${stageCmd}`,
+    { phase: 'Stage', agentType: 'triage-quick-task', label: 'stage:create', schema: STAGE_SCHEMA })
+} catch (e) {
+  stageErr = errText(e)
+}
+// The reply must name exactly the worktrees computed above, in order — the paths
+// used are always the computed ones; this only proves staging made them.
+const stageOk = !!(staged && isStr(staged.sha) && SHA_RE.test(staged.sha.trim()) && Array.isArray(staged.worktrees) &&
+  staged.worktrees.length === candidates.length && staged.worktrees.every((w, i) => isStr(w) && stripSlash(w.trim()) === candidates[i].worktree))
+// create rolls back its own failures, and a populated stage dir may be another
+// run's, so nothing is removed here: the error names the cleanup command instead.
+if (!stageOk) {
+  throw new Error(`triage-compare: staging failed — no candidate ran (${stageErr || `stage-worktree.sh create returned ${JSON.stringify(staged).slice(0, 300)}`}). ` +
+    `If ${stageDir} was created by this run, remove it with: ${cleanupCmd}`)
+}
+const sha = staged.sha.trim()
+
+const runs = []
+let gr = null
+try {
+  // ─── Candidates: strictly sequential ──────────────────────────────────────
+  // One at a time, so each budget.spent() delta is that candidate's Claude output
+  // tokens and nothing else (the pool is shared across the whole turn).
+  phase('Candidates')
+  for (const c of candidates) {
+    const external = c.vendor !== 'claude'
+    if (!external && c.level === 'top') log(`⚠ Escalating to Fable: triage-compare candidate ${c.label}`)
+    if (external) log(`⚠ External candidate ${c.label}: the workspace leaves this machine for ${c.vendor}.`)
+    // No isolation:'worktree': the harness bases that on the default branch, not
+    // on the sha every other candidate gets. The staged worktree is the isolation.
+    const opts = external
+      ? { phase: 'Candidates', agentType: 'triage-external', label: `candidate:${c.label}` }
+      : Object.assign({ phase: 'Candidates', agentType: CLAUDE_AGENT[c.level], label: `candidate:${c.label}` },
+          c.model ? { model: c.model } : {}, c.effort ? { effort: c.effort } : {})
+    const before = spentNow()
+    let out = null
+    let err = null
+    try {
+      out = await agent(external ? externalPrompt(c, sha) : claudePrompt(c, sha), opts)
+    } catch (e) {
+      err = errText(e)   // e.g. the budget's hard ceiling
+    }
+    const after = spentNow()
+    const claudeOut = before != null && after != null ? after - before : null
+    const nothing = err != null || producedNothing(out)
+    const ext = external && out ? String(out).match(EXT_LINE) : null
+    const run = {
+      c,
+      available: !nothing,
+      reason: err ? `spawn failed: ${err}` : out == null ? 'spawn returned nothing' : nothing ? firstLine(out).slice(0, 200) : null,
+      selfRc: nothing ? null : selfRcOf(out),
+      model: c.model || (ext ? ext[4] : null),
+      // Claude: the output tokens this candidate cost (budget delta). External: the
+      // vendor's own output count from the ext-run line (null when it gave none).
+      outTokens: external ? (ext && ext[5] != null ? Number(ext[5]) : null) : claudeOut,
+      totalTokens: external && ext ? Number(ext[1]) : null,
+      seconds: external && ext ? Number(ext[2]) : null,
+    }
+    if (!run.available) log(`⚠ ${c.label} unavailable (${run.reason}) — reported, not graded as a fail.`)
+    runs.push(run)
+  }
+
+  // ─── Grade: ONE spawn — worktree diffs, patch-check, leakcheck ────────────
+  // This is THE grade: each available candidate's staged worktree is diffed
+  // against the sha (whatever the candidate said — an empty diff is graded like any
+  // other), patch-check applies each diff to a fresh worktree at the sha and runs
+  // the checks, and leakcheck compares repo with its fingerprint. Every step is
+  // idempotent, so a dead grader is simply re-run once. Cleanup is separate so a
+  // retry still has the worktrees and the fingerprint to work from.
+  phase('Grade')
+  const graded = runs.filter(r => r.available)
+  const lines = graded.map(r => `${STAGE_WT} diff --worktree ${shq(r.c.worktree)} --base ${shq(sha)} --out ${shq(r.c.patch)}`)
+  if (graded.length) {
+    lines.push(`${PATCH_CHECK} --repo ${shq(repo)} --base ${shq(sha)} --check ${shq(checkCmd)}` +
+      (overlay ? ` --overlay ${shq(overlay)}` : '') + ' ' + graded.map(r => shq(r.c.patch)).join(' '))
+  }
+  lines.push(`${STAGE_WT} leakcheck --repo ${shq(repo)} --dir ${shq(stageDir)}`)
+  const GRADE_SCHEMA = {
+    type: 'object',
+    properties: {
+      diffs: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: { worktree: { type: 'string' }, patch: { type: 'string' }, ok: { type: 'boolean' }, shortstat: { type: 'string' }, error: { type: 'string' } },
+          required: ['worktree', 'patch', 'ok'],
+        },
+      },
+      results: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            patch: { type: 'string' },
+            applies: { type: 'boolean' },
+            rc: { type: ['integer', 'null'] },
+            diffstat: { type: 'string' },
+            tail: { type: 'string' },
+          },
+          required: ['patch', 'applies', 'rc', 'diffstat', 'tail'],
+        },
+      },
+      leakcheck: {
         type: 'object',
         properties: {
-          patch: { type: 'string' },
-          applies: { type: 'boolean' },
+          status: { type: 'string', enum: ['CLEAN', 'LEAK', 'BASE_MOVED', 'ERROR'] },
+          leak: { type: 'boolean' },
+          baseMoved: { type: 'boolean' },
           rc: { type: ['integer', 'null'] },
-          diffstat: { type: 'string' },
-          tail: { type: 'string' },
+          detail: { type: 'string' },
         },
-        required: ['patch', 'applies', 'rc', 'diffstat', 'tail'],
+        required: ['status', 'rc'],
       },
     },
-  },
-  required: ['results'],
-}
-const graded = runs.filter(r => r.available)
-let byPatch = null
-if (graded.length) {
-  const cmd = `${PATCH_CHECK} --repo ${shq(repo)} --base ${shq(base)} --check ${shq(checkCmd)}` +
-    (overlay ? ` --overlay ${shq(overlay)}` : '') + ' ' + graded.map(r => shq(r.c.patch)).join(' ')
-  const gradePrompt = `Run this one command exactly as written and return its stdout JSON lines, one results[] entry per line, field for field, in order. Do not run anything else, and do not interpret or fix anything.\n${cmd}`
-  let pc = null
-  for (let attempt = 1; attempt <= 2 && !(pc && Array.isArray(pc.results)); attempt++) {
+    required: ['diffs', 'results', 'leakcheck'],
+  }
+  const gradePrompt = `Run these commands in order, each exactly as written, and each even if an earlier one fails. Do not run anything else, and do not interpret or fix anything.\n` +
+    `${lines.join('\n')}\n\n` +
+    `Each prints JSON lines on stdout. Return them field for field: diffs = the stage-worktree diff lines, in order (${graded.length}); ` +
+    `results = patch-check's lines, one per patch, in order${graded.length ? '' : ' (none ran: [])'}; ` +
+    `leakcheck = the leakcheck line's status, leak, baseMoved and detail, plus rc = the leakcheck command's exit status (status ERROR if it printed no JSON line).`
+  const gradeOk = x => !!(x && Array.isArray(x.diffs) && Array.isArray(x.results) && x.leakcheck && typeof x.leakcheck === 'object')
+  for (let attempt = 1; attempt <= 2 && !gradeOk(gr); attempt++) {
     try {
-      pc = await agent(gradePrompt, { phase: 'Grade', agentType: 'triage-quick-task', label: attempt === 1 ? 'grade:patch-check' : 'grade:patch-check#retry', schema: RESULT_SCHEMA })
+      gr = await agent(gradePrompt, { phase: 'Grade', agentType: 'triage-quick-task', label: attempt === 1 ? 'grade:finalize' : 'grade:finalize#retry', schema: GRADE_SCHEMA })
     } catch (e) {
-      log(`⚠ patch-check grader spawn failed (${String((e && e.message) || e).slice(0, 200)}).`)
-      pc = null
+      log(`⚠ grader spawn failed (${errText(e)}).`)
+      gr = null
     }
   }
-  if (pc && Array.isArray(pc.results)) byPatch = new Map(pc.results.map(x => [x.patch, x]))
-  else log('⚠ GRADING INCOMPLETE — the patch-check grader returned nothing twice; available candidates are reported as ungraded, NOT as passes or fails.')
+  if (!gradeOk(gr)) {
+    gr = null
+    log('⚠ GRADING INCOMPLETE — the grader returned nothing twice; available candidates are reported as ungraded, NOT as passes or fails.')
+  }
+} finally {
+  await cleanupStage('Grade')
 }
 
-// grade() — SINGLE OWNER of a candidate's status. pass = the patch applied at base AND
-// the checks exited 0 in patch-check's own worktree. Nothing the candidate said counts.
+// leakState() — SINGLE OWNER of the leak verdict. Any sign of a leak is a leak;
+// only an explicit CLEAN/BASE_MOVED with exit 0 is clean; anything else is
+// unknown (null), never assumed clean.
+function leakState(lc) {
+  if (!lc) return { leak: null, baseMoved: null, detail: 'leakcheck did not report' }
+  const detail = isStr(lc.detail) ? lc.detail : null
+  if (lc.leak === true || lc.rc === 7 || lc.status === 'LEAK') return { leak: true, baseMoved: lc.baseMoved === true, detail }
+  if ((lc.status === 'CLEAN' || lc.status === 'BASE_MOVED') && lc.rc === 0) {
+    return { leak: false, baseMoved: lc.status === 'BASE_MOVED' || lc.baseMoved === true, detail }
+  }
+  return { leak: null, baseMoved: lc.baseMoved === true ? true : null, detail: detail || `leakcheck status ${lc.status}, rc ${lc.rc}` }
+}
+const leakInfo = leakState(gr && gr.leakcheck)
+if (leakInfo.leak === true) log(`⚠ LEAK: the real repo changed during triage-compare — inspect before anything else${leakInfo.detail ? ` (${leakInfo.detail})` : ''}`)
+else if (leakInfo.leak == null) log(`⚠ LEAK CHECK INCOMPLETE — could not confirm ${repo} is unchanged; inspect it before anything else (${leakInfo.detail}).`)
+if (leakInfo.baseMoved) log(`⚠ BASE_MOVED: HEAD of ${repo} moved during the run; every candidate was graded at ${sha}.`)
+
+const byDiff = gr ? new Map(gr.diffs.map(x => [stripSlash(String(x.worktree || '')), x])) : null
+const byPatch = gr ? new Map(gr.results.map(x => [x.patch, x])) : null
+
+// grade() — SINGLE OWNER of a candidate's status. pass = its worktree diff applied
+// at the sha AND the checks exited 0 in patch-check's own worktree. Nothing the
+// candidate said counts, and a leak voids every grade.
 function grade(r) {
-  if (!r.available) return { status: 'unavailable', applies: null, rc: null, diffstat: null, tail: r.reason }
-  const pc = byPatch && byPatch.get(r.c.patch)
-  if (!pc) return { status: 'ungraded', applies: null, rc: null, diffstat: null, tail: 'patch-check produced no result for this patch' }
+  const g = gradeOf(r)
+  if (leakInfo.leak === true) return Object.assign({}, g, { status: 'invalid', tail: `LEAK — ${leakInfo.detail || 'the real repo changed during the run'}` })
+  return g
+}
+function gradeOf(r) {
+  const none = (status, tail) => ({ status, applies: null, rc: null, diffstat: null, patch: null, tail })
+  if (!r.available) return none('unavailable', r.reason)
+  if (!gr) return none('ungraded', 'the grader returned nothing')
+  const d = byDiff.get(r.c.worktree)
+  if (!d || d.ok !== true) return none('ungraded', `worktree diff failed: ${(d && d.error) || 'no diff result'}`)
+  const pc = byPatch.get(r.c.patch)
+  if (!pc) return none('ungraded', 'patch-check produced no result for this patch')
   const status = pc.applies === true && pc.rc === 0 ? 'pass' : 'fail'
-  return { status, applies: pc.applies, rc: pc.rc, diffstat: pc.diffstat, tail: pc.tail }
+  return { status, applies: pc.applies, rc: pc.rc, diffstat: pc.diffstat, patch: r.c.patch, tail: pc.tail }
 }
 
 const results = runs.map(r => {
@@ -252,13 +367,18 @@ const results = runs.map(r => {
   return {
     label: r.c.label, vendor: r.c.vendor, level: r.c.level, model: r.model, effort: r.c.effort,
     status: g.status, applies: g.applies, rc: g.rc, diffstat: g.diffstat,
-    patch: r.available ? r.c.patch : null,
+    patch: g.patch,
     outTokens: r.outTokens, totalTokens: r.totalTokens, seconds: r.seconds,
     selfRc: r.selfRc,
     tail: g.tail == null ? null : String(g.tail).slice(-2000),
   }
 })
 const tally = s => results.filter(x => x.status === s).length
-log(`Bake-off graded by patch-check: ${tally('pass')} pass, ${tally('fail')} fail, ${tally('unavailable')} unavailable` +
-  (tally('ungraded') ? `, ${tally('ungraded')} UNGRADED` : '') + ' — nothing was applied to the repo.')
-return { base, graded: graded.length === 0 || byPatch != null, candidates: results }
+log(`Bake-off graded by patch-check at ${sha.slice(0, 12)}: ${tally('pass')} pass, ${tally('fail')} fail, ${tally('unavailable')} unavailable` +
+  (tally('ungraded') ? `, ${tally('ungraded')} UNGRADED` : '') + (tally('invalid') ? `, ${tally('invalid')} INVALID (leak)` : '') +
+  ' — nothing was applied to the repo.')
+return {
+  base, sha, leak: leakInfo.leak, baseMoved: leakInfo.baseMoved,
+  graded: runs.every(r => gradeOf(r).status !== 'ungraded'),
+  candidates: results,
+}

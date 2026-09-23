@@ -295,6 +295,7 @@ install_file "scripts/triage-stats.sh" "$CLAUDE_DIR/scripts/triage-stats.sh" x
 install_file "scripts/triage-cache-segment.sh" "$CLAUDE_DIR/scripts/triage-cache-segment.sh" x
 install_file "scripts/ext-run.sh" "$CLAUDE_DIR/scripts/ext-run.sh" x
 install_file "scripts/patch-check.sh" "$CLAUDE_DIR/scripts/patch-check.sh" x
+install_file "scripts/stage-worktree.sh" "$CLAUDE_DIR/scripts/stage-worktree.sh" x
 install_file "scripts/triage-tiers.sh" "$CLAUDE_DIR/scripts/triage-tiers.sh" x
 install_file "config/tiers.json" "$CLAUDE_DIR/scripts/triage-tiers.json"
 retire_triage_run

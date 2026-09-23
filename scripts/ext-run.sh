@@ -276,7 +276,9 @@ resolve_tier() {
 # ".../clip-creator/media" is refused and ".../clip-creators-lab" is not. A
 # per-vendor marker file (.agy-deny for agy, .codex-deny for codex) anywhere from
 # the path up to $HOME also refuses, so a repo can opt itself out of one vendor
-# without editing this script.
+# without editing this script. Each of those paths that sits in a git work tree
+# is ALSO checked via the main worktree of its repository (git-common-dir), so a
+# linked worktree created outside a deny-listed repo is refused like the repo.
 # ---------------------------------------------------------------------------
 resolve_path() { # $1 = path -> absolute, symlinks resolved where possible
   local d
@@ -295,12 +297,13 @@ deny_names() {
   esac
 }
 
-deny_check() { # $1 = path. exits E_REFUSED on a hit.
-  local p d name marker
+deny_check_path() { # $1 = one path, $2 = optional context for the message. exits E_REFUSED on a hit.
+  local p d name marker why
   p=$(resolve_path "$1")
+  why="${2:-}"
   for name in $(deny_names); do
     case "/$p/" in
-      */"$name"/*) die "REFUSED: $p is under a deny-listed repo ('$name') — $VENDOR must never read it." "$E_REFUSED" ;;
+      */"$name"/*) die "REFUSED: $p$why is under a deny-listed repo ('$name') — $VENDOR must never read it." "$E_REFUSED" ;;
     esac
   done
   marker=".$VENDOR-deny"
@@ -308,10 +311,43 @@ deny_check() { # $1 = path. exits E_REFUSED on a hit.
   [ -f "$d" ] && d=$(dirname "$d")
   while [ -n "$d" ] && [ "$d" != "/" ] && [ "$d" != "$HOME" ]; do
     if [ -f "$d/$marker" ]; then
-      die "REFUSED: $d/$marker marks this tree as off-limits to $VENDOR." "$E_REFUSED"
+      die "REFUSED: $d/$marker marks this tree as off-limits to $VENDOR$why." "$E_REFUSED"
     fi
     d=$(dirname "$d")
   done
+}
+
+# main_worktree_of PATH — the main worktree of the git repository PATH (a file or
+# dir) belongs to, physical path; prints nothing outside a git work tree or
+# without git. A LINKED worktree can live anywhere (triage-compare stages them
+# under an outDir outside the repo), so its own path says nothing about which
+# repository it checks out — the common git dir does: its parent when it ends in
+# /.git, else the common dir itself (bare repo, submodule module dir). GIT_DIR &
+# co. are unset so an inherited environment (a git hook) cannot redirect it.
+main_worktree_of() {
+  local d common
+  command -v git >/dev/null 2>&1 || return 0
+  d="$1"
+  [ -d "$d" ] || d=$(dirname "$d")
+  common=$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE \
+    git -C "$d" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 0
+  [ -n "$common" ] || return 0
+  common=$(resolve_path "$common")
+  case "$common" in
+    */.git) dirname "$common" ;;
+    *) printf '%s\n' "$common" ;;
+  esac
+}
+
+# deny_check — the path itself AND the main worktree of the repository it is in,
+# so a linked worktree (or a file in one) outside a deny-listed repo is refused
+# exactly like the repo.
+deny_check() { # $1 = path. exits E_REFUSED on a hit.
+  local p main
+  p=$(resolve_path "$1")
+  deny_check_path "$p"
+  main=$(main_worktree_of "$p")
+  if [ -n "$main" ] && [ "$main" != "$p" ]; then deny_check_path "$main" " (the main worktree of the repository $p belongs to)"; fi
 }
 
 # ---------------------------------------------------------------------------

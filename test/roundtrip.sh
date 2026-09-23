@@ -337,6 +337,8 @@ chk "G14: the installed triage-tiers.sh reads the installed tiers file next to i
 chk "G15: workflows/triage-compare.js copied (byte-identical)" \
   'cmp -s "$REPO_DIR/workflows/triage-compare.js" "$G_DIR/workflows/triage-compare.js"'
 chk "G16: scripts/patch-check.sh copied and executable" '[ -x "$G_DIR/scripts/patch-check.sh" ]'
+chk "G17: scripts/stage-worktree.sh copied (byte-identical) and executable" \
+  '[ -x "$G_DIR/scripts/stage-worktree.sh" ] && cmp -s "$REPO_DIR/scripts/stage-worktree.sh" "$G_DIR/scripts/stage-worktree.sh"'
 
 # =============================================================================
 # Case H — version-compat warnings (stub `claude` on PATH; --dry-run so a
@@ -396,8 +398,8 @@ chk "M1a: install placed scripts/ext-run.sh (executable)" '[ -x "$I_DIR/scripts/
 chk "M1c: install placed scripts/triage-tiers.json and scripts/triage-tiers.sh" \
   '[ -f "$I_DIR/scripts/triage-tiers.json" ] && [ -x "$I_DIR/scripts/triage-tiers.sh" ]'
 chk "M1d: install removed the legacy scripts/agy-run.sh (renamed to ext-run.sh)" '[ ! -e "$I_DIR/scripts/agy-run.sh" ]'
-chk "M1f: install placed workflows/triage-compare.js and scripts/patch-check.sh (executable)" \
-  '[ -f "$I_DIR/workflows/triage-compare.js" ] && [ -x "$I_DIR/scripts/patch-check.sh" ]'
+chk "M1f: install placed workflows/triage-compare.js, scripts/patch-check.sh and scripts/stage-worktree.sh (executable)" \
+  '[ -f "$I_DIR/workflows/triage-compare.js" ] && [ -x "$I_DIR/scripts/patch-check.sh" ] && [ -x "$I_DIR/scripts/stage-worktree.sh" ]'
 printf '#!/bin/bash\necho legacy\n' > "$I_DIR/scripts/agy-run.sh"
 printf 'my own agent, not shipped by this repo\n' > "$I_DIR/agents/triage-mine.md"
 
@@ -411,8 +413,8 @@ chk "I3: all seven shipped agents removed" \
 chk "M1b: uninstall removes scripts/ext-run.sh, triage-tiers.sh and triage-tiers.json" \
   '[ ! -f "$I_DIR/scripts/ext-run.sh" ] && [ ! -f "$I_DIR/scripts/triage-tiers.sh" ] && [ ! -f "$I_DIR/scripts/triage-tiers.json" ]'
 chk "M1e: uninstall also removes a legacy scripts/agy-run.sh" '[ ! -e "$I_DIR/scripts/agy-run.sh" ]'
-chk "M1g: uninstall removes workflows/triage-compare.js and scripts/patch-check.sh" \
-  '[ ! -e "$I_DIR/workflows/triage-compare.js" ] && [ ! -e "$I_DIR/scripts/patch-check.sh" ]'
+chk "M1g: uninstall removes workflows/triage-compare.js, scripts/patch-check.sh and scripts/stage-worktree.sh" \
+  '[ ! -e "$I_DIR/workflows/triage-compare.js" ] && [ ! -e "$I_DIR/scripts/patch-check.sh" ] && [ ! -e "$I_DIR/scripts/stage-worktree.sh" ]'
 
 # =============================================================================
 # Case J — drift.sh: a checked file missing from an installed sandbox is
@@ -435,7 +437,7 @@ chk "J2: freshly installed sandbox has no MISSING/FORKED lines" \
 # Delete two checked files — one long-standing, one added with the external-CLI tier —
 # so drift.sh's per-file list is exercised for both.
 rm -f "$J_DIR/scripts/triage-usage.sh" "$J_DIR/scripts/ext-run.sh" "$J_DIR/scripts/triage-tiers.json" \
-      "$J_DIR/scripts/patch-check.sh" "$J_DIR/workflows/triage-compare.js"
+      "$J_DIR/scripts/patch-check.sh" "$J_DIR/workflows/triage-compare.js" "$J_DIR/scripts/stage-worktree.sh"
 
 J_MISSING_OUT=$(mktemp)
 ALL_TMP="$ALL_TMP $J_MISSING_OUT"
@@ -447,8 +449,8 @@ chk "J3: drift.sh reports MISSING for the deleted checked file" \
 chk "J4: drift.sh exits non-zero once a checked file is missing" '[ "$J_MISSING_RC" -ne 0 ]'
 chk "J5: drift.sh also reports MISSING for the deleted scripts/ext-run.sh" \
   'grep -q "MISSING (not installed): scripts/ext-run.sh" "$J_MISSING_OUT"'
-chk "J7: drift.sh reports MISSING for the deleted patch-check.sh and triage-compare.js" \
-  'grep -q "MISSING (not installed): scripts/patch-check.sh" "$J_MISSING_OUT" && grep -q "MISSING (not installed): workflows/triage-compare.js" "$J_MISSING_OUT"'
+chk "J7: drift.sh reports MISSING for the deleted patch-check.sh, stage-worktree.sh and triage-compare.js" \
+  'grep -q "MISSING (not installed): scripts/patch-check.sh" "$J_MISSING_OUT" && grep -q "MISSING (not installed): scripts/stage-worktree.sh" "$J_MISSING_OUT" && grep -q "MISSING (not installed): workflows/triage-compare.js" "$J_MISSING_OUT"'
 chk "J6: drift.sh reports MISSING for the deleted installed tiers file (config/tiers.json)" \
   'grep -q "MISSING (not installed): config/tiers.json" "$J_MISSING_OUT"'
 
