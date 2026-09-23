@@ -824,16 +824,22 @@ if mode_writes "$MODE"; then
 fi
 
 # Accounting: vendor spend is invisible to scripts/triage-usage.sh, so the token
-# count goes to stderr where the caller can relay it. codex: input + output
-# (reasoning_output_tokens is already inside output_tokens — codex's own
-# total_tokens is input + output).
+# count goes to stderr where the caller can relay it:
+#   ext-run: <N> tokens (<S>s, <vendor>/<model>)[ out=<M>]
+# N is the total; out= is the OUTPUT side (reasoning included), the part a
+# bake-off compares across vendors. codex: N = input + output summed over
+# turn.completed events, out = output_tokens (reasoning_output_tokens is already
+# inside output_tokens — codex's own total_tokens is input + output). agy: N is
+# .usage.total_tokens; out= appears only when the envelope carries a numeric
+# .usage.output_tokens (unverified live whether agy 1.2.3 emits it; absent => omitted, never guessed).
 case "$VENDOR" in
   agy)
-    jq -r --arg m "agy/$MODEL" '"ext-run: \(.usage.total_tokens // 0) tokens (\(.duration_seconds // 0)s, \($m))"' "$ENVELOPE" >&2
+    jq -r --arg m "agy/$MODEL" '"ext-run: \(.usage.total_tokens // 0) tokens (\(.duration_seconds // 0)s, \($m))" + (if (.usage.output_tokens | type) == "number" then " out=\(.usage.output_tokens)" else "" end)' "$ENVELOPE" >&2
     ;;
   codex)
     TOKENS=$(jq -R 'fromjson? | select(type == "object" and .type == "turn.completed") | ((.usage.input_tokens // 0) + (.usage.output_tokens // 0))' "$EVENTS" 2>/dev/null | jq -s 'add // 0')
-    echo "ext-run: ${TOKENS:-0} tokens (${ELAPSED}s, codex/$MODEL)" >&2
+    OUT_TOKENS=$(jq -R 'fromjson? | select(type == "object" and .type == "turn.completed") | (.usage.output_tokens // 0)' "$EVENTS" 2>/dev/null | jq -s 'add // 0')
+    echo "ext-run: ${TOKENS:-0} tokens (${ELAPSED}s, codex/$MODEL) out=${OUT_TOKENS:-0}" >&2
     ;;
 esac
 

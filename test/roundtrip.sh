@@ -39,6 +39,9 @@
 #   O - the Wave 12 rename triage-overflow -> triage-external: install removes
 #       the legacy agent file and its Agent(triage-overflow) allow rule and adds
 #       triage-external; uninstall removes both names (agents + permissions).
+#   P - .driftignore'd forks (triage.md) are skipped by EVERY install mode when
+#       the installed copy exists (bare install, --dry-run), and written only by a
+#       first install (bare or --files-only) where no copy exists yet.
 #   Plus two direct statusline.sh checks (non-numeric / numeric pct).
 set -u
 
@@ -331,6 +334,9 @@ chk "G12: config/tiers.json installed as scripts/triage-tiers.json (byte-identic
 chk "G13: scripts/triage-tiers.sh copied and executable" '[ -x "$G_DIR/scripts/triage-tiers.sh" ]'
 chk "G14: the installed triage-tiers.sh reads the installed tiers file next to it, not the repo copy" \
   '"$G_DIR/scripts/triage-tiers.sh" | grep -q "tiers: $G_DIR/scripts/triage-tiers.json"'
+chk "G15: workflows/triage-compare.js copied (byte-identical)" \
+  'cmp -s "$REPO_DIR/workflows/triage-compare.js" "$G_DIR/workflows/triage-compare.js"'
+chk "G16: scripts/patch-check.sh copied and executable" '[ -x "$G_DIR/scripts/patch-check.sh" ]'
 
 # =============================================================================
 # Case H — version-compat warnings (stub `claude` on PATH; --dry-run so a
@@ -390,6 +396,8 @@ chk "M1a: install placed scripts/ext-run.sh (executable)" '[ -x "$I_DIR/scripts/
 chk "M1c: install placed scripts/triage-tiers.json and scripts/triage-tiers.sh" \
   '[ -f "$I_DIR/scripts/triage-tiers.json" ] && [ -x "$I_DIR/scripts/triage-tiers.sh" ]'
 chk "M1d: install removed the legacy scripts/agy-run.sh (renamed to ext-run.sh)" '[ ! -e "$I_DIR/scripts/agy-run.sh" ]'
+chk "M1f: install placed workflows/triage-compare.js and scripts/patch-check.sh (executable)" \
+  '[ -f "$I_DIR/workflows/triage-compare.js" ] && [ -x "$I_DIR/scripts/patch-check.sh" ]'
 printf '#!/bin/bash\necho legacy\n' > "$I_DIR/scripts/agy-run.sh"
 printf 'my own agent, not shipped by this repo\n' > "$I_DIR/agents/triage-mine.md"
 
@@ -403,6 +411,8 @@ chk "I3: all seven shipped agents removed" \
 chk "M1b: uninstall removes scripts/ext-run.sh, triage-tiers.sh and triage-tiers.json" \
   '[ ! -f "$I_DIR/scripts/ext-run.sh" ] && [ ! -f "$I_DIR/scripts/triage-tiers.sh" ] && [ ! -f "$I_DIR/scripts/triage-tiers.json" ]'
 chk "M1e: uninstall also removes a legacy scripts/agy-run.sh" '[ ! -e "$I_DIR/scripts/agy-run.sh" ]'
+chk "M1g: uninstall removes workflows/triage-compare.js and scripts/patch-check.sh" \
+  '[ ! -e "$I_DIR/workflows/triage-compare.js" ] && [ ! -e "$I_DIR/scripts/patch-check.sh" ]'
 
 # =============================================================================
 # Case J — drift.sh: a checked file missing from an installed sandbox is
@@ -424,7 +434,8 @@ chk "J2: freshly installed sandbox has no MISSING/FORKED lines" \
 
 # Delete two checked files — one long-standing, one added with the external-CLI tier —
 # so drift.sh's per-file list is exercised for both.
-rm -f "$J_DIR/scripts/triage-usage.sh" "$J_DIR/scripts/ext-run.sh" "$J_DIR/scripts/triage-tiers.json"
+rm -f "$J_DIR/scripts/triage-usage.sh" "$J_DIR/scripts/ext-run.sh" "$J_DIR/scripts/triage-tiers.json" \
+      "$J_DIR/scripts/patch-check.sh" "$J_DIR/workflows/triage-compare.js"
 
 J_MISSING_OUT=$(mktemp)
 ALL_TMP="$ALL_TMP $J_MISSING_OUT"
@@ -436,6 +447,8 @@ chk "J3: drift.sh reports MISSING for the deleted checked file" \
 chk "J4: drift.sh exits non-zero once a checked file is missing" '[ "$J_MISSING_RC" -ne 0 ]'
 chk "J5: drift.sh also reports MISSING for the deleted scripts/ext-run.sh" \
   'grep -q "MISSING (not installed): scripts/ext-run.sh" "$J_MISSING_OUT"'
+chk "J7: drift.sh reports MISSING for the deleted patch-check.sh and triage-compare.js" \
+  'grep -q "MISSING (not installed): scripts/patch-check.sh" "$J_MISSING_OUT" && grep -q "MISSING (not installed): workflows/triage-compare.js" "$J_MISSING_OUT"'
 chk "J6: drift.sh reports MISSING for the deleted installed tiers file (config/tiers.json)" \
   'grep -q "MISSING (not installed): config/tiers.json" "$J_MISSING_OUT"'
 
@@ -671,6 +684,37 @@ chk "O6: uninstall removes triage-external.md and the legacy triage-overflow.md"
   '[ ! -e "$O_DIR/agents/triage-external.md" ] && [ ! -e "$O_DIR/agents/triage-overflow.md" ]'
 chk "O7: uninstall removes both Agent(triage-external) and Agent(triage-overflow), keeping the user rule" \
   '[ "$(jq -c ".permissions.allow" "$O_DIR/settings.json")" = "[\"Bash(ls:*)\"]" ]'
+
+# =============================================================================
+# Case P — an expected fork (.driftignore: triage.md) survives EVERY install mode.
+# Found live 2026-09-23: a bare ./install.sh overwrote the personal ~/.claude/
+# triage.md fork (only a .bak-triage copy was kept), because the skip applied under
+# --files-only alone. A first install, where no copy exists yet, still writes it.
+# =============================================================================
+P_DIR=$(new_sandbox)
+printf 'my personal triage.md fork\n' > "$P_DIR/triage.md"
+P_DRY_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $P_DRY_OUT"
+CLAUDE_DIR="$P_DIR" "$REPO_DIR/install.sh" --dry-run >"$P_DRY_OUT" 2>&1
+chk "P1: --dry-run shows the existing fork as 'skipped (expected fork)', never 'overwrite'" \
+  'grep -qF "skipped (expected fork): triage.md" "$P_DRY_OUT" && ! grep -q "overwrite.*$P_DIR/triage.md" "$P_DRY_OUT"'
+P_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $P_OUT"
+CLAUDE_DIR="$P_DIR" "$REPO_DIR/install.sh" >"$P_OUT" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+P_RC=$?
+chk "P2: a BARE install over an existing fork exits 0 and leaves the fork byte-for-byte" \
+  '[ "$P_RC" -eq 0 ] && [ "$(cat "$P_DIR/triage.md")" = "my personal triage.md fork" ]'
+chk "P3: the bare install announces the skip and writes no .bak-triage copy" \
+  'grep -qF "skipped (expected fork): triage.md" "$P_OUT" && [ ! -e "$P_DIR/triage.md.bak-triage" ]'
+chk "P4: the rest of the bare install still happened (agents, workflows, @triage.md wiring)" \
+  '[ -f "$P_DIR/agents/triage-quick-task.md" ] && [ -f "$P_DIR/workflows/triage-compare.js" ] && grep -qxF "@triage.md" "$P_DIR/CLAUDE.md"'
+P2_DIR=$(new_sandbox)
+run_install "$P2_DIR" >/dev/null 2>&1
+chk "P5: a first bare install (no triage.md yet) writes the repo copy" 'cmp -s "$REPO_DIR/triage.md" "$P2_DIR/triage.md"'
+P3_DIR=$(new_sandbox)
+CLAUDE_DIR="$P3_DIR" "$REPO_DIR/install.sh" --files-only >/dev/null 2>&1
+chk "P6: a first --files-only install (no triage.md yet) writes the repo copy too" 'cmp -s "$REPO_DIR/triage.md" "$P3_DIR/triage.md"'
 
 # =============================================================================
 # Statusline checks (direct, no install needed)

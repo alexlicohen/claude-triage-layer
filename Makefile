@@ -7,13 +7,16 @@ test:
 	./test/roundtrip.sh
 	./test/usage-tally.sh
 	./test/ext-run.sh
+	./test/patch-check.sh
 	node test/workflow-scenarios.mjs
+	node test/compare-scenarios.mjs
 
 drift:
 	./drift.sh
 
 # Sync repo files into the live install (~/.claude) without touching
-# CLAUDE.md/settings.json/permissions; .driftignore'd personal forks are skipped.
+# CLAUDE.md/settings.json/permissions. .driftignore'd personal forks are skipped by
+# every install mode (only a first install writes them).
 sync:
 	./install.sh --files-only
 
@@ -24,7 +27,7 @@ tiers:
 	./scripts/tiers-sync.sh
 
 # Mutation gate: prove the test suite has teeth (killed/survivor/error per
-# mutation). Strict since all 30 mutations have covering tests: any survivor
+# mutation). Strict since all 36 mutations have covering tests: any survivor
 # fails the gate.
 mutate:
 	./qc/mutate.sh --strict

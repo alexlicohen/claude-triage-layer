@@ -4,6 +4,127 @@ Reverse-chronological. Each entry cites the commit(s) it corresponds to and,
 where known, the test-count delta. See `test/roundtrip.sh` and `test/lint.sh`
 for the current check catalog.
 
+## Wave 12 — vendor-neutral tiers: Codex alongside agy, level/vendor/role split
+
+`8a2df13`, `6920ee2`, run C: compare workflow + `patch-check.sh` + installer fork
+fix — hash TBD (branch `wave12-codex`, in progress at time of writing).
+
+- **Tier model separated into three axes.** The old 7-tier list mixed difficulty,
+  vendor and role. Now: **level** (`quick|builder|deep|top`, `top` replaces
+  `fable` as the name — `fable` kept as the `top`+claude alias) describes the
+  task, never a model; **vendor** (`claude|codex|agy`) says who serves it, read
+  from data, not code; **role** (`implement`/`review`/`read`) is unchanged.
+  `overflow` stops being a tier — it's `builder` + `vendor:'agy'`, with
+  `overflow:true`/`tier:'overflow'` kept as aliases. Agent `triage-overflow` →
+  `triage-external` (any vendor, any level a vendor serves); the other six agent
+  names are unchanged. Decision basis: Alex 2026-09-23 — Codex (`gpt-6-astra`) is
+  at rough parity with Fable 5.1, Opus 5.5 stays top tier; any level is open to
+  Codex while that holds, rechecked periodically by a parity workflow.
+- **`config/tiers.json`** (`8a2df13`): the single place that names a model id or
+  effort, Claude or external — installed as `~/.claude/scripts/triage-tiers.json`.
+  Each entry carries a `basis` (`alex <date>` / `incumbent <date>` / `guess`).
+  `make tiers` (`scripts/tiers-sync.sh`) rewrites `agents/*.md` frontmatter to
+  match; `test/lint.sh` fails on drift. `scripts/triage-tiers.sh` prints the
+  level × vendor table and flags `guess` entries. Edit loop: edit the file →
+  `make tiers` → `make verify`.
+- **`scripts/agy-run.sh` → `scripts/ext-run.sh`** (`8a2df13`, `git mv`): adds
+  `--vendor agy|codex` and `--level` (build mode, resolves model/effort from
+  `config/tiers.json`). Codex adapter: `codex exec -C RUNDIR -s
+  read-only|workspace-write -m M -c model_reasoning_effort=E --ephemeral
+  --skip-git-repo-check --ignore-user-config --json -o LAST [--output-schema F]`,
+  a bash-3.2-safe wall-clock watchdog (codex has no print-timeout), and a
+  non-interactive-worker prompt footer (codex auto-loads `~/.codex/AGENTS.md`).
+  **Per-vendor deny**: `clip-creator` hard-denied for every vendor; new
+  `.codex-deny` marker + `CODEX_DENY_REPOS`, same walk-to-`$HOME` logic as the
+  existing `.agy-deny`. New `--patch-out`/`--check` for compare/bake-off use
+  (refuses a dirty tree; runs checks in the worktree outside the model sandbox).
+  Exit codes gain `6` (build-mode patch didn't apply; tree left unchanged).
+- **`workflows/triage-exec.js`** (`6920ee2`): subtask `level` (alias `tier`),
+  optional `vendor` per subtask or plan-wide. `overflow:true` rewrites only
+  `builder` subtasks to `vendor:'agy'`. `codex`+`danger` is allowed, effort
+  floored at `high`, level lifted to ≥`deep`; `agy` never takes `danger` work.
+  External `null`/`UNAVAILABLE` falls back to the same level on Claude, logged
+  `codex→claude`; failed checks or `ESCALATE:` climb the normal Claude ladder
+  (`redoStep()`) — no automatic escalation to another vendor. `runFable()`
+  remains the only path to `top`+claude. `crossReview: true|'agy'|'codex'|'both'`
+  (`'both'` = two parallel spawns, findings keyed by vendor). `report()` gains
+  `external: {agy, codex}` counts; `overflow` mirrors `external.agy` for
+  backward compatibility.
+- **Agents**: `triage-external.md` (from `triage-overflow.md`) reads a
+  `VENDOR=<agy|codex> LEVEL=<…> EFFORT=<…>` header line; `triage-cross-reviewer`
+  reads `VENDOR=`; `triage-fable-architect`'s description becomes "the `top`
+  level's Claude slot." Installer swaps the permission entry and removes the
+  legacy `triage-overflow.md` only when its bytes match a version this repo
+  shipped.
+- **Rule 6 rewritten**: "correctness-critical work never goes off-vendor"
+  becomes "never to `agy`; `codex` is allowed at any level `config/tiers.json`
+  lists for it" (parity by Alex's decision 2026-09-23, re-checked by the parity
+  workflow). Data-boundary class (a) — clinical/COI/Fable-retention material
+  never to `triage-fable-architect` — is unchanged. Fable escalation is still
+  only via `triage-exec`'s `runFable()`, only after a failed/escalated
+  `deep@max` attempt.
+- **New flow rule**: before a `triage-exec` plan with `builder`/`deep` work, run
+  `~/.claude/skills/usage-guard/usage_guard.sh --once`. At Weekly ≥80%, ask once
+  (`AskUserQuestion`) whether to shunt the plan to Codex; yes sets the plan's
+  `vendor:'codex'`.
+- **Cross-vendor second opinion** (verification rule 6) now routes through
+  `ext-run.sh` modes with `--vendor agy|codex`, or `crossReview:'both'` for a
+  two-vendor pass — still only for substantive/high-risk work or on request,
+  plus deliberate parity sampling for the ledger below.
+- **Compare / bake-off** (run C, on disk, uncommitted at time of writing —
+  hash TBD): `workflows/triage-compare.js` runs `{vendor, level, model?,
+  effort?, label?}` candidates in isolation (a Claude worktree spawn, or
+  `ext-run.sh build --patch-out --check` externally, one candidate spawn at a
+  time in plan order), grades them all in ONE `triage-quick-task` spawn with
+  `scripts/patch-check.sh` — applies each candidate's patch to its own fresh
+  worktree at a fixed base revision, runs the check there, reports
+  `{patch, applies, rc, diffstat, tail}` per patch as JSON, retried once on a
+  dead grader — and **never applies anything, never commits or stashes into
+  the target repo**; the orchestrator picks, applies with `git apply`, re-runs
+  the checks, and appends one line to `~/.agents/evidence/vendor-parity.jsonl`
+  (`{date, repo, level, candidates, winner, why}` — scores only, never document
+  text). A `top`-level Claude candidate still prints the `⚠ Escalating to
+  Fable` line before its spawn.
+- **Installer fork fix** (run C): a bare `install.sh` (no `--files-only`) used
+  to clobber a `.driftignore`-listed personal fork (e.g. a hand-tuned
+  `triage.md`) on every run after the first, keeping only a `.bak-triage`
+  copy. `is_ignored` is now checked in every install mode whenever the
+  installed copy already exists — only a genuine first install still writes
+  it. Also installs the two new run-C files: `workflows/triage-compare.js` and
+  `scripts/patch-check.sh`.
+- **Boundary markers added outside this repo** (independent of this wave, Alex
+  approved): `.agy-deny` in `~/projects/grant-forge-use` (its `AGENTS.md` bars
+  agy; nothing enforced it before); `.agy-deny` + `.codex-deny` in
+  `~/projects/review-editor/realdoc_corpus/` (PHI-adjacent).
+- **Codex spike facts** (live `codex exec`, gates the whole wave): nested
+  seatbelt sandbox works under Claude Code's own sandbox; `--ignore-user-config`
+  keeps ChatGPT auth while dropping the notify hook; `/tmp` needs explicit
+  sandbox-exclusion flags or the worker can read outside its workdir; the worker
+  auto-loads `~/.codex/AGENTS.md` (the non-interactive-worker prompt footer
+  exists because of this).
+- **Checks**: `make test` suites, run C totals — 148 (roundtrip) + 24
+  (usage-tally) + 139 (ext-run, was 64 pre-wave) + 17 (patch-check, new) + 226
+  (workflow-scenarios) + 73 (compare-scenarios, new, was 59) = **627**, up from
+  300 pre-wave. `qc/mutate.sh` 23 → 36 (27 after run A, 30 after run B, +3 in
+  run C: `triage-compare.js` grading a candidate from its own self-reported
+  `CHECK rc` instead of `patch-check`'s result; `patch-check.sh`'s
+  `cleanup_wt` becoming a no-op (worktrees left behind); and the bare-install
+  fork-clobber bug above — +3 more from three reviewer-confirmed
+  `triage-compare.js` defects fixed after the wave: `outDir`/`overlay` not
+  required to sit outside `repo`, a stale patch left in `outDir` from a
+  previous run getting graded when a candidate's reply carried no `PATCH`
+  line, and external candidates running with no `args.files`).
+- **Deferred**: `workflows/triage-parity.js` (the ranking/task-suite research
+  workflow, §5 of the plan) and its `parity/tasks/` suite — not started; a live
+  end-to-end `triage-exec` run with a real codex builder subtask (today's
+  coverage is `test/workflow-scenarios.mjs` mocks only); the reverse direction
+  (Codex orchestrating, dispatching to Claude) — explicitly out of scope this
+  wave, kept open by making `config/tiers.json` and the parity ledger
+  vendor-neutral; `triage-reviewer`'s zero recorded uses — noted, not
+  addressed; `AGENTS.md`'s single-owner list and agent/check counts still need
+  updating for Wave 12 and are **pending Alex's approval**, per this repo's own
+  rule that changes to `AGENTS.md` are shown as a diff first.
+
 ## Wave 11 — Opus 5.5 as orchestrator; effort retune; deep@max before Fable
 
 Uncommitted at time of writing (branch `wave11-opus55`).

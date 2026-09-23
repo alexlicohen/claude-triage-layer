@@ -5,12 +5,15 @@
 # Flags:
 #   --dry-run     print the full mutation plan, write NOTHING.
 #   --files-only  copy/chmod the installed FILES only (agents, statusline.sh,
-#                 workflows/triage-exec.js, scripts/*, the tiers file as
-#                 scripts/triage-tiers.json, triage.md).
+#                 workflows/triage-exec.js + triage-compare.js, scripts/*, the
+#                 tiers file as scripts/triage-tiers.json, triage.md).
 #                 Skips CLAUDE.md, settings.json, and permissions entirely.
-#                 Files listed in .driftignore (deliberate personal forks, e.g.
-#                 triage.md) are skipped rather than clobbered. This is the
-#                 "make sync" primitive.
+#                 This is the "make sync" primitive.
+#
+# Files listed in .driftignore (deliberate personal forks, e.g. triage.md) are
+# skipped rather than clobbered in EVERY mode — bare install, --files-only and
+# --dry-run alike — whenever the installed copy already exists. Only a first
+# install (no copy there yet) writes them.
 #
 # This installer is deliberately NARROW about settings.json: it never writes
 # `model`, `effortLevel`, or `statusLine`. Those are your session preferences,
@@ -128,7 +131,7 @@ check_force_override() {
 check_force_override
 
 # Files where a live ~/.claude fork is EXPECTED (config-as-data, shared with drift.sh) —
-# --files-only skips these instead of clobbering a deliberate personal fork.
+# every mode skips an existing copy instead of clobbering a deliberate personal fork.
 is_ignored() { # $1 = repo-relative path
   [ -f "$DRIFTIGNORE" ] || return 1
   grep -vE '^\s*#|^\s*$' "$DRIFTIGNORE" | grep -qxF "$1"
@@ -170,7 +173,10 @@ install_file() {
   rel="$1"
   dst="$2"
   mode="${3:-}"
-  if [ "$FILES_ONLY" -eq 1 ] && is_ignored "$rel"; then
+  # An expected fork is never overwritten, in any mode (a bare install used to
+  # clobber it, keeping only a .bak-triage copy). A missing target is a first
+  # install, which does get the repo copy.
+  if is_ignored "$rel" && [ -e "$dst" ]; then
     echo "  skipped (expected fork): $rel"
     return
   fi
@@ -283,10 +289,12 @@ done
 install_file "triage.md" "$CLAUDE_DIR/triage.md"
 install_file "statusline.sh" "$CLAUDE_DIR/statusline.sh" x
 install_file "workflows/triage-exec.js" "$CLAUDE_DIR/workflows/triage-exec.js"
+install_file "workflows/triage-compare.js" "$CLAUDE_DIR/workflows/triage-compare.js"
 install_file "scripts/triage-usage.sh" "$CLAUDE_DIR/scripts/triage-usage.sh" x
 install_file "scripts/triage-stats.sh" "$CLAUDE_DIR/scripts/triage-stats.sh" x
 install_file "scripts/triage-cache-segment.sh" "$CLAUDE_DIR/scripts/triage-cache-segment.sh" x
 install_file "scripts/ext-run.sh" "$CLAUDE_DIR/scripts/ext-run.sh" x
+install_file "scripts/patch-check.sh" "$CLAUDE_DIR/scripts/patch-check.sh" x
 install_file "scripts/triage-tiers.sh" "$CLAUDE_DIR/scripts/triage-tiers.sh" x
 install_file "config/tiers.json" "$CLAUDE_DIR/scripts/triage-tiers.json"
 retire_triage_run

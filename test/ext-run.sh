@@ -109,6 +109,8 @@ done
 case "${AGY_STUB_MODE:-ok}" in
   ok)
     echo '{"status":"SUCCESS","response":"hello from the stub","duration_seconds":1.5,"usage":{"total_tokens":42}}' ;;
+  okout)
+    echo '{"status":"SUCCESS","response":"hello from the stub","duration_seconds":1.5,"usage":{"total_tokens":42,"output_tokens":17}}' ;;
   denied)
     echo '{"status":"SUCCESS","response":"","denied_actions":[{"action":"command","display_name":"RunCommand"}]}' ;;
   empty)
@@ -276,8 +278,12 @@ chk "R13 a good envelope exits 0 and stdout is exactly the response" \
   '[ "$RC" -eq 0 ] && [ "$OUT" = "hello from the stub" ]'
 chk "R13b a clean read-only run prints NO staging-write note" \
   '! printf "%s" "$ERR" | grep -q "wrote into its staging dir"'
-chk "R13c the token-accounting line goes to stderr, tagged vendor/model" \
+chk "R13c the token-accounting line goes to stderr, tagged vendor/model; no out= when agy exposes no output count" \
   'printf "%s" "$ERR" | grep -q "^ext-run: 42 tokens (1.5s, agy/gemini-3.8-flash-low)$"'
+
+AGY_BOUNDARY_CLEARED=1 AGY_STUB_MODE=okout run_agy read --prompt-file "$BRIEF"
+chk "R13d an agy envelope with a numeric usage.output_tokens appends out=<M>" \
+  '[ "$RC" -eq 0 ] && printf "%s" "$ERR" | grep -q "^ext-run: 42 tokens (1.5s, agy/gemini-3.8-flash-low) out=17$"'
 
 AGY_BOUNDARY_CLEARED=1 AGY_STUB_MODE=exit7 run_agy read --prompt-file "$BRIEF"
 chk "R14 a non-zero agy exit is UNAVAILABLE (exit 4)" \
@@ -629,8 +635,8 @@ chk "C1f -C pins the throwaway stage, which is also the process cwd" \
   '[ "$(grep "^CDIR=" "$STUB_LOG" | sed "s/^CDIR=//")" = "$STUB_PWD" ] && case "$STUB_PWD" in */ext-run.*/ws) true ;; *) false ;; esac'
 chk "C1g the stdin prompt carries the Workspace footer, the staged input and the non-interactive footer" \
   'grep -q -- "--- Workspace ---" "$STUB_PROMPT" && grep -q "^  /.*/inputs/note.txt$" "$STUB_PROMPT" && grep -q -- "--- Non-interactive worker ---" "$STUB_PROMPT" && grep -q "PROJECT_MEMORY.md" "$STUB_PROMPT"'
-chk "C1h the token line is input+output from turn.completed, tagged codex/<model>" \
-  'printf "%s" "$ERR" | grep -q "^ext-run: 130 tokens ([0-9]*s, codex/gpt-fx-read)$"'
+chk "C1h the token line is input+output from turn.completed, tagged codex/<model>, out= the output tokens (reasoning inside)" \
+  'printf "%s" "$ERR" | grep -q "^ext-run: 130 tokens ([0-9]*s, codex/gpt-fx-read) out=30$"'
 
 AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_agy verify --vendor codex --prompt-file "$BRIEF"
 chk "C2 verify adds -c web_search=\"live\" on the fixture verify model/effort" \

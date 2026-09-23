@@ -47,7 +47,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30"
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -102,6 +102,12 @@ mut_file() {
     28) echo "workflows/triage-exec.js" ;;
     29) echo "workflows/triage-exec.js" ;;
     30) echo "workflows/triage-exec.js" ;;
+    31) echo "workflows/triage-compare.js" ;;
+    32) echo "scripts/patch-check.sh" ;;
+    33) echo "install.sh" ;;
+    34) echo "workflows/triage-compare.js" ;;
+    35) echo "workflows/triage-compare.js" ;;
+    36) echo "workflows/triage-compare.js" ;;
     *) echo "" ;;
   esac
 }
@@ -138,17 +144,26 @@ mut_desc() {
     28) echo "triage-exec.js: the codex danger effort floor is dropped (danger work runs on codex below effort high)" ;;
     29) echo "triage-exec.js: a failed external subtask is retried sideways on the same vendor instead of on Claude" ;;
     30) echo "triage-exec.js: crossReview 'both' spawns only one cross-reviewer (codex never asked)" ;;
+    31) echo "triage-compare.js: grades a candidate from its own CHECK rc self-report instead of patch-check's result" ;;
+    32) echo "patch-check.sh: cleanup_wt is a no-op (worktrees and their git bookkeeping are left behind)" ;;
+    33) echo "install.sh: the .driftignore fork skip is limited to --files-only again (a bare install clobbers triage.md)" ;;
+    34) echo "triage-compare.js: the outDir-under-repo entry-contract check is dropped (a patch written under repo dirties the tree; later external candidates falsely report unavailable)" ;;
+    35) echo "triage-compare.js: a Claude candidate reply with no PATCH line is graded anyway (a stale leftover patch in outDir gets credited to this run)" ;;
+    36) echo "triage-compare.js: the external-candidate files requirement is dropped (a non-claude candidate runs with no files, and triage-external refuses it mid-run instead of the plan being rejected up front)" ;;
     *) echo "" ;;
   esac
 }
 
 # Which suite exercises this mutation's file: "roundtrip" (test/roundtrip.sh),
-# "scenarios" (test/workflow-scenarios.mjs) or "extrun" (test/ext-run.sh).
+# "scenarios" (test/workflow-scenarios.mjs), "extrun" (test/ext-run.sh),
+# "compare" (test/compare-scenarios.mjs) or "patchcheck" (test/patch-check.sh).
 mut_suite() {
   case "$1" in
-    1|2|3|4|5|6|10|12|18|19|20|21) echo "roundtrip" ;;
+    1|2|3|4|5|6|10|12|18|19|20|21|33) echo "roundtrip" ;;
     7|8|9|11|16|17|22|23|28|29|30) echo "scenarios" ;;
     13|14|15|24|25|26|27) echo "extrun" ;;
+    31|34|35|36) echo "compare" ;;
+    32) echo "patchcheck" ;;
     *) echo "" ;;
   esac
 }
@@ -160,6 +175,8 @@ suite_file() {
     roundtrip) echo "test/roundtrip.sh" ;;
     scenarios) echo "test/workflow-scenarios.mjs" ;;
     extrun) echo "test/ext-run.sh" ;;
+    compare) echo "test/compare-scenarios.mjs" ;;
+    patchcheck) echo "test/patch-check.sh" ;;
     *) echo "" ;;
   esac
 }
@@ -482,6 +499,50 @@ const CROSS_REVIEW_VENDORS = { agy: ['agy'], codex: ['codex'], both: ['agy'] } /
 MUT30
       mut_replace_block "$target" "const CROSS_REVIEW_VENDORS = { agy: ['agy'], codex: ['codex'], both: ['agy', 'codex'] }" 1 "$rep"
       ;;
+    31)
+      # triage-compare.js: grade() trusts the candidate's own `CHECK rc=` line — the
+      # exact thing the bake-off exists to avoid (a candidate that claims green but
+      # whose patch fails patch-check's independent run would be reported as a pass).
+      cat > "$rep" <<'MUT31'
+  const status = r.selfRc === 0 ? 'pass' : 'fail' // MUTATED: graded from the self-report
+MUT31
+      mut_replace_block "$target" "  const status = pc.applies === true && pc.rc === 0 ? 'pass' : 'fail'" 1 "$rep"
+      ;;
+    32)
+      # patch-check.sh: the single owner of worktree removal returns at once, so
+      # every graded patch leaves a worktree dir and its .git/worktrees entry behind
+      # in the CALLER's repo. Opening-line anchor, as in 18.
+      cat > "$rep" <<'MUT32'
+cleanup_wt() { return 0 # MUTATED: worktree cleanup skipped
+MUT32
+      mut_replace_block "$target" 'cleanup_wt() {' 1 "$rep"
+      ;;
+    33)
+      # install.sh: the pre-fix condition — the fork skip fires under --files-only
+      # only, so a bare install overwrites a personal triage.md fork (found live
+      # 2026-09-23; only a .bak-triage copy survived).
+      cat > "$rep" <<'MUT33'
+  if [ "$FILES_ONLY" -eq 1 ] && is_ignored "$rel" && [ -e "$dst" ]; then # MUTATED: fork skip limited to --files-only
+MUT33
+      mut_replace_block "$target" '  if is_ignored "$rel" && [ -e "$dst" ]; then' 1 "$rep"
+      ;;
+    34)
+      # triage-compare.js: drop the outDir-under-repo entry-contract check (5 lines,
+      # the whole if-block) — a patch written under repo would then dirty the tree.
+      mut_delete_block "$target" 'if (isAbsPath(args.repo) && isAbsPath(args.outDir)) {' 5
+      ;;
+    35)
+      # triage-compare.js: drop the no-PATCH-line guard (4 lines) — a Claude candidate
+      # that never reports its own patch path is graded anyway, so a stale leftover
+      # patch already sitting in outDir gets silently credited to this run.
+      mut_delete_block "$target" '  if (!nothing && !hasPatchLine(out, c.patch)) {' 4
+      ;;
+    36)
+      # triage-compare.js: drop the external-candidate-needs-files entry-contract
+      # check (3 lines) — a non-claude candidate with no files spawns anyway and
+      # triage-external refuses it mid-run instead of the plan failing up front.
+      mut_delete_block "$target" "if (candidates.some(c => c.vendor !== 'claude') && files.length === 0) {" 3
+      ;;
     *)
       return 1
       ;;
@@ -528,6 +589,12 @@ verify_mutation() {
     28) grep -qF 'MUTATED: codex danger effort floor dropped' "$target" && ! grep -qF 'effort = codexDangerEffort(level, effort)' "$target" ;;
     29) grep -qF 'MUTATED: retried sideways on the same vendor' "$target" && ! grep -qF "const vendor = 'claude' // every redo runs on Claude" "$target" ;;
     30) grep -qF "MUTATED: 'both' spawns one" "$target" && ! grep -qF "both: ['agy', 'codex']" "$target" ;;
+    31) grep -qF 'MUTATED: graded from the self-report' "$target" && ! grep -qF "pc.applies === true && pc.rc === 0" "$target" ;;
+    32) grep -qF 'MUTATED: worktree cleanup skipped' "$target" ;;
+    33) grep -qF 'MUTATED: fork skip limited to --files-only' "$target" && ! grep -qxF '  if is_ignored "$rel" && [ -e "$dst" ]; then' "$target" ;;
+    34) ! grep -qF 'args.outDir must not be inside args.repo' "$target" ;;
+    35) ! grep -qF 'if (!nothing && !hasPatchLine(out, c.patch)) {' "$target" ;;
+    36) ! grep -qF "if (candidates.some(c => c.vendor !== 'claude') && files.length === 0) {" "$target" ;;
     *) return 1 ;;
   esac
 }
@@ -561,6 +628,8 @@ run_suite() { # $1 = repo copy dir, $2 = suite name (see suite_file) -> exit cod
     roundtrip) ( cd "$copy" && bash test/roundtrip.sh ) >"$WORK_ROOT/last-suite.log" 2>&1 ;;
     scenarios) ( cd "$copy" && node test/workflow-scenarios.mjs ) >"$WORK_ROOT/last-suite.log" 2>&1 ;;
     extrun) ( cd "$copy" && bash test/ext-run.sh ) >"$WORK_ROOT/last-suite.log" 2>&1 ;;
+    compare) ( cd "$copy" && node test/compare-scenarios.mjs ) >"$WORK_ROOT/last-suite.log" 2>&1 ;;
+    patchcheck) ( cd "$copy" && bash test/patch-check.sh ) >"$WORK_ROOT/last-suite.log" 2>&1 ;;
     *) return 1 ;;
   esac
 }
@@ -579,6 +648,8 @@ copy_repo "$BASELINE_DIR"
 BASELINE_ROUNDTRIP_OK=1
 BASELINE_SCENARIOS_OK=1
 BASELINE_EXTRUN_OK=1
+BASELINE_COMPARE_OK=1
+BASELINE_PATCHCHECK_OK=1
 if run_suite "$BASELINE_DIR" roundtrip; then
   BASELINE_ROUNDTRIP_OK=0
 else
@@ -596,6 +667,16 @@ if run_suite "$BASELINE_DIR" extrun; then
 else
   BASELINE_EXTRUN_OK=1
   echo "  ⚠ baseline $(suite_file extrun) is already RED on unmutated code — mutations using it will be reported ERROR (baseline-red), not KILLED/SURVIVOR."
+fi
+if run_suite "$BASELINE_DIR" compare; then
+  BASELINE_COMPARE_OK=0
+else
+  echo "  ⚠ baseline $(suite_file compare) is already RED on unmutated code — mutations using it will be reported ERROR (baseline-red), not KILLED/SURVIVOR."
+fi
+if run_suite "$BASELINE_DIR" patchcheck; then
+  BASELINE_PATCHCHECK_OK=0
+else
+  echo "  ⚠ baseline $(suite_file patchcheck) is already RED on unmutated code — mutations using it will be reported ERROR (baseline-red), not KILLED/SURVIVOR."
 fi
 echo ""
 
@@ -627,6 +708,8 @@ for id in $RUN_IDS; do
     roundtrip) baseline_ok=$BASELINE_ROUNDTRIP_OK ;;
     scenarios) baseline_ok=$BASELINE_SCENARIOS_OK ;;
     extrun) baseline_ok=$BASELINE_EXTRUN_OK ;;
+    compare) baseline_ok=$BASELINE_COMPARE_OK ;;
+    patchcheck) baseline_ok=$BASELINE_PATCHCHECK_OK ;;
     *) baseline_ok=1 ;;
   esac
 

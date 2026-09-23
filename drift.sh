@@ -1,7 +1,7 @@
 #!/bin/bash
 # Compare the installed copies under ~/.claude (or $CLAUDE_DIR) against this
-# repo, file-by-file, for: the 7 agents, statusline.sh, workflows/triage-exec.js,
-# the scripts (incl. ext-run.sh), config/tiers.json (installed as
+# repo, file-by-file, for: the 7 agents, statusline.sh, workflows/triage-exec.js
+# and triage-compare.js, the scripts (incl. ext-run.sh and patch-check.sh), config/tiers.json (installed as
 # scripts/triage-tiers.json), triage.md. Prints one of `same` / `MISSING (not installed)` / `FORKED` per
 # file (or `forked (expected)` for files listed in .driftignore).
 #
@@ -61,10 +61,12 @@ done
 
 check_file "statusline.sh" "$CLAUDE_DIR/statusline.sh"
 check_file "workflows/triage-exec.js" "$CLAUDE_DIR/workflows/triage-exec.js"
+check_file "workflows/triage-compare.js" "$CLAUDE_DIR/workflows/triage-compare.js"
 check_file "scripts/triage-usage.sh" "$CLAUDE_DIR/scripts/triage-usage.sh"
 check_file "scripts/triage-stats.sh" "$CLAUDE_DIR/scripts/triage-stats.sh"
 check_file "scripts/triage-cache-segment.sh" "$CLAUDE_DIR/scripts/triage-cache-segment.sh"
 check_file "scripts/ext-run.sh" "$CLAUDE_DIR/scripts/ext-run.sh"
+check_file "scripts/patch-check.sh" "$CLAUDE_DIR/scripts/patch-check.sh"
 check_file "scripts/triage-tiers.sh" "$CLAUDE_DIR/scripts/triage-tiers.sh"
 check_file "config/tiers.json" "$CLAUDE_DIR/scripts/triage-tiers.json"
 check_file "triage.md" "$CLAUDE_DIR/triage.md"

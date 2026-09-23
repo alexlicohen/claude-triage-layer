@@ -358,8 +358,12 @@ have not consciously cleared for it.
 | `TRIAGE_TIERS` | the tiers file to read (overrides the installed and repo copies) |
 
 Vendor-side token spend is invisible to `triage-usage.sh`, so each run echoes
-`ext-run: <N> tokens (<S>s, <vendor>/<model>)` to **stderr** (codex: `input_tokens +
-output_tokens` from `turn.completed`; reasoning tokens are already inside `output_tokens`).
+`ext-run: <N> tokens (<S>s, <vendor>/<model>)[ out=<M>]` to **stderr**. `N` is the total
+(codex: `input_tokens + output_tokens` summed over `turn.completed`; agy:
+`.usage.total_tokens`). `out=` is the output side, reasoning included, which is what a bake-off
+compares: codex `output_tokens` (reasoning tokens are already inside it); agy only when its
+envelope carries a numeric `.usage.output_tokens`, otherwise the field is omitted, never guessed
+(unverified whether agy 1.2.3 emits it).
 
 ### Requirements and tests
 
@@ -371,3 +375,39 @@ the flag tables (codex's from a fixture tiers file), the deny-list, the exit-cod
 the watchdog, `--patch-out`/`--check` and the whole build-worktree round trip are asserted
 without ever reaching a real CLI or the network. It also covers `tiers-sync.sh` and
 `triage-tiers.sh`.
+
+## `patch-check.sh` — the independent grader of a bake-off
+
+```
+patch-check.sh --repo DIR --base REV --check CMD [--overlay DIR] [--timeout SECS] PATCH...
+```
+
+`workflows/triage-compare.js` runs one brief on several candidates (Claude levels, codex, agy),
+each writing a patch. The candidates' own claims about their checks are never the grade; this
+script is. For each PATCH, in argument order:
+
+1. `git worktree add --detach` a fresh worktree of DIR at REV under a temp dir (hooks off);
+2. `git apply --binary`, falling back to `git apply --3way` (a conflict is `applies:false`);
+   an **empty** patch file applies trivially and is still checked;
+3. copies `--overlay DIR` into the worktree after the patch: hidden tests the candidates
+   never saw, kept out of the diffstat;
+4. runs CMD (`bash -c`) from the worktree root under a wall-clock watchdog (default 600s;
+   over time = rc 124);
+5. removes the worktree and its `.git/worktrees` bookkeeping (`cleanup_wt()`, also on every
+   exit path via the trap).
+
+It prints one JSON line per patch on stdout:
+
+```json
+{"patch":"/abs/x.patch","applies":true,"rc":0,"diffstat":"1 file changed, 2 insertions(+)","tail":"<last 20 lines of check output>"}
+```
+
+`applies:false` means `rc:null` and the check never ran; `tail` says why (including "patch file
+not found"). Exit 0 = every patch was graded; exit 2 = usage error (bad flag, not a repo,
+unknown REV), nothing ran. It never touches the caller's working tree, index or HEAD.
+
+`test/patch-check.sh` (wired into `make test`) runs it against scratch repos: applies+pass,
+applies+fail, non-applying, empty, binary/new file, overlay visible to the check but absent from
+the diffstat and the caller's tree, caller tree/index/HEAD untouched, worktrees cleaned (also
+after a timeout), missing patch, usage errors. `qc/mutate.sh` #32 proves the cleanup assertion
+has teeth.

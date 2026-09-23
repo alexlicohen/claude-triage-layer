@@ -143,27 +143,60 @@ else
   printf '%s\n' "$TIERS_OUT" >&2
 fi
 
-# --- 6. level map: triage-exec.js CLAUDE_AGENT == tiers.json levels.*.claude.agent --
-# The workflow cannot read tiers.json at run time (the DSL has no fs), so it carries
-# its own level -> Claude agent map. This keeps the two from drifting apart.
+# --- 6. level map: each workflow's CLAUDE_AGENT == tiers.json levels.*.claude.agent --
+# The workflows cannot read tiers.json at run time (the DSL has no fs), so each
+# carries its own level -> Claude agent map. This keeps them from drifting apart.
 if command -v node >/dev/null 2>&1; then
+  for WF in workflows/triage-exec.js workflows/triage-compare.js; do
   if LEVEL_OUT=$(node -e '
     const fs = require("fs");
-    const src = fs.readFileSync("workflows/triage-exec.js", "utf8");
+    const file = process.argv[1];
+    const src = fs.readFileSync(file, "utf8");
     const m = src.match(/^const CLAUDE_AGENT = (\{[^}\n]*\})/m);
-    if (!m) { console.error("no single-line `const CLAUDE_AGENT = {...}` in workflows/triage-exec.js"); process.exit(1); }
+    if (!m) { console.error(`no single-line \`const CLAUDE_AGENT = {...}\` in ${file}`); process.exit(1); }
     const wf = Function(`"use strict"; return (${m[1]})`)();
     const tiers = JSON.parse(fs.readFileSync("config/tiers.json", "utf8"));
     const want = Object.fromEntries(Object.entries(tiers.levels || {}).map(([l, v]) => [l, v && v.claude && v.claude.agent]));
     const keys = [...new Set([...Object.keys(wf), ...Object.keys(want)])].sort();
-    const bad = keys.filter(k => wf[k] !== want[k]).map(k => `${k}: triage-exec.js=${wf[k]} tiers.json=${want[k]}`);
+    const bad = keys.filter(k => wf[k] !== want[k]).map(k => `${k}: ${file}=${wf[k]} tiers.json=${want[k]}`);
     if (bad.length) { console.error(bad.join("\n")); process.exit(1); }
-  ' 2>&1); then
-    ok "level-map: triage-exec.js CLAUDE_AGENT matches config/tiers.json levels.*.claude.agent"
+  ' "$WF" 2>&1); then
+    ok "level-map: $WF CLAUDE_AGENT matches config/tiers.json levels.*.claude.agent"
   else
-    fail "level-map: triage-exec.js CLAUDE_AGENT differs from config/tiers.json levels.*.claude.agent"
+    fail "level-map: $WF CLAUDE_AGENT differs from config/tiers.json levels.*.claude.agent"
     printf '%s\n' "$LEVEL_OUT" >&2
   fi
+  done
+
+  # Workflow-DSL constraints (the runtime throws on these at run time, so catch them
+  # here): meta is a pure literal, and no Date.now()/Math.random()/argless new Date().
+  for WF in workflows/*.js; do
+    if DSL_OUT=$(node -e '
+      const src = require("fs").readFileSync(process.argv[1], "utf8");
+      const errs = [];
+      const code = src.replace(/\/\/[^\n]*/g, "");
+      if (/\bDate\.now\s*\(/.test(code)) errs.push("Date.now()");
+      if (/\bMath\.random\s*\(/.test(code)) errs.push("Math.random()");
+      if (/\bnew\s+Date\s*\(\s*\)/.test(code)) errs.push("argless new Date()");
+      const m = src.match(/^export const meta = (\{[\s\S]*?\n\})/m);
+      if (!m) errs.push("no `export const meta = {...}` block");
+      else {
+        // Pure literal: once string literals, keys, numbers and true/false/null are
+        // removed, only { } [ ] , : may remain (no identifiers, calls, spreads, templates).
+        const rest = m[1]
+          .replace(/"(?:[^"\\]|\\.)*"|\x27(?:[^\x27\\]|\\.)*\x27/g, "0")
+          .replace(/[A-Za-z_$][\w$]*\s*:/g, ":")
+          .replace(/\b(?:true|false|null)\b|-?\d+(?:\.\d+)?/g, "");
+        if (!/^[\s{}\[\],:]*$/.test(rest)) errs.push("meta is not a pure literal (left over: " + rest.replace(/[\s{}\[\],:]+/g, " ").trim().slice(0, 80) + ")");
+      }
+      if (errs.length) { console.error(errs.join("\n")); process.exit(1); }
+    ' "$WF" 2>&1); then
+      ok "dsl-constraints: $WF (pure-literal meta, no Date.now/Math.random/argless new Date)"
+    else
+      fail "dsl-constraints: $WF"
+      printf '%s\n' "$DSL_OUT" >&2
+    fi
+  done
 fi
 
 echo ""
