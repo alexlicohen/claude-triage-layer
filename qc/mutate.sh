@@ -49,7 +49,7 @@ done
 
 # 35 (the no-PATCH-line guard) was retired with that rule: staged worktrees made it
 # moot — the grade is now the worktree diff, never a patch file a candidate wrote.
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 36 37 38 39 40 41 42 43 44 45"
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -118,6 +118,7 @@ mut_file() {
     43) echo "workflows/triage-parity.js" ;;
     44) echo "scripts/parity-suite.sh" ;;
     45) echo "scripts/parity-suite.sh" ;;
+    46) echo "workflows/triage-parity.js" ;;
     *) echo "" ;;
   esac
 }
@@ -168,6 +169,7 @@ mut_desc() {
     43) echo "triage-parity.js: the proposal ignores the cheapness order (takes the top-ranked clearing candidate instead of the cheapest)" ;;
     44) echo "parity-suite.sh: materialize skips deny-marker propagation (a clone of a .agy-deny/.codex-deny source is handed to that vendor, because ext-run no longer sees the source)" ;;
     45) echo "parity-suite.sh: materialize keeps source history/refs reachable (the post-commit ref-deletion loop is skipped, so a generator source's own commits — and any other branch — stay in the materialized repo, defeating the no-history guarantee)" ;;
+    46) echo "triage-parity.js: an external review candidate omits its MODEL line (the read-mode spawn falls back to triage-cross-reviewer's mode default model instead of the candidate's own, silently reintroducing the wrong-model bug for a candidate with an explicit model)" ;;
     *) echo "" ;;
   esac
 }
@@ -185,7 +187,7 @@ mut_suite() {
     31|34|36|37|38) echo "compare" ;;
     32) echo "patchcheck" ;;
     39) echo "stagewt" ;;
-    41|42|43) echo "parity" ;;
+    41|42|43|46) echo "parity" ;;
     44|45) echo "paritysuite" ;;
     *) echo "" ;;
   esac
@@ -639,6 +641,15 @@ MUT44
 MUT45
       mut_replace_block "$target" '  for r in $(git -C "$MAT_REPO" for-each-ref --format='"'"'%(refname)'"'"' refs/heads refs/tags refs/remotes); do' 3 "$rep"
       ;;
+    46)
+      # triage-parity.js: the MODEL= header line for an external review
+      # candidate is dropped, so its read-mode spawn falls back to
+      # triage-cross-reviewer's mode-default model instead of the candidate's own.
+      cat > "$rep" <<'MUT46'
+      '' + // MUTATED: MODEL line dropped for external review candidates
+MUT46
+      mut_replace_block "$target" "      (c.model ? \`MODEL=\${c.model}\n\` : '') +" 1 "$rep"
+      ;;
     *)
       return 1
       ;;
@@ -699,6 +710,7 @@ verify_mutation() {
     43) grep -qF 'MUTATED: cheapness order ignored' "$target" && ! grep -qF 'eligible.slice().sort((x, y) => cheaper(x.c, y.c))' "$target" ;;
     44) grep -qF 'MUTATED: deny markers not propagated' "$target" && ! grep -qF 'propagated by parity-suite.sh materialize' "$target" && grep -qF '  DENIED_AGY=false DENIED_CODEX=false' "$target" ;;
     45) grep -qF 'MUTATED: source history/refs kept' "$target" && ! grep -qF 'update-ref -d "$r"' "$target" ;;
+    46) grep -qF 'MUTATED: MODEL line dropped for external review candidates' "$target" && ! grep -qF '(c.model ? `MODEL=${c.model}' "$target" ;;
     *) return 1 ;;
   esac
 }

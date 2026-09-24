@@ -276,13 +276,13 @@ const cellOf = (result, id, l) => ((result.tasks.find(t => t.id === id) || { res
     scores: [...p.matchAll(/--findings '[^']*\/([^/']+)\.json'/g)].map(m => (
       { good: { label: 'good', recall: 0.67, precision: 0.5, matched: ['S1', 'S2'] }, poor: { label: 'poor', recall: 0.33, precision: 1, matched: ['S1'] }, xgood: { label: 'xgood', recall: 1, precision: 0.6, matched: ['S1', 'S2', 'S3'] } }[m[1]])),
   })
-  const { result, calls, wf } = await run(A({ bands: [3], candidates: [C('claude', 'deep', 'good'), C('claude', 'builder', 'poor'), C('codex', 'deep', 'xgood'), C('codex', 'builder', 'xjunk')] }), {
+  const { result, calls, wf } = await run(A({ bands: [3], candidates: [C('claude', 'deep', 'good'), C('claude', 'builder', 'poor'), C('codex', 'deep', 'xgood', { model: 'gpt-6-astra', effort: 'high' }), C('codex', 'builder', 'xjunk')] }), {
     tasks,
     script: {
       'candidate:good@rv': [{ findings: [{ file: 'app.py', line: 3, desc: 'a' }] }],
       'candidate:poor@rv': [{ findings: [{ file: 'app.py', line: 30, desc: 'b' }] }],
-      'candidate:xgood@rv': ['CROSS-REVIEW (codex · review · exit 0)\n```json\n{"findings":[{"file":"app.py","line":9,"desc":"c"}]}\n```\next-run: 500 tokens (4s, codex/gpt-6-astra)'],
-      'candidate:xjunk@rv': ['CROSS-REVIEW (codex · review · exit 0)\nI found some problems but will not say where.'],
+      'candidate:xgood@rv': ['CROSS-REVIEW (codex · read · exit 0)\n```json\n{"findings":[{"file":"app.py","line":9,"desc":"c"}]}\n```\next-run: 500 tokens (4s, codex/gpt-6-astra)'],
+      'candidate:xjunk@rv': ['CROSS-REVIEW (codex · read · exit 0)\nI found some problems but will not say where.'],
       'score:rv': [scoreReply],
     },
   })
@@ -291,8 +291,13 @@ const cellOf = (result, id, l) => ((result.tasks.find(t => t.id === id) || { res
   chk('P7: a Claude reviewer is its level agent with a findings schema, told read-only and `cd <repo> && ` for every command',
     cg && cg.opts.agentType === 'triage-deep-reasoner' && cg.opts.schema && cg.prompt.includes(`\`cd ${OUT}/3/rv/mat/repo && \``) && /READ-ONLY/.test(cg.prompt))
   const cx = calls.find(c => c.label === 'candidate:xgood@rv')
-  chk('P7: an external reviewer is triage-cross-reviewer VENDOR=codex MODE=review with every file as an absolute --input',
-    cx && cx.opts.agentType === 'triage-cross-reviewer' && /^VENDOR=codex\nMODE=review\n/.test(cx.prompt) && cx.prompt.includes(`--input ${OUT}/3/rv/mat/repo/app.py --input ${OUT}/3/rv/mat/repo/lib/util.py`))
+  chk('P7: an external reviewer is triage-cross-reviewer VENDOR=codex MODE=read with MODEL/EFFORT and every file as an absolute --input',
+    cx && cx.opts.agentType === 'triage-cross-reviewer' && /^VENDOR=codex\nMODE=read\nMODEL=gpt-6-astra\nEFFORT=high\n/.test(cx.prompt) &&
+    cx.prompt.includes(`--input ${OUT}/3/rv/mat/repo/app.py --input ${OUT}/3/rv/mat/repo/lib/util.py`))
+  chk('P7: the external reviewer prompt carries the findings JSON Schema for ext-run.sh --schema', /Write this exact JSON Schema/.test(cx.prompt) && cx.prompt.includes('"findings"'))
+  const cj = calls.find(c => c.label === 'candidate:xjunk@rv')
+  chk('P7: an external reviewer with no candidate model/effort omits the MODEL/EFFORT lines', cj && /^VENDOR=codex\nMODE=read\n(?!MODEL=)(?!EFFORT=)/.test(cj.prompt))
+  chk('P7: no review-task candidate is ever sent MODE=review', calls.filter(c => c.label.startsWith('candidate:')).every(c => !/\bMODE=review\b/.test(c.prompt)))
   chk('P7: no reviewer prompt names the key or the task dir', calls.filter(c => c.label.startsWith('candidate:')).every(c => !c.prompt.includes('key.json') && !c.prompt.includes(SUITE)))
   chk('P7: the Claude reviewer prompt tells it never to inspect git history and gives no git-history command (git log/show/diff)',
     /never inspect git history/i.test(cg.prompt) && !/git (log|show|diff)\b/.test(cg.prompt))
@@ -304,7 +309,7 @@ const cellOf = (result, id, l) => ((result.tasks.find(t => t.id === id) || { res
   chk('P7: the recall/precision/matched are on the cell', cellOf(result, 'rv', 'good').recall === 0.67 && cellOf(result, 'rv', 'good').matched.join() === 'S1,S2')
   chk('P7: an external reply without the findings JSON => invalid (flagged), not a fail, and never scored',
     cellOf(result, 'rv', 'xjunk').status === 'invalid' && rank(result, 'xjunk').perBand[3].fail === 0 && !sc[0].prompt.includes('xjunk.json') && result.flags.some(f => /xjunk/.test(f)))
-  chk('P7: the review-mode model caveat for external reviewers is flagged', result.flags.some(f => /review-mode model/.test(f)))
+  chk('P7: no review-mode-model caveat is flagged now that external reviewers carry their own model', !result.flags.some(f => /review-mode model/.test(f)))
   const noScore = await run(A({ bands: [3], candidates: [C('claude', 'deep', 'good')] }), { tasks, script: { 'candidate:good@rv': [{ findings: [] }], 'score:rv': [new Error('dead')] } })
   chk('P7: a dead scorer => ungraded (other), not a fail', cellOf(noScore.result, 'rv', 'good').status === 'ungraded' && rank(noScore.result, 'good').perBand[3].other === 1)
 }

@@ -407,11 +407,22 @@ async function reviewTask(t, b, runnable) {
         Object.assign({ phase: `Band ${b}`, agentType: CLAUDE_AGENT[c.level], label, schema: FINDINGS_SCHEMA },
           c.model ? { model: c.model } : {}, c.effort ? { effort: c.effort } : {}))
     }
-    return agent(`VENDOR=${c.vendor}\nMODE=review\n` +
+    // External review candidates run in MODE=read, not MODE=review: review mode
+    // pins triage-cross-reviewer's own review-mode model (config/tiers.json
+    // modes.<vendor>.review), which measured the wrong model for this candidate.
+    // read mode is the staged, read-only, schema-capable mode, and MODEL=/EFFORT=
+    // headers (below) pin it to THIS candidate's model/effort instead.
+    return agent(`VENDOR=${c.vendor}\nMODE=read\n` +
+      (c.model ? `MODEL=${c.model}\n` : '') +
+      (c.effort ? `EFFORT=${c.effort}\n` : '') +
       'The data boundary has been checked by the orchestrator for this material (a synthetic or cleared parity task).\n' +
       `Pass exactly these files to ext-run.sh: ${abs.map(f => `--input ${f}`).join(' ')}\n` +
       `They are, relative to the repository root: ${t.files.join(', ')}\n\n` +
       `Review focus: ${t.brief}\nAcceptance: ${t.acceptance}\n\n` +
+      'This is a review task: read only the staged files, never any git history.\n' +
+      'Write this exact JSON Schema to a file and pass it to ext-run.sh as --schema (read mode enforces it; ' +
+      'the response will be the model\'s answer as JSON matching it):\n' +
+      `${JSON.stringify(FINDINGS_SCHEMA)}\n\n` +
       'Report every defect you find. Output ONLY one JSON object: {"findings": [{"file": "<path relative to the repository root, as listed above>", "line": <1-based line number>, "desc": "<one line>"}]} — no other text.',
       { phase: `Band ${b}`, agentType: 'triage-cross-reviewer', label })
   }))
@@ -434,9 +445,6 @@ async function reviewTask(t, b, runnable) {
     const ext = String(o).match(/ext-run:\s*(\d+)\s+tokens\s*\(([\d.]+)s/)
     toScore.push({ c, findings: p.findings, totalTokens: ext ? Number(ext[1]) : null, seconds: ext ? Number(ext[2]) : null })
   })
-  if (runnable.some(c => c.vendor !== 'claude')) {
-    flags.push(`${t.id}: external review candidates ran on triage-cross-reviewer's review-mode model (config/tiers.json modes.<vendor>.review), not their own model/effort`)
-  }
   if (!toScore.length) return rows
   // score-review (parity-suite.sh) is the ONLY scorer: findings are written to
   // files under outDir, then scored one by one.

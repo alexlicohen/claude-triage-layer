@@ -176,6 +176,26 @@ fix — hash TBD (branch `wave12-codex`, in progress at time of writing).
   `triage-cross-reviewer`'s review-mode model (it passes no model/effort
   override), so a codex reviewer is ranked as `modes.codex.review`, not as its
   own model — flagged in every run's result.
+- **Review-task model fix (run D2, after the first live parity pilot
+  `wf_fa44f0b0-a5e`).** The pilot flagged two review-task defects: (a) external
+  review candidates were ranked on `triage-cross-reviewer`'s review-mode model,
+  not their own; (b) `ext-run.sh` only accepts `--schema` in `read` mode, so a
+  `MODE=review` reply was free text a review task could not reliably parse.
+  Fix: `reviewTask()`'s external branch now spawns `triage-cross-reviewer` in
+  `MODE=read` (the staged, read-only, schema-capable mode) with the artifact
+  files as `--input`, the findings JSON Schema inline in the brief (for the
+  wrapper to write out and pass as `--schema`), and the candidate's own
+  `MODEL=`/`EFFORT=` header lines when the candidate set them. `MODE=review` is
+  never used for a review-kind task's own candidates any more (judge scoring
+  in `judgeTask()`, a different path, is unchanged). `agents/triage-cross-
+  reviewer.md` gains optional `MODEL=<id>`/`EFFORT=<level>` header fields,
+  mapped to `--model`/`--effort` on `ext-run.sh`; EFFORT is mapped to the
+  vendor's scale the same way `triage-external` does (agy `low|medium|high`,
+  `xhigh`/`max` → `high`; codex `low|medium|high|xhigh|max` unchanged). The
+  now-obsolete "review-mode model" caveat and its flag are removed. A review
+  reply that still isn't valid findings JSON stays `invalid`, never a fail.
+  Checks: parity-scenarios 101 → 104; mutations 45 → 46 (#46 an external review
+  candidate's `MODEL=` header line dropped, reintroducing the wrong-model bug).
 - **Deferred**: the private parity task suite (`~/.agents/parity/tasks`) and the
   first live parity run; a live
   end-to-end `triage-exec` run with a real codex builder subtask (today's
