@@ -4,6 +4,87 @@ Reverse-chronological. Each entry cites the commit(s) it corresponds to and,
 where known, the test-count delta. See `test/roundtrip.sh` and `test/lint.sh`
 for the current check catalog.
 
+## Wave 12 — vendor-neutral tiers: Codex alongside agy, level/vendor/role split
+
+- **Three axes replace the 7-tier list.** **level** (`quick|builder|deep|top`,
+  `top` replaces `fable` as the name; `fable` kept as the `top`+claude alias)
+  describes the task, never a model; **vendor** (`claude|codex|agy`) says who
+  serves it, read from `config/tiers.json`, not code; **role**
+  (`implement`/`review`/`read`) is unchanged. `overflow` is no longer a tier —
+  it's `builder`+`vendor:'agy'`, kept as an alias. `triage-overflow` →
+  `triage-external` (any vendor, any level it serves). Rule 6: "never to
+  `agy`; `codex` is allowed at any level `config/tiers.json` lists for it"
+  (Alex's decision 2026-09-23, rechecked by the parity workflow); the
+  data-boundary class barring Fable-retention material is unchanged.
+- **`config/tiers.json`**: the single place naming a model/effort, Claude or
+  external, each entry tagged `basis` (`alex <date>` / `incumbent <date>` /
+  `guess`). `make tiers` syncs `agents/*.md` frontmatter to it; `test/lint.sh`
+  fails on drift.
+- **`scripts/agy-run.sh` → `scripts/ext-run.sh`**: adds `--vendor agy|codex`
+  and `--level`; a Codex adapter (`codex exec`, non-interactive footer since
+  codex auto-loads `~/.codex/AGENTS.md`); per-vendor deny (`.agy-deny` /
+  `.codex-deny`, same walk-to-`$HOME` logic); `--patch-out`/`--check` for
+  compare/bake-off use.
+- **`workflows/triage-exec.js`**: subtask `vendor`; `codex`+`danger` allowed
+  (effort floored `high`, level lifted to ≥`deep`), `agy` never takes
+  `danger`; external `UNAVAILABLE` falls back to Claude at the same level,
+  logged; failed checks/`ESCALATE:` still climb only the Claude ladder —
+  no auto-escalation across vendors. `crossReview` gains `'agy'|'codex'|'both'`.
+- **Compare / bake-off, final design (`35e546a`).** Each candidate runs in
+  its own detached worktree from `scripts/stage-worktree.sh` at one resolved
+  sha; the real repo is never a candidate workdir; grading is only
+  `scripts/patch-check.sh`; a `leakcheck` invalidates the whole run. Why: the
+  first live run leaked — the external wrapper dropped `--patch-out`, so a
+  codex patch applied to the real tree (reverted), and `isolation:'worktree'`
+  was based on `main`, not the branch head.
+- **Installer fork fix**: a bare `install.sh` used to clobber a
+  `.driftignore`-listed personal fork after the first install; `is_ignored`
+  is now checked in every mode whenever the installed copy already exists.
+- **Parity machinery (`037f3e1`, `6cc7c86`, `2469dea`).**
+  `scripts/parity-suite.sh` (task format/validation, `materialize`,
+  `verify-task`, `score-review`), `scripts/parity-cost.sh` (Claude spend per
+  candidate from a transcript dir), `workflows/triage-parity.js` (climbs a
+  private task suite band-by-band, build tasks graded by a nested
+  `triage-compare`, review tasks by seeded-defect recall/precision, rubric
+  tasks by two blind judges; adaptive stop; proposes but never writes
+  `tiers.json`). `materialize` builds each task repo as one root commit from
+  `git archive` rather than a clone — a clone-based version leaked replayed
+  fixes via git history, caught in review. Review tasks route external
+  candidates through read mode with their own model/effort, not the
+  review-mode default (`6cc7c86`).
+  Private 17-task suite at `~/.agents/parity` (kept private because it lives
+  alongside private grant-forge material). Two pilot runs, 9 candidates
+  (`wf_fa44f0b0-a5e` bands 1–2, `wf_c5a32cce-ae6` bands 3–4): the suite
+  saturates above the quick tier (only 4/17 tasks discriminate, n=1);
+  `luna-low` beats `haiku-low`; `codex sol-medium` passed every graded task.
+  The auto-proposal (sonnet at deep/top, luna at codex top) was **not**
+  adopted; only `tiers.json`'s `basis` field was updated (`2469dea`) to
+  record the pilot as evidence, not a tier change.
+- **Boundary markers added outside this repo**: `.agy-deny` in
+  one confidential local project (cleared for Claude + Codex only);
+  `.agy-deny`+`.codex-deny` on one PHI-adjacent local corpus.
+- **Cross-vendor review before merge** (codex + agy on the danger-zone diff,
+  via `ext-run.sh`; two agy claims were false positives): fixed `leak:null`
+  accepted as graded, overlay-copy failure graded without hidden tests,
+  inherited `GIT_DIR`/`GIT_WORK_TREE` redirecting staging, symlinked inputs
+  bypassing deny, space-containing deny sources, trailing-option parse loop,
+  `--3way` conflict markers left on exit 6, the worktree `.git` pointer visible
+  to the external CLI (now hidden during the run), `$HOME` marker unchecked,
+  watchdog orphaning grandchildren, and fixed `/tmp/ext-*` files racing between
+  parallel candidates (this may have mis-marked some parity candidates
+  `unavailable`; grades were unaffected). Known limitation, documented: grading
+  runs candidate code unsandboxed (confined to a disposable worktree).
+- **Checks**: roundtrip 153, usage-tally 24, ext-run 172, patch-check 25,
+  stage-worktree 34, workflow-scenarios 226, compare-scenarios 116,
+  parity-suite 74, parity-scenarios 104 (928 total); `qc/mutate.sh` 23 → 50.
+- **Deferred**: suite v2 (harder band-4 tasks, reps ≥ 3, a minimum-n/margin
+  gate before adopting a proposal); codex review JSON invalid on
+  `syn-r-seeded` (likely strict-schema quirks); codex read/verify-mode model
+  in `config/tiers.json` still `guess`; live end-to-end `triage-exec` codex
+  routing (only compare/parity have exercised it live); the reverse direction
+  (Codex orchestrating); Wave 13 inline bake-offs on real work (decided 2026-09-24: 1-in-5 sampling, ~80% codex challengers, challenger fallback, tracked ledger); `triage-reviewer`'s zero recorded uses; the usage-
+  guard weekly reading looked stale all session.
+
 ## Wave 11 — Opus 5.5 as orchestrator; effort retune; deep@max before Fable
 
 Uncommitted at time of writing (branch `wave11-opus55`).

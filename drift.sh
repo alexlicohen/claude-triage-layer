@@ -1,7 +1,9 @@
 #!/bin/bash
 # Compare the installed copies under ~/.claude (or $CLAUDE_DIR) against this
-# repo, file-by-file, for: the 7 agents, statusline.sh, workflows/triage-exec.js,
-# triage.md. Prints one of `same` / `MISSING (not installed)` / `FORKED` per
+# repo, file-by-file, for: the 7 agents, statusline.sh, workflows/triage-exec.js
+# triage-compare.js and triage-parity.js, the scripts (incl. ext-run.sh, patch-check.sh, stage-worktree.sh,
+# parity-suite.sh and parity-cost.sh), config/tiers.json (installed as
+# scripts/triage-tiers.json), triage.md. Prints one of `same` / `MISSING (not installed)` / `FORKED` per
 # file (or `forked (expected)` for files listed in .driftignore).
 #
 # Exit non-zero only on UNEXPECTED drift (FORKED on a file not in
@@ -60,10 +62,18 @@ done
 
 check_file "statusline.sh" "$CLAUDE_DIR/statusline.sh"
 check_file "workflows/triage-exec.js" "$CLAUDE_DIR/workflows/triage-exec.js"
+check_file "workflows/triage-compare.js" "$CLAUDE_DIR/workflows/triage-compare.js"
+check_file "workflows/triage-parity.js" "$CLAUDE_DIR/workflows/triage-parity.js"
 check_file "scripts/triage-usage.sh" "$CLAUDE_DIR/scripts/triage-usage.sh"
 check_file "scripts/triage-stats.sh" "$CLAUDE_DIR/scripts/triage-stats.sh"
 check_file "scripts/triage-cache-segment.sh" "$CLAUDE_DIR/scripts/triage-cache-segment.sh"
-check_file "scripts/agy-run.sh" "$CLAUDE_DIR/scripts/agy-run.sh"
+check_file "scripts/ext-run.sh" "$CLAUDE_DIR/scripts/ext-run.sh"
+check_file "scripts/patch-check.sh" "$CLAUDE_DIR/scripts/patch-check.sh"
+check_file "scripts/stage-worktree.sh" "$CLAUDE_DIR/scripts/stage-worktree.sh"
+check_file "scripts/parity-suite.sh" "$CLAUDE_DIR/scripts/parity-suite.sh"
+check_file "scripts/parity-cost.sh" "$CLAUDE_DIR/scripts/parity-cost.sh"
+check_file "scripts/triage-tiers.sh" "$CLAUDE_DIR/scripts/triage-tiers.sh"
+check_file "config/tiers.json" "$CLAUDE_DIR/scripts/triage-tiers.json"
 check_file "triage.md" "$CLAUDE_DIR/triage.md"
 
 # Warn-only: a forced subagent model silently collapses every tier onto one model, so

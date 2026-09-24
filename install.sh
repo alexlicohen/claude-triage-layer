@@ -5,11 +5,15 @@
 # Flags:
 #   --dry-run     print the full mutation plan, write NOTHING.
 #   --files-only  copy/chmod the installed FILES only (agents, statusline.sh,
-#                 workflows/triage-exec.js, scripts/triage-usage.sh, triage.md).
+#                 workflows/triage-exec.js + triage-compare.js + triage-parity.js, scripts/*, the
+#                 tiers file as scripts/triage-tiers.json, triage.md).
 #                 Skips CLAUDE.md, settings.json, and permissions entirely.
-#                 Files listed in .driftignore (deliberate personal forks, e.g.
-#                 triage.md) are skipped rather than clobbered. This is the
-#                 "make sync" primitive.
+#                 This is the "make sync" primitive.
+#
+# Files listed in .driftignore (deliberate personal forks, e.g. triage.md) are
+# skipped rather than clobbered in EVERY mode — bare install, --files-only and
+# --dry-run alike — whenever the installed copy already exists. Only a first
+# install (no copy there yet) writes them.
 #
 # This installer is deliberately NARROW about settings.json: it never writes
 # `model`, `effortLevel`, or `statusLine`. Those are your session preferences,
@@ -127,7 +131,7 @@ check_force_override() {
 check_force_override
 
 # Files where a live ~/.claude fork is EXPECTED (config-as-data, shared with drift.sh) —
-# --files-only skips these instead of clobbering a deliberate personal fork.
+# every mode skips an existing copy instead of clobbering a deliberate personal fork.
 is_ignored() { # $1 = repo-relative path
   [ -f "$DRIFTIGNORE" ] || return 1
   grep -vE '^\s*#|^\s*$' "$DRIFTIGNORE" | grep -qxF "$1"
@@ -169,7 +173,10 @@ install_file() {
   rel="$1"
   dst="$2"
   mode="${3:-}"
-  if [ "$FILES_ONLY" -eq 1 ] && is_ignored "$rel"; then
+  # An expected fork is never overwritten, in any mode (a bare install used to
+  # clobber it, keeping only a .bak-triage copy). A missing target is a first
+  # install, which does get the repo copy.
+  if is_ignored "$rel" && [ -e "$dst" ]; then
     echo "  skipped (expected fork): $rel"
     return
   fi
@@ -231,6 +238,38 @@ retire_triage_run() {
   fi
 }
 
+# --- retiring scripts/agy-run.sh (renamed to ext-run.sh in Wave 12) ----------
+# ext-run.sh is the single owner of every external-CLI call now. A leftover
+# agy-run.sh would be a second, stale owner with hard-coded model ids and none of
+# the per-vendor deny rules, so it is removed (the layer shipped it; it was never
+# a place for local edits).
+retire_agy_run() {
+  old="$CLAUDE_DIR/scripts/agy-run.sh"
+  [ -f "$old" ] || return 0
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "  remove (renamed to scripts/ext-run.sh): $old"
+  else
+    rm -f "$old"
+    echo "  removed legacy script: $old (renamed to scripts/ext-run.sh)"
+  fi
+}
+
+# --- retiring agents/triage-overflow.md (renamed to triage-external in Wave 12) ---
+# triage-external is the external build worker for every vendor now. A leftover
+# triage-overflow.md would be an eighth, stale agent that knows only agy and none of
+# the VENDOR/LEVEL/EFFORT header, so it is removed (the layer shipped it; it was never
+# a place for local edits). Its Agent(triage-overflow) allow rule goes in step 3b.
+retire_overflow_agent() {
+  old="$CLAUDE_DIR/agents/triage-overflow.md"
+  [ -f "$old" ] || return 0
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "  remove (renamed to agents/triage-external.md): $old"
+  else
+    rm -f "$old"
+    echo "  removed legacy agent: $old (renamed to agents/triage-external.md)"
+  fi
+}
+
 # =============================================================================
 # 1. Installed files (agents, statusline, /triage-exec workflow, usage script,
 #    triage.md rubric) — the only step --files-only performs.
@@ -250,11 +289,21 @@ done
 install_file "triage.md" "$CLAUDE_DIR/triage.md"
 install_file "statusline.sh" "$CLAUDE_DIR/statusline.sh" x
 install_file "workflows/triage-exec.js" "$CLAUDE_DIR/workflows/triage-exec.js"
+install_file "workflows/triage-compare.js" "$CLAUDE_DIR/workflows/triage-compare.js"
+install_file "workflows/triage-parity.js" "$CLAUDE_DIR/workflows/triage-parity.js"
 install_file "scripts/triage-usage.sh" "$CLAUDE_DIR/scripts/triage-usage.sh" x
 install_file "scripts/triage-stats.sh" "$CLAUDE_DIR/scripts/triage-stats.sh" x
 install_file "scripts/triage-cache-segment.sh" "$CLAUDE_DIR/scripts/triage-cache-segment.sh" x
-install_file "scripts/agy-run.sh" "$CLAUDE_DIR/scripts/agy-run.sh" x
+install_file "scripts/ext-run.sh" "$CLAUDE_DIR/scripts/ext-run.sh" x
+install_file "scripts/patch-check.sh" "$CLAUDE_DIR/scripts/patch-check.sh" x
+install_file "scripts/stage-worktree.sh" "$CLAUDE_DIR/scripts/stage-worktree.sh" x
+install_file "scripts/parity-suite.sh" "$CLAUDE_DIR/scripts/parity-suite.sh" x
+install_file "scripts/parity-cost.sh" "$CLAUDE_DIR/scripts/parity-cost.sh" x
+install_file "scripts/triage-tiers.sh" "$CLAUDE_DIR/scripts/triage-tiers.sh" x
+install_file "config/tiers.json" "$CLAUDE_DIR/scripts/triage-tiers.json"
 retire_triage_run
+retire_agy_run
+retire_overflow_agent
 
 if [ "$FILES_ONLY" -eq 1 ]; then
   if [ "$DRY_RUN" -eq 0 ]; then
@@ -314,7 +363,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
     echo "  subagentPromptCacheTtl: already set to $cur_ttl — left as is"
   fi
 
-  for w in triage-quick-task triage-builder triage-deep-reasoner triage-reviewer triage-cross-reviewer triage-overflow; do
+  for w in triage-quick-task triage-builder triage-deep-reasoner triage-reviewer triage-cross-reviewer triage-external; do
     rule="Agent($w)"
     if printf '%s' "$CUR_SETTINGS_JSON" | jq -e --arg r "$rule" '.permissions.allow // [] | index($r)' >/dev/null 2>&1; then
       echo "  permissions.allow: already present: $rule"
@@ -322,6 +371,9 @@ if [ "$DRY_RUN" -eq 1 ]; then
       echo "  permissions.allow: would add: $rule"
     fi
   done
+  if printf '%s' "$CUR_SETTINGS_JSON" | jq -e '.permissions.allow // [] | index("Agent(triage-overflow)")' >/dev/null 2>&1; then
+    echo "  permissions.allow: would remove legacy: Agent(triage-overflow) (renamed to triage-external)"
+  fi
   fable_rule="Agent(triage-fable-architect)"
   if printf '%s' "$CUR_SETTINGS_JSON" | jq -e --arg r "$fable_rule" '.permissions.ask // [] | index($r)' >/dev/null 2>&1; then
     echo "  permissions.ask: already present: $fable_rule"
@@ -364,14 +416,17 @@ fi
 #       - `ask` before any Fable spawn → confirms the costly tier (the ⚠ rule, enforced)
 #       - `allow` the worker spawns    → fan-out never prompts (a worker's OWN Bash/Edit
 #                                         calls stay gated by your normal permissions)
+#     The pre-Wave-12 Agent(triage-overflow) allow rule is removed: that agent is now
+#     triage-external, and a rule for an agent that no longer exists is only noise.
 #     Gate by agent TYPE, not `model:` — `Agent(type)` enforcement for named subagent
 #     spawns landed in Claude Code 2.1.186; matching a frontmatter-set `model:` is
 #     unverified. Switch the `ask` to `deny` below to hard-block Fable instead.
 tmp=$(mktemp)
 jq '
-  ["Agent(triage-quick-task)","Agent(triage-builder)","Agent(triage-deep-reasoner)","Agent(triage-reviewer)","Agent(triage-cross-reviewer)","Agent(triage-overflow)"] as $workers
+  ["Agent(triage-quick-task)","Agent(triage-builder)","Agent(triage-deep-reasoner)","Agent(triage-reviewer)","Agent(triage-cross-reviewer)","Agent(triage-external)"] as $workers
+  | ["Agent(triage-overflow)"] as $legacy_workers
   | ["Agent(triage-fable-architect)"] as $fable
-  | .permissions.allow = ((.permissions.allow // []) + ($workers - (.permissions.allow // [])))
+  | .permissions.allow = (((.permissions.allow // []) - $legacy_workers) + ($workers - (.permissions.allow // [])))
   | .permissions.ask   = ((.permissions.ask   // []) + ($fable   - (.permissions.ask   // [])))
 ' "$SETTINGS" > "$tmp" && apply_settings "$tmp"
 

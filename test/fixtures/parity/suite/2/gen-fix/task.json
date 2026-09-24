@@ -1,0 +1,14 @@
+{
+  "id": "gen-fix",
+  "band": 2,
+  "kind": "build",
+  "source": {"type": "generator", "script": "gen.sh"},
+  "brief": "greet.sh misspells its greeting. Make it print hello.",
+  "files": ["greet.sh"],
+  "acceptance": "sh greet.sh prints hello",
+  "checks": ["sh test_greet.sh"],
+  "overlay": "hidden",
+  "solution": "solution.patch",
+  "grading": "check",
+  "vendors": ["claude", "codex"]
+}
