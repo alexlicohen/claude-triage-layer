@@ -1,16 +1,17 @@
 {
-  "asOf": "2026-09-23",
+  "asOf": "2026-09-24",
   "parity": [
-    {"date": "2026-09-23", "by": "alex", "note": "gpt-6-astra ~ Fable 5.1; Opus 5.5 top tier"}
+    {"date": "2026-09-23", "by": "alex", "note": "gpt-6-astra ~ Fable 5.1; Opus 5.5 top tier"},
+    {"date": "2026-09-24", "by": "parity-run", "note": "17-task suite, bands 1-4, n=1: luna-low > haiku-low; sol-medium 14/14 graded. Suite saturates above quick tier: no deep/top conclusions (ledger ~/.agents/evidence/vendor-parity.jsonl)"}
   ],
   "levels": {
     "quick": {
       "claude": {"agent": "triage-quick-task", "model": "haiku", "effort": "low"},
-      "codex": {"model": "gpt-6-luna", "effort": "low", "basis": "guess"}
+      "codex": {"model": "gpt-6-luna", "effort": "low", "basis": "parity-run 2026-09-24"}
     },
     "builder": {
       "claude": {"agent": "triage-builder", "model": "sonnet", "effort": "medium"},
-      "codex": {"model": "gpt-6-sol", "effort": "medium", "basis": "guess"},
+      "codex": {"model": "gpt-6-sol", "effort": "medium", "basis": "parity-run 2026-09-24"},
       "agy": {"model": "gemini-3.1-pro-high", "basis": "incumbent 2026-09-15"}
     },
     "deep": {
