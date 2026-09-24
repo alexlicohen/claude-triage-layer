@@ -147,7 +147,7 @@ fi
 # The workflows cannot read tiers.json at run time (the DSL has no fs), so each
 # carries its own level -> Claude agent map. This keeps them from drifting apart.
 if command -v node >/dev/null 2>&1; then
-  for WF in workflows/triage-exec.js workflows/triage-compare.js; do
+  for WF in workflows/triage-exec.js workflows/triage-compare.js workflows/triage-parity.js; do
   if LEVEL_OUT=$(node -e '
     const fs = require("fs");
     const file = process.argv[1];

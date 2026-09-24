@@ -1,7 +1,7 @@
 export const meta = {
   name: 'triage-compare',
   description: 'Implementation bake-off: run one brief on several candidates (Claude levels, codex, agy), each in its own staged worktree outside the repo, then grade every worktree diff independently with patch-check.sh. Never applies a patch; the real repo is never a candidate workdir.',
-  whenToUse: 'Compare vendors/levels/models on the SAME well-specified task: /triage-compare with args = {repo, base?, brief, files, acceptance, checks:[cmd...], outDir, overlay?, candidates:[{vendor:claude|codex|agy, level:quick|builder|deep|top, model?, effort?, label?}]}. repo is any absolute git repo path (not necessarily the session repo) and may be dirty: base (default HEAD) is resolved to ONE sha up front and each candidate works in its own detached worktree at that sha under <outDir>/stage (scripts/stage-worktree.sh), never in repo. outDir/overlay must be OUTSIDE repo and <outDir>/stage must not already exist. External (non-claude) candidates require args.files. Candidates run one at a time; the grade is scripts/patch-check.sh on each worktree diff at the sha (plus the hidden overlay), never the candidate self-report; a leakcheck then proves repo did not change (leak:true => every candidate invalid). Returns sha/leak/baseMoved and per-candidate status/applies/rc/diffstat/patch/tokens; the orchestrator picks and applies.',
+  whenToUse: 'Compare vendors/levels/models on the SAME well-specified task: /triage-compare with args = {repo, base?, brief, files, acceptance, checks:[cmd...], outDir, overlay?, candidates:[{vendor:claude|codex|agy, level:quick|builder|deep|top, model?, effort?, label?}]}. repo is any absolute git repo path (not necessarily the session repo) and may be dirty: base (default HEAD) is resolved to ONE sha up front and each candidate works in its own detached worktree at that sha under <outDir>/stage (scripts/stage-worktree.sh), never in repo. outDir/overlay must be OUTSIDE repo and <outDir>/stage must not already exist. External (non-claude) candidates require args.files. Candidates run one at a time (parallel:true runs them concurrently; Claude outTokens is then null); the grade is scripts/patch-check.sh on each worktree diff at the sha (plus the hidden overlay), never the candidate self-report; a leakcheck then proves repo did not change (leak:true => every candidate invalid). Returns sha/leak/baseMoved and per-candidate status/applies/rc/diffstat/patch/tokens; the orchestrator picks and applies.',
   phases: [
     { title: 'Stage' },
     { title: 'Candidates' },
@@ -29,7 +29,8 @@ const USAGE = 'Expected args = {\n' +
   '  checks: string[]            // at least one; the grade\n' +
   '  outDir: "/abs/dir"          // must be outside repo; worktrees are staged in <outDir>/stage (must not exist yet), patches land at <outDir>/<label>.patch\n' +
   '  overlay?: "/abs/dir"        // hidden tests copied in before the check; never shown to candidates; must be outside repo\n' +
-  `  candidates: [{ vendor: ${VENDORS.join('|')}, level: ${LEVELS.join('|')}, model?, effort?: ${EFFORTS.join('|')}, label? }]\n}`
+  `  candidates: [{ vendor: ${VENDORS.join('|')}, level: ${LEVELS.join('|')}, model?, effort?: ${EFFORTS.join('|')}, label? }]\n` +
+  '  parallel?: false            // true = candidates run concurrently (Claude outTokens then null)\n}'
 
 function bad(msg) {
   throw new Error(`triage-compare: ${msg}\n${USAGE}`)
@@ -67,6 +68,8 @@ if (args.overlay != null && isAbsPath(args.repo) && isAbsPath(args.overlay)) {
   if (overlayC === repoC || overlayC.startsWith(`${repoC}/`)) bad('args.overlay must not be inside args.repo — an overlay under the repo leaks the hidden tests into candidate worktrees.')
 }
 if (!Array.isArray(args.candidates) || args.candidates.length === 0) bad('args.candidates must be a non-empty array.')
+if (args.parallel != null && typeof args.parallel !== 'boolean') bad(`args.parallel must be true or false (got ${JSON.stringify(args.parallel)}).`)
+const runParallel = args.parallel === true
 
 const repo = args.repo.trim()
 const base = (args.base || 'HEAD').trim()
@@ -204,11 +207,16 @@ const sha = staged.sha.trim()
 const runs = []
 let gr = null
 try {
-  // ─── Candidates: strictly sequential ──────────────────────────────────────
-  // One at a time, so each budget.spent() delta is that candidate's Claude output
-  // tokens and nothing else (the pool is shared across the whole turn).
+  // ─── Candidates: sequential by default, concurrent with parallel:true ──────
+  // Sequential: one at a time, so each budget.spent() delta is that candidate's
+  // Claude output tokens and nothing else (the pool is shared across the whole
+  // turn). parallel:true runs them concurrently — safe, since each already has
+  // its own staged worktree — but then no budget delta can be attributed to one
+  // candidate, so a Claude candidate's outTokens is null (an external one keeps
+  // the vendor's own count from its ext-run line). parity runs attribute Claude
+  // cost afterwards from the transcripts (scripts/parity-cost.sh).
   phase('Candidates')
-  for (const c of candidates) {
+  async function runCandidate(c) {
     const external = c.vendor !== 'claude'
     if (!external && c.level === 'top') log(`⚠ Escalating to Fable: triage-compare candidate ${c.label}`)
     if (external) log(`⚠ External candidate ${c.label}: the workspace leaves this machine for ${c.vendor}.`)
@@ -218,7 +226,7 @@ try {
       ? { phase: 'Candidates', agentType: 'triage-external', label: `candidate:${c.label}` }
       : Object.assign({ phase: 'Candidates', agentType: CLAUDE_AGENT[c.level], label: `candidate:${c.label}` },
           c.model ? { model: c.model } : {}, c.effort ? { effort: c.effort } : {})
-    const before = spentNow()
+    const before = runParallel ? null : spentNow()
     let out = null
     let err = null
     try {
@@ -226,7 +234,7 @@ try {
     } catch (e) {
       err = errText(e)   // e.g. the budget's hard ceiling
     }
-    const after = spentNow()
+    const after = runParallel ? null : spentNow()
     const claudeOut = before != null && after != null ? after - before : null
     const nothing = err != null || producedNothing(out)
     const ext = external && out ? String(out).match(EXT_LINE) : null
@@ -236,14 +244,23 @@ try {
       reason: err ? `spawn failed: ${err}` : out == null ? 'spawn returned nothing' : nothing ? firstLine(out).slice(0, 200) : null,
       selfRc: nothing ? null : selfRcOf(out),
       model: c.model || (ext ? ext[4] : null),
-      // Claude: the output tokens this candidate cost (budget delta). External: the
-      // vendor's own output count from the ext-run line (null when it gave none).
+      // Claude: the output tokens this candidate cost (budget delta; null in
+      // parallel mode). External: the vendor's own output count from the ext-run
+      // line (null when it gave none).
       outTokens: external ? (ext && ext[5] != null ? Number(ext[5]) : null) : claudeOut,
       totalTokens: external && ext ? Number(ext[1]) : null,
       seconds: external && ext ? Number(ext[2]) : null,
     }
     if (!run.available) log(`⚠ ${c.label} unavailable (${run.reason}) — reported, not graded as a fail.`)
-    runs.push(run)
+    return run
+  }
+  if (runParallel) {
+    // parallel() maps a thrown thunk to null; runCandidate never throws, but a
+    // null is still reported as unavailable, never dropped.
+    const got = await parallel(candidates.map(c => () => runCandidate(c)))
+    candidates.forEach((c, i) => runs.push(got[i] || { c, available: false, reason: 'candidate run failed', selfRc: null, model: c.model, outTokens: null, totalTokens: null, seconds: null }))
+  } else {
+    for (const c of candidates) runs.push(await runCandidate(c))
   }
 
   // ─── Grade: ONE spawn — worktree diffs, patch-check, leakcheck ────────────

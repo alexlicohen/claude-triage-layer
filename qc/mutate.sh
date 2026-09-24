@@ -49,7 +49,7 @@ done
 
 # 35 (the no-PATCH-line guard) was retired with that rule: staged worktrees made it
 # moot — the grade is now the worktree diff, never a patch file a candidate wrote.
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 36 37 38 39 40"
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 36 37 38 39 40 41 42 43 44 45"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -113,6 +113,11 @@ mut_file() {
     38) echo "workflows/triage-compare.js" ;;
     39) echo "scripts/stage-worktree.sh" ;;
     40) echo "scripts/ext-run.sh" ;;
+    41) echo "workflows/triage-parity.js" ;;
+    42) echo "workflows/triage-parity.js" ;;
+    43) echo "workflows/triage-parity.js" ;;
+    44) echo "scripts/parity-suite.sh" ;;
+    45) echo "scripts/parity-suite.sh" ;;
     *) echo "" ;;
   esac
 }
@@ -158,14 +163,20 @@ mut_desc() {
     38) echo "triage-compare.js: the leakcheck result is ignored (a candidate that wrote into the real repo is graded as if nothing happened)" ;;
     39) echo "stage-worktree.sh: diff stages only tracked files (git add -u), so new/untracked files a candidate created are silently dropped from its patch" ;;
     40) echo "ext-run.sh: drop the git-common-dir deny check (a linked worktree created outside a deny-listed repo, or an --input file in one, bypasses clip-creator and the .agy-deny/.codex-deny markers)" ;;
+    41) echo "triage-parity.js: an unavailable/denied/invalid/unresolved run is tallied as a FAIL (a flaky vendor or a deny marker drops a candidate from the climb)" ;;
+    42) echo "triage-parity.js: the stop rule ignores 'consecutive' (a cleared band no longer resets the failed-band streak, so fail/pass/fail stops a candidate)" ;;
+    43) echo "triage-parity.js: the proposal ignores the cheapness order (takes the top-ranked clearing candidate instead of the cheapest)" ;;
+    44) echo "parity-suite.sh: materialize skips deny-marker propagation (a clone of a .agy-deny/.codex-deny source is handed to that vendor, because ext-run no longer sees the source)" ;;
+    45) echo "parity-suite.sh: materialize keeps source history/refs reachable (the post-commit ref-deletion loop is skipped, so a generator source's own commits — and any other branch — stay in the materialized repo, defeating the no-history guarantee)" ;;
     *) echo "" ;;
   esac
 }
 
 # Which suite exercises this mutation's file: "roundtrip" (test/roundtrip.sh),
 # "scenarios" (test/workflow-scenarios.mjs), "extrun" (test/ext-run.sh),
-# "compare" (test/compare-scenarios.mjs), "patchcheck" (test/patch-check.sh) or
-# "stagewt" (test/stage-worktree.sh).
+# "compare" (test/compare-scenarios.mjs), "patchcheck" (test/patch-check.sh),
+# "stagewt" (test/stage-worktree.sh), "parity" (test/parity-scenarios.mjs) or
+# "paritysuite" (test/parity-suite.sh).
 mut_suite() {
   case "$1" in
     1|2|3|4|5|6|10|12|18|19|20|21|33) echo "roundtrip" ;;
@@ -174,6 +185,8 @@ mut_suite() {
     31|34|36|37|38) echo "compare" ;;
     32) echo "patchcheck" ;;
     39) echo "stagewt" ;;
+    41|42|43) echo "parity" ;;
+    44|45) echo "paritysuite" ;;
     *) echo "" ;;
   esac
 }
@@ -188,6 +201,8 @@ suite_file() {
     compare) echo "test/compare-scenarios.mjs" ;;
     patchcheck) echo "test/patch-check.sh" ;;
     stagewt) echo "test/stage-worktree.sh" ;;
+    parity) echo "test/parity-scenarios.mjs" ;;
+    paritysuite) echo "test/parity-suite.sh" ;;
     *) echo "" ;;
   esac
 }
@@ -582,6 +597,48 @@ MUT39
 MUT40
       mut_replace_block "$target" '  if [ -n "$main" ] && [ "$main" != "$p" ]; then deny_check_path "$main"' 1 "$rep"
       ;;
+    41)
+      # triage-parity.js: every non-pass/fail status except skipped is tallied as
+      # a fail, so unavailable/denied/invalid/unresolved runs push a candidate
+      # towards the stop rule.
+      cat > "$rep" <<'MUT41'
+        else if (r.status !== 'skipped') pb.fail++ // MUTATED: unavailable counted as fail
+MUT41
+      mut_replace_block "$target" "        else if (r.status !== 'skipped') pb.other++" 1 "$rep"
+      ;;
+    42)
+      # triage-parity.js: a cleared band no longer resets the failed-band streak,
+      # so failures need not be consecutive to stop a candidate.
+      cat > "$rep" <<'MUT42'
+    if (pb.rate >= passRate) { s.highest = Math.max(s.highest, b); continue } // MUTATED: streak not reset
+MUT42
+      mut_replace_block "$target" '    if (pb.rate >= passRate) { s.streak = 0; s.highest = Math.max(s.highest, b); continue }' 1 "$rep"
+      ;;
+    43)
+      # triage-parity.js: the proposal takes the first eligible candidate in
+      # ranking order (strongest first) instead of the cheapest.
+      cat > "$rep" <<'MUT43'
+    const pick = eligible[0] // MUTATED: cheapness order ignored
+MUT43
+      mut_replace_block "$target" '    const pick = eligible.slice().sort((x, y) => cheaper(x.c, y.c))[0]' 1 "$rep"
+      ;;
+    44)
+      # parity-suite.sh: the 11-line propagation block (comment + loop) is gone,
+      # so no .<vendor>-deny marker is written next to the clone.
+      cat > "$rep" <<'MUT44'
+  : # MUTATED: deny markers not propagated
+MUT44
+      mut_replace_block "$target" '  # Propagate: any deny status of the source becomes a marker next to the clone.' 11 "$rep"
+      ;;
+    45)
+      # parity-suite.sh: the ref-deletion loop after the orphan commit is
+      # skipped, so a generator source's own branch (and any other ref) stays
+      # in the materialized repo — its history is no longer discarded.
+      cat > "$rep" <<'MUT45'
+  : # MUTATED: source history/refs kept
+MUT45
+      mut_replace_block "$target" '  for r in $(git -C "$MAT_REPO" for-each-ref --format='"'"'%(refname)'"'"' refs/heads refs/tags refs/remotes); do' 3 "$rep"
+      ;;
     *)
       return 1
       ;;
@@ -637,6 +694,11 @@ verify_mutation() {
     38) grep -qF 'MUTATED: leakcheck result ignored' "$target" && ! grep -qF 'const leakInfo = leakState(gr && gr.leakcheck)' "$target" ;;
     39) grep -qF 'MUTATED: untracked files omitted' "$target" && ! grep -qF 'git -C "$WT" add -A' "$target" ;;
     40) grep -qF 'MUTATED: common-dir deny check dropped' "$target" && ! grep -qF 'deny_check_path "$main"' "$target" ;;
+    41) grep -qF 'MUTATED: unavailable counted as fail' "$target" && ! grep -qF "pb.other++" "$target" ;;
+    42) grep -qF 'MUTATED: streak not reset' "$target" && ! grep -qF 's.streak = 0' "$target" ;;
+    43) grep -qF 'MUTATED: cheapness order ignored' "$target" && ! grep -qF 'eligible.slice().sort((x, y) => cheaper(x.c, y.c))' "$target" ;;
+    44) grep -qF 'MUTATED: deny markers not propagated' "$target" && ! grep -qF 'propagated by parity-suite.sh materialize' "$target" && grep -qF '  DENIED_AGY=false DENIED_CODEX=false' "$target" ;;
+    45) grep -qF 'MUTATED: source history/refs kept' "$target" && ! grep -qF 'update-ref -d "$r"' "$target" ;;
     *) return 1 ;;
   esac
 }
@@ -673,6 +735,8 @@ run_suite() { # $1 = repo copy dir, $2 = suite name (see suite_file) -> exit cod
     compare) ( cd "$copy" && node test/compare-scenarios.mjs ) >"$WORK_ROOT/last-suite.log" 2>&1 ;;
     patchcheck) ( cd "$copy" && bash test/patch-check.sh ) >"$WORK_ROOT/last-suite.log" 2>&1 ;;
     stagewt) ( cd "$copy" && bash test/stage-worktree.sh ) >"$WORK_ROOT/last-suite.log" 2>&1 ;;
+    parity) ( cd "$copy" && node test/parity-scenarios.mjs ) >"$WORK_ROOT/last-suite.log" 2>&1 ;;
+    paritysuite) ( cd "$copy" && bash test/parity-suite.sh ) >"$WORK_ROOT/last-suite.log" 2>&1 ;;
     *) return 1 ;;
   esac
 }
@@ -694,6 +758,8 @@ BASELINE_EXTRUN_OK=1
 BASELINE_COMPARE_OK=1
 BASELINE_PATCHCHECK_OK=1
 BASELINE_STAGEWT_OK=1
+BASELINE_PARITY_OK=1
+BASELINE_PARITYSUITE_OK=1
 if run_suite "$BASELINE_DIR" roundtrip; then
   BASELINE_ROUNDTRIP_OK=0
 else
@@ -726,6 +792,16 @@ if run_suite "$BASELINE_DIR" stagewt; then
   BASELINE_STAGEWT_OK=0
 else
   echo "  ⚠ baseline $(suite_file stagewt) is already RED on unmutated code — mutations using it will be reported ERROR (baseline-red), not KILLED/SURVIVOR."
+fi
+if run_suite "$BASELINE_DIR" parity; then
+  BASELINE_PARITY_OK=0
+else
+  echo "  ⚠ baseline $(suite_file parity) is already RED on unmutated code — mutations using it will be reported ERROR (baseline-red), not KILLED/SURVIVOR."
+fi
+if run_suite "$BASELINE_DIR" paritysuite; then
+  BASELINE_PARITYSUITE_OK=0
+else
+  echo "  ⚠ baseline $(suite_file paritysuite) is already RED on unmutated code — mutations using it will be reported ERROR (baseline-red), not KILLED/SURVIVOR."
 fi
 echo ""
 
@@ -760,6 +836,8 @@ for id in $RUN_IDS; do
     compare) baseline_ok=$BASELINE_COMPARE_OK ;;
     patchcheck) baseline_ok=$BASELINE_PATCHCHECK_OK ;;
     stagewt) baseline_ok=$BASELINE_STAGEWT_OK ;;
+    parity) baseline_ok=$BASELINE_PARITY_OK ;;
+    paritysuite) baseline_ok=$BASELINE_PARITYSUITE_OK ;;
     *) baseline_ok=1 ;;
   esac
 

@@ -1,0 +1,8 @@
+diff --git a/greet.sh b/greet.sh
+index adcdd56..21ba682 100644
+--- a/greet.sh
++++ b/greet.sh
+@@ -1,2 +1,2 @@
+ #!/bin/sh
+-echo helo
++echo hello

@@ -11,6 +11,8 @@ test:
 	./test/stage-worktree.sh
 	node test/workflow-scenarios.mjs
 	node test/compare-scenarios.mjs
+	./test/parity-suite.sh
+	node test/parity-scenarios.mjs
 
 drift:
 	./drift.sh
@@ -28,7 +30,7 @@ tiers:
 	./scripts/tiers-sync.sh
 
 # Mutation gate: prove the test suite has teeth (killed/survivor/error per
-# mutation). Strict since all 39 mutations have covering tests: any survivor
+# mutation). Strict since all 45 mutations have covering tests: any survivor
 # fails the gate.
 mutate:
 	./qc/mutate.sh --strict

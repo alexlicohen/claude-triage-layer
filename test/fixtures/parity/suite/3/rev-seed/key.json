@@ -1,0 +1,5 @@
+[
+  {"file": "app.py", "line": 3, "id": "S1", "desc": "loop skips the first element"},
+  {"file": "app.py", "line": 9, "id": "S2", "desc": "index out of range: xs[len(xs)]"},
+  {"file": "app.py", "line": 13, "id": "S3", "desc": "is_even tests for odd"}
+]

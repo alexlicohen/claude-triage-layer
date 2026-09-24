@@ -140,8 +140,44 @@ fix — hash TBD (branch `wave12-codex`, in progress at time of writing).
   result ignored, +#39 `stage-worktree.sh diff` dropping new files, +#40
   `ext-run.sh` git-common-dir deny check dropped — a linked worktree outside a
   deny-listed repo bypassed the deny-list).
-- **Deferred**: `workflows/triage-parity.js` (the ranking/task-suite research
-  workflow, §5 of the plan) and its `parity/tasks/` suite — not started; a live
+- **Parity machinery (run D, §5; uncommitted at time of writing — hash TBD).**
+  The generic half only: the task suite is private and lives outside this repo
+  (`~/.agents/parity/tasks`, a later run); fixtures here are three tiny
+  synthetic tasks. `scripts/parity-suite.sh` — `list` (the task format, single
+  owner of its validation), `materialize` (clone `--local` or generator, setup
+  as one fixed-identity commit => deterministic sha, origin removed, source
+  never written; refuses `clip-creator`; **propagates** the source's
+  `.agy-deny`/`.codex-deny`/`*_DENY_REPOS` status as `<out>/.<vendor>-deny`,
+  because a clone's git-common-dir hides the source from ext-run),
+  `verify-task` (base must fail, `solution.patch` must pass, via
+  `patch-check.sh`), `score-review` (closest-first seed matching, |Δline| ≤ 3).
+  `scripts/parity-cost.sh` — Claude usage per agent label / model / parity
+  candidate from a workflow transcript dir (message ids deduped, max usage).
+  `workflows/triage-compare.js` gains `parallel:true` (Claude `outTokens` null
+  in that mode). New `workflows/triage-parity.js`: loader → per band, tasks in
+  parallel → materialize → nested `triage-compare` (build) / read-only
+  reviewers + `score-review` (review) / two blind judges on anonymized patches
+  (rubric; > 0.3 apart = unresolved, flagged); adaptive stop after N
+  consecutive failed bands; `unavailable`/`denied`/`invalid`/`unresolved`
+  never count; a compare LEAK aborts; returns ranking, plateaus, a proposed
+  tiers change (cheapest clearing candidate at ≥ the incumbent's rate), flags,
+  a codex+agy desk-research leg (signal only) and a markdown table — never
+  writes tiers.json. Checks: roundtrip 149 → 153, compare-scenarios 101 → 109,
+  new parity-suite 69, new parity-scenarios 101 (all suites: 881); mutations
+  39 → 45 (#41 unavailable tallied as fail, #42 stop rule not consecutive,
+  #43 proposal ignores cheapness, #44 materialize skips deny propagation, #45
+  materialize keeps source history/refs). `materialize` no longer clones: it
+  `git init`s + `git archive`s the base tree (or discards a generator's own
+  history) and commits it as ONE orphan root commit, so a reviewer's repo
+  carries no source history, refs or unreachable objects to read (the seeded
+  defect / fix could otherwise leak via `git log`/`git show`); the review-task
+  reviewer prompt no longer suggests any git-history command.
+  Known limit: external review candidates and the codex judge run on
+  `triage-cross-reviewer`'s review-mode model (it passes no model/effort
+  override), so a codex reviewer is ranked as `modes.codex.review`, not as its
+  own model — flagged in every run's result.
+- **Deferred**: the private parity task suite (`~/.agents/parity/tasks`) and the
+  first live parity run; a live
   end-to-end `triage-exec` run with a real codex builder subtask (today's
   coverage is `test/workflow-scenarios.mjs` mocks only); the reverse direction
   (Codex orchestrating, dispatching to Claude) — explicitly out of scope this

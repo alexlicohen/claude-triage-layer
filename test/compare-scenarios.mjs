@@ -472,6 +472,41 @@ const repoAsWorkdir = p => /(^|\s)cd\s+'?\/r\/repo'?(\s|$|\/)/.test(p) || /WORKD
   chk('C16: …the ⚠ names the stage dir and the cleanup command', logs.some(l => l.startsWith(`⚠ Staged worktrees may remain under ${STAGE}`) && l.includes('stage-worktree.sh cleanup')))
 }
 
+// ---- C17: parallel:true — concurrent candidates, same grade, no budget deltas --
+{
+  const { result, calls, maxInflight } = await run(
+    A({ parallel: true, candidates: [
+      { vendor: 'claude', level: 'builder', label: 'c1' },
+      { vendor: 'codex', level: 'deep', label: 'x1' },
+      { vendor: 'claude', level: 'deep', label: 'c2' },
+    ] }),
+    {
+      'candidate:c1': ['done\nCHECK rc=0\nDONE'],
+      'candidate:x1': [EXT_OK('codex', 'gpt-6-astra', 900, 7, 321)],
+      'candidate:c2': [new Error('budget ceiling')],
+      'grade:': [FIN({ c1: [true, 0], x1: [true, 1] })],
+    },
+    { spend: { 'candidate:c1': 1234, 'candidate:x1': 50, 'candidate:c2': 777 } })
+  const labels = calls.map(c => c.label)
+  chk('C17: parallel:true runs the candidates concurrently (all three in flight at once)', maxInflight === 3)
+  chk('C17: …still ONE stage spawn before them and ONE grade spawn after all of them, then cleanup',
+    labels[0] === 'stage:create' && labels.slice(1, 4).sort().join() === 'candidate:c1,candidate:c2,candidate:x1' && labels.slice(4).join() === 'grade:finalize,cleanup:stage')
+  chk('C17: results keep plan order and grades come from patch-check (pass / fail / unavailable)',
+    result.candidates.map(c => `${c.label}:${c.status}`).join() === 'c1:pass,x1:fail,c2:unavailable')
+  chk('C17: a Claude candidate\'s outTokens is null in parallel mode (budget deltas cannot be attributed)', byLabel(result, 'c1').outTokens === null)
+  chk('C17: an external candidate keeps the vendor\'s own out/total/seconds from its ext-run line',
+    byLabel(result, 'x1').outTokens === 321 && byLabel(result, 'x1').totalTokens === 900 && byLabel(result, 'x1').seconds === 7)
+  chk('C17: each candidate still gets its own staged worktree', new Set(cands(calls).map(c => (c.prompt.match(/wt-\d+/) || [])[0])).size === 3)
+}
+{
+  const r = await throws(A({ parallel: 'yes', candidates: [{ vendor: 'claude', level: 'builder' }] }))
+  chk('C17: a non-boolean parallel throws before any spawn', r.threw && r.calls.length === 0 && /args\.parallel/.test(r.message))
+  const { maxInflight, result } = await run(A({ parallel: false, candidates: [{ vendor: 'claude', level: 'builder', label: 'a' }, { vendor: 'claude', level: 'deep', label: 'b' }] }),
+    { 'candidate:': ['done'], 'grade:': [FIN({ a: [true, 0], b: [true, 0] })] }, { spend: { 'candidate:a': 10, 'candidate:b': 20 } })
+  chk('C17: parallel:false (and the default) stays strictly sequential with per-candidate budget deltas',
+    maxInflight === 1 && byLabel(result, 'a').outTokens === 10 && byLabel(result, 'b').outTokens === 20)
+}
+
 console.log('')
 console.log(`RESULT: ${pass} passed, ${fail} failed`)
 process.exit(fail > 0 ? 1 : 0)

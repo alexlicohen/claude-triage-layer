@@ -5,7 +5,7 @@
 # Flags:
 #   --dry-run     print the full mutation plan, write NOTHING.
 #   --files-only  copy/chmod the installed FILES only (agents, statusline.sh,
-#                 workflows/triage-exec.js + triage-compare.js, scripts/*, the
+#                 workflows/triage-exec.js + triage-compare.js + triage-parity.js, scripts/*, the
 #                 tiers file as scripts/triage-tiers.json, triage.md).
 #                 Skips CLAUDE.md, settings.json, and permissions entirely.
 #                 This is the "make sync" primitive.
@@ -290,12 +290,15 @@ install_file "triage.md" "$CLAUDE_DIR/triage.md"
 install_file "statusline.sh" "$CLAUDE_DIR/statusline.sh" x
 install_file "workflows/triage-exec.js" "$CLAUDE_DIR/workflows/triage-exec.js"
 install_file "workflows/triage-compare.js" "$CLAUDE_DIR/workflows/triage-compare.js"
+install_file "workflows/triage-parity.js" "$CLAUDE_DIR/workflows/triage-parity.js"
 install_file "scripts/triage-usage.sh" "$CLAUDE_DIR/scripts/triage-usage.sh" x
 install_file "scripts/triage-stats.sh" "$CLAUDE_DIR/scripts/triage-stats.sh" x
 install_file "scripts/triage-cache-segment.sh" "$CLAUDE_DIR/scripts/triage-cache-segment.sh" x
 install_file "scripts/ext-run.sh" "$CLAUDE_DIR/scripts/ext-run.sh" x
 install_file "scripts/patch-check.sh" "$CLAUDE_DIR/scripts/patch-check.sh" x
 install_file "scripts/stage-worktree.sh" "$CLAUDE_DIR/scripts/stage-worktree.sh" x
+install_file "scripts/parity-suite.sh" "$CLAUDE_DIR/scripts/parity-suite.sh" x
+install_file "scripts/parity-cost.sh" "$CLAUDE_DIR/scripts/parity-cost.sh" x
 install_file "scripts/triage-tiers.sh" "$CLAUDE_DIR/scripts/triage-tiers.sh" x
 install_file "config/tiers.json" "$CLAUDE_DIR/scripts/triage-tiers.json"
 retire_triage_run

@@ -1,0 +1,12 @@
+{
+  "id": "rev-seed",
+  "band": 3,
+  "kind": "review",
+  "source": {"type": "generator", "script": "gen.sh"},
+  "brief": "Review app.py for correctness bugs. Report each as {file, line, desc}.",
+  "files": ["app.py"],
+  "acceptance": "every real defect reported with its line",
+  "grading": "seeded",
+  "key": "key.json",
+  "vendors": ["claude", "codex"]
+}

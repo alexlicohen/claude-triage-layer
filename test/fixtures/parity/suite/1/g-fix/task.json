@@ -1,0 +1,16 @@
+{
+  "id": "g-fix",
+  "band": 1,
+  "kind": "build",
+  "source": {"type": "git", "repo": "/REPLACED/AT/TEST/TIME", "base": "REPLACED"},
+  "setup": "setup.patch",
+  "brief": "calc.sh should print the sum of its two arguments; it prints the difference. Fix it.",
+  "files": ["calc.sh"],
+  "acceptance": "sh calc.sh 2 3 prints 5",
+  "checks": ["sh test_calc.sh"],
+  "overlay": "hidden/",
+  "solution": "solution.patch",
+  "grading": "check",
+  "vendors": ["claude", "codex", "agy"],
+  "timeoutMin": 1
+}

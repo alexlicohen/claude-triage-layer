@@ -446,3 +446,92 @@ empty diff still checked, diff refusing the main tree and never leaving a stale 
 CLEAN / LEAK (tracked edit, untracked file, content change to an already-dirty file) /
 BASE_MOVED (including committing pre-existing work), cleanup leaving no worktree registered, and
 R's tree, index bytes and HEAD untouched. `qc/mutate.sh` #39 proves the new-file capture has teeth.
+
+## `parity-suite.sh` — the task suite of a parity run
+
+```
+parity-suite.sh list         --suite DIR
+parity-suite.sh materialize  --task DIR --out DIR
+parity-suite.sh verify-task  --task DIR --out DIR
+parity-suite.sh score-review --key FILE --findings FILE
+```
+
+`workflows/triage-parity.js` ranks candidates (vendor × model × effort) on a task suite. The suite
+is private data kept **outside this repo** (planned at `~/.agents/parity/tasks`); this repo only
+ships the machinery and three tiny synthetic fixtures (`test/fixtures/parity/suite`).
+
+**Task format.** `<suite>/<band>/<id>/task.json` (`<band>` is `N` or `bN`, and must equal `band`;
+`<id>` must equal `id`). Every path in it is relative to the task dir and may not leave it.
+
+| Field | Required | Meaning |
+|---|---|---|
+| `id` | yes | file-name-safe, unique in the suite |
+| `band` | yes | 1–4 (B1 mechanical … B4 danger zone / judgment) |
+| `kind` | yes | `build` (implement) or `review` (find seeded defects) |
+| `source` | yes | `{type:"git", repo:"/abs/path", base:"<sha>"}` or `{type:"generator", script:"gen.sh"}` |
+| `setup` | no | a patch applied at base and committed as the task's starting point |
+| `brief`, `acceptance` | yes | what the candidates are told |
+| `files` | yes | non-empty; the files the candidates may touch (build) or review |
+| `checks` | build | shell commands run from the materialized repo root; the grade |
+| `overlay` | no | a dir (e.g. `hidden/`) copied only into GRADING worktrees — hidden tests |
+| `solution` | build, for `verify-task` | the reference fix; never shown to candidates |
+| `grading` | yes | `check` (the checks), `rubric` (checks + two blind judges vs the key), `seeded` (review tasks only) |
+| `key` | rubric/seeded | `key.md`/`key.json` (rubric), `key.json` = `[{file,line,id,desc}]` (seeded) |
+| `vendors` | yes | subset of `claude`, `codex`, `agy` allowed on this task |
+| `timeoutMin` | no | per-check wall clock for `verify-task` (default 10) |
+
+`list` prints every task (task.json + `taskDir`) sorted by band then id; any invalid task, or a
+duplicate id, is exit 2 naming it. `materialize` builds `<out>/repo`: a git source is
+`git clone --local --no-checkout`, detached at `base`, with the origin remote removed (nothing
+can be pushed back); a generator is run as `<taskDir>/gen.sh <out>/repo` and must leave a clean
+repo with at least one commit. `setup.patch` then becomes ONE commit. Identity, dates and git
+config are fixed for every commit it makes (and for a generator's), so the same task always
+gives the same sha. It never writes into the source repo, refuses an `--out` inside the source
+or the task dir, rebuilds an `--out` it made before and refuses any other non-empty one.
+
+**Deny propagation.** A clone's git-common-dir is the clone itself, so `ext-run.sh` — the owner
+of every deny decision — would no longer see the source's `.agy-deny`/`.codex-deny` markers or
+its `AGY_DENY_REPOS`/`CODEX_DENY_REPOS` names. `materialize` therefore refuses (exit 3) any
+source or task path with a `clip-creator` component (`HARD_DENY_REPOS`, kept equal to
+ext-run's by a test), and writes `<out>/.<vendor>-deny` for any vendor the source is denied to
+(the same walk up to `$HOME` as ext-run). ext-run finds that marker walking up from the clone and
+from any worktree of it (triage-compare's staged worktrees). It prints
+`{repo, sha, denied:{agy, codex}}`, `denied` being what ext-run will see.
+
+`verify-task` materializes, then for a build task runs `patch-check.sh` twice — an empty patch
+(the base) and `solution.patch`, both with the overlay — and prints
+`{id, kind, sha, baseFails, solutionPasses, ok}`: `ok` needs the base to FAIL (the task is not
+pre-solved) and the solution to PASS. For a review task it checks the key is a non-empty seed
+list whose files exist at the sha. Exit 0 = ok, 1 = not.
+
+`score-review` is deterministic: a finding `{file, line, desc}` matches a seed `{file, line,
+id, desc}` when the file is the same (`./x` and an absolute path ending in `/x` count) and the
+lines are at most 3 apart; pairs are assigned closest-first, each seed and each finding at most
+once. It prints `{recall, precision, matched:[seed ids], seeds, findings}` (no findings =>
+precision 0). triage-parity passes a review at recall ≥ 0.6 and precision ≥ 0.5.
+
+Exit codes: 0 ok; 1 the step failed; 2 usage error or invalid task; 3 refused (deny-listed).
+`test/parity-suite.sh` (in `make test`) covers every subcommand on the synthetic fixtures,
+including the real `ext-run.sh` refusing a clone of a marked source (stub CLIs that must not
+run); `qc/mutate.sh` #44 proves deny propagation has teeth.
+
+## `parity-cost.sh` — Claude cost per parity candidate
+
+```
+parity-cost.sh DIR...
+```
+
+Sums the Claude usage of a workflow run from its transcripts: every `agent-*.jsonl` below DIR
+(pass the run's `.../subagents/workflows/wf_<id>/` dir; a parent dir sums every run under it),
+labelled from `agent-*.meta.json`'s `description`. Billing-style sums — input, cache read,
+cache write, output — per agent label, per model, and per parity candidate: agents labelled
+`candidate:<label>` (triage-compare) or `candidate:<label>@<task>` (triage-parity reviewers)
+fold onto `<label>`, with a `-r<N>` repetition suffix removed; everything else (loaders,
+graders, judges, cleanup) is `overhead`. Claude Code repeats a message id across content-block
+lines with a growing usage object, so each id counts once with the max of each field.
+
+This is a different cut from `triage-usage.sh`, which keeps the per-tier PEAK-context proxy;
+the per-label/per-candidate attribution lives only here. External spend is vendor-side and is
+reported by the parity run itself (`externalTokens`, from ext-run's accounting line). Exit 2 =
+usage, 5 = INCOMPLETE (no transcripts, or none with usage) — never a silent zero. Tested in
+`test/parity-suite.sh` on a synthetic transcript (`test/fixtures/parity/cost`).
