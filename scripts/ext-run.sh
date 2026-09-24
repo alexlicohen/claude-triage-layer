@@ -90,9 +90,10 @@
 #                  failure event, the response was empty, or the build stage
 #                  could not be prepared. NEVER silently a pass.
 #   5  SCHEMA      --schema was given and the response is not valid JSON
-#   6  APPLY       build only: a patch was produced but did NOT apply to the
-#                  real repo. The patch is left at --output for inspection; the
-#                  answer still went to stdout.
+#   6  APPLY       build only: a patch was produced but would NOT apply cleanly
+#                  to the real repo. The real repo is left exactly as it was (the
+#                  apply is pre-checked; nothing is written unless it is clean);
+#                  the patch is left at --output; the answer still went to stdout.
 #
 # WHY exit code alone is not enough:
 #   agy (verified live, agy 1.2.3, 2026-09-15): a run whose tools were auto-denied
@@ -116,8 +117,18 @@
 #   stage base already holds the caller's changes) and applies it back to the
 #   real repo. Failure to apply is exit 6, never a silent half-write, and the
 #   worktree is removed on every exit path. `git add -A` honours .gitignore, so
-#   files the repo ignores are NOT carried back.
+#   files the repo ignores are NOT carried back. While the CLI runs, the
+#   worktree's `.git` file (which names the REAL repo's gitdir) is moved into
+#   this script's private meta dir, so the CLI cannot discover or write the real
+#   repo through git; it is restored before this script's own git calls and in
+#   the exit trap.
 set -uo pipefail
+
+# Inherited git redirection (a git hook, a caller running under GIT_DIR=...)
+# would point every `git -C` below at ANOTHER repository: -C does not override an
+# absolute GIT_DIR/GIT_WORK_TREE. Cleared once, here, for this script and every
+# child (the external CLI included).
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_NAMESPACE GIT_CEILING_DIRECTORIES
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 AGY_BIN="${AGY_BIN:-agy}"
@@ -126,6 +137,8 @@ CODEX_BIN="${CODEX_BIN:-codex}"
 HARD_DENY_REPOS="clip-creator"
 AGY_DENY_REPOS="${AGY_DENY_REPOS:-}"
 CODEX_DENY_REPOS="${CODEX_DENY_REPOS:-}"
+# $HOME in its physical spelling too: deny paths are compared after pwd -P.
+HOME_P=$(cd "${HOME:-/}" 2>/dev/null && pwd -P) || HOME_P="${HOME:-/}"
 
 E_USAGE=2
 E_REFUSED=3
@@ -137,9 +150,13 @@ STAGE=""
 BUILD_REPO=""
 BUILD_WT=""
 WD_PID=""
+RUN_PID=""
+HIDDEN_GIT=""   # where the build worktree's .git file sits while the CLI runs
 stop_watchdog() {
   # Kill the watchdog subshell FIRST, then its pending `sleep`: killing the sleep
   # first would let the subshell run on and declare a timeout that never happened.
+  # Stopping it also cancels its delayed KILL — reap_tree, not the watchdog, is
+  # what guarantees nothing of the run survives.
   local kids=""
   if [ -n "$WD_PID" ]; then
     command -v pgrep >/dev/null 2>&1 && kids=$(pgrep -P "$WD_PID" 2>/dev/null)
@@ -150,8 +167,50 @@ stop_watchdog() {
     WD_PID=""
   fi
 }
+# kill_tree SIG PID — signal PID and every descendant still attached to it by
+# parentage, leaves first. Each process is frozen (STOP) before its children are
+# listed, so it cannot fork a new one in between; a pending SIG lands on CONT.
+kill_tree() {
+  local kid
+  kill -STOP "$2" 2>/dev/null || return 0
+  if command -v pgrep >/dev/null 2>&1; then
+    for kid in $(pgrep -P "$2" 2>/dev/null); do kill_tree "$1" "$kid"; done
+  fi
+  kill "-$1" "$2" 2>/dev/null
+  kill -CONT "$2" 2>/dev/null
+}
+# reap_tree PID [reaped] — PID was started under `set -m`, so it leads its own
+# process group, and a grandchild orphaned by an exiting parent keeps that group
+# (bash 3.2 / macOS: no setsid, so the group is the handle). TERM the tree and the
+# group, give it 2s, KILL whatever is left, and wait until the group is empty.
+# Pass "reaped" once PID itself has been waited for: its pid may then belong to
+# someone else, so only the group is signalled.
+reap_tree() {
+  local n=0
+  [ "${2:-}" = reaped ] || kill_tree TERM "$1"
+  kill -TERM -- "-$1" 2>/dev/null
+  while [ "$n" -lt 20 ] && [ -n "$(pgrep -g "$1" 2>/dev/null)" ]; do sleep 0.1; n=$((n + 1)); done
+  [ "${2:-}" = reaped ] || kill_tree KILL "$1"
+  kill -KILL -- "-$1" 2>/dev/null
+  n=0
+  while [ "$n" -lt 20 ] && [ -n "$(pgrep -g "$1" 2>/dev/null)" ]; do sleep 0.1; n=$((n + 1)); done
+  [ "${2:-}" = reaped ] || wait "$1" 2>/dev/null
+}
+# restore_git — put the build worktree's .git file back (anything the CLI created
+# at that path is discarded first). Idempotent; called before this script's own
+# git calls on the worktree and from the exit trap.
+restore_git() {
+  [ -n "$HIDDEN_GIT" ] && [ -n "$BUILD_WT" ] || return 0
+  if [ -e "$HIDDEN_GIT" ]; then
+    rm -rf "${BUILD_WT:?}/.git"
+    mv "$HIDDEN_GIT" "$BUILD_WT/.git"
+  fi
+  HIDDEN_GIT=""
+}
 cleanup() {
   stop_watchdog
+  if [ -n "$RUN_PID" ]; then reap_tree "$RUN_PID"; RUN_PID=""; fi
+  restore_git
   # The worktree goes first and unconditionally: it is registered in the real
   # repo's .git, so leaving it behind would litter the caller's repo, and
   # AGY_STAGE_KEEP must not be able to defeat that.
@@ -164,6 +223,9 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+# A signal must still run cleanup (reap the CLI's tree, restore .git, remove the
+# worktree): exit through the EXIT trap.
+trap 'exit 130' INT TERM HUP
 
 die() { echo "$1" >&2; exit "$2"; }
 
@@ -271,23 +333,36 @@ resolve_tier() {
 }
 
 # ---------------------------------------------------------------------------
-# Deny-list. Enforced on the resolved, symlink-free path of the workdir, of every
-# --input source, and of the prompt file. Component equality (not substring), so
-# ".../clip-creator/media" is refused and ".../clip-creators-lab" is not. A
-# per-vendor marker file (.agy-deny for agy, .codex-deny for codex) anywhere from
-# the path up to $HOME also refuses, so a repo can opt itself out of one vendor
+# Deny-list. Enforced on the resolved, symlink-free path (resolve_path: the whole
+# symlink chain) of the workdir, of every --input source, of a --schema file and
+# of the prompt file — and that resolved path is what is then read. Component
+# equality (not substring), so ".../clip-creator/media" is refused and
+# ".../clip-creators-lab" is not. A per-vendor marker file (.agy-deny for agy,
+# .codex-deny for codex) anywhere from the path up to AND INCLUDING $HOME (or /,
+# outside $HOME) also refuses, so a repo can opt itself out of one vendor
 # without editing this script. Each of those paths that sits in a git work tree
 # is ALSO checked via the main worktree of its repository (git-common-dir), so a
 # linked worktree created outside a deny-listed repo is refused like the repo.
 # ---------------------------------------------------------------------------
-resolve_path() { # $1 = path -> absolute, symlinks resolved where possible
-  local d
-  if [ -d "$1" ]; then (cd "$1" 2>/dev/null && pwd -P) || echo "$1"
-  elif [ -f "$1" ]; then
-    d=$(cd "$(dirname "$1")" 2>/dev/null && pwd -P) || d=$(dirname "$1")
-    echo "$d/$(basename "$1")"
-  else echo "$1"
-  fi
+# resolve_path — SINGLE OWNER of "which file does this path really name". The
+# whole symlink chain of the leaf is followed (a link in an allowed dir pointing
+# into a denied repo must be judged — and read — at its target), then every
+# directory component is made physical with pwd -P. bash-3.2-safe: plain
+# readlink, no -f. A chain over 40 hops (a loop) is returned unresolved, and the
+# caller's -f/-d test on it then fails as a usage error.
+resolve_path() { # $1 = path -> absolute physical path
+  local p="$1" t d n=0
+  case "$p" in /*) ;; *) p="$PWD/$p" ;; esac
+  while [ -L "$p" ]; do
+    n=$((n + 1))
+    [ "$n" -le 40 ] || { echo "$p"; return 0; }
+    t=$(readlink "$p") || break
+    case "$t" in /*) p="$t" ;; *) p="$(dirname "$p")/$t" ;; esac
+  done
+  if [ -d "$p" ]; then (cd "$p" 2>/dev/null && pwd -P) || echo "$p"; return 0; fi
+  d=$(cd "$(dirname "$p")" 2>/dev/null && pwd -P) || { echo "$p"; return 0; }
+  [ "$d" = / ] && d=""
+  echo "$d/$(basename "$p")"
 }
 
 deny_names() {
@@ -309,10 +384,14 @@ deny_check_path() { # $1 = one path, $2 = optional context for the message. exit
   marker=".$VENDOR-deny"
   d="$p"
   [ -f "$d" ] && d=$(dirname "$d")
-  while [ -n "$d" ] && [ "$d" != "/" ] && [ "$d" != "$HOME" ]; do
+  # Every directory from the path up to AND INCLUDING $HOME (or / for a path
+  # outside it) is checked; the walk stops only after checking one of those.
+  while [ -n "$d" ]; do
     if [ -f "$d/$marker" ]; then
       die "REFUSED: $d/$marker marks this tree as off-limits to $VENDOR$why." "$E_REFUSED"
     fi
+    case "$d" in /|"${HOME:-/}"|"$HOME_P") break ;; esac
+    [ "$(dirname "$d")" != "$d" ] || break   # never spin on a fixed point
     d=$(dirname "$d")
   done
 }
@@ -323,14 +402,13 @@ deny_check_path() { # $1 = one path, $2 = optional context for the message. exit
 # under an outDir outside the repo), so its own path says nothing about which
 # repository it checks out — the common git dir does: its parent when it ends in
 # /.git, else the common dir itself (bare repo, submodule module dir). GIT_DIR &
-# co. are unset so an inherited environment (a git hook) cannot redirect it.
+# co. were unset at the top, so an inherited environment cannot redirect it.
 main_worktree_of() {
   local d common
   command -v git >/dev/null 2>&1 || return 0
   d="$1"
   [ -d "$d" ] || d=$(dirname "$d")
-  common=$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE \
-    git -C "$d" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 0
+  common=$(git -C "$d" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 0
   [ -n "$common" ] || return 0
   common=$(resolve_path "$common")
   case "$common" in
@@ -371,23 +449,30 @@ TIMEOUT="$(mode_timeout "$MODE")"
 RAW=0
 INPUTS=()
 
+# Every value-taking option REQUIRES its value: a trailing `--vendor` would make
+# `shift 2` fail without shifting, and the loop would spin forever.
 while [ $# -gt 0 ]; do
   case "$1" in
-    --vendor)      VENDOR="${2:-}"; shift 2 ;;
-    --level)       LEVEL="${2:-}"; shift 2 ;;
-    --prompt-file) PROMPT_FILE="${2:-}"; shift 2 ;;
-    --input)       INPUTS+=("${2:-}"); shift 2 ;;
-    --schema)      SCHEMA="${2:-}"; shift 2 ;;
-    --workdir)     WORKDIR="${2:-}"; shift 2 ;;
-    --output)      OUTPUT="${2:-}"; shift 2 ;;
-    --patch-out)   PATCH_OUT="${2:-}"; shift 2 ;;
-    --check)       CHECK_CMD="${2:-}"; shift 2 ;;
-    --model)       MODEL_OVERRIDE="${2:-}"; shift 2 ;;
-    --effort)      EFFORT="${2:-}"; shift 2 ;;
-    --timeout)     TIMEOUT="${2:-}"; shift 2 ;;
-    --raw)         RAW=1; shift ;;
+    --raw) RAW=1; shift; continue ;;
+    --vendor|--level|--prompt-file|--input|--schema|--workdir|--output|--patch-out|--check|--model|--effort|--timeout)
+      [ $# -ge 2 ] || die "USAGE: $1 needs a value" "$E_USAGE" ;;
     *) die "USAGE: unknown argument '$1'" "$E_USAGE" ;;
   esac
+  case "$1" in
+    --vendor)      VENDOR="$2" ;;
+    --level)       LEVEL="$2" ;;
+    --prompt-file) PROMPT_FILE="$2" ;;
+    --input)       INPUTS+=("$2") ;;
+    --schema)      SCHEMA="$2" ;;
+    --workdir)     WORKDIR="$2" ;;
+    --output)      OUTPUT="$2" ;;
+    --patch-out)   PATCH_OUT="$2" ;;
+    --check)       CHECK_CMD="$2" ;;
+    --model)       MODEL_OVERRIDE="$2" ;;
+    --effort)      EFFORT="$2" ;;
+    --timeout)     TIMEOUT="$2" ;;
+  esac
+  shift 2
 done
 
 case "$VENDOR" in
@@ -403,6 +488,9 @@ if [ -n "$LEVEL" ]; then
 fi
 
 [ -n "$PROMPT_FILE" ] || die "USAGE: --prompt-file is required" "$E_USAGE"
+# From here on every caller-named file/dir is its RESOLVED path (resolve_path):
+# the path that is deny-checked is the path that is read.
+PROMPT_FILE=$(resolve_path "$PROMPT_FILE")
 [ -f "$PROMPT_FILE" ] || die "USAGE: prompt file not found: $PROMPT_FILE" "$E_USAGE"
 [ -s "$PROMPT_FILE" ] || die "USAGE: prompt file is empty: $PROMPT_FILE" "$E_USAGE"
 # The prompt reaches agy as `-p "$(cat FILE)"`, so it is bounded by ARG_MAX (~1MB
@@ -464,6 +552,7 @@ if [ -n "$PATCH_OUT" ] && [ -n "$OUTPUT" ]; then
 fi
 if mode_writes "$MODE"; then
   [ -n "$WORKDIR" ] || die "USAGE: build mode requires --workdir" "$E_USAGE"
+  WORKDIR=$(resolve_path "$WORKDIR")
   [ -d "$WORKDIR" ] || die "USAGE: --workdir is not a directory: $WORKDIR" "$E_USAGE"
   [ -n "$PATCH_OUT" ] && OUTPUT="$PATCH_OUT"
   if [ -n "$OUTPUT" ]; then
@@ -479,7 +568,7 @@ fi
 
 deny_check "$PROMPT_FILE"
 if [ -n "$WORKDIR" ]; then deny_check "$WORKDIR"; fi
-if [ -n "$SCHEMA" ] && [ -f "$SCHEMA" ]; then deny_check "$SCHEMA"; fi
+if [ -n "$SCHEMA" ] && [ -f "$SCHEMA" ]; then SCHEMA=$(resolve_path "$SCHEMA"); deny_check "$SCHEMA"; fi
 
 case "$VENDOR" in
   agy)   VENDOR_BIN="$AGY_BIN" ;;
@@ -582,9 +671,11 @@ fi
 
 STAGED_LIST=""
 for src in ${INPUTS+"${INPUTS[@]}"}; do
-  [ -f "$src" ] || die "USAGE: --input file not found: $src" "$E_USAGE"
-  deny_check "$src"
-  cp "$src" "$INPUT_DIR/$(basename "$src")"
+  real=$(resolve_path "$src")
+  [ -f "$real" ] || die "USAGE: --input file not found: $src" "$E_USAGE"
+  deny_check "$real"
+  # Staged under the name the caller gave, read from the path that was checked.
+  cp "$real" "$INPUT_DIR/$(basename "$src")" || die "UNAVAILABLE: could not stage --input $src" "$E_UNAVAIL"
   STAGED_LIST="$STAGED_LIST  $INPUT_DIR/$(basename "$src")
 "
 done
@@ -629,6 +720,11 @@ if [ "$VENDOR" = "codex" ]; then
     printf 'Do not create or edit PROJECT_MEMORY.md, handoff files, engram, or any memory file.\n'
     printf 'Touch only files inside the workspace named above.\n'
   } >> "$PROMPT"
+fi
+# Build mode hides the worktree's .git during the CLI run (the pointer names the
+# caller's real gitdir), so say so: a self-check that shells out to git would fail.
+if mode_writes "$MODE"; then
+  printf '\nNote: git is unavailable in this workspace during your run; do not run git commands. Checks that need git run afterwards, outside your session.\n' >> "$PROMPT"
 fi
 
 # Read-only modes: fingerprint the stage so we can SAY whether the run tried to
@@ -677,8 +773,13 @@ agy_invoke() {
   esac
   [ -n "$SCHEMA" ] && set -- "$@" --json-schema "$SCHEMA"
   # cd to the RESOLVED path, so agy's own $PWD and the --add-dir it is given are
-  # the same string (on macOS $TMPDIR is a symlink).
-  ( cd "$RUNDIR_ABS" && "$AGY_BIN" "$@" ) > "$ENVELOPE" 2> "$ERRLOG" </dev/null
+  # the same string (on macOS $TMPDIR is a symlink). Run as its own process group
+  # (set -m) so reap_tree can clear anything it leaves running.
+  set -m
+  ( cd "$RUNDIR_ABS" && exec "$AGY_BIN" "$@" ) > "$ENVELOPE" 2> "$ERRLOG" </dev/null &
+  RUN_PID=$!
+  set +m
+  wait "$RUN_PID" 2>/dev/null
   RC=$?
 }
 
@@ -719,16 +820,33 @@ codex_invoke() {
   [ -n "$SCHEMA_FILE" ] && set -- "$@" --output-schema "$SCHEMA_FILE"
   [ "$MODE" = "verify" ] && set -- "$@" -c 'web_search="live"'
   set -- "$@" -
+  # Its own process group (set -m): the watchdog and reap_tree signal the WHOLE
+  # tree, so a grandchild (a tool the CLI spawned) cannot outlive the run.
+  set -m
   ( cd "$RUNDIR_ABS" && exec "$CODEX_BIN" "$@" ) < "$PROMPT" > "$EVENTS" 2> "$ERRLOG" &
-  local cpid=$!
+  RUN_PID=$!
+  set +m
+  local cpid=$RUN_PID
   ( sleep "$tsecs"
     kill -0 "$cpid" 2>/dev/null || exit 0
-    : > "$TIMEDOUT_MARK"; kill -TERM "$cpid"; sleep 5; kill -KILL "$cpid" ) >/dev/null 2>&1 &
+    : > "$TIMEDOUT_MARK"
+    kill_tree TERM "$cpid"; kill -TERM -- "-$cpid"
+    sleep 5
+    kill_tree KILL "$cpid"; kill -KILL -- "-$cpid" ) >/dev/null 2>&1 &
   WD_PID=$!
   wait "$cpid" 2>/dev/null
   RC=$?
   stop_watchdog
 }
+
+# Build: hide the worktree's .git file for the duration of the CLI run. It names
+# the REAL repo's gitdir, so with it in place the CLI (agy runs with
+# --dangerously-skip-permissions) could `git -C`/commit its way into the caller's
+# repository. restore_git puts it back — below, and in the exit trap.
+if mode_writes "$MODE"; then
+  HIDDEN_GIT="$STAGE/meta/worktree.git"
+  mv "$BUILD_WT/.git" "$HIDDEN_GIT" || { HIDDEN_GIT=""; die "UNAVAILABLE: could not detach the build worktree's .git for the run" "$E_UNAVAIL"; }
+fi
 
 RUN_START=$SECONDS
 case "$VENDOR" in
@@ -736,6 +854,10 @@ case "$VENDOR" in
   codex) codex_invoke ;;
 esac
 ELAPSED=$((SECONDS - RUN_START))
+# The CLI has exited; clear anything it left running (grandchildren), then give
+# the worktree its .git back before this script's own git calls.
+if [ -n "$RUN_PID" ]; then reap_tree "$RUN_PID" reaped; RUN_PID=""; fi
+restore_git
 
 # Capture the result patch BEFORE the gates, so a failed run still leaves
 # something inspectable. It is applied only if every gate passes.
@@ -834,26 +956,48 @@ fi
 
 # ---------------------------------------------------------------------------
 # Apply the build patch back to the real repo (never with --patch-out).
-#   plain `git apply` first: it is atomic and index-free, so the common case
-#   (the caller's tree is exactly what we carried in) applies cleanly even with
-#   unstaged changes and untracked files present — `--index` cannot do that, it
-#   refuses any path whose worktree copy differs from the index.
-#   `--3way` second: recovers when the caller's tree drifted while the CLI ran.
-#   It can leave conflict markers, so it is the fallback, not the first attempt.
+# apply_back — SINGLE OWNER of writing into the caller's tree. It writes ONLY an
+# apply that was proven clean first, so exit 6 always means "tree unchanged":
+#   1. `git apply --check`, then `git apply`: atomic and index-free, so the common
+#      case (the caller's tree is exactly what we carried in) applies even with
+#      unstaged changes and untracked files present — `--index` cannot do that,
+#      it refuses any path whose worktree copy differs from the index.
+#   2. else `git apply --3way --check` (recovers a tree that drifted while the
+#      CLI ran). It exits 0 even when the merge WOULD conflict (verified, git
+#      2.54: "Applied patch to 'f' with conflicts."), so the check counts as clean
+#      only with rc 0 AND no "conflict" in its output (LC_ALL=C); then --3way.
+#   3. else nothing is written: APPLY (exit 6), the patch is kept at $OUTPUT.
 # ---------------------------------------------------------------------------
 APPLY_FAILED=0
+apply_back() {
+  local err="$STAGE/meta/apply.err" chk3="$STAGE/meta/apply-3way-check.out"
+  if git -C "$BUILD_REPO" apply --check "$OUTPUT" >"$err" 2>&1; then
+    if git -C "$BUILD_REPO" apply "$OUTPUT" >>"$err" 2>&1; then
+      echo "ext-run: applied the build patch to $BUILD_REPO ($OUTPUT)" >&2
+      return 0
+    fi
+    echo "APPLY: git apply failed after a clean --check (the tree changed in between?). git apply is atomic, so $BUILD_REPO was not written. The patch is left at $OUTPUT." >&2
+    return 1
+  fi
+  if LC_ALL=C git -C "$BUILD_REPO" apply --3way --check "$OUTPUT" >"$chk3" 2>&1 && ! grep -qi 'conflict' "$chk3"; then
+    if LC_ALL=C git -C "$BUILD_REPO" apply --3way "$OUTPUT" >>"$err" 2>&1; then
+      echo "ext-run: applied the build patch to $BUILD_REPO by 3-way merge ($OUTPUT)" >&2
+      return 0
+    fi
+    echo "APPLY: the 3-way apply failed after a clean 3-way --check (the tree changed in between?) — inspect $BUILD_REPO. The patch is left at $OUTPUT." >&2
+    return 1
+  fi
+  cat "$chk3" >> "$err" 2>/dev/null
+  echo "APPLY: the build patch would NOT apply cleanly to $BUILD_REPO (plain and 3-way pre-checks failed), so nothing was written: the tree is unchanged. The patch is left at $OUTPUT." >&2
+  return 1
+}
 if mode_writes "$MODE"; then
   if [ ! -s "$OUTPUT" ]; then
     echo "ext-run: build produced NO changes (empty patch at $OUTPUT)" >&2
   elif [ -n "$PATCH_OUT" ]; then
     echo "ext-run: patch written to $OUTPUT — NOT applied (--patch-out)" >&2
-  elif git -C "$BUILD_REPO" apply "$OUTPUT" >"$STAGE/meta/apply.err" 2>&1; then
-    echo "ext-run: applied the build patch to $BUILD_REPO ($OUTPUT)" >&2
-  elif git -C "$BUILD_REPO" apply --3way "$OUTPUT" >>"$STAGE/meta/apply.err" 2>&1; then
-    echo "ext-run: applied the build patch to $BUILD_REPO by 3-way merge ($OUTPUT)" >&2
-  else
+  elif ! apply_back; then
     APPLY_FAILED=1
-    echo "APPLY: the build patch did NOT apply to $BUILD_REPO. The patch is left at $OUTPUT; the 3-way attempt may have left conflict markers — inspect before continuing." >&2
     head -c 800 "$STAGE/meta/apply.err" >&2
     echo "" >&2
   fi

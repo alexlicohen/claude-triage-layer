@@ -1,7 +1,7 @@
 export const meta = {
   name: 'triage-compare',
   description: 'Implementation bake-off: run one brief on several candidates (Claude levels, codex, agy), each in its own staged worktree outside the repo, then grade every worktree diff independently with patch-check.sh. Never applies a patch; the real repo is never a candidate workdir.',
-  whenToUse: 'Compare vendors/levels/models on the SAME well-specified task: /triage-compare with args = {repo, base?, brief, files, acceptance, checks:[cmd...], outDir, overlay?, candidates:[{vendor:claude|codex|agy, level:quick|builder|deep|top, model?, effort?, label?}]}. repo is any absolute git repo path (not necessarily the session repo) and may be dirty: base (default HEAD) is resolved to ONE sha up front and each candidate works in its own detached worktree at that sha under <outDir>/stage (scripts/stage-worktree.sh), never in repo. outDir/overlay must be OUTSIDE repo and <outDir>/stage must not already exist. External (non-claude) candidates require args.files. Candidates run one at a time (parallel:true runs them concurrently; Claude outTokens is then null); the grade is scripts/patch-check.sh on each worktree diff at the sha (plus the hidden overlay), never the candidate self-report; a leakcheck then proves repo did not change (leak:true => every candidate invalid). Returns sha/leak/baseMoved and per-candidate status/applies/rc/diffstat/patch/tokens; the orchestrator picks and applies.',
+  whenToUse: 'Compare vendors/levels/models on the SAME well-specified task: /triage-compare with args = {repo, base?, brief, files, acceptance, checks:[cmd...], outDir, overlay?, candidates:[{vendor:claude|codex|agy, level:quick|builder|deep|top, model?, effort?, label?}]}. repo is any absolute git repo path (not necessarily the session repo) and may be dirty: base (default HEAD) is resolved to ONE sha up front and each candidate works in its own detached worktree at that sha under <outDir>/stage (scripts/stage-worktree.sh), never in repo. outDir/overlay must be OUTSIDE repo and <outDir>/stage must not already exist. External (non-claude) candidates require args.files. Candidates run one at a time (parallel:true runs them concurrently; Claude outTokens is then null); the grade is scripts/patch-check.sh on each worktree diff at the sha (plus the hidden overlay), never the candidate self-report; a leakcheck then proves repo did not change (only leak:false lets a grade stand: leak true OR unknown => every candidate invalid, graded:false; a patch patch-check could not grade, e.g. overlay-failed, is invalid). Returns sha/leak/baseMoved and per-candidate status/applies/rc/diffstat/patch/tokens; the orchestrator picks and applies.',
   phases: [
     { title: 'Stage' },
     { title: 'Candidates' },
@@ -299,6 +299,7 @@ try {
             rc: { type: ['integer', 'null'] },
             diffstat: { type: 'string' },
             tail: { type: 'string' },
+            error: { type: ['string', 'null'] },
           },
           required: ['patch', 'applies', 'rc', 'diffstat', 'tail'],
         },
@@ -320,7 +321,7 @@ try {
   const gradePrompt = `Run these commands in order, each exactly as written, and each even if an earlier one fails. Do not run anything else, and do not interpret or fix anything.\n` +
     `${lines.join('\n')}\n\n` +
     `Each prints JSON lines on stdout. Return them field for field: diffs = the stage-worktree diff lines, in order (${graded.length}); ` +
-    `results = patch-check's lines, one per patch, in order${graded.length ? '' : ' (none ran: [])'}; ` +
+    `results = patch-check's lines, one per patch, in order, including an error field whenever a line has one${graded.length ? '' : ' (none ran: [])'}; ` +
     `leakcheck = the leakcheck line's status, leak, baseMoved and detail, plus rc = the leakcheck command's exit status (status ERROR if it printed no JSON line).`
   const gradeOk = x => !!(x && Array.isArray(x.diffs) && Array.isArray(x.results) && x.leakcheck && typeof x.leakcheck === 'object')
   for (let attempt = 1; attempt <= 2 && !gradeOk(gr); attempt++) {
@@ -353,7 +354,10 @@ function leakState(lc) {
 }
 const leakInfo = leakState(gr && gr.leakcheck)
 if (leakInfo.leak === true) log(`⚠ LEAK: the real repo changed during triage-compare — inspect before anything else${leakInfo.detail ? ` (${leakInfo.detail})` : ''}`)
-else if (leakInfo.leak == null) log(`⚠ LEAK CHECK INCOMPLETE — could not confirm ${repo} is unchanged; inspect it before anything else (${leakInfo.detail}).`)
+else if (leakInfo.leak == null) {
+  log(`⚠ LEAK CHECK INCOMPLETE — could not confirm ${repo} is unchanged; inspect it before anything else (${leakInfo.detail}).` +
+    (gr ? ' Every candidate is INVALID: no grade stands without a confirmed-clean repo.' : ''))
+}
 if (leakInfo.baseMoved) log(`⚠ BASE_MOVED: HEAD of ${repo} moved during the run; every candidate was graded at ${sha}.`)
 
 const byDiff = gr ? new Map(gr.diffs.map(x => [stripSlash(String(x.worktree || '')), x])) : null
@@ -361,10 +365,14 @@ const byPatch = gr ? new Map(gr.results.map(x => [x.patch, x])) : null
 
 // grade() — SINGLE OWNER of a candidate's status. pass = its worktree diff applied
 // at the sha AND the checks exited 0 in patch-check's own worktree. Nothing the
-// candidate said counts, and a leak voids every grade.
+// candidate said counts. A grade stands ONLY with leak === false: a leak voids
+// every grade, and so does an UNKNOWN leak state (leakcheck errored or relayed
+// nothing usable). A dead grader (gr null) leaves 'ungraded' — there was no grade
+// to accept.
 function grade(r) {
   const g = gradeOf(r)
   if (leakInfo.leak === true) return Object.assign({}, g, { status: 'invalid', tail: `LEAK — ${leakInfo.detail || 'the real repo changed during the run'}` })
+  if (leakInfo.leak !== false && gr) return Object.assign({}, g, { status: 'invalid', tail: `LEAK STATE UNKNOWN — ${leakInfo.detail}` })
   return g
 }
 function gradeOf(r) {
@@ -375,6 +383,11 @@ function gradeOf(r) {
   if (!d || d.ok !== true) return none('ungraded', `worktree diff failed: ${(d && d.error) || 'no diff result'}`)
   const pc = byPatch.get(r.c.patch)
   if (!pc) return none('ungraded', 'patch-check produced no result for this patch')
+  // patch-check could not grade it (error, e.g. overlay-failed: the hidden tests
+  // never ran), or relayed an applied patch with no rc: never a pass or a fail.
+  if (pc.error != null || (pc.applies === true && pc.rc == null)) {
+    return { status: 'invalid', applies: pc.applies, rc: null, diffstat: pc.diffstat, patch: r.c.patch, tail: `UNGRADABLE (${pc.error || 'applied, but no check rc'}) — ${pc.tail}` }
+  }
   const status = pc.applies === true && pc.rc === 0 ? 'pass' : 'fail'
   return { status, applies: pc.applies, rc: pc.rc, diffstat: pc.diffstat, patch: r.c.patch, tail: pc.tail }
 }
@@ -392,10 +405,10 @@ const results = runs.map(r => {
 })
 const tally = s => results.filter(x => x.status === s).length
 log(`Bake-off graded by patch-check at ${sha.slice(0, 12)}: ${tally('pass')} pass, ${tally('fail')} fail, ${tally('unavailable')} unavailable` +
-  (tally('ungraded') ? `, ${tally('ungraded')} UNGRADED` : '') + (tally('invalid') ? `, ${tally('invalid')} INVALID (leak)` : '') +
+  (tally('ungraded') ? `, ${tally('ungraded')} UNGRADED` : '') + (tally('invalid') ? `, ${tally('invalid')} INVALID` : '') +
   ' — nothing was applied to the repo.')
 return {
   base, sha, leak: leakInfo.leak, baseMoved: leakInfo.baseMoved,
-  graded: runs.every(r => gradeOf(r).status !== 'ungraded'),
+  graded: leakInfo.leak === false && results.every(x => x.status !== 'ungraded' && x.status !== 'invalid'),
   candidates: results,
 }

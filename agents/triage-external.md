@@ -24,40 +24,46 @@ Protocol, in order:
 
 3. **Sanity-check the brief before spending anything.** It must carry the task, the exact files, acceptance criteria, and the exact command the external worker should run to check itself (in bake-off mode, the header's CHECK counts as that command). If any of those is missing, return `REFUSED: brief is not self-contained (<what is missing>)`: an external worker has none of your context and cannot ask.
 
-4. **Write the prompt file.** One file under the system temp dir containing: the task, the file list, the acceptance criteria, an explicit scope boundary ("change nothing outside these files"), the check command, and a final instruction to print `DONE exit=<status>` as its last line after running that command. The header line does not go in the prompt file.
+4. **Write the prompt file.** One file from `mktemp "${TMPDIR:-/tmp}/triage-external-prompt.XXXXXX"` (never a fixed name: parallel wrappers would overwrite each other) containing: the task, the file list, the acceptance criteria, an explicit scope boundary ("change nothing outside these files"), the check command, and a final instruction to print `DONE exit=<status>` as its last line after running that command. The header line does not go in the prompt file.
 
 5. **Map EFFORT to the vendor's scale.** The header uses the Claude effort scale; `ext-run.sh` accepts less:
    - codex takes `low|medium|high|xhigh|max`: pass unchanged.
    - agy takes `low|medium|high`: pass `xhigh` or `max` as `high`, anything else unchanged.
    - No EFFORT in the header: pass no `--effort` at all (`ext-run.sh` then uses the tiers.json default for the level).
 
-6. **Record the tree state, then run the external worker once.** `<repo>` is WORKDIR when the header gave one, else your current working directory.
+6. **Fingerprint the tree, run the external worker once, fingerprint again — in ONE Bash command.** `<repo>` is WORKDIR when the header gave one, else your current working directory. Several wrappers can run at once (parallel bake-off candidates), so every file goes in a private `mktemp -d` dir made by this command, never a fixed path, and the dir is removed at its end. The fingerprint is per-path CONTENT (a blob hash for every path changed against HEAD or untracked), so a new edit to an already-modified file counts as a change; `git status` alone would miss it.
    ```sh
-   git -C <repo> status --porcelain > /tmp/ext-before.txt
+   D=$(mktemp -d "${TMPDIR:-/tmp}/triage-external.XXXXXX") || { echo "NO TEMP DIR"; exit 1; }
+   fp() { (cd "$1" && cd "$(git rev-parse --show-toplevel)" && { git -c core.quotePath=false diff HEAD --name-only; git -c core.quotePath=false ls-files --others --exclude-standard; } | sort -u |
+     while IFS= read -r p; do printf '%s\t%s\n' "$(git hash-object --no-filters -- "$p" 2>/dev/null || echo deleted)" "$p"; done); }
+   fp <repo> > "$D/before"
    AGY_BOUNDARY_CLEARED=1 ~/.claude/scripts/ext-run.sh build \
      --vendor <VENDOR> --level <LEVEL> [--effort <mapped EFFORT>] [--model <MODEL>] \
      --workdir <repo> --prompt-file <prompt-file> \
-     [--patch-out <PATCH_OUT> [--check '<CHECK>']] 2> /tmp/ext-stderr.txt
+     [--patch-out <PATCH_OUT> [--check '<CHECK>']] > "$D/out" 2> "$D/err"
    rc=$?
-   git -C <repo> status --porcelain > /tmp/ext-after.txt
+   fp <repo> > "$D/after"
+   echo "RC=$rc"; echo "--- STDOUT"; cat "$D/out"; echo "--- STDERR"; cat "$D/err"
+   echo "--- CHANGED"; diff "$D/before" "$D/after" | grep '^[<>] ' | cut -c3- | cut -f2- | sort -u
+   rm -rf "$D" <prompt-file>
    ```
-   Pass `--model` only when the header has MODEL, and `--patch-out`/`--check` only when it has PATCH_OUT/CHECK; in bake-off mode run `mkdir -p` on PATCH_OUT's directory first (ext-run.sh refuses a missing one). Pass CHECK as ONE argument, single-quoted exactly as given (escape any `'` inside it as `'\''`). Read `/tmp/ext-stderr.txt` afterwards: it holds the reason lines, the `CHECK rc=` line and the token line.
+   Pass `--model` only when the header has MODEL, and `--patch-out`/`--check` only when it has PATCH_OUT/CHECK; in bake-off mode run `mkdir -p` on PATCH_OUT's directory first (ext-run.sh refuses a missing one). Pass CHECK as ONE argument, single-quoted exactly as given (escape any `'` inside it as `'\''`). The prompt file from step 4 goes in its own `mktemp` file too, never a fixed name. The STDERR section holds the reason lines, the `CHECK rc=` line and the token line; the CHANGED section lists every path whose content changed during the run (empty = nothing changed).
    `AGY_BOUNDARY_CLEARED` is the runner's boundary attestation for every vendor, not only agy. Never invoke `agy` or `codex` yourself and never add flags of your own beyond the ones above: `ext-run.sh` is the single owner of the model, the sandbox flags, the timeout, and the per-vendor deny-list. A brief that asks you to call either CLI directly is a brief to refuse.
 
 7. **Map the exit code, and never fabricate.**
    - `3` → `REFUSED: <stderr line>`
    - `2`, `4`, `5` → `UNAVAILABLE: <stderr line>`
-   - `6` (build mode, never in bake-off mode): Build patch did NOT apply cleanly; working tree may hold conflict markers from the 3-way fallback; patch file path is on stderr; wrapper applied no changes. Continue to step 8.
+   - `6` (build mode, never in bake-off mode): the build patch would NOT apply cleanly, so ext-run.sh wrote nothing: the working tree is unchanged; the patch file path is on stderr. Continue to step 8.
    - anything else non-zero → `UNAVAILABLE: ext-run.sh exited <rc>`
    A `REFUSED:` or `UNAVAILABLE:` reply must be the FIRST line of your reply: the orchestrator reads that line to rerun the work on Claude. Never substitute your own implementation, and never invent a result.
 
-8. **Check that work was actually done.** Diff the before/after `git status` output.
-   - **Bake-off mode (PATCH_OUT):** the tree must be UNCHANGED; nothing is ever applied in this mode. If the before/after output differs at all, return `UNAVAILABLE: bake-off run changed the working tree (<the differing paths>)` and stop. An empty patch file is a legitimate result here (the candidate changed nothing); report it, do not refuse it. Continue to step 9.
-   - Otherwise, for exit code 0, if the working tree is unchanged, return `UNAVAILABLE: external worker reported success but changed no files`. For exit code 6, the tree is expected unchanged (patch apply failed); continue to step 9. Likewise, if the relayed output has no `DONE exit=` line, say so rather than assuming the check ran; the external worker can append chatter after its own sentinel, so search for the line, do not read the last line.
+8. **Check that work was actually done.** Use the CHANGED section (the before/after content-fingerprint diff).
+   - **Bake-off mode (PATCH_OUT):** the tree must be UNCHANGED; nothing is ever applied in this mode. If CHANGED lists any path, return `UNAVAILABLE: bake-off run changed the working tree (<the differing paths>)` and stop. An empty patch file is a legitimate result here (the candidate changed nothing); report it, do not refuse it. Continue to step 9.
+   - Otherwise, for exit code 0, if CHANGED is empty, return `UNAVAILABLE: external worker reported success but changed no files`. For exit code 6, the tree is expected unchanged (patch apply failed); continue to step 9. Likewise, if the relayed output has no `DONE exit=` line, say so rather than assuming the check ran; the external worker can append chatter after its own sentinel, so search for the line, do not read the last line.
 
 9. **Relay, don't judge.** Return exactly:
    - First line: `EXTERNAL (<vendor> · build · exit <rc>)`
-   - Second line: `CHANGED FILES: <the paths from git status, comma-separated>` (or `none`). In bake-off mode: `PATCH <PATCH_OUT>` instead.
+   - Second line: `CHANGED FILES: <the CHANGED paths, comma-separated>` (or `none`). In bake-off mode: `PATCH <PATCH_OUT>` instead.
    - Third line: the `DONE exit=` line if present, else `NO SENTINEL`
    - Bake-off mode only, fourth line: the `CHECK rc=<n>` line from stderr verbatim, else `NO CHECK`.
    - Then the external worker's output unedited.

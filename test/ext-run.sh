@@ -89,6 +89,7 @@ set -u
 log() { printf '%s\n' "$1" >> "$AGY_STUB_LOG"; }
 log "PWD=$PWD"
 log "GITTOP=$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)"
+if [ -e "$PWD/.git" ]; then log "DOTGIT=present"; else log "DOTGIT=absent"; fi
 prev=""
 for a in "$@"; do
   log "ARG=$a"
@@ -140,6 +141,27 @@ case "${AGY_STUB_MODE:-ok}" in
     printf 'line1\nSTAGE\nline3\n' > "$PWD/conflict.txt"
     printf 'line1\nREAL-DRIFT\nline3\n' > "$AGY_STUB_REPO/conflict.txt"
     echo '{"status":"SUCCESS","response":"edited conflict.txt\nDONE exit=0"}' ;;
+  buildconflictstaged)
+    # The same conflict, but the drift is STAGED (index == worktree), so a 3-way
+    # apply gets as far as merging — and would leave conflict markers. The
+    # caller's state right after the drift is recorded for byte comparison.
+    printf 'line1\nSTAGE\nline3\n' > "$PWD/conflict.txt"
+    printf 'line1\nREAL-DRIFT\nline3\n' > "$AGY_STUB_REPO/conflict.txt"
+    git -C "$AGY_STUB_REPO" add conflict.txt
+    { git -C "$AGY_STUB_REPO" status --porcelain; cksum < "$AGY_STUB_REPO/.git/index"; cksum < "$AGY_STUB_REPO/conflict.txt"; } > "$AGY_STUB_STATE"
+    echo '{"status":"SUCCESS","response":"edited conflict.txt\nDONE exit=0"}' ;;
+  build3way)
+    # Stage edits line 1; the caller's tree drifts (staged) on line 4 — plain
+    # apply fails on context, a 3-way merge is clean.
+    printf 'EDIT1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\n' > "$PWD/long.txt"
+    printf 'l1\nl2\nl3\nDRIFT4\nl5\nl6\nl7\nl8\n' > "$AGY_STUB_REPO/long.txt"
+    git -C "$AGY_STUB_REPO" add long.txt
+    echo '{"status":"SUCCESS","response":"edited long.txt\nDONE exit=0"}' ;;
+  buildmkgit)
+    # The CLI makes a git repo of its own in the workspace, and edits a file.
+    git init -q "$PWD" >/dev/null 2>&1
+    printf 'AGY WAS HERE\n' >> "$PWD/calc.txt"
+    echo '{"status":"SUCCESS","response":"edited calc.txt\nDONE exit=0"}' ;;
   *)
     echo "stub: unknown AGY_STUB_MODE '${AGY_STUB_MODE:-}'" >&2; exit 9 ;;
 esac
@@ -383,7 +405,9 @@ STUB_TOP=$(grep '^GITTOP=' "$STUB_LOG" | head -1 | sed 's/^GITTOP=//')
 STUB_ADD=$(grep '^ADDDIR=' "$STUB_LOG" | head -1 | sed 's/^ADDDIR=//')
 
 chk "B1 build runs in a disposable worktree, NOT in the caller's repo" \
-  '[ -n "$STUB_PWD" ] && [ "$STUB_PWD" != "$REPO" ] && [ "$STUB_TOP" = "$STUB_PWD" ] && case "$STUB_PWD" in */ext-run.*/build) true ;; *) false ;; esac'
+  '[ -n "$STUB_PWD" ] && [ "$STUB_PWD" != "$REPO" ] && case "$STUB_PWD" in */ext-run.*/build) true ;; *) false ;; esac'
+chk "B1a the CLI sees NO .git in its cwd and git finds no repo there (the worktree's .git names the real gitdir)" \
+  'grep -qx "DOTGIT=absent" "$STUB_LOG" && [ -z "$STUB_TOP" ]'
 chk "B1b --add-dir points at the worktree, never at the real repo (F9 + isolation)" \
   '[ "$STUB_ADD" = "$STUB_PWD" ]'
 chk "B1c build passes --mode accept-edits and the 20m mode timeout" \
@@ -465,6 +489,113 @@ DEFAULT_PATCH=$(printf '%s' "$ERR" | sed -n 's/.*applied the build patch to [^ ]
 chk "B9b --output is optional: the patch goes to a temp file whose path is printed" \
   '[ "$RC" -eq 0 ] && [ -n "$DEFAULT_PATCH" ] && [ -s "$DEFAULT_PATCH" ]'
 [ -n "$DEFAULT_PATCH" ] && rm -f "$DEFAULT_PATCH"
+
+# B10: a CLI that creates its OWN .git in the workspace: discarded, the worktree's
+# .git restored, the patch still captured and applied.
+REPO6="$BUILD/repo6"
+new_repo "$REPO6"
+AGY_BOUNDARY_CLEARED=1 AGY_STUB_MODE=buildmkgit run_agy build --prompt-file "$BRIEF" --workdir "$REPO6" --output "$BUILD/mkgit.patch"
+chk "B10 a .git the CLI created is discarded; the worktree's own .git is restored and the patch captured + applied" \
+  '[ "$RC" -eq 0 ] && grep -q "^+AGY WAS HERE$" "$BUILD/mkgit.patch" && ! grep -q "\.git/" "$BUILD/mkgit.patch" && tail -1 "$REPO6/calc.txt" | grep -qx "AGY WAS HERE" && [ "$(git -C "$REPO6" worktree list | wc -l | tr -d " ")" -eq 1 ] && [ -z "$(ls -A "$REPO6/.git/worktrees" 2>/dev/null)" ]'
+
+# B11: a conflicting apply NEVER leaves markers: the caller's staged drift makes a
+# 3-way merge conflict; the pre-check refuses it, exit 6, tree byte-identical.
+REPO7="$BUILD/repo7"
+new_repo "$REPO7"
+AGY_BOUNDARY_CLEARED=1 AGY_STUB_MODE=buildconflictstaged AGY_STUB_REPO="$REPO7" AGY_STUB_STATE="$BUILD/repo7.state" \
+  run_agy build --prompt-file "$BRIEF" --workdir "$REPO7" --output "$BUILD/conflict7.patch"
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+STATE7=$({ git -C "$REPO7" status --porcelain; cksum < "$REPO7/.git/index"; cksum < "$REPO7/conflict.txt"; })
+chk "B11 a patch whose 3-way merge would conflict is exit 6 and the caller's tree + index are byte-identical (no markers)" \
+  '[ "$RC" -eq 6 ] && [ -s "$BUILD/repo7.state" ] && [ "$STATE7" = "$(cat "$BUILD/repo7.state")" ] && ! grep -q "^<<<<<<<" "$REPO7/conflict.txt" && [ "$(sed -n 2p "$REPO7/conflict.txt")" = "REAL-DRIFT" ]'
+chk "B11b ...stderr says APPLY, nothing was written, and the patch is kept" \
+  'printf "%s" "$ERR" | grep -q "^APPLY:.*nothing was written" && [ -s "$BUILD/conflict7.patch" ]'
+
+# B12: the 3-way fallback still recovers a drift that does not conflict.
+REPO8="$BUILD/repo8"
+new_repo "$REPO8"
+printf 'l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\n' > "$REPO8/long.txt"
+git -C "$REPO8" add long.txt && git -C "$REPO8" commit -qm long
+AGY_BOUNDARY_CLEARED=1 AGY_STUB_MODE=build3way AGY_STUB_REPO="$REPO8" \
+  run_agy build --prompt-file "$BRIEF" --workdir "$REPO8" --output "$BUILD/3way.patch"
+chk "B12 a non-conflicting drift is applied by the clean 3-way path (both changes land, exit 0)" \
+  '[ "$RC" -eq 0 ] && printf "%s" "$ERR" | grep -q "3-way merge" && [ "$(sed -n 1p "$REPO8/long.txt")" = EDIT1 ] && [ "$(sed -n 4p "$REPO8/long.txt")" = DRIFT4 ]'
+
+# D1: an inherited GIT_DIR/GIT_WORK_TREE (a git hook's environment) must not
+# redirect ext-run's git calls into another repository.
+DREPO="$BUILD/drepo"; DECOY="$BUILD/decoy"
+new_repo "$DREPO"; new_repo "$DECOY"
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+DECOY_BEFORE=$({ git -C "$DECOY" status --porcelain; git -C "$DECOY" rev-parse HEAD; git -C "$DECOY" worktree list; })
+GIT_DIR="$DECOY/.git" GIT_WORK_TREE="$DECOY" GIT_INDEX_FILE="$DECOY/.git/index" AGY_BOUNDARY_CLEARED=1 AGY_STUB_MODE=buildedit \
+  run_agy build --prompt-file "$BRIEF" --workdir "$DREPO" --output "$BUILD/d1.patch"
+chk "D1 inherited GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE are cleared: the build lands in --workdir, the decoy repo is untouched" \
+  '[ "$RC" -eq 0 ] && tail -1 "$DREPO/calc.txt" | grep -qx "AGY WAS HERE" && [ -f "$DREPO/gen.txt" ] && [ ! -e "$DECOY/gen.txt" ] && [ "$(git -C "$DECOY" status --porcelain; git -C "$DECOY" rev-parse HEAD; git -C "$DECOY" worktree list)" = "$DECOY_BEFORE" ]'
+
+# --- E*: a symlink is judged — and read — at its target -------------------------
+SYM=$(new_tmp)
+printf '{"type":"object"}\n' > "$DENY/clip-creator/schema.json"
+ln -s "$DENY/clip-creator/note.txt" "$SYM/link-note.txt"
+ln -s "link-note.txt" "$SYM/link2.txt"
+ln -s "$DENY/clip-creator/note.txt" "$SYM/brief-link.txt"
+ln -s "$DENY/clip-creator/schema.json" "$SYM/schema-link.json"
+ln -s "$DENY/clip-creator/inner" "$SYM/wd-link"
+printf 'secret\n' > "$MARKED/repo/secret.txt"
+ln -s "$MARKED/repo/secret.txt" "$SYM/marked-link.txt"
+ln -s "$DATA" "$SYM/ok-link.txt"
+AGY_BOUNDARY_CLEARED=1 run_agy read --prompt-file "$BRIEF" --input "$SYM/link-note.txt"
+chk "E1 an --input symlink in an allowed dir pointing into clip-creator is REFUSED (exit 3), agy never runs" \
+  '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "clip-creator" && [ ! -s "$STUB_LOG" ]'
+AGY_BOUNDARY_CLEARED=1 run_agy read --prompt-file "$BRIEF" --input "$SYM/link2.txt"
+chk "E2 a symlink CHAIN (link -> link -> denied file) is followed to the end and refused (exit 3)" \
+  '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "clip-creator" && [ ! -s "$STUB_LOG" ]'
+AGY_BOUNDARY_CLEARED=1 run_agy read --prompt-file "$SYM/brief-link.txt"
+chk "E3 a --prompt-file symlink into clip-creator is refused (exit 3)" \
+  '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "clip-creator" && [ ! -s "$STUB_LOG" ]'
+AGY_BOUNDARY_CLEARED=1 run_agy read --prompt-file "$BRIEF" --schema "$SYM/schema-link.json"
+chk "E4 a --schema symlink into clip-creator is refused (exit 3)" \
+  '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "clip-creator" && [ ! -s "$STUB_LOG" ]'
+AGY_BOUNDARY_CLEARED=1 run_agy build --prompt-file "$BRIEF" --workdir "$SYM/wd-link"
+chk "E5 a --workdir symlink to a clip-creator repo is refused (exit 3)" \
+  '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "clip-creator" && [ ! -s "$STUB_LOG" ]'
+AGY_BOUNDARY_CLEARED=1 run_agy read --prompt-file "$BRIEF" --input "$SYM/marked-link.txt"
+chk "E6 a symlink into a .agy-deny tree is refused by the marker at its TARGET (exit 3)" \
+  '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "\.agy-deny" && [ ! -s "$STUB_LOG" ]'
+AGY_BOUNDARY_CLEARED=1 AGY_STUB_MODE=ok AGY_STAGE_KEEP=1 run_agy read --prompt-file "$BRIEF" --input "$SYM/ok-link.txt"
+KEPT=$(printf '%s' "$ERR" | sed -n 's/^ext-run: staging dir kept at //p' | head -1)
+chk "E7 an allowed symlink runs: staged under the caller's name with the TARGET's content (a copy, not a link)" \
+  '[ "$RC" -eq 0 ] && [ -n "$KEPT" ] && [ -f "$KEPT/ws/inputs/ok-link.txt" ] && [ ! -L "$KEPT/ws/inputs/ok-link.txt" ] && [ "$(cat "$KEPT/ws/inputs/ok-link.txt")" = needle ]'
+[ -n "$KEPT" ] && rm -rf "$KEPT"
+
+# --- J*: a marker exactly AT $HOME counts; one above $HOME does not ---------------
+HM=$(new_tmp)
+HMP=$(cd "$HM" && pwd -P)
+new_repo "$HMP/proj"
+: > "$HMP/.agy-deny"
+HOME="$HMP" AGY_BOUNDARY_CLEARED=1 AGY_STUB_MODE=buildnoop run_agy build --prompt-file "$BRIEF" --workdir "$HMP/proj" --output "$HMP/j1.patch"
+chk "J1 a .agy-deny marker at \$HOME itself refuses (exit 3) — the walk checks \$HOME before stopping" \
+  '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "$HMP/.agy-deny" && [ ! -s "$STUB_LOG" ]'
+HOME="$HM" AGY_BOUNDARY_CLEARED=1 AGY_STUB_MODE=buildnoop run_agy build --prompt-file "$BRIEF" --workdir "$HMP/proj" --output "$HMP/j1b.patch"
+chk "J1b ...also when \$HOME is spelled through a symlink (the walk compares physical paths)" \
+  '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "\.agy-deny"'
+HA=$(new_tmp)
+HAP=$(cd "$HA" && pwd -P)
+mkdir -p "$HAP/home"
+new_repo "$HAP/home/proj"
+: > "$HAP/.agy-deny"
+HOME="$HAP/home" AGY_BOUNDARY_CLEARED=1 AGY_STUB_MODE=buildnoop run_agy build --prompt-file "$BRIEF" --workdir "$HAP/home/proj" --output "$HAP/j2.patch"
+chk "J2 a marker ABOVE \$HOME is not consulted (the walk still stops at \$HOME)" '[ "$RC" -eq 0 ]'
+
+# --- G*: a trailing value-taking option is a usage error, never a hang ------------
+# bounded RC-capturing run: perl's alarm kills a regressed (looping) parser.
+# shellcheck disable=SC2034  # OUT is read inside chk's eval'd condition strings
+run_bounded() { OUT=$(perl -e 'alarm shift; exec @ARGV' 20 "$EXT_RUN" "$@" 2>"$ERRF"); RC=$?; ERR=$(cat "$ERRF"); }
+AGY_BOUNDARY_CLEARED=1 run_bounded review --prompt-file "$BRIEF" --vendor
+chk "G1 a trailing --vendor with no value is exit 2 (needs a value), not an endless loop" \
+  '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q -- "--vendor needs a value"'
+AGY_BOUNDARY_CLEARED=1 run_bounded review --prompt-file
+chk "G2 a trailing --prompt-file is exit 2 too" \
+  '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q -- "--prompt-file needs a value"'
 
 # =============================================================================
 # T*: tiers.json — the ONLY source of external model ids (agy side)
@@ -556,6 +687,7 @@ set -u
 log() { printf '%s\n' "$1" >> "$CODEX_STUB_LOG"; }
 log "PWD=$PWD"
 log "GITTOP=$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)"
+if [ -e "$PWD/.git" ]; then log "DOTGIT=present"; else log "DOTGIT=absent"; fi
 last=""
 prev=""
 for a in "$@"; do
@@ -605,6 +737,17 @@ case "${CODEX_STUB_MODE:-ok}" in
     printf 'line1\nREAL-DRIFT\nline3\n' > "$CODEX_STUB_REPO/conflict.txt"
     ok_events; printf 'edited conflict.txt\nDONE exit=0\n' > "$last" ;;
   hang) exec sleep 30 ;;
+  hanggc)
+    # A grandchild that IGNORES TERM, then the CLI hangs: the watchdog's TERM
+    # kills the parent, and only a tree/group KILL can reach the grandchild.
+    ( trap '' TERM; exec sleep 300 ) </dev/null >/dev/null 2>&1 &
+    echo "$!" > "$CODEX_STUB_GC"
+    exec sleep 30 ;;
+  okgc)
+    # A normal run that leaves a background grandchild behind.
+    sleep 300 </dev/null >/dev/null 2>&1 &
+    echo "$!" > "$CODEX_STUB_GC"
+    ok_events; printf 'hello from codex\n' > "$last" ;;
   *) echo "stub: unknown CODEX_STUB_MODE '${CODEX_STUB_MODE:-}'" >&2; exit 9 ;;
 esac
 exit 0
@@ -693,6 +836,24 @@ AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=hang run_agy read --v
 T_TOOK=$((SECONDS - T_START))
 chk "C5g the wall-clock watchdog kills a hung codex: exit 4, says timed out, well before the hang ends" \
   '[ "$RC" -eq 4 ] && printf "%s" "$ERR" | grep -q "timed out after 1s" && [ "$T_TOOK" -lt 15 ]'
+
+# K*: the whole process tree dies with the run — a grandchild that ignores TERM
+# (the watchdog's TERM kills the parent, which stops the watchdog before its KILL)
+# and a background grandchild of a run that exited normally.
+export CODEX_STUB_GC="$HARNESS/codex-gc.pid"
+alive() { [ -n "$1" ] && kill -0 "$1" 2>/dev/null; }
+rm -f "$CODEX_STUB_GC"
+AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=hanggc run_agy read --vendor codex --prompt-file "$BRIEF" --timeout 1s
+GC1=$(cat "$CODEX_STUB_GC" 2>/dev/null)
+chk "K1 a timed-out codex's TERM-ignoring grandchild is killed and reaped before ext-run exits (exit 4, timed out)" \
+  '[ "$RC" -eq 4 ] && printf "%s" "$ERR" | grep -q "timed out" && [ -n "$GC1" ] && ! alive "$GC1"'
+alive "$GC1" && kill -9 "$GC1" 2>/dev/null
+rm -f "$CODEX_STUB_GC"
+AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=okgc run_agy read --vendor codex --prompt-file "$BRIEF"
+GC2=$(cat "$CODEX_STUB_GC" 2>/dev/null)
+chk "K2 a background grandchild left by a codex run that exited normally is killed too (exit 0, answer intact)" \
+  '[ "$RC" -eq 0 ] && [ "$OUT" = "hello from codex" ] && [ -n "$GC2" ] && ! alive "$GC2"'
+alive "$GC2" && kill -9 "$GC2" 2>/dev/null
 
 AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_agy read --vendor codex --prompt-file "$BRIEF" --timeout 1m30s
 chk "C5h a codex --timeout the watchdog cannot parse is a usage error (exit 2)" '[ "$RC" -eq 2 ]'
@@ -850,6 +1011,8 @@ AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildedit \
 STUB_PWD=$(grep '^PWD=' "$STUB_LOG" | head -1 | sed 's/^PWD=//')
 chk "C10 codex build: workspace-write sandbox, level model/effort, -C = the disposable worktree" \
   'grep -qx "SANDBOX=workspace-write" "$STUB_LOG" && grep -qx "MODEL=gpt-fx-builder" "$STUB_LOG" && grep -qx "CFG=model_reasoning_effort=medium" "$STUB_LOG" && [ "$(grep "^CDIR=" "$STUB_LOG" | sed "s/^CDIR=//")" = "$STUB_PWD" ] && case "$STUB_PWD" in */ext-run.*/build) true ;; *) false ;; esac'
+chk "C10a codex also sees NO .git in its workspace, and the patch is still captured (C10c)" \
+  'grep -qx "DOTGIT=absent" "$STUB_LOG" && [ -z "$(grep "^GITTOP=" "$STUB_LOG" | sed "s/^GITTOP=//")" ]'
 chk "C10b the caller's uncommitted + untracked work and --input (.codex-inputs) are carried in" \
   'grep -qx "SEEN new.txt=new untracked" "$STUB_LOG" && grep -qx "SEEN .codex-inputs/note.txt=needle" "$STUB_LOG"'
 chk "C10c the codex patch is applied back; carried work not re-applied; inputs never leak" \

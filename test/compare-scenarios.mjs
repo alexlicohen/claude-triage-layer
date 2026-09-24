@@ -36,13 +36,13 @@ const STAGED = (prompt, over = {}) => {
 }
 // The grade reply, built from the grade prompt itself: one diff line per
 // `stage-worktree.sh diff` command (ok unless the label is in opts.badDiff), one
-// patch-check line per {label: [applies, rc]}, and the leakcheck line.
+// patch-check line per {label: [applies, rc, error?]}, and the leakcheck line.
 const FIN = (rows, { leak = 'CLEAN', rc, badDiff = [], leakField, baseMoved } = {}) => prompt => {
   const diffs = [...prompt.matchAll(/diff --worktree '([^']+)' --base '[^']+' --out '([^']+)'/g)].map(m => {
     const label = m[2].replace(/^.*\//, '').replace(/\.patch$/, '')
     return badDiff.includes(label) ? { worktree: m[1], patch: m[2], ok: false, error: 'worktree does not exist' } : { worktree: m[1], patch: m[2], ok: true, shortstat: '' }
   })
-  const results = Object.entries(rows).map(([label, [applies, rc2]]) => ({ patch: `/o/out/${label}.patch`, applies, rc: rc2, diffstat: applies ? '1 file changed, 1 insertion(+)' : '', tail: `tail-${label}` }))
+  const results = Object.entries(rows).map(([label, [applies, rc2, error]]) => Object.assign({ patch: `/o/out/${label}.patch`, applies, rc: rc2, diffstat: applies ? '1 file changed, 1 insertion(+)' : '', tail: `tail-${label}` }, error ? { error } : {}))
   const leakcheck = { status: leak, leak: leakField != null ? leakField : leak === 'LEAK', baseMoved: baseMoved != null ? baseMoved : leak === 'BASE_MOVED', rc: rc != null ? rc : leak === 'LEAK' ? 7 : 0, detail: `${leak}: detail` }
   return { diffs, results, leakcheck }
 }
@@ -412,7 +412,28 @@ const repoAsWorkdir = p => /(^|\s)cd\s+'?\/r\/repo'?(\s|$|\/)/.test(p) || /WORKD
   const { result: r3, logs: l3 } = await run(
     A({ candidates: [{ vendor: 'claude', level: 'builder', label: 'a' }] }),
     { 'candidate:': ['done'], 'grade:': [FIN({ a: [true, 0] }, { leak: 'ERROR', rc: 2, leakField: false })] })
-  chk('C12: a leakcheck that errored is UNKNOWN (leak null, loud), not clean', r3.leak === null && l3.some(l => l.startsWith('⚠ LEAK CHECK INCOMPLETE')) && byLabel(r3, 'a').status === 'pass')
+  chk('C12: a leakcheck that errored is UNKNOWN (leak null, loud), not clean', r3.leak === null && l3.some(l => l.startsWith('⚠ LEAK CHECK INCOMPLETE')))
+  chk('C12: …and an UNKNOWN leak state voids every grade: a checks-green candidate is invalid, graded:false, the ⚠ says so',
+    byLabel(r3, 'a').status === 'invalid' && /LEAK STATE UNKNOWN/.test(byLabel(r3, 'a').tail) && r3.graded === false &&
+    l3.some(l => l.startsWith('⚠ LEAK CHECK INCOMPLETE') && l.includes('Every candidate is INVALID')))
+  const { result: r4 } = await run(
+    A({ candidates: [{ vendor: 'claude', level: 'builder', label: 'a' }, { vendor: 'codex', level: 'builder', label: 'u' }] }),
+    { 'candidate:a': ['done'], 'candidate:u': ['UNAVAILABLE: x'], 'grade:': [FIN({ a: [true, 0] }, { leak: 'CLEAN', rc: 0, leakField: false })].map(f => p => Object.assign(f(p), { leakcheck: { rc: 0 } })) })
+  chk('C12: a leakcheck line with no status (relayed badly) is UNKNOWN too — every candidate, unavailable included, is invalid',
+    r4.leak === null && r4.candidates.every(c => c.status === 'invalid') && r4.graded === false)
+  chk('C12: a LEAK also leaves graded:false (no grade stands)', result.graded === false)
+}
+
+// ---- C12o: a patch patch-check could not grade (overlay-failed) is invalid -------
+{
+  const { result, logs } = await run(
+    A({ overlay: '/h/hidden', candidates: [{ vendor: 'claude', level: 'builder', label: 'a' }, { vendor: 'claude', level: 'deep', label: 'b' }, { vendor: 'claude', level: 'deep', label: 'c' }] }),
+    { 'candidate:': ['done\nCHECK rc=0'], 'grade:': [FIN({ a: [true, null, 'overlay-failed'], b: [true, 0], c: [true, null] })] })
+  chk('C12o: patch-check error overlay-failed → invalid (never pass, never fail), the reason in tail',
+    byLabel(result, 'a').status === 'invalid' && byLabel(result, 'a').rc === null && /overlay-failed/.test(byLabel(result, 'a').tail))
+  chk('C12o: an applied patch relayed with rc null (error field dropped by the relay) is invalid too, not a fail', byLabel(result, 'c').status === 'invalid')
+  chk('C12o: the other candidate still grades, but graded:false (not every candidate was graded)', byLabel(result, 'b').status === 'pass' && result.leak === false && result.graded === false)
+  chk('C12o: the tally counts it as INVALID', logs.some(l => /2 INVALID/.test(l)))
 }
 
 // ---- C13: external candidates require args.files -----------------------------

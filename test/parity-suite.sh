@@ -205,6 +205,33 @@ TD="$T/taskdeny"; mkdir -p "$TD"; mksuite "$TD/suite" "$SRC"; : > "$TD/.agy-deny
 run_ps materialize --task "$TD/suite/2/gen-fix" --out "$T/td-out"
 chk "D8: a generator task under an .agy-deny tree carries that status to its repo" '[ "$RC" -eq 0 ] && [ "$(j .denied.agy)" = true ] && [ -f "$T/td-out/.agy-deny" ]'
 
+# A source path WITH SPACES keeps its deny status (the source list is an array,
+# never whitespace-split text).
+mksrc "$T/sp ace/src"; : > "$T/sp ace/src/.codex-deny"; SPS="$T/spsuite"; mksuite "$SPS" "$T/sp ace/src"
+# (bounded: word-splitting once turned "sp ace/src" into a relative path whose
+# dirname walk never ended)
+OUT=$(perl -e 'alarm shift; exec @ARGV' 60 "$PS" materialize --task "$SPS/1/g-fix" --out "$T/sp-out" 2>"$T/err"); RC=$?; ERR=$(cat "$T/err")
+chk "D13: a .codex-deny in a source repo whose path has a space is propagated (denied.codex true)" \
+  '[ "$RC" -eq 0 ] && [ -f "$T/sp-out/.codex-deny" ] && [ "$(j .denied.codex)" = true ] && grep -qF "$T/sp ace/src/.codex-deny" "$T/sp-out/.codex-deny"'
+
+# A marker exactly AT $HOME counts (the same walk as ext-run.sh, $HOME included).
+HP="$T/homedeny"; mksrc "$HP/src"; : > "$HP/.agy-deny"; HPS="$T/hpsuite"; mksuite "$HPS" "$HP/src"
+OUT=$(HOME="$HP" "$PS" materialize --task "$HPS/1/g-fix" --out "$T/hp-out" 2>"$T/err"); RC=$?; ERR=$(cat "$T/err")
+chk "D14: a .agy-deny at \$HOME itself is propagated (denied.agy true)" \
+  '[ "$RC" -eq 0 ] && [ -f "$T/hp-out/.agy-deny" ] && [ "$(j .denied.agy)" = true ]'
+
+# An inherited GIT_DIR/GIT_WORK_TREE (a hook's environment) must not redirect the
+# source lookup or the materialized repo.
+DECOY="$T/decoy"; mksrc "$DECOY"; printf 'decoy only\n' > "$DECOY/decoy.txt"; git -C "$DECOY" add decoy.txt; git -C "$DECOY" commit -qm decoy
+DECOY_BEFORE=$({ git -C "$DECOY" status --porcelain; git -C "$DECOY" rev-parse HEAD; git -C "$DECOY" for-each-ref; })
+OUT=$(GIT_DIR="$DECOY/.git" GIT_WORK_TREE="$DECOY" GIT_INDEX_FILE="$DECOY/.git/index" "$PS" materialize --task "$SUITE/1/g-fix" --out "$T/gd-out" 2>"$T/err"); RC=$?; ERR=$(cat "$T/err")
+chk "D15: with a decoy GIT_DIR/GIT_WORK_TREE inherited, materialize yields the same sha as M1 and leaves the decoy untouched" \
+  '[ "$RC" -eq 0 ] && [ "$(j .sha)" = "$M1_SHA" ] && [ "$({ git -C "$DECOY" status --porcelain; git -C "$DECOY" rev-parse HEAD; git -C "$DECOY" for-each-ref; })" = "$DECOY_BEFORE" ]'
+
+# A trailing value-taking flag is a usage error, never an endless loop.
+OUT=$(perl -e 'alarm shift; exec @ARGV' 20 "$PS" materialize --task "$SUITE/1/g-fix" --out 2>"$T/err"); RC=$?; ERR=$(cat "$T/err")
+chk "G1: a trailing --out with no value is exit 2 (needs a value)" '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q -- "--out needs a value"'
+
 # The owner of the deny decision, ext-run.sh, must refuse the clone and any
 # worktree of it — with stub CLIs that must never be invoked.
 if [ -x "$EXT_RUN" ]; then
@@ -266,6 +293,11 @@ chk "V7: a build task without a solution cannot be proven solvable => ok false" 
 run_ps verify-task --task "$SUITE/3/rev-seed" --out "$T/v7"
 chk "V8: verify-task on the review task: key parses, 3 seeds, every seeded file exists at the sha" \
   '[ "$RC" -eq 0 ] && [ "$(j .seeds)" = 3 ] && [ "$(j ".missing | length")" = 0 ] && [ "$(j .ok)" = true ]'
+OVF="$T/ovfail"; mksuite "$OVF" "$SRC"
+mkdir -p "$OVF/1/g-fix/hidden/calc.sh"; printf 'x\n' > "$OVF/1/g-fix/hidden/calc.sh/inner"
+run_ps verify-task --task "$OVF/1/g-fix" --out "$T/v10"
+chk "V11: an overlay that cannot be copied (hidden tests missing) is no grade: baseFails AND solutionPasses false, ok false, error overlay-failed" \
+  '[ "$RC" -eq 1 ] && [ "$(j .baseFails)" = false ] && [ "$(j .solutionPasses)" = false ] && [ "$(j .ok)" = false ] && [ "$(j .error)" = overlay-failed ]'
 RK="$T/rk"; mksuite "$RK" "$SRC"; printf '[]\n' > "$RK/3/rev-seed/key.json"
 run_ps verify-task --task "$RK/3/rev-seed" --out "$T/v8"
 chk "V9: an empty seed list => ok false" '[ "$RC" -eq 1 ] && [ "$(j .ok)" = false ]'

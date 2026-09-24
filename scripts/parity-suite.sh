@@ -66,6 +66,9 @@
 #             invalid task, nothing done; 3 REFUSED (deny-listed source).
 set -uo pipefail
 export LC_ALL=C
+# Inherited git redirection (GIT_DIR & co. from a hook or a caller) would point
+# every `git -C` below — the source lookup included — at another repository.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_NAMESPACE GIT_CEILING_DIRECTORIES
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Mirrors HARD_DENY_REPOS in ext-run.sh (the owner of deny decisions);
@@ -205,16 +208,20 @@ has_hard_deny() {
 # deny_names VENDOR — the extra names ext-run denies for VENDOR.
 deny_names() { case "$1" in agy) echo "${AGY_DENY_REPOS:-}" ;; codex) echo "${CODEX_DENY_REPOS:-}" ;; esac; }
 # denied_at VENDOR PATH — prints the reason ext-run would refuse VENDOR on PATH
-# (a .VENDOR-deny marker from PATH up to $HOME, exclusive — the same walk as
-# ext-run.sh — or a deny-listed name component); prints nothing otherwise.
+# (a .VENDOR-deny marker from PATH up to AND INCLUDING $HOME, or / outside it —
+# the same walk as ext-run.sh — or a deny-listed name component); prints nothing
+# otherwise.
+HOME_P=$(cd "${HOME:-/}" 2>/dev/null && pwd -P) || HOME_P="${HOME:-/}"
 denied_at() {
   local v="$1" p="$2" d name
   for name in $(deny_names "$v"); do
     case "/$p/" in */"$name"/*) echo "$v deny-listed name '$name' in $p"; return 0 ;; esac
   done
   d="$p"
-  while [ -n "$d" ] && [ "$d" != "/" ] && [ "$d" != "$HOME" ]; do
+  while [ -n "$d" ]; do
     if [ -f "$d/.$v-deny" ]; then echo "$d/.$v-deny"; return 0; fi
+    case "$d" in /|"${HOME:-/}"|"$HOME_P") break ;; esac
+    [ "$(dirname "$d")" != "$d" ] || break   # a relative path bottoms out at "."
     d=$(dirname "$d")
   done
   return 0
@@ -243,14 +250,15 @@ materialize_task() {
   type=$(printf '%s' "$TASK_JSON" | jq -r .source.type)
 
   # Identity, dates and config fixed for every commit this makes (and for a
-  # generator's): the same task always yields the same sha.
-  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY
+  # generator's): the same task always yields the same sha. (GIT_DIR & co. were
+  # unset at the top.)
   export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
   export GIT_AUTHOR_NAME=parity GIT_AUTHOR_EMAIL=parity@localhost GIT_COMMITTER_NAME=parity GIT_COMMITTER_EMAIL=parity@localhost
   export GIT_AUTHOR_DATE="2000-01-01T00:00:00+0000" GIT_COMMITTER_DATE="2000-01-01T00:00:00+0000"
 
-  # The paths whose deny status the clone must inherit.
-  DENY_SOURCES="$tdir"
+  # The paths whose deny status the clone must inherit — an ARRAY, so a path with
+  # spaces stays one path (a word-split path would lose its marker).
+  DENY_SOURCES=("$tdir")
   if [ "$type" = git ]; then
     src=$(printf '%s' "$TASK_JSON" | jq -r .source.repo)
     base=$(printf '%s' "$TASK_JSON" | jq -r .source.base)
@@ -259,11 +267,12 @@ materialize_task() {
     srcTop=$(git -C "$src" rev-parse --show-toplevel 2>/dev/null) || die "source.repo is not a git work tree: $src" 2
     srcTop=$(cd "$srcTop" && pwd -P)
     srcMain=$(main_worktree_of "$srcTop")
-    DENY_SOURCES="$DENY_SOURCES $srcTop${srcMain:+ $srcMain}"
+    DENY_SOURCES+=("$srcTop")
+    [ -n "$srcMain" ] && DENY_SOURCES+=("$srcMain")
     within "$out" "$srcTop" && usage "refusing: --out $out is inside the source repo $srcTop"
     [ -n "$srcMain" ] && within "$out" "$srcMain" && usage "refusing: --out $out is inside the source repo $srcMain"
   fi
-  for p in $DENY_SOURCES; do
+  for p in "${DENY_SOURCES[@]}"; do
     has_hard_deny "$p" && die "REFUSED: $p is under a hard-denied repo ($HARD_DENY_REPOS)" 3
   done
 
@@ -319,7 +328,7 @@ materialize_task() {
   # Propagate: any deny status of the source becomes a marker next to the clone.
   for v in $VENDORS; do
     wrote=0
-    for p in $DENY_SOURCES; do
+    for p in "${DENY_SOURCES[@]}"; do
       why=$(denied_at "$v" "$p")
       if [ -n "$why" ] && [ "$wrote" -eq 0 ]; then
         printf 'propagated by parity-suite.sh materialize: %s\n' "$why" > "$out/.$v-deny" || fail "could not write $out/.$v-deny"
@@ -383,13 +392,16 @@ do_verify() {
   lines=$("$SCRIPT_DIR/patch-check.sh" "$@" "$out/base.patch" "$tdir/$sol") || die "patch-check.sh failed: $lines"
   rm -f "$out/base.patch"
   l1=$(printf '%s\n' "$lines" | sed -n 1p); l2=$(printf '%s\n' "$lines" | sed -n 2p)
-  baseFails=$(printf '%s' "$l1" | jq '.applies == true and .rc != 0')
-  solPasses=$(printf '%s' "$l2" | jq '.applies == true and .rc == 0')
+  # A patch-check error (e.g. overlay-failed: the hidden tests never ran) is no
+  # grade at all — neither "base fails" nor "solution passes".
+  baseFails=$(printf '%s' "$l1" | jq '.applies == true and .rc != null and .rc != 0 and (.error // null) == null')
+  solPasses=$(printf '%s' "$l2" | jq '.applies == true and .rc == 0 and (.error // null) == null')
   ok=false; [ "$baseFails" = true ] && [ "$solPasses" = true ] && ok=true
   jq -nc --arg id "$id" --arg sha "$MAT_SHA" --argjson b "$baseFails" --argjson s "$solPasses" --argjson ok "$ok" \
     --argjson l1 "$l1" --argjson l2 "$l2" \
     '{id: $id, kind: "build", sha: $sha, baseFails: $b, solutionPasses: $s, ok: $ok}
-     + (if $ok then {} else {baseTail: $l1.tail, solutionTail: $l2.tail} end)'
+     + (if $ok then {} else {baseTail: $l1.tail, solutionTail: $l2.tail} end)
+     + (if ($l1.error // $l2.error) != null then {error: ($l1.error // $l2.error)} else {} end)'
   [ "$ok" = true ] && exit 0
   exit 1
 }

@@ -7,7 +7,9 @@
 # checked), a new + binary file, an overlay file visible to the check but absent
 # from the diffstat and the caller's tree, the caller's tree AND index untouched,
 # worktrees (dirs and git bookkeeping) cleaned up, the timeout, a missing patch
-# file, JSON shape/order, and usage errors.
+# file, JSON shape/order, usage errors (a trailing flag with no value), an overlay
+# copy failure (ungradable, never graded), an inherited GIT_DIR/GIT_WORK_TREE, and
+# a check's grandchildren killed with it (timeout and normal exit).
 # shellcheck disable=SC2034  # *_BEFORE/START are read inside chk's eval'd conditions
 set -u
 
@@ -143,6 +145,54 @@ chk "P11b a missing --check is a usage error (exit 2)" '[ "$RC" -eq 2 ]'
 run_pc --repo "$T/tmp" --base HEAD --check true "$T/fix.patch"
 chk "P11c a non-repo --repo is a usage error (exit 2)" '[ "$RC" -eq 2 ]'
 chk "P11d usage errors leave no worktree behind" '[ "$(git -C "$R" worktree list | wc -l | tr -d " ")" -eq 1 ]'
+
+# --- P12: an overlay copy failure is fatal for that patch, never a grade ----------
+# overlay/calc.txt/ is a DIRECTORY where the worktree has the file calc.txt, so
+# `cp -R` fails (as root too).
+OVB="$T/overlay-bad"
+mkdir -p "$OVB/calc.txt" "$OVB/hidden"
+printf 'x\n' > "$OVB/calc.txt/inner"
+printf '#!/bin/bash\necho hidden-ran\n' > "$OVB/hidden/test.sh"
+run_pc --repo "$R" --base HEAD --overlay "$OVB" --check 'echo check-ran; true' "$T/fix.patch" "$T/nofix.patch"
+chk "P12 overlay copy failed: applies true, rc null, error overlay-failed, and the check never ran" \
+  '[ "$RC" -eq 0 ] && [ "$(field 1 .applies)" = true ] && [ "$(field 1 .rc)" = null ] && [ "$(field 1 .error)" = overlay-failed ] && ! field 1 .tail | grep -qx check-ran && field 1 .tail | grep -q "overlay copy failed"'
+chk "P12b every patch in the run is reported the same way, and its worktree is still cleaned" \
+  '[ "$(field 2 .error)" = overlay-failed ] && [ "$(field 2 .rc)" = null ] && [ "$(git -C "$R" worktree list | wc -l | tr -d " ")" -eq 1 ] && [ -z "$(ls -A "$TMPDIR")" ]'
+run_pc --repo "$R" --base HEAD --check true "$T/fix.patch"
+chk "P12c a normal result carries no error field" '[ "$(field 1 "has(\"error\")")" = false ]'
+
+# --- P13: a trailing value-taking flag is a usage error, never an endless loop ----
+OUT=$(perl -e 'alarm shift; exec @ARGV' 20 "$PC" --repo "$R" --base 2>"$T/err"); RC=$?
+chk "P13 a trailing --base with no value is exit 2 (needs a value)" '[ "$RC" -eq 2 ] && grep -q -- "--base needs a value" "$T/err"'
+OUT=$(perl -e 'alarm shift; exec @ARGV' 20 "$PC" --repo "$R" --base HEAD --check true --timeout 2>"$T/err"); RC=$?
+chk "P13b a trailing --timeout too" '[ "$RC" -eq 2 ] && grep -q -- "--timeout needs a value" "$T/err"'
+
+# --- P14: an inherited GIT_DIR/GIT_WORK_TREE does not redirect the grader ---------
+DECOY="$T/decoy"
+mkdir -p "$DECOY"
+git -c init.defaultBranch=main init -q "$DECOY"
+printf 'decoy\n' > "$DECOY/calc.txt"
+git -C "$DECOY" -c user.email=d@l -c user.name=d add -A && git -C "$DECOY" -c user.email=d@l -c user.name=d commit -qm decoy
+DECOY_BEFORE=$({ git -C "$DECOY" status --porcelain; git -C "$DECOY" worktree list; git -C "$DECOY" rev-parse HEAD; })
+OUT=$(GIT_DIR="$DECOY/.git" GIT_WORK_TREE="$DECOY" "$PC" --repo "$R" --base HEAD --check "$CHECK" "$T/fix.patch" 2>"$T/err"); RC=$?
+chk "P14 with GIT_DIR/GIT_WORK_TREE of a decoy inherited, the patch is graded against --repo (pass) and the decoy is untouched" \
+  '[ "$RC" -eq 0 ] && [ "$(field 1 .applies)" = true ] && [ "$(field 1 .rc)" = 0 ] && [ "$({ git -C "$DECOY" status --porcelain; git -C "$DECOY" worktree list; git -C "$DECOY" rev-parse HEAD; })" = "$DECOY_BEFORE" ] && [ "$(git -C "$R" status --porcelain)" = "$STATUS_BEFORE" ]'
+
+# --- P15: a check's grandchildren die with it ------------------------------------
+alive() { [ -n "$1" ] && kill -0 "$1" 2>/dev/null; }
+GCF="$T/gc.pid"
+rm -f "$GCF"
+run_pc --repo "$R" --base HEAD --timeout 1 --check "( trap '' TERM; exec sleep 300 ) </dev/null >/dev/null 2>&1 & echo \$! > '$GCF'; sleep 30" "$T/fix.patch"
+GC1=$(cat "$GCF" 2>/dev/null)
+chk "P15 a timed-out check's TERM-ignoring grandchild is killed before patch-check returns (rc 124)" \
+  '[ "$(field 1 .rc)" = 124 ] && [ -n "$GC1" ] && ! alive "$GC1"'
+alive "$GC1" && kill -9 "$GC1" 2>/dev/null
+rm -f "$GCF"
+run_pc --repo "$R" --base HEAD --check "sleep 300 </dev/null >/dev/null 2>&1 & echo \$! > '$GCF'; grep -qx fixed calc.txt" "$T/fix.patch"
+GC2=$(cat "$GCF" 2>/dev/null)
+chk "P15b a background process left by a check that exited normally is killed too (rc 0 kept)" \
+  '[ "$(field 1 .rc)" = 0 ] && [ -n "$GC2" ] && ! alive "$GC2" && [ "$(git -C "$R" worktree list | wc -l | tr -d " ")" -eq 1 ]'
+alive "$GC2" && kill -9 "$GC2" 2>/dev/null
 
 echo ""
 echo "RESULT: $PASS_COUNT passed, $FAIL_COUNT failed"

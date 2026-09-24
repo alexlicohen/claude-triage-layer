@@ -261,7 +261,12 @@ model id and rejects the two together, so `--effort low|medium|high` rewrites th
 --ignore-user-config --json -o <last-message> - < <prompt>`. Never a `--dangerously-*` flag.
 Without the two `/tmp` exclusions a workspace-write run can write anywhere under `/tmp` and
 `$TMPDIR`. codex has no print-timeout, so a background watchdog enforces the mode timeout
-(`--timeout N|Ns|Nm|Nh`). `--effort minimal|low|medium|high|xhigh` overrides the tiers
+(`--timeout N|Ns|Nm|Nh`). Both CLIs run as their own process group (`set -m`; bash 3.2 has no
+`setsid`): the watchdog signals the whole tree (frozen with STOP, leaves first) and the group,
+and after every run `reap_tree` TERMs, then KILLs, whatever is left — a grandchild that ignores
+TERM or outlives its exiting parent dies with the run. (A descendant that moves itself into a
+new process group AND is orphaned escapes; a CLI that needs the controlling terminal would be
+stopped, which none of the headless invocations here do.) `--effort minimal|low|medium|high|xhigh` overrides the tiers
 effort. codex auto-loads `~/.codex/AGENTS.md`, so its prompt gets a footer: non-interactive
 worker, ask nothing, never touch `PROJECT_MEMORY.md`/handoffs/engram/memory files, touch only
 the workspace.
@@ -286,13 +291,21 @@ Neither CLI's flags can express "which files it may change" safely (agy needs
 3. commits that carried state as the stage base, so the result patch is the **pure model
    delta** rather than a re-application of the caller's own changes;
 4. points the CLI (agy `--add-dir` + cwd, codex `-C` + cwd) at the worktree — never at the
-   real repo; staged `--input` files go in `.<vendor>-inputs/`;
+   real repo; staged `--input` files go in `.<vendor>-inputs/`. For the duration of the run
+   the worktree's `.git` file — which names the REAL repo's gitdir — is moved into the
+   script's private meta dir, so the CLI (agy runs with `--dangerously-skip-permissions`)
+   cannot discover or write the real repository through git; it is restored (any `.git` the
+   CLI created is discarded) before the capture, and always in the exit trap;
 5. captures `git add -A && git diff --cached --binary` into `--output` (a `mktemp` file
    when `--output` is omitted; the path is always printed on stderr). `add -A` honours
    `.gitignore`, so a deliverable at an ignored path comes back as "no changes";
-6. applies that patch back with `git apply` (and `git apply --3way` as a fallback for a
-   tree that drifted while the CLI ran). `--index` is deliberately *not* used: it refuses
-   any path whose worktree copy differs from the index;
+6. applies that patch back (`apply_back`, the single writer of the caller's tree) ONLY after
+   a clean pre-check: `git apply --check` then `git apply`; else `git apply --3way --check`
+   then `--3way` (for a tree that drifted while the CLI ran) — and since `--3way --check`
+   exits 0 even when the merge *would* conflict ("Applied patch to 'f' with conflicts.",
+   git 2.54), a 3-way check is clean only without "conflict" in its output. Anything else
+   writes nothing: exit 6 with the tree byte-identical (one exception: a clean 3-way check followed by a failing `--3way` apply, a race with a concurrent edit — ext-run then says to inspect the tree). `--index` is deliberately *not*
+   used: it refuses any path whose worktree copy differs from the index;
 7. removes the worktree on every exit path, including failures — `AGY_STAGE_KEEP` cannot
    defeat that.
 
@@ -315,7 +328,7 @@ stderr and never changes the exit code.
 | 3 | REFUSED — deny-list hit, boundary not attested, vendor not listed in the tiers file for this level/mode, or `--patch-out` on a dirty tree; nothing ran | return `REFUSED: …` |
 | 4 | UNAVAILABLE — CLI missing, non-zero exit, timeout, unparseable envelope, denied tools, non-SUCCESS status, a codex failure event, empty response, or the build stage could not be prepared | return `UNAVAILABLE: …`; never substitute your own work, never read as "no findings" |
 | 5 | SCHEMA — `--schema` given and the response is not valid JSON | retry once or report INCOMPLETE |
-| 6 | APPLY — build only: the patch did not apply to the real repo. The patch is left at `--output`; the answer still went to stdout | resolve by hand, or re-run |
+| 6 | APPLY — build only: the patch would not apply cleanly to the real repo, so NOTHING was written (the tree is unchanged). The patch is left at `--output`; the answer still went to stdout | resolve by hand, or re-run |
 
 **Exit 0 alone is never proof of work.** A headless agy run whose tools were auto-denied
 exits 0 and reports `{"status":"SUCCESS","response":"","denied_actions":[…]}`; a
@@ -327,15 +340,17 @@ non-empty `-o` file and no failure event. A codex rate limit is therefore UNAVAI
 ### Deny-list and the data boundary
 
 Applied to the resolved path of `--prompt-file`, `--workdir` (and its repo top level), a
-`--schema` file, and every `--input`:
+`--schema` file, and every `--input`. "Resolved" is the whole symlink chain (`resolve_path`,
+bash-3.2 `readlink` loop), not just the parent dir, and the resolved path is also the one that
+is read — a link in an allowed dir pointing into a denied repo is refused, never followed:
 
 1. refuse if any **path component equals** a denied name — component equality, not
    substring, so `…/clip-creator/media` refuses and `…/clip-creators-lab` does not.
    `clip-creator` is hard-denied for every vendor; `AGY_DENY_REPOS` / `CODEX_DENY_REPOS`
    add names for one vendor;
 2. refuse if the vendor's marker — `.agy-deny` (agy only) or `.codex-deny` (codex only) —
-   exists anywhere from that path up to `$HOME`: a per-repo, per-vendor opt-out that needs
-   no edit to this script;
+   exists anywhere from that path up to **and including** `$HOME` (or `/` for a path outside
+   it): a per-repo, per-vendor opt-out that needs no edit to this script;
 3. refuse unless `AGY_BOUNDARY_CLEARED=1` (both vendors) — clinical/BCH/PHI and COI
    material is not a path pattern, so it stays an explicit caller attestation.
 
@@ -356,6 +371,7 @@ have not consciously cleared for it.
 | `AGY_BOUNDARY_CLEARED` | must be `1`, else REFUSED before anything runs (both vendors) |
 | `AGY_STAGE_KEEP` | `1` keeps the staging dir (its path is printed on stderr). Never keeps the build worktree |
 | `TRIAGE_TIERS` | the tiers file to read (overrides the installed and repo copies) |
+| `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_COMMON_DIR`, `GIT_NAMESPACE`, `GIT_CEILING_DIRECTORIES` | **cleared** at the top (also by `patch-check.sh`, `stage-worktree.sh`, `parity-suite.sh`): an inherited absolute `GIT_DIR`/`GIT_WORK_TREE` (a git hook's environment) would otherwise redirect `git -C` into another repository |
 
 Vendor-side token spend is invisible to `triage-usage.sh`, so each run echoes
 `ext-run: <N> tokens (<S>s, <vendor>/<model>)[ out=<M>]` to **stderr**. `N` is the total
@@ -373,8 +389,18 @@ envelope carries a numeric `.usage.output_tokens`, otherwise the field is omitte
 first on `PATH` replay canned envelopes / JSONL events and log their cwd, argv and prompt, so
 the flag tables (codex's from a fixture tiers file), the deny-list, the exit-code contract,
 the watchdog, `--patch-out`/`--check` and the whole build-worktree round trip are asserted
-without ever reaching a real CLI or the network. It also covers `tiers-sync.sh` and
-`triage-tiers.sh`.
+without ever reaching a real CLI or the network — including: the CLI sees no `.git` in its
+cwd, a conflicting 3-way apply leaves the caller's tree byte-identical (exit 6), symlink
+chains into denied repos, a marker at `$HOME`, an inherited `GIT_DIR`, a trailing option with
+no value (exit 2, never a hang) and grandchildren reaped. It also covers `tiers-sync.sh` and
+`triage-tiers.sh`. `qc/mutate.sh` #49–#51 prove the git-env, symlink and apply-back guards
+have teeth.
+
+**Known limitation — `--check` is not sandboxed.** The check command runs in the disposable
+worktree with this user's full rights, OUTSIDE the model sandbox, and it may execute code the
+external CLI wrote (tests, Makefiles, scripts). The worktree is the only confinement. The same
+holds for `patch-check.sh`. A macOS seatbelt profile would close this, but would also block
+checks that need LibreOffice (grant-forge's docx rendering), so it is deliberately not done.
 
 ## `patch-check.sh` — the independent grader of a bake-off
 
@@ -403,14 +429,25 @@ It prints one JSON line per patch on stdout:
 ```
 
 `applies:false` means `rc:null` and the check never ran; `tail` says why (including "patch file
-not found"). Exit 0 = every patch was graded; exit 2 = usage error (bad flag, not a repo,
-unknown REV), nothing ran. It never touches the caller's working tree, index or HEAD.
+not found"). `"error":"overlay-failed"` (with `applies:true, rc:null`) means the patch applied
+but the `--overlay` copy failed, so the hidden tests are missing and the check was NOT run: the
+patch is ungradable — `triage-compare.js` maps it to `invalid`, `parity-suite.sh verify-task`
+to "neither base-fails nor solution-passes"; never a pass or a fail. `error` appears only then.
+Exit 0 = every patch was reported; exit 2 = usage error (bad flag, a flag with no value, not a
+repo, unknown REV), nothing ran. It never touches the caller's working tree, index or HEAD.
+
+The check runs as its own process group; on timeout the whole tree is killed, and after every
+check `reap_tree` kills anything it left running (a background server, a TERM-ignoring child)
+before the worktree is removed. **Not a sandbox:** the check executes candidate-written code
+(tests, Makefiles) with this user's rights, confined only by the disposable worktree — see the
+`--check` limitation under `ext-run.sh`; a seatbelt profile would block LibreOffice-based checks.
 
 `test/patch-check.sh` (wired into `make test`) runs it against scratch repos: applies+pass,
 applies+fail, non-applying, empty, binary/new file, overlay visible to the check but absent from
 the diffstat and the caller's tree, caller tree/index/HEAD untouched, worktrees cleaned (also
-after a timeout), missing patch, usage errors. `qc/mutate.sh` #32 proves the cleanup assertion
-has teeth.
+after a timeout), missing patch, usage errors (incl. a trailing flag with no value), overlay
+copy failure (`overlay-failed`), an inherited decoy `GIT_DIR`, grandchildren killed (timeout and
+normal exit). `qc/mutate.sh` #32 and #48 prove the cleanup and overlay assertions have teeth.
 
 ## `stage-worktree.sh` — the staging area of a bake-off
 
@@ -494,7 +531,8 @@ of every deny decision — would no longer see the source's `.agy-deny`/`.codex-
 its `AGY_DENY_REPOS`/`CODEX_DENY_REPOS` names. `materialize` therefore refuses (exit 3) any
 source or task path with a `clip-creator` component (`HARD_DENY_REPOS`, kept equal to
 ext-run's by a test), and writes `<out>/.<vendor>-deny` for any vendor the source is denied to
-(the same walk up to `$HOME` as ext-run). ext-run finds that marker walking up from the clone and
+(the same walk as ext-run: up to and including `$HOME`; the source paths are kept as an array,
+so a path with spaces keeps its status). ext-run finds that marker walking up from the clone and
 from any worktree of it (triage-compare's staged worktrees). It prints
 `{repo, sha, denied:{agy, codex}}`, `denied` being what ext-run will see.
 

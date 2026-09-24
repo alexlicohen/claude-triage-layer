@@ -44,6 +44,9 @@
 #             says why); 2 usage error, nothing done; 7 LEAK (leakcheck only).
 set -uo pipefail
 export LC_ALL=C
+# Inherited git redirection (GIT_DIR & co. from a hook or a caller) would point
+# every `git -C` below at another repository — -C does not override it.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_NAMESPACE GIT_CEILING_DIRECTORIES
 
 usage() { echo "stage-worktree: USAGE: $1" >&2; exit 2; }
 command -v jq >/dev/null 2>&1 || usage "jq is required"

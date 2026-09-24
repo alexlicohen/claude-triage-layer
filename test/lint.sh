@@ -9,6 +9,7 @@
 #   4. Docs-consistency check: every file path referenced in README.md's
 #      install / manual-install sections must exist on disk, and README's
 #      claim of "seven subagent definitions" must match the real agent count.
+#   4b. No agent file references a fixed /tmp/ext-* scratch path.
 #   5. Tiers sync: every agent's model:/effort: frontmatter equals
 #      config/tiers.json (scripts/tiers-sync.sh --check).
 #   6. Level map: triage-exec.js's CLAUDE_AGENT (level -> Claude agent) equals
@@ -131,6 +132,17 @@ else
   else
     fail "docs-consistency: README no longer says 'seven subagent definitions' — update the doc-consistency check or the README"
   fi
+fi
+
+# --- 4b. agent files never use a FIXED /tmp/ext-* path -------------------------
+# Parallel bake-off candidates (triage-compare parallel:true) run several
+# triage-external wrappers at once; a fixed scratch path lets one overwrite
+# another's before/after state. Each invocation uses its own mktemp -d dir.
+if FIXED_TMP=$(grep -n '/tmp/ext-' agents/*.md); then
+  fail "agents: a fixed /tmp/ext-* path is referenced (use a private mktemp -d dir per invocation):"
+  printf '%s\n' "$FIXED_TMP" >&2
+else
+  ok "agents: no fixed /tmp/ext-* path in any agent file"
 fi
 
 # --- 5. tiers sync: agents/*.md model:/effort: must equal config/tiers.json ------

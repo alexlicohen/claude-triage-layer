@@ -174,6 +174,27 @@ git -C "$R" checkout -q -- calc.txt
 run_sw cleanup --repo "$R" --dir "$D2"
 chk "S9f cleanup after a BASE_MOVED run still leaves no worktree registered" '[ "$RC" -eq 0 ] && [ "$(wt_count "$R")" -eq 1 ]'
 
+# --- S10: an inherited GIT_DIR/GIT_WORK_TREE does not redirect staging --------
+DECOY="$T/decoy"
+mkrepo "$DECOY"
+printf 'decoy\n' > "$DECOY/f.txt"
+git -C "$DECOY" add -A && git -C "$DECOY" commit -qm decoy
+DECOY_BEFORE=$({ st "$DECOY"; git -C "$DECOY" rev-parse HEAD; git -C "$DECOY" worktree list; })
+D3="$T/out/stage3"
+OUT=$(GIT_DIR="$DECOY/.git" GIT_WORK_TREE="$DECOY" GIT_INDEX_FILE="$DECOY/.git/index" "$SW" create --repo "$R" --base HEAD --count 1 --dir "$D3" 2>"$T/err"); RC=$?
+R_HEAD=$(git -C "$R" rev-parse HEAD)
+printf 'cand\n' > "$D3/wt-1/new-by-candidate.txt"
+OUT2=$(GIT_DIR="$DECOY/.git" GIT_WORK_TREE="$DECOY" "$SW" diff --worktree "$D3/wt-1" --base "$R_HEAD" --out "$T/out/s10.patch" 2>/dev/null)
+chk "S10 with a decoy GIT_DIR/GIT_WORK_TREE inherited, create stages --repo at its own HEAD and diff captures the candidate's file" \
+  '[ "$RC" -eq 0 ] && [ "$(j .sha)" = "$R_HEAD" ] && [ "$(git -C "$D3/wt-1" rev-parse HEAD)" = "$R_HEAD" ] && printf "%s" "$OUT2" | jq -e ".ok == true" >/dev/null && grep -q "new-by-candidate.txt" "$T/out/s10.patch"'
+chk "S10b ...and the decoy repo has no worktree, no new file, no index change" \
+  '[ "$({ st "$DECOY"; git -C "$DECOY" rev-parse HEAD; git -C "$DECOY" worktree list; })" = "$DECOY_BEFORE" ]'
+GIT_DIR="$DECOY/.git" GIT_WORK_TREE="$DECOY" "$SW" cleanup --repo "$R" --dir "$D3" >/dev/null 2>&1
+
+# --- S11: a trailing value-taking flag is a usage error, never an endless loop ----
+OUT=$(perl -e 'alarm shift; exec @ARGV' 20 "$SW" create --repo "$R" --base HEAD --count 1 --dir 2>"$T/err"); RC=$?
+chk "S11 a trailing --dir with no value is exit 2 (needs a value)" '[ "$RC" -eq 2 ] && grep -q -- "--dir needs a value" "$T/err"'
+
 echo ""
 echo "RESULT: $PASS_COUNT passed, $FAIL_COUNT failed"
 [ "$FAIL_COUNT" -eq 0 ]

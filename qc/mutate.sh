@@ -49,7 +49,7 @@ done
 
 # 35 (the no-PATCH-line guard) was retired with that rule: staged worktrees made it
 # moot — the grade is now the worktree diff, never a patch file a candidate wrote.
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46"
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -119,6 +119,11 @@ mut_file() {
     44) echo "scripts/parity-suite.sh" ;;
     45) echo "scripts/parity-suite.sh" ;;
     46) echo "workflows/triage-parity.js" ;;
+    47) echo "workflows/triage-compare.js" ;;
+    48) echo "scripts/patch-check.sh" ;;
+    49) echo "scripts/ext-run.sh" ;;
+    50) echo "scripts/ext-run.sh" ;;
+    51) echo "scripts/ext-run.sh" ;;
     *) echo "" ;;
   esac
 }
@@ -170,6 +175,11 @@ mut_desc() {
     44) echo "parity-suite.sh: materialize skips deny-marker propagation (a clone of a .agy-deny/.codex-deny source is handed to that vendor, because ext-run no longer sees the source)" ;;
     45) echo "parity-suite.sh: materialize keeps source history/refs reachable (the post-commit ref-deletion loop is skipped, so a generator source's own commits — and any other branch — stay in the materialized repo, defeating the no-history guarantee)" ;;
     46) echo "triage-parity.js: an external review candidate omits its MODEL line (the read-mode spawn falls back to triage-cross-reviewer's mode default model instead of the candidate's own, silently reintroducing the wrong-model bug for a candidate with an explicit model)" ;;
+    47) echo "triage-compare.js: an UNKNOWN leak state (leakcheck errored / relayed no status) no longer voids the grades, so a candidate is reported pass while the real repo may have changed" ;;
+    48) echo "patch-check.sh: an --overlay copy failure only logs, and the check runs without the hidden tests (a candidate is graded on its own tests alone)" ;;
+    49) echo "ext-run.sh: the inherited GIT_DIR/GIT_WORK_TREE/... are no longer cleared (a hook's environment redirects the build's git calls into another repository)" ;;
+    50) echo "ext-run.sh: resolve_path resolves only the parent dir again (a symlink in an allowed dir pointing into clip-creator passes the deny check and is then read)" ;;
+    51) echo "ext-run.sh: the 3-way apply-back is no longer pre-checked for conflicts (a conflicting merge leaves markers in the caller's tree while exit 6 promises it unchanged)" ;;
     *) echo "" ;;
   esac
 }
@@ -183,9 +193,9 @@ mut_suite() {
   case "$1" in
     1|2|3|4|5|6|10|12|18|19|20|21|33) echo "roundtrip" ;;
     7|8|9|11|16|17|22|23|28|29|30) echo "scenarios" ;;
-    13|14|15|24|25|26|27|40) echo "extrun" ;;
-    31|34|36|37|38) echo "compare" ;;
-    32) echo "patchcheck" ;;
+    13|14|15|24|25|26|27|40|49|50|51) echo "extrun" ;;
+    31|34|36|37|38|47) echo "compare" ;;
+    32|48) echo "patchcheck" ;;
     39) echo "stagewt" ;;
     41|42|43|46) echo "parity" ;;
     44|45) echo "paritysuite" ;;
@@ -650,6 +660,56 @@ MUT45
 MUT46
       mut_replace_block "$target" "      (c.model ? \`MODEL=\${c.model}\n\` : '') +" 1 "$rep"
       ;;
+    47)
+      # triage-compare.js: grade() stops voiding grades on an UNKNOWN leak state —
+      # only an explicit LEAK invalidates, so a leakcheck that errored lets every
+      # checks-green candidate through as a pass.
+      cat > "$rep" <<'MUT47'
+  // MUTATED: unknown leak state accepted
+MUT47
+      mut_replace_block "$target" "  if (leakInfo.leak !== false && gr) return Object.assign({}, g, { status: 'invalid'" 1 "$rep"
+      ;;
+    48)
+      # patch-check.sh: the overlay copy failure is logged and ignored again (the
+      # pre-fix behaviour): the check runs with the hidden tests missing.
+      cat > "$rep" <<'MUT48'
+  if [ -n "$OVERLAY" ]; then
+    cp -R "$OVERLAY"/. "$WT"/ 2>> "$log" || echo "patch-check: overlay copy failed" >> "$log" # MUTATED: overlay failure ignored
+  fi
+MUT48
+      mut_replace_block "$target" '  if [ -n "$OVERLAY" ] && ! cp -R "$OVERLAY"/. "$WT"/ 2>> "$log"; then' 5 "$rep"
+      ;;
+    49)
+      # ext-run.sh: the top-level unset of the git redirection variables is gone.
+      cat > "$rep" <<'MUT49'
+: # MUTATED: git env not cleared
+MUT49
+      mut_replace_block "$target" 'unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE' 1 "$rep"
+      ;;
+    50)
+      # ext-run.sh: resolve_path reverts to resolving only the PARENT dir of a
+      # file, so a symlink's own target is never judged.
+      cat > "$rep" <<'MUT50'
+resolve_path() { # MUTATED: symlink resolved only at parent
+  local d
+  if [ -d "$1" ]; then (cd "$1" 2>/dev/null && pwd -P) || echo "$1"
+  elif [ -f "$1" ]; then
+    d=$(cd "$(dirname "$1")" 2>/dev/null && pwd -P) || d=$(dirname "$1")
+    echo "$d/$(basename "$1")"
+  else echo "$1"
+  fi
+}
+MUT50
+      mut_replace_block "$target" 'resolve_path() { # $1 = path -> absolute physical path' 14 "$rep"
+      ;;
+    51)
+      # ext-run.sh: the 3-way apply is attempted without the conflict pre-check,
+      # so a conflicting merge writes markers into the caller's tree.
+      cat > "$rep" <<'MUT51'
+  if true; then # MUTATED: conflicting 3-way apply not pre-checked
+MUT51
+      mut_replace_block "$target" '  if LC_ALL=C git -C "$BUILD_REPO" apply --3way --check "$OUTPUT" >"$chk3" 2>&1' 1 "$rep"
+      ;;
     *)
       return 1
       ;;
@@ -711,6 +771,11 @@ verify_mutation() {
     44) grep -qF 'MUTATED: deny markers not propagated' "$target" && ! grep -qF 'propagated by parity-suite.sh materialize' "$target" && grep -qF '  DENIED_AGY=false DENIED_CODEX=false' "$target" ;;
     45) grep -qF 'MUTATED: source history/refs kept' "$target" && ! grep -qF 'update-ref -d "$r"' "$target" ;;
     46) grep -qF 'MUTATED: MODEL line dropped for external review candidates' "$target" && ! grep -qF '(c.model ? `MODEL=${c.model}' "$target" ;;
+    47) grep -qF 'MUTATED: unknown leak state accepted' "$target" && ! grep -qF 'if (leakInfo.leak !== false && gr)' "$target" ;;
+    48) grep -qF 'MUTATED: overlay failure ignored' "$target" && ! grep -qF 'emit "$patch" true null "$diffstat" "$log.tail" overlay-failed' "$target" ;;
+    49) grep -qF 'MUTATED: git env not cleared' "$target" && ! grep -qF 'unset GIT_DIR GIT_WORK_TREE' "$target" ;;
+    50) grep -qF 'MUTATED: symlink resolved only at parent' "$target" && ! grep -qF 't=$(readlink "$p")' "$target" ;;
+    51) grep -qF 'MUTATED: conflicting 3-way apply not pre-checked' "$target" && ! grep -qF "! grep -qi 'conflict'" "$target" ;;
     *) return 1 ;;
   esac
 }
