@@ -65,6 +65,7 @@ rm -f "$CLAUDE_DIR/workflows/triage-exec.js" "$CLAUDE_DIR/workflows/triage-compa
       "$CLAUDE_DIR/scripts/ext-run.sh" "$CLAUDE_DIR/scripts/patch-check.sh" \
       "$CLAUDE_DIR/scripts/stage-worktree.sh" \
       "$CLAUDE_DIR/scripts/parity-suite.sh" "$CLAUDE_DIR/scripts/parity-cost.sh" \
+      "$CLAUDE_DIR/scripts/parity-report.sh" \
       "$CLAUDE_DIR/scripts/triage-tiers.sh" \
       "$CLAUDE_DIR/scripts/triage-tiers.json" \
       "$CLAUDE_DIR/scripts/agy-run.sh" \

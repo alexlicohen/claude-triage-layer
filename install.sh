@@ -299,6 +299,7 @@ install_file "scripts/patch-check.sh" "$CLAUDE_DIR/scripts/patch-check.sh" x
 install_file "scripts/stage-worktree.sh" "$CLAUDE_DIR/scripts/stage-worktree.sh" x
 install_file "scripts/parity-suite.sh" "$CLAUDE_DIR/scripts/parity-suite.sh" x
 install_file "scripts/parity-cost.sh" "$CLAUDE_DIR/scripts/parity-cost.sh" x
+install_file "scripts/parity-report.sh" "$CLAUDE_DIR/scripts/parity-report.sh" x
 install_file "scripts/triage-tiers.sh" "$CLAUDE_DIR/scripts/triage-tiers.sh" x
 install_file "config/tiers.json" "$CLAUDE_DIR/scripts/triage-tiers.json"
 retire_triage_run

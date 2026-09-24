@@ -15,6 +15,7 @@
 #   stage-worktree.sh diff      --worktree W --base SHA --out FILE
 #   stage-worktree.sh leakcheck --repo R --dir D
 #   stage-worktree.sh cleanup   --repo R --dir D
+#   stage-worktree.sh apply     --repo R --patch P
 #
 # create     resolves REV to a sha ONCE, records R's fingerprint (HEAD, `status
 #            --porcelain=v1 -uall`, and a content manifest of every tracked +
@@ -39,9 +40,28 @@
 # cleanup    `git worktree remove --force` each staged worktree, `git worktree
 #            prune`, rm -rf D. Refuses a D with no fingerprint (not a stage dir).
 #            An absent D is already clean (exit 0). Prints {"step":"cleanup","ok"}.
+# apply      the ONE step here that writes the caller's tree, on purpose: applies a
+#            chosen candidate's patch P to R (an inline bake-off's fallback). Only
+#            an apply proven clean first is written, so exit 6 always means "R is
+#            byte-identical":
+#              1. `git apply --check` then `git apply` (index-free, so unstaged
+#                 changes and untracked files elsewhere in R do not block it);
+#              2. else `git apply --3way --check` — it exits 0 even when the merge
+#                 WOULD conflict, so it counts as clean only with rc 0 AND no
+#                 "conflict" in its output — then `git apply --3way`;
+#              3. else nothing is written: exit 6.
+#            An empty P is a no-op success. Prints one JSON line
+#              {"step":"apply","repo","patch","ok","applied","method":"plain|3way|empty|none","error"?}
+#            The rule mirrors ext-run.sh apply_back() on purpose rather than being
+#            shared: ext-run.sh stays self-contained (the single owner of every
+#            external-CLI run, with its own exit-6 contract and diagnostics), and a
+#            runtime dependency from that danger-zone script on this one was judged
+#            worse than a three-command rule kept in two places — each copy has its
+#            own conflict-marker mutation in qc/mutate.sh (51 there, 55 here).
 #
 # Exit codes: 0 ok (CLEAN / BASE_MOVED for leakcheck); 1 the step failed (JSON
-#             says why); 2 usage error, nothing done; 7 LEAK (leakcheck only).
+#             says why); 2 usage error, nothing done; 6 apply: the patch would not
+#             apply cleanly, nothing written; 7 LEAK (leakcheck only).
 set -uo pipefail
 export LC_ALL=C
 # Inherited git redirection (GIT_DIR & co. from a hook or a caller) would point
@@ -54,7 +74,7 @@ command -v git >/dev/null 2>&1 || usage "git is required"
 
 SUB="${1:-}"
 [ $# -gt 0 ] && shift
-REPO="" BASE="" COUNT="" DIR="" WT="" OUT=""
+REPO="" BASE="" COUNT="" DIR="" WT="" OUT="" PATCH=""
 while [ $# -gt 0 ]; do
   [ $# -ge 2 ] || usage "$1 needs a value"
   case "$1" in
@@ -64,6 +84,7 @@ while [ $# -gt 0 ]; do
     --dir)      DIR="$2" ;;
     --worktree) WT="$2" ;;
     --out)      OUT="$2" ;;
+    --patch)    PATCH="$2" ;;
     *)          usage "unknown argument $1" ;;
   esac
   shift 2
@@ -293,10 +314,40 @@ do_cleanup() {
   jq -nc --argjson n "$removed" '{step:"cleanup", ok:true, removed:$n}'
 }
 
+# ---------------------------------------------------------------------------
+apply_out() { # $1 ok, $2 applied, $3 method, $4 error (empty = none)
+  jq -nc --arg r "$REPO" --arg p "$PATCH" --argjson ok "$1" --argjson ap "$2" --arg m "$3" --arg e "$4" \
+    '{step:"apply", repo:$r, patch:$p, ok:$ok, applied:$ap, method:$m} + (if $e == "" then {} else {error:$e} end)'
+}
+do_apply() {
+  [ -n "$REPO" ] && [ -n "$PATCH" ] || usage "apply needs --repo --patch"
+  check_abs --patch "$PATCH"
+  [ -f "$PATCH" ] || usage "--patch is not a file: $PATCH"
+  local R log chk3
+  R=$(repo_top "$REPO")
+  if [ ! -s "$PATCH" ]; then apply_out true false empty ""; exit 0; fi
+  log=$(mktemp) && chk3=$(mktemp) || { apply_out false false none "mktemp failed"; exit 1; }
+  # shellcheck disable=SC2064  # expand now: the temp paths are local to this call
+  trap "rm -f '$log' '$chk3'" EXIT
+  if git -C "$R" apply --check "$PATCH" >"$log" 2>&1; then
+    if git -C "$R" apply "$PATCH" >>"$log" 2>&1; then apply_out true true plain ""; exit 0; fi
+    apply_out false false plain "git apply failed after a clean --check (the tree changed in between?); git apply is atomic, so $R was not written: $(head -c 300 "$log")"
+    exit 1
+  fi
+  if git -C "$R" apply --3way --check "$PATCH" >"$chk3" 2>&1 && ! grep -qi 'conflict' "$chk3"; then
+    if git -C "$R" apply --3way "$PATCH" >>"$log" 2>&1; then apply_out true true 3way ""; exit 0; fi
+    apply_out false false 3way "the 3-way apply failed after a clean 3-way --check (the tree changed in between?) — inspect $R: $(head -c 300 "$log")"
+    exit 1
+  fi
+  apply_out false false none "the patch would NOT apply cleanly to $R (plain and 3-way pre-checks failed), so nothing was written: $(cat "$log" "$chk3" | head -c 300)"
+  exit 6
+}
+
 case "$SUB" in
+  apply)     do_apply ;;
   create)    do_create ;;
   diff)      do_diff ;;
   leakcheck) do_leakcheck ;;
   cleanup)   do_cleanup ;;
-  *)         usage "stage-worktree.sh create|diff|leakcheck|cleanup [options] (see the header)" ;;
+  *)         usage "stage-worktree.sh create|diff|leakcheck|cleanup|apply [options] (see the header)" ;;
 esac

@@ -49,7 +49,9 @@ done
 
 # 35 (the no-PATCH-line guard) was retired with that rule: staged worktrees made it
 # moot — the grade is now the worktree diff, never a patch file a candidate wrote.
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51"
+# 43 (cheapness order) moved with the proposal from triage-parity.js to
+# scripts/parity-report.sh, its single owner (Wave 13) — re-anchored there.
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -115,7 +117,7 @@ mut_file() {
     40) echo "scripts/ext-run.sh" ;;
     41) echo "workflows/triage-parity.js" ;;
     42) echo "workflows/triage-parity.js" ;;
-    43) echo "workflows/triage-parity.js" ;;
+    43) echo "scripts/parity-report.sh" ;;
     44) echo "scripts/parity-suite.sh" ;;
     45) echo "scripts/parity-suite.sh" ;;
     46) echo "workflows/triage-parity.js" ;;
@@ -124,6 +126,10 @@ mut_file() {
     49) echo "scripts/ext-run.sh" ;;
     50) echo "scripts/ext-run.sh" ;;
     51) echo "scripts/ext-run.sh" ;;
+    52) echo "scripts/parity-report.sh" ;;
+    53) echo "scripts/parity-report.sh" ;;
+    54) echo "scripts/parity-report.sh" ;;
+    55) echo "scripts/stage-worktree.sh" ;;
     *) echo "" ;;
   esac
 }
@@ -171,7 +177,7 @@ mut_desc() {
     40) echo "ext-run.sh: drop the git-common-dir deny check (a linked worktree created outside a deny-listed repo, or an --input file in one, bypasses clip-creator and the .agy-deny/.codex-deny markers)" ;;
     41) echo "triage-parity.js: an unavailable/denied/invalid/unresolved run is tallied as a FAIL (a flaky vendor or a deny marker drops a candidate from the climb)" ;;
     42) echo "triage-parity.js: the stop rule ignores 'consecutive' (a cleared band no longer resets the failed-band streak, so fail/pass/fail stops a candidate)" ;;
-    43) echo "triage-parity.js: the proposal ignores the cheapness order (takes the top-ranked clearing candidate instead of the cheapest)" ;;
+    43) echo "parity-report.sh: the cheapness order is ignored (every ranked challenger is judged by the cheaper rule, so a pricier one below the margin is proposed on its Wilson bound)" ;;
     44) echo "parity-suite.sh: materialize skips deny-marker propagation (a clone of a .agy-deny/.codex-deny source is handed to that vendor, because ext-run no longer sees the source)" ;;
     45) echo "parity-suite.sh: materialize keeps source history/refs reachable (the post-commit ref-deletion loop is skipped, so a generator source's own commits — and any other branch — stay in the materialized repo, defeating the no-history guarantee)" ;;
     46) echo "triage-parity.js: an external review candidate omits its MODEL line (the read-mode spawn falls back to triage-cross-reviewer's mode default model instead of the candidate's own, silently reintroducing the wrong-model bug for a candidate with an explicit model)" ;;
@@ -180,6 +186,10 @@ mut_desc() {
     49) echo "ext-run.sh: the inherited GIT_DIR/GIT_WORK_TREE/... are no longer cleared (a hook's environment redirects the build's git calls into another repository)" ;;
     50) echo "ext-run.sh: resolve_path resolves only the parent dir again (a symlink in an allowed dir pointing into clip-creator passes the deny check and is then read)" ;;
     51) echo "ext-run.sh: the 3-way apply-back is no longer pre-checked for conflicts (a conflicting merge leaves markers in the caller's tree while exit 6 promises it unchanged)" ;;
+    52) echo "parity-report.sh: the report ignores minN (a challenger with a handful of runs is proposed instead of 'insufficient data')" ;;
+    53) echo "parity-report.sh: the cheaper rule uses the challenger's point rate instead of its Wilson 95% lower bound (10/10 beats a 9/10 incumbent)" ;;
+    54) echo "parity-report.sh: a non-graded status (unavailable/invalid/...) is ingested and counted as a fail" ;;
+    55) echo "stage-worktree.sh: apply runs the 3-way merge without the conflict pre-check (a conflicting patch leaves markers in the caller's tree while exit 6 promises it unchanged)" ;;
     *) echo "" ;;
   esac
 }
@@ -187,8 +197,8 @@ mut_desc() {
 # Which suite exercises this mutation's file: "roundtrip" (test/roundtrip.sh),
 # "scenarios" (test/workflow-scenarios.mjs), "extrun" (test/ext-run.sh),
 # "compare" (test/compare-scenarios.mjs), "patchcheck" (test/patch-check.sh),
-# "stagewt" (test/stage-worktree.sh), "parity" (test/parity-scenarios.mjs) or
-# "paritysuite" (test/parity-suite.sh).
+# "stagewt" (test/stage-worktree.sh), "parity" (test/parity-scenarios.mjs),
+# "paritysuite" (test/parity-suite.sh) or "parityreport" (test/parity-report.sh).
 mut_suite() {
   case "$1" in
     1|2|3|4|5|6|10|12|18|19|20|21|33) echo "roundtrip" ;;
@@ -196,9 +206,10 @@ mut_suite() {
     13|14|15|24|25|26|27|40|49|50|51) echo "extrun" ;;
     31|34|36|37|38|47) echo "compare" ;;
     32|48) echo "patchcheck" ;;
-    39) echo "stagewt" ;;
-    41|42|43|46) echo "parity" ;;
+    39|55) echo "stagewt" ;;
+    41|42|46) echo "parity" ;;
     44|45) echo "paritysuite" ;;
+    43|52|53|54) echo "parityreport" ;;
     *) echo "" ;;
   esac
 }
@@ -215,6 +226,7 @@ suite_file() {
     stagewt) echo "test/stage-worktree.sh" ;;
     parity) echo "test/parity-scenarios.mjs" ;;
     paritysuite) echo "test/parity-suite.sh" ;;
+    parityreport) echo "test/parity-report.sh" ;;
     *) echo "" ;;
   esac
 }
@@ -627,12 +639,12 @@ MUT42
       mut_replace_block "$target" '    if (pb.rate >= passRate) { s.streak = 0; s.highest = Math.max(s.highest, b); continue }' 1 "$rep"
       ;;
     43)
-      # triage-parity.js: the proposal takes the first eligible candidate in
-      # ranking order (strongest first) instead of the cheapest.
+      # parity-report.sh: direction() stops telling cheaper from pricier — every
+      # ranked challenger goes through the cheaper (Wilson-bound) rule.
       cat > "$rep" <<'MUT43'
-    const pick = eligible[0] // MUTATED: cheapness order ignored
+    else "cheaper" end; # MUTATED: cheapness order ignored
 MUT43
-      mut_replace_block "$target" '    const pick = eligible.slice().sort((x, y) => cheaper(x.c, y.c))[0]' 1 "$rep"
+      mut_replace_block "$target" '    elif $kc < $ki then "cheaper" elif $kc > $ki then "pricier" else "unranked" end;' 1 "$rep"
       ;;
     44)
       # parity-suite.sh: the 11-line propagation block (comment + loop) is gone,
@@ -710,6 +722,36 @@ MUT50
 MUT51
       mut_replace_block "$target" '  if LC_ALL=C git -C "$BUILD_REPO" apply --3way --check "$OUTPUT" >"$chk3" 2>&1' 1 "$rep"
       ;;
+    52)
+      # parity-report.sh: need() always says 0 more runs are needed.
+      cat > "$rep" <<'MUT52'
+def need($n): 0; # MUTATED: minN ignored
+MUT52
+      mut_replace_block "$target" 'def need($n): if $n >= $minN then 0 else $minN - $n end;' 1 "$rep"
+      ;;
+    53)
+      # parity-report.sh: the cheaper rule compares the point rate, not the
+      # Wilson 95% lower bound.
+      cat > "$rep" <<'MUT53'
+        (if $ch.rate >= $inc.rate - $tol - 1e-12 then .verdict = "propose" else .verdict = "keep" end) # MUTATED: point rate, not Wilson LB
+MUT53
+      mut_replace_block "$target" '        (if $ch.wilsonLB >= $inc.rate - $tol - 1e-12 then .verdict = "propose" else .verdict = "keep" end)' 1 "$rep"
+      ;;
+    54)
+      # parity-report.sh: norm maps every non-graded status to "fail".
+      cat > "$rep" <<'MUT54'
+    else "fail" end; # MUTATED: non-graded status counted as fail
+MUT54
+      mut_replace_block "$target" '    else (if (KNOWN | index($s)) != null then $s else "unknown" end) end;' 1 "$rep"
+      ;;
+    55)
+      # stage-worktree.sh: apply attempts the 3-way merge without the conflict
+      # pre-check, so a conflicting patch writes markers into the caller's tree.
+      cat > "$rep" <<'MUT55'
+  if true; then # MUTATED: conflicting 3-way apply not pre-checked
+MUT55
+      mut_replace_block "$target" '  if git -C "$R" apply --3way --check "$PATCH" >"$chk3" 2>&1 && ! grep -qi '"'"'conflict'"'"' "$chk3"; then' 1 "$rep"
+      ;;
     *)
       return 1
       ;;
@@ -767,7 +809,7 @@ verify_mutation() {
     40) grep -qF 'MUTATED: common-dir deny check dropped' "$target" && ! grep -qF 'deny_check_path "$main"' "$target" ;;
     41) grep -qF 'MUTATED: unavailable counted as fail' "$target" && ! grep -qF "pb.other++" "$target" ;;
     42) grep -qF 'MUTATED: streak not reset' "$target" && ! grep -qF 's.streak = 0' "$target" ;;
-    43) grep -qF 'MUTATED: cheapness order ignored' "$target" && ! grep -qF 'eligible.slice().sort((x, y) => cheaper(x.c, y.c))' "$target" ;;
+    43) grep -qF 'MUTATED: cheapness order ignored' "$target" && ! grep -qF 'elif $kc > $ki then "pricier"' "$target" ;;
     44) grep -qF 'MUTATED: deny markers not propagated' "$target" && ! grep -qF 'propagated by parity-suite.sh materialize' "$target" && grep -qF '  DENIED_AGY=false DENIED_CODEX=false' "$target" ;;
     45) grep -qF 'MUTATED: source history/refs kept' "$target" && ! grep -qF 'update-ref -d "$r"' "$target" ;;
     46) grep -qF 'MUTATED: MODEL line dropped for external review candidates' "$target" && ! grep -qF '(c.model ? `MODEL=${c.model}' "$target" ;;
@@ -776,6 +818,10 @@ verify_mutation() {
     49) grep -qF 'MUTATED: git env not cleared' "$target" && ! grep -qF 'unset GIT_DIR GIT_WORK_TREE' "$target" ;;
     50) grep -qF 'MUTATED: symlink resolved only at parent' "$target" && ! grep -qF 't=$(readlink "$p")' "$target" ;;
     51) grep -qF 'MUTATED: conflicting 3-way apply not pre-checked' "$target" && ! grep -qF "! grep -qi 'conflict'" "$target" ;;
+    52) grep -qF 'MUTATED: minN ignored' "$target" && ! grep -qF 'then 0 else $minN - $n end' "$target" ;;
+    53) grep -qF 'MUTATED: point rate, not Wilson LB' "$target" && ! grep -qF 'if $ch.wilsonLB >= $inc.rate' "$target" ;;
+    54) grep -qF 'MUTATED: non-graded status counted as fail' "$target" && ! grep -qF 'else "unknown" end) end;' "$target" ;;
+    55) grep -qF 'MUTATED: conflicting 3-way apply not pre-checked' "$target" && ! grep -qF "! grep -qi 'conflict'" "$target" ;;
     *) return 1 ;;
   esac
 }
@@ -814,6 +860,7 @@ run_suite() { # $1 = repo copy dir, $2 = suite name (see suite_file) -> exit cod
     stagewt) ( cd "$copy" && bash test/stage-worktree.sh ) >"$WORK_ROOT/last-suite.log" 2>&1 ;;
     parity) ( cd "$copy" && node test/parity-scenarios.mjs ) >"$WORK_ROOT/last-suite.log" 2>&1 ;;
     paritysuite) ( cd "$copy" && bash test/parity-suite.sh ) >"$WORK_ROOT/last-suite.log" 2>&1 ;;
+    parityreport) ( cd "$copy" && bash test/parity-report.sh ) >"$WORK_ROOT/last-suite.log" 2>&1 ;;
     *) return 1 ;;
   esac
 }
@@ -837,6 +884,7 @@ BASELINE_PATCHCHECK_OK=1
 BASELINE_STAGEWT_OK=1
 BASELINE_PARITY_OK=1
 BASELINE_PARITYSUITE_OK=1
+BASELINE_PARITYREPORT_OK=1
 if run_suite "$BASELINE_DIR" roundtrip; then
   BASELINE_ROUNDTRIP_OK=0
 else
@@ -880,6 +928,11 @@ if run_suite "$BASELINE_DIR" paritysuite; then
 else
   echo "  ⚠ baseline $(suite_file paritysuite) is already RED on unmutated code — mutations using it will be reported ERROR (baseline-red), not KILLED/SURVIVOR."
 fi
+if run_suite "$BASELINE_DIR" parityreport; then
+  BASELINE_PARITYREPORT_OK=0
+else
+  echo "  ⚠ baseline $(suite_file parityreport) is already RED on unmutated code — mutations using it will be reported ERROR (baseline-red), not KILLED/SURVIVOR."
+fi
 echo ""
 
 # -----------------------------------------------------------------------------
@@ -915,6 +968,7 @@ for id in $RUN_IDS; do
     stagewt) baseline_ok=$BASELINE_STAGEWT_OK ;;
     parity) baseline_ok=$BASELINE_PARITY_OK ;;
     paritysuite) baseline_ok=$BASELINE_PARITYSUITE_OK ;;
+    parityreport) baseline_ok=$BASELINE_PARITYREPORT_OK ;;
     *) baseline_ok=1 ;;
   esac
 

@@ -2,7 +2,7 @@
 # Compare the installed copies under ~/.claude (or $CLAUDE_DIR) against this
 # repo, file-by-file, for: the 7 agents, statusline.sh, workflows/triage-exec.js
 # triage-compare.js and triage-parity.js, the scripts (incl. ext-run.sh, patch-check.sh, stage-worktree.sh,
-# parity-suite.sh and parity-cost.sh), config/tiers.json (installed as
+# parity-suite.sh, parity-cost.sh and parity-report.sh), config/tiers.json (installed as
 # scripts/triage-tiers.json), triage.md. Prints one of `same` / `MISSING (not installed)` / `FORKED` per
 # file (or `forked (expected)` for files listed in .driftignore).
 #
@@ -72,6 +72,7 @@ check_file "scripts/patch-check.sh" "$CLAUDE_DIR/scripts/patch-check.sh"
 check_file "scripts/stage-worktree.sh" "$CLAUDE_DIR/scripts/stage-worktree.sh"
 check_file "scripts/parity-suite.sh" "$CLAUDE_DIR/scripts/parity-suite.sh"
 check_file "scripts/parity-cost.sh" "$CLAUDE_DIR/scripts/parity-cost.sh"
+check_file "scripts/parity-report.sh" "$CLAUDE_DIR/scripts/parity-report.sh"
 check_file "scripts/triage-tiers.sh" "$CLAUDE_DIR/scripts/triage-tiers.sh"
 check_file "config/tiers.json" "$CLAUDE_DIR/scripts/triage-tiers.json"
 check_file "triage.md" "$CLAUDE_DIR/triage.md"

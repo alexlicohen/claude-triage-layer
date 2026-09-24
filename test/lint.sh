@@ -12,6 +12,7 @@
 #   4b. No agent file references a fixed /tmp/ext-* scratch path.
 #   5. Tiers sync: every agent's model:/effort: frontmatter equals
 #      config/tiers.json (scripts/tiers-sync.sh --check).
+#   5b. Tuning: config/tiers.json's tuning block passes triage-tiers.sh --bakeoff-json.
 #   6. Level map: triage-exec.js's CLAUDE_AGENT (level -> Claude agent) equals
 #      config/tiers.json levels.*.claude.agent, key for key.
 #
@@ -153,6 +154,16 @@ if TIERS_OUT=$(./scripts/tiers-sync.sh --check 2>&1); then
 else
   fail "tiers-sync: agents/*.md frontmatter differs from config/tiers.json — run make tiers (or fix tiers.json)"
   printf '%s\n' "$TIERS_OUT" >&2
+fi
+
+# --- 5b. tuning block: the inline bake-off / parity-report config is valid --------
+# triage-tiers.sh --bakeoff-json owns the tuning schema (sampleRate, challengerMix,
+# challengers per level/vendor, the decision rule, ledger, pause threshold).
+if TUNING_OUT=$(TRIAGE_TIERS="$REPO_DIR/config/tiers.json" ./scripts/triage-tiers.sh --bakeoff-json 2>&1 >/dev/null); then
+  ok "tuning: config/tiers.json tuning block is valid (triage-tiers.sh --bakeoff-json)"
+else
+  fail "tuning: config/tiers.json tuning block is invalid"
+  printf '%s\n' "$TUNING_OUT" >&2
 fi
 
 # --- 6. level map: each workflow's CLAUDE_AGENT == tiers.json levels.*.claude.agent --

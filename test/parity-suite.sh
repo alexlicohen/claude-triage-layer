@@ -40,6 +40,9 @@ T=$(cd "$T" && pwd -P)
 trap 'rm -rf "$T"' EXIT
 export TMPDIR="$T/tmp"
 mkdir -p "$TMPDIR"
+# Hermetic: the deny walk stops at $HOME, so a machine-level marker above $T
+# (e.g. a real $TMPDIR/.agy-deny kill switch) never leaks into these cases.
+export HOME="$T"
 
 OUT=""; ERR=""; RC=0
 chk() {

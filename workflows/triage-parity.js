@@ -1,7 +1,7 @@
 export const meta = {
   name: 'triage-parity',
-  description: 'Parity research run: every candidate (vendor x model x effort) climbs a private task suite band by band (B1 mechanical to B4 danger/judgment), each build task graded by a nested triage-compare bake-off, rubric tasks by two blind judges, review tasks by seeded-defect recall/precision. Returns a ranking, plateau clusters and a PROPOSED tiers.json change; never writes tiers.json or anything outside outDir.',
-  whenToUse: 'Re-rank models and efforts when a model ships or on request: /triage-parity with args = {suite:"/abs task suite dir", outDir:"/abs fresh dir outside any source repo", candidates:[{vendor:claude|codex|agy, level:quick|builder|deep|top, model?, effort?, label?}], bands?:[1,2,3,4], reps?:1, stopAfterFailedBands?:2, bandPassRate?:0.5, judges?:[{vendor,level,label?}], taskFilter?:[ids], incumbents?:{level:{vendor:label}}, desk?:true}. Adaptive: a candidate stops after stopAfterFailedBands consecutive failed bands. unavailable/denied/invalid/unresolved never count as pass or fail; a compare LEAK aborts the run. The proposal is for Alex to approve; Claude cost per candidate comes afterwards from scripts/parity-cost.sh on the run transcript.',
+  description: 'Parity research run: every candidate (vendor x model x effort) climbs a private task suite band by band (B1 mechanical to B4 danger/judgment), each build task graded by a nested triage-compare bake-off, rubric tasks by two blind judges, review tasks by seeded-defect recall/precision. Returns a ranking, plateau clusters and flags; never writes tiers.json or anything outside outDir. Tier-change proposals are not made here: the orchestrator saves the result, runs scripts/parity-report.sh ingest-parity, then report (the ONE owner of the ledger and the decision rule).',
+  whenToUse: 'Re-rank models and efforts when a model ships or on request: /triage-parity with args = {suite:"/abs task suite dir", outDir:"/abs fresh dir outside any source repo", candidates:[{vendor:claude|codex|agy, level:quick|builder|deep|top, model?, effort?, label?}], bands?:[1,2,3,4], reps?:1, stopAfterFailedBands?:2, bandPassRate?:0.5, judges?:[{vendor,level,label?}], taskFilter?:[ids], desk?:true}. Adaptive: a candidate stops after stopAfterFailedBands consecutive failed bands. unavailable/denied/invalid/unresolved never count as pass or fail; a compare LEAK aborts the run. Afterwards: parity-report.sh ingest-parity --result <saved result> then parity-report.sh report proposes any tiers.json change (min-n + margin rule; Alex approves); Claude cost per candidate comes from scripts/parity-cost.sh on the run transcript.',
   phases: [
     { title: 'Load' },
     { title: 'Desk' },
@@ -22,16 +22,9 @@ const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 // triage-compare.js; test/lint.sh checks it against config/tiers.json.
 const CLAUDE_AGENT = { quick: 'triage-quick-task', builder: 'triage-builder', deep: 'triage-deep-reasoner', top: 'triage-fable-architect' }
 const PARITY_SUITE = '~/.claude/scripts/parity-suite.sh'
-// level <-> band: the band a level's work lives at.
-const LEVEL_BAND = { quick: 1, builder: 2, deep: 3, top: 4 }
-// Cheapness, cheapest first, per vendor; then effort (EFFORTS order). A candidate
-// with no (or an unrecognised) model is ranked by its level's default model, and
-// one with no effort by its level's default effort — the same defaults as
-// config/tiers.json today (quick haiku/luna low, builder sonnet/sol medium, deep
-// opus/astra high, top fable/astra xhigh); the run flags every such inference.
-const MODEL_ORDER = { claude: ['haiku', 'sonnet', 'opus', 'fable'], codex: ['gpt-6-luna', 'gpt-6-sol', 'gpt-6-astra'], agy: ['flash', 'pro'] }
-const LEVEL_MODEL_PROXY = { claude: { quick: 0, builder: 1, deep: 2, top: 3 }, codex: { quick: 0, builder: 1, deep: 2, top: 2 }, agy: { quick: 1, builder: 1, deep: 1, top: 1 } }
-const LEVEL_EFFORT_PROXY = { quick: 0, builder: 1, deep: 2, top: 3 }
+// The ledger + tier-change decision rule (min-n, Wilson bound, margins, the
+// cheapness order) live ONLY in scripts/parity-report.sh; this run measures.
+const PARITY_REPORT = '~/.claude/scripts/parity-report.sh'
 // Grading thresholds.
 const REVIEW_RECALL = 0.6
 const REVIEW_PRECISION = 0.5
@@ -45,7 +38,7 @@ const USAGE = 'Expected args = {\n' +
   `  candidates: [{ vendor: ${VENDORS.join('|')}, level: ${LEVELS.join('|')}, model?, effort?: ${EFFORTS.join('|')}, label? }]\n` +
   '  bands?: [1,2,3,4], reps?: 1, stopAfterFailedBands?: 2, bandPassRate?: 0.5,\n' +
   '  judges?: [{vendor:"claude",level:"deep"},{vendor:"codex",level:"deep"}], taskFilter?: [ids],\n' +
-  '  incumbents?: { <level>: { <vendor>: <candidate label> } }, desk?: true\n}'
+  '  desk?: true\n}'
 
 function bad(msg) {
   throw new Error(`triage-parity: ${msg}\n${USAGE}`)
@@ -108,22 +101,12 @@ const candidates = args.candidates.map((raw, i) => {
     seen.add(c.label)
   }
 }
-const byLabel = new Map(candidates.map(c => [c.label, c]))
 if (args.judges != null && !(Array.isArray(args.judges) && args.judges.length > 0)) bad('args.judges must be a non-empty array when given.')
 const judges = (args.judges || [{ vendor: 'claude', level: 'deep' }, { vendor: 'codex', level: 'deep' }]).map((raw, i) => checkAgentSpec(raw, 'judges', i))
 if (new Set(judges.map(j => j.label)).size !== judges.length) bad('judge labels must be unique.')
-const incumbents = args.incumbents || {}
-if (typeof incumbents !== 'object' || Array.isArray(incumbents)) bad('args.incumbents must be an object {level: {vendor: label}}.')
-for (const [lvl, m] of Object.entries(incumbents)) {
-  if (!LEVELS.includes(lvl)) bad(`args.incumbents: unknown level ${JSON.stringify(lvl)}.`)
-  if (!m || typeof m !== 'object' || Array.isArray(m)) bad(`args.incumbents.${lvl} must be an object {vendor: label}.`)
-  for (const [v, l] of Object.entries(m)) {
-    if (!VENDORS.includes(v)) bad(`args.incumbents.${lvl}: unknown vendor ${JSON.stringify(v)}.`)
-    const c = byLabel.get(l)
-    if (!c) bad(`args.incumbents.${lvl}.${v} = ${JSON.stringify(l)} is not a candidate label.`)
-    if (c.vendor !== v) bad(`args.incumbents.${lvl}.${v} = ${JSON.stringify(l)} is a ${c.vendor} candidate.`)
-  }
-}
+// Proposals moved to scripts/parity-report.sh (incumbents = config/tiers.json
+// levels there): an incumbents arg would silently do nothing, so it is refused.
+if (args.incumbents != null) bad('args.incumbents is no longer accepted: the incumbents are config/tiers.json levels, and tier-change proposals come from scripts/parity-report.sh report after ingest-parity.')
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 const shq = s => `'${String(s).replace(/'/g, `'\\''`)}'`
@@ -155,25 +138,6 @@ function parseJsonObject(text) {
 const taskDirOf = t => stripSlash(t.taskDir)
 const bandDir = (b, t) => `${outDir}/${b}/${t.id}`
 
-// cheapKey() — SINGLE OWNER of the cheapness order used by the proposal.
-function cheapKey(c) {
-  const order = MODEL_ORDER[c.vendor]
-  let m = c.model ? order.findIndex(k => c.model.includes(k)) : -1
-  if (m < 0) m = LEVEL_MODEL_PROXY[c.vendor][c.level]
-  const e = c.effort ? EFFORTS.indexOf(c.effort) : LEVEL_EFFORT_PROXY[c.level]
-  return [m, e]
-}
-const cheaper = (a, b) => {
-  const ka = cheapKey(a)
-  const kb = cheapKey(b)
-  return ka[0] - kb[0] || ka[1] - kb[1] || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0)
-}
-for (const c of candidates) {
-  const known = c.model && MODEL_ORDER[c.vendor].some(k => c.model.includes(k))
-  if (!known || (!c.effort && c.vendor !== 'agy')) {
-    flags.push(`cheapness of ${c.label} inferred from its level (${!known ? `model ${c.model || 'unset'}` : ''}${!known && !c.effort ? ', ' : ''}${!c.effort ? 'effort unset' : ''})`)
-  }
-}
 
 // ─── Load ───────────────────────────────────────────────────────────────────
 phase('Load')
@@ -551,35 +515,15 @@ const overall = s => {
   return p + f ? p / (p + f) : -1
 }
 const states = candidates.map(c => st.get(c.label))
-states.sort((x, y) => y.highest - x.highest || overall(y) - overall(x) || cheaper(x.c, y.c))
+// Strongest first; ties by label (deterministic). No cheapness here: comparing
+// cost is parity-report.sh's job.
+states.sort((x, y) => y.highest - x.highest || overall(y) - overall(x) || (x.c.label < y.c.label ? -1 : x.c.label > y.c.label ? 1 : 0))
 const ranking = states.map(s => ({
   label: s.c.label, vendor: s.c.vendor, level: s.c.level, model: s.model, effort: s.c.effort,
   highestBandCleared: s.highest, perBand: s.perBand, externalTokens: s.externalTokens, seconds: s.seconds, stoppedAfterBand: s.stoppedAfter,
 }))
 const plateaus = {}
 for (const s of states) (plateaus[s.highest] = plateaus[s.highest] || []).push(s.c.label)
-
-// proposal — per level and vendor, the CHEAPEST candidate that clears the
-// level's band at >= bandPassRate AND >= the incumbent's pass rate there.
-const proposal = {}
-for (const L of LEVELS) {
-  const b = LEVEL_BAND[L]
-  if (!bands.includes(b)) continue
-  for (const V of VENDORS) {
-    if (V === 'agy' && L !== 'builder') continue   // agy serves the builder level only
-    const incLabel = incumbents[L] && incumbents[L][V] ? incumbents[L][V] : null
-    const incPb = incLabel ? st.get(incLabel).perBand[b] : null
-    const incRate = incPb && incPb.rate != null ? incPb.rate : null
-    if (incLabel && incRate == null) flags.push(`incumbent ${incLabel} not measured at band ${b} — bar dropped`)
-    const eligible = states.filter(s => s.c.vendor === V && s.perBand[b] && s.perBand[b].rate != null &&
-      s.perBand[b].rate >= passRate && (incRate == null || s.perBand[b].rate >= incRate))
-    if (!states.some(s => s.c.vendor === V)) continue
-    if (!eligible.length) { flags.push(`proposal: no ${V} candidate cleared band ${b} for level ${L}${incLabel ? ` at the incumbent ${incLabel}'s rate` : ''}`); continue }
-    const pick = eligible.slice().sort((x, y) => cheaper(x.c, y.c))[0]
-    proposal[L] = proposal[L] || {}
-    proposal[L][V] = { label: pick.c.label, model: pick.model, effort: pick.c.effort, basis: 'parity-run', passRate: pick.perBand[b].rate, incumbent: incLabel, incumbentRate: incRate }
-  }
-}
 
 let desk = null
 if (args.desk !== false) {
@@ -593,13 +537,15 @@ const md = [
   `|---|---|---|---|---|${bands.map(() => '---').join('|')}|---|---|`,
   ...ranking.map(r => `| ${r.label} | ${r.vendor} | ${r.model || '—'} | ${r.effort || '—'} | B${r.highestBandCleared} | ${bands.map(b => cell(r.perBand[b])).join(' | ')} | ${r.externalTokens == null ? '—' : r.externalTokens} | ${r.stoppedAfterBand == null ? '—' : `after B${r.stoppedAfterBand}`} |`),
   '',
-  '| Level | Vendor | Proposed | Pass rate | Incumbent |',
-  '|---|---|---|---|---|',
-  ...Object.entries(proposal).flatMap(([L, m]) => Object.entries(m).map(([V, p]) =>
-    `| ${L} | ${V} | ${p.label} (${p.model || 'default'}${p.effort ? ` · ${p.effort}` : ''}) | ${p.passRate.toFixed(2)} | ${p.incumbent ? `${p.incumbent} (${p.incumbentRate == null ? 'n/a' : p.incumbentRate.toFixed(2)})` : '—'} |`)),
-  '',
-  'Proposal only: Alex approves any config/tiers.json change. Claude cost per candidate: scripts/parity-cost.sh on this run\'s transcript dir.',
+  'No tier proposal here. Save this result as JSON, then run parity-report.sh ingest-parity --result <file> and parity-report.sh report (min-n + margin rule; Alex approves any config/tiers.json change). Claude cost per candidate: scripts/parity-cost.sh on this run\'s transcript dir.',
 ].join('\n')
 
 log(`Parity run done: ${ranking.length} candidate(s), ${matrix.length} task run(s), ${flags.length} flag(s). Nothing outside ${outDir} was written; tiers.json untouched.`)
-return { outDir, bands, ranking, plateaus, proposal, flags, desk, tasks: matrix, markdown: md }
+// next — what the orchestrator does with this value: the ledger + decision rule
+// have ONE owner, scripts/parity-report.sh.
+const next = [
+  'Save this return value as JSON (e.g. <outDir>/result.json), then:',
+  `${PARITY_REPORT} ingest-parity --result <that file>   # one ledger line per graded (task, candidate run)`,
+  `${PARITY_REPORT} report                               # per level x vendor: n, rate, Wilson LB; proposals only past min-n + margin`,
+]
+return { outDir, bands, ranking, plateaus, flags, desk, tasks: matrix, markdown: md, next }

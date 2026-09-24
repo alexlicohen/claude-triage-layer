@@ -53,9 +53,19 @@ cleanup() {
 }
 trap cleanup EXIT
 
-new_tmp() {
-  d=$(mktemp -d)
-  ALL_TMP="$ALL_TMP $d"
+# Hermetic root: every fixture lives under ROOT, and HOME=ROOT, so the deny walk
+# (path up to AND INCLUDING $HOME) never reaches a machine-level marker such as
+# a real $TMPDIR/.agy-deny kill switch. Cases that test the $HOME rule set their
+# own HOME per call. Removing ROOT removes every fixture.
+ROOT=$(mktemp -d)
+ROOT=$(cd "$ROOT" && pwd -P)
+ALL_TMP="$ROOT"
+export HOME="$ROOT"
+export TMPDIR="$ROOT/tmp"
+mkdir -p "$TMPDIR"
+
+new_tmp() { # under ROOT (a bare `mktemp -d` ignores $TMPDIR on macOS)
+  d=$(mktemp -d "$ROOT/t.XXXXXX")
   printf '%s' "$d"
 }
 
@@ -571,19 +581,21 @@ chk "E7 an allowed symlink runs: staged under the caller's name with the TARGET'
 HM=$(new_tmp)
 HMP=$(cd "$HM" && pwd -P)
 new_repo "$HMP/proj"
+cp "$BRIEF" "$HMP/brief.txt"   # every checked path under this case's HOME (hermetic)
 : > "$HMP/.agy-deny"
-HOME="$HMP" AGY_BOUNDARY_CLEARED=1 AGY_STUB_MODE=buildnoop run_agy build --prompt-file "$BRIEF" --workdir "$HMP/proj" --output "$HMP/j1.patch"
+HOME="$HMP" AGY_BOUNDARY_CLEARED=1 AGY_STUB_MODE=buildnoop run_agy build --prompt-file "$HMP/brief.txt" --workdir "$HMP/proj" --output "$HMP/j1.patch"
 chk "J1 a .agy-deny marker at \$HOME itself refuses (exit 3) — the walk checks \$HOME before stopping" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "$HMP/.agy-deny" && [ ! -s "$STUB_LOG" ]'
-HOME="$HM" AGY_BOUNDARY_CLEARED=1 AGY_STUB_MODE=buildnoop run_agy build --prompt-file "$BRIEF" --workdir "$HMP/proj" --output "$HMP/j1b.patch"
+HOME="$HM" AGY_BOUNDARY_CLEARED=1 AGY_STUB_MODE=buildnoop run_agy build --prompt-file "$HMP/brief.txt" --workdir "$HMP/proj" --output "$HMP/j1b.patch"
 chk "J1b ...also when \$HOME is spelled through a symlink (the walk compares physical paths)" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "\.agy-deny"'
 HA=$(new_tmp)
 HAP=$(cd "$HA" && pwd -P)
 mkdir -p "$HAP/home"
 new_repo "$HAP/home/proj"
+cp "$BRIEF" "$HAP/home/brief.txt"
 : > "$HAP/.agy-deny"
-HOME="$HAP/home" AGY_BOUNDARY_CLEARED=1 AGY_STUB_MODE=buildnoop run_agy build --prompt-file "$BRIEF" --workdir "$HAP/home/proj" --output "$HAP/j2.patch"
+HOME="$HAP/home" AGY_BOUNDARY_CLEARED=1 AGY_STUB_MODE=buildnoop run_agy build --prompt-file "$HAP/home/brief.txt" --workdir "$HAP/home/proj" --output "$HAP/j2.patch"
 chk "J2 a marker ABOVE \$HOME is not consulted (the walk still stops at \$HOME)" '[ "$RC" -eq 0 ]'
 
 # --- G*: a trailing value-taking option is a usage error, never a hang ------------

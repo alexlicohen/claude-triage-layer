@@ -6,9 +6,10 @@
 // restricted per task and deny-marked vendors dropped per task; the adaptive stop
 // (consecutive failed bands only); unavailable/denied/invalid/unresolved never
 // counted as pass or fail; rubric judges (blind, agreement, disagreement); the
-// review scoring path; a LEAK aborting the run; the proposal (cheapest clearing
-// candidate, incumbents respected); the Fable warning; reps; the desk leg; and
-// that nothing outside outDir (never tiers.json) is ever written.
+// review scoring path; a LEAK aborting the run; the ranking with NO proposal (the
+// decision rule is scripts/parity-report.sh's, tested by test/parity-report.sh);
+// the Fable warning; reps; the desk leg; and that nothing outside outDir (never
+// tiers.json) is ever written.
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -134,8 +135,7 @@ const cellOf = (result, id, l) => ((result.tasks.find(t => t.id === id) || { res
     ['reps 0', A({ reps: 0, candidates: ok })],
     ['bandPassRate 2', A({ bandPassRate: 2, candidates: ok })],
     ['stopAfterFailedBands 0', A({ stopAfterFailedBands: 0, candidates: ok })],
-    ['incumbent not a candidate', A({ candidates: ok, incumbents: { builder: { claude: 'zzz' } } })],
-    ['incumbent of the wrong vendor', A({ candidates: ok, incumbents: { builder: { codex: 'a' } } })],
+    ['incumbents (moved to parity-report.sh)', A({ candidates: ok, incumbents: { builder: { claude: 'a' } } })],
     ['judges empty', A({ candidates: ok, judges: [] })],
     ['judges not an array', A({ candidates: ok, judges: { vendor: 'claude', level: 'deep' } })],
     ['duplicate judge labels', A({ candidates: ok, judges: [{ vendor: 'claude', level: 'deep' }, { vendor: 'claude', level: 'deep' }] })],
@@ -329,7 +329,7 @@ const cellOf = (result, id, l) => ((result.tasks.find(t => t.id === id) || { res
   chk('P8: an incomplete leak check is flagged but does not abort', unk.result.flags.some(f => /leak check incomplete/.test(f)) && cellOf(unk.result, 't1', 'a').status === 'pass')
 }
 
-// ---- P9: the proposal — cheapest clearing candidate, incumbents respected ------
+// ---- P9: ranking only — no proposal; the orchestrator runs parity-report.sh ---
 {
   const tasks = [task('q1', 1), task('q2', 1), task('b1', 2), task('b2', 2)]
   // B1: everyone passes q1; haiku fails q2 (rate 0.5), sonnet and opus pass both (1.0).
@@ -344,22 +344,19 @@ const cellOf = (result, id, l) => ((result.tasks.find(t => t.id === id) || { res
     C('codex', 'quick', 'luna-hi', { model: 'gpt-6-luna', effort: 'high' }),
   ]
   const { result } = await run(A({ bands: [1, 2], candidates: cands }), { tasks, outcome })
-  chk('P9: among Claude candidates the ranking puts the strongest first (opus), so a proposal taken in ranking order would be wrong', result.ranking.filter(r => r.vendor === 'claude')[0].label === 'opus')
-  chk('P9: quick/claude = the CHEAPEST candidate clearing band 1 (haiku at 0.5 >= bandPassRate), not the top-ranked one',
-    result.proposal.quick && result.proposal.quick.claude.label === 'haiku' && result.proposal.quick.claude.basis === 'parity-run')
-  chk('P9: builder/claude = sonnet (clears band 2 at 0.5; haiku does not clear it)', result.proposal.builder.claude.label === 'sonnet')
-  chk('P9: model order before effort: codex quick = luna-hi (luna < sol even at high effort)', result.proposal.quick.codex.label === 'luna-hi')
-  chk('P9: same model, lower effort wins: codex builder = sol-lo', result.proposal.builder.codex.label === 'sol-lo')
-  chk('P9: a level whose band was not run gets no proposal', result.proposal.deep === undefined && result.proposal.top === undefined)
-  const inc = await run(A({ bands: [1, 2], candidates: cands, incumbents: { quick: { claude: 'sonnet' }, builder: { claude: 'opus' } } }), { tasks, outcome })
-  chk('P9: an incumbent raises the bar: quick/claude = sonnet (haiku 0.5 < incumbent sonnet 1.0)', inc.result.proposal.quick.claude.label === 'sonnet' && inc.result.proposal.quick.claude.incumbent === 'sonnet' && inc.result.proposal.quick.claude.incumbentRate === 1)
-  chk('P9: builder/claude with incumbent opus (1.0 in band 2) = opus itself (sonnet 0.5 falls short)', inc.result.proposal.builder.claude.label === 'opus')
-  chk('P9: the markdown summary has the ranking and the proposal tables and says it is a proposal',
-    /\| opus \| claude \| opus \| high \| B2 \|/.test(result.markdown) && /\| quick \| claude \| haiku/.test(result.markdown) && /Alex approves/.test(result.markdown))
-  const weakOutcome = (id, l) => (l === 'weak' ? 'fail' : 'pass')
-  const nm = await run(A({ bands: [1, 2], stopAfterFailedBands: 1, candidates: [C('claude', 'builder', 'weak'), C('claude', 'builder', 'ok')], incumbents: { builder: { claude: 'weak' } } }), { tasks, outcome: weakOutcome })
-  chk('P9: an incumbent that stopped before the level\'s band (never measured there) is flagged, not silently dropped',
-    nm.result.flags.some(f => /incumbent weak not measured at band 2 — bar dropped/.test(f)))
+  chk('P9: the ranking puts the strongest first (opus before sonnet before haiku among Claude)',
+    result.ranking.filter(r => r.vendor === 'claude').map(r => r.label).join() === 'opus,sonnet,haiku')
+  chk('P9: equal records tie by label, not by cost (sol-hi, sol-lo and opus all clear B2 at 1.0: opus, sol-hi, sol-lo)',
+    result.ranking.slice(0, 3).map(r => r.label).join() === 'opus,sol-hi,sol-lo')
+  chk('P9: no proposal is returned — the decision rule is parity-report.sh\'s alone', !('proposal' in result))
+  chk('P9: the result says what comes next: parity-report.sh ingest-parity, then report',
+    Array.isArray(result.next) && result.next.some(l => /parity-report\.sh ingest-parity --result/.test(l)) && result.next.some(l => /parity-report\.sh report/.test(l)) &&
+    result.next.findIndex(l => /ingest-parity/.test(l)) < result.next.findIndex(l => /parity-report\.sh report/.test(l)))
+  chk('P9: the markdown has the ranking table, no proposal table, and points at parity-report.sh',
+    /\| opus \| claude \| opus \| high \| B2 \|/.test(result.markdown) && !/\| Level \| Vendor \| Proposed/.test(result.markdown) && /parity-report\.sh ingest-parity/.test(result.markdown))
+  chk('P9: no cheapness inference is flagged any more (cost is not judged here)', !result.flags.some(f => /cheapness/.test(f)))
+  const inc = await throws(A({ bands: [1, 2], candidates: cands, incumbents: { quick: { claude: 'sonnet' } } }), { tasks, outcome })
+  chk('P9: an incumbents arg is refused before any spawn and names parity-report.sh', inc.threw && /incumbents is no longer accepted/.test(inc.message) && /parity-report\.sh/.test(inc.message) && inc.calls.length === 0)
 }
 
 // ---- P10: the Fable warning precedes any top-level Claude candidate or judge --
@@ -386,7 +383,7 @@ const cellOf = (result, id, l) => ((result.tasks.find(t => t.id === id) || { res
     tasks, script: { 'judge:claude-deep': [{ score: 0.9 }], 'judge:codex-deep': ['{"score": 0.9}'], 'candidate:b@rv': [{ findings: [] }], 'score:rv': [{ scores: [{ label: 'b', recall: 1, precision: 1 }] }] },
   })
   const text = calls.map(c => c.prompt).join('\n') + JSON.stringify(wf.map(w => w.args))
-  chk('P11: no prompt or nested workflow arg mentions tiers.json, tiers-sync or make tiers', !/tiers\.json|tiers-sync|make tiers/.test(text) && !/tiers\.json/.test(JSON.stringify(result.proposal)))
+  chk('P11: no prompt or nested workflow arg mentions tiers.json, tiers-sync or make tiers', !/tiers\.json|tiers-sync|make tiers/.test(text))
   const targets = []
   for (const c of calls) {
     for (const m of c.prompt.matchAll(/(?:--out|mkdir -p|cat >) '([^']+)'/g)) targets.push(m[1])
@@ -395,8 +392,8 @@ const cellOf = (result, id, l) => ((result.tasks.find(t => t.id === id) || { res
   for (const w of wf) targets.push(w.args.outDir)
   chk('P11: every path this run writes (materialize --out, compare outDir, findings, judge copies) is under outDir',
     targets.length >= 5 && targets.every(p => p === OUT || p.startsWith(`${OUT}/`)))
-  chk('P11: the proposal is only returned (basis parity-run), and the result carries the flags/desk/markdown fields',
-    Array.isArray(result.flags) && typeof result.markdown === 'string' && result.desk && result.desk.note === 'signal only, never scored')
+  chk('P11: nothing is proposed, and the result carries the flags/desk/markdown/next fields',
+    !('proposal' in result) && Array.isArray(result.next) && Array.isArray(result.flags) && typeof result.markdown === 'string' && result.desk && result.desk.note === 'signal only, never scored')
 }
 
 // ---- P12: reps, the desk leg, the loader --------------------------------------

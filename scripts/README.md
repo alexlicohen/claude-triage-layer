@@ -456,6 +456,7 @@ stage-worktree.sh create    --repo R --base REV --count N --dir D
 stage-worktree.sh diff      --worktree W --base SHA --out FILE
 stage-worktree.sh leakcheck --repo R --dir D
 stage-worktree.sh cleanup   --repo R --dir D
+stage-worktree.sh apply     --repo R --patch P
 ```
 
 `workflows/triage-compare.js` never gives a candidate the real repo as its working directory.
@@ -473,8 +474,21 @@ the fingerprint: `CLEAN` (exit 0); `LEAK` (exit 7) when, with HEAD unchanged, th
 path's content changed, or, with HEAD moved, any path's content changed; `BASE_MOVED` (exit 0,
 flagged) when someone committed and nothing else changed — grading stays at the recorded sha.
 `cleanup` removes each staged worktree and its bookkeeping, prunes, and deletes D; it refuses a
-D without a fingerprint. Every step prints one JSON line; R's working tree and index are only
-ever read (`--no-optional-locks`).
+D without a fingerprint. Every step prints one JSON line; except for `apply`, R's working tree
+and index are only ever read (`--no-optional-locks`).
+
+`apply` is the one deliberate write into R: an inline bake-off's fallback applies the chosen
+candidate's patch P. Only an apply proven clean first is written: `git apply --check` then
+`git apply` (index-free, so unrelated unstaged/untracked work does not block it); else `git apply
+--3way --check`, which exits 0 even when the merge WOULD conflict, so it counts as clean only
+with rc 0 **and** no `conflict` in its output, then `git apply --3way`; else nothing is written
+and the exit is **6** with R byte-identical. An empty P is a no-op success. It prints
+`{step:"apply", repo, patch, ok, applied, method: plain|3way|empty|none, error?}`. The rule
+mirrors `ext-run.sh`'s `apply_back()` on purpose instead of sharing a helper: ext-run stays
+self-contained (single owner of every external-CLI run, its own exit-6 contract and
+diagnostics), and a runtime dependency from that danger-zone script on this one was judged
+worse than a three-command rule kept in two places. Each copy has its own conflict-marker
+mutation (#51 ext-run, #55 here).
 
 `test/stage-worktree.sh` (wired into `make test`): sha resolution, worktrees at the exact sha,
 refusals (D inside/containing R, populated D, relative D, unknown REV), a diff with
@@ -482,7 +496,10 @@ new/modified/deleted/binary files that applies cleanly at the sha through `patch
 empty diff still checked, diff refusing the main tree and never leaving a stale patch, leakcheck
 CLEAN / LEAK (tracked edit, untracked file, content change to an already-dirty file) /
 BASE_MOVED (including committing pre-existing work), cleanup leaving no worktree registered, and
-R's tree, index bytes and HEAD untouched. `qc/mutate.sh` #39 proves the new-file capture has teeth.
+R's tree, index bytes and HEAD untouched; `apply` with a clean patch, a drifted tree recovered by
+a clean 3-way merge, a conflicting patch (exit 6, tree incl. untracked/unstaged work and index
+byte-identical, no markers), an empty patch and a relative path. `qc/mutate.sh` #39 proves the
+new-file capture has teeth, #55 the apply conflict pre-check.
 
 ## `parity-suite.sh` — the task suite of a parity run
 
@@ -552,6 +569,76 @@ Exit codes: 0 ok; 1 the step failed; 2 usage error or invalid task; 3 refused (d
 `test/parity-suite.sh` (in `make test`) covers every subcommand on the synthetic fixtures,
 including the real `ext-run.sh` refusing a clone of a marked source (stub CLIs that must not
 run); `qc/mutate.sh` #44 proves deny propagation has teeth.
+
+## `parity-report.sh` — the parity ledger and the tier-change decision rule
+
+```
+parity-report.sh ingest-compare --result FILE --repo-name NAME --level L --source inline|suite
+                                [--task ID] [--applied LABEL] [--run ID] [--ts ISO]
+parity-report.sh ingest-parity  --result FILE [--ts ISO]
+parity-report.sh migrate        [--from ~/.agents/evidence/vendor-parity.jsonl]
+parity-report.sh report         [--json]
+      every subcommand also takes [--ledger F] [--tiers F]
+```
+
+Single owner of the ledger schema and of the rule that turns outcomes into a **proposed**
+`config/tiers.json` change. `triage-parity.js` and inline bake-offs only produce results; the
+orchestrator saves a result as JSON, ingests it here, then runs `report`. It never writes
+tiers.json (a `--ledger` that is the tiers file is refused) — Alex approves every change.
+
+**Config.** `tuning` in the tiers file, read through `triage-tiers.sh --bakeoff-json` (the one
+validator; also what the orchestrator passes to triage-exec as `args.bakeoff.config`):
+`sampleRate`, `challengerMix` (vendor shares, sum 1), `challengers` (`level → vendor → [{model,
+effort}]`), `rule {minN, cheaperTolerance, pricierMargin, confidence: "wilson95"}`, `ledger`
+(default path, `~` expanded) and `pauseAtWeeklyPct`. An invalid or missing block is exit 2 for
+every subcommand and a `make lint` failure.
+
+**Ledger** (JSON lines, schema v 1) — scores and metadata only, never patch contents, briefs,
+checks, tails, diffstats or paths from the target repo (`repoName` is a bare name; `task`, `run`
+and labels are id tokens; anything else is refused with exit 2 and nothing written):
+
+```
+{"v":1, "ts":"<ISO>", "source":"inline|suite", "run":<id|null>, "repoName":"<name>",
+ "level":"quick|builder|deep|top", "band":<1-4, suite lines only>, "task":<id|null>,
+ "candidates":[{"label","vendor","model","effort","status","totalTokens","seconds"}],
+ "applied":<label|null>, "migrated":"vendor-parity.jsonl" (migrated lines only)}
+```
+
+`status` is `pass`/`fail` (graded) or the candidate's own non-graded status (`unavailable`,
+`invalid`, `denied`, `unresolved`, `ungraded`, `skipped`, else `unknown`) — never turned into a
+fail. A null model/effort is filled at ingest from `levels.<the candidate's level>.<vendor>`,
+which is exactly what ran (agents and ext-run default to that entry). `ingest-compare` writes one
+line per compare (`--level` = the planned level). `ingest-parity` writes one line per **graded**
+(task, candidate run), `level` = the band's level (B1 quick … B4 top), `run` = the outDir
+basename; a run already in the ledger is skipped. `migrate` converts the legacy evidence file
+best-effort: a compare line → one line; a parity aggregate → one pass/fail line per counted
+outcome per band (it had no task ids or per-task tokens; models resolved from the label via the
+tiers file); idempotent by run id.
+
+**Rule** (`report`). Groups graded outcomes per level × vendor × (model, effort): n, passes,
+rate, Wilson 95% lower bound, excluded (non-graded) count, mean tokens and seconds. Per level ×
+vendor the incumbent is `levels.<level>.<vendor>`; every other (model, effort) there is a
+challenger. Cheapness: claude haiku < sonnet < opus < fable; codex gpt-6-luna < gpt-6-sol <
+gpt-6-astra; agy flash < pro; then effort low < medium < high < xhigh < max.
+
+| Case | Verdict |
+|---|---|
+| either side has n < minN | `insufficient-data`, naming the graded runs still needed on each side |
+| cheaper challenger | `propose` iff its Wilson LB ≥ incumbent rate − cheaperTolerance, else `keep` |
+| pricier challenger | `propose` iff its rate − incumbent rate ≥ pricierMargin, else `keep` |
+| unknown model / same cost | `unranked`, never proposed |
+
+One proposal per level × vendor: a qualifying pricier challenger first (quality; highest rate,
+then cheapest), else the cheapest qualifying cheaper one. Markdown by default (a table per
+level, the decisions with their reasons, the proposals); `--json` gives
+`{ledger, tiers, lines, malformed, rule, groups, decisions, proposals, note}`. Malformed ledger
+lines are counted, not fatal.
+
+Exit codes: 0 ok; 1 ledger write failed; 2 usage / invalid input / invalid tiers file (nothing
+written). `test/parity-report.sh` (in `make test`) covers both ingest shapes, the refusals,
+no-repo-content, migrate + idempotence, Wilson bounds, every rule branch, exclusions and that
+tiers.json is never written; `qc/mutate.sh` #43 (cheapness order), #52 (minN), #53 (Wilson LB
+vs point rate) and #54 (non-graded status as fail) prove the rule has teeth.
 
 ## `parity-cost.sh` — Claude cost per parity candidate
 
