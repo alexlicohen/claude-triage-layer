@@ -61,7 +61,10 @@ done
 # 63-66 cover the parity confinement fixes (Wave 13): the PARITY_ env map's
 # unmapped-variable refusal, the source fingerprint on every task kind, judges
 # given only patch + key, and the per-check cache isolation.
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66"
+# 67-70 cover the review bake-off (Wave 13D): hard excludes applied to tracked
+# paths too, adjudicators blind to provenance, disputed items never scored, and
+# --input-dir refusing a symlink out of the staged tree.
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -139,6 +142,9 @@ mut_file() {
     56|57|58|59|60|61|62) echo "scripts/ext-run.sh" ;;
     63|66) echo "scripts/patch-check.sh" ;;
     64|65) echo "workflows/triage-parity.js" ;;
+    67) echo "scripts/review-stage.sh" ;;
+    68|69) echo "workflows/triage-compare.js" ;;
+    70) echo "scripts/ext-run.sh" ;;
     *) echo "" ;;
   esac
 }
@@ -206,6 +212,10 @@ mut_desc() {
     64) echo "triage-parity.js: the after-grading source fingerprint is skipped for review tasks (a review candidate that writes into the source repo goes unnoticed)" ;;
     65) echo "triage-parity.js: judges are handed the materialized repo path again (a judge can cd into a repo and read beyond the patch + key)" ;;
     66) echo "patch-check.sh: checks run without XDG_CACHE_HOME/TMPDIR/GRANTFORGE_CACHE_DIR pointed at the per-patch dir (a check refreshes the real user cache)" ;;
+    67) echo "review-stage.sh: a hard exclude is skipped when the path is tracked (as .gitignore would: a committed context/ or PROJECT_MEMORY.md reaches the snapshot)" ;;
+    68) echo "triage-compare.js (review): the adjudicator prompt leaks provenance (each item says which anonymized reviewers reported it)" ;;
+    69) echo "triage-compare.js (review): a disputed item is counted as real in the reviewer scores" ;;
+    70) echo "ext-run.sh: --input-dir follows a symlink out of the staged tree (whatever it names is copied to codex)" ;;
     *) echo "" ;;
   esac
 }
@@ -214,18 +224,20 @@ mut_desc() {
 # "scenarios" (test/workflow-scenarios.mjs), "extrun" (test/ext-run.sh),
 # "compare" (test/compare-scenarios.mjs), "patchcheck" (test/patch-check.sh),
 # "stagewt" (test/stage-worktree.sh), "parity" (test/parity-scenarios.mjs),
-# "paritysuite" (test/parity-suite.sh) or "parityreport" (test/parity-report.sh).
+# "paritysuite" (test/parity-suite.sh), "parityreport" (test/parity-report.sh) or
+# "reviewstage" (test/review-stage.sh).
 mut_suite() {
   case "$1" in
     1|2|3|4|5|6|10|12|18|19|20|21|33) echo "roundtrip" ;;
     7|8|9|11|16|17|22|23|28|29) echo "scenarios" ;;
-    15|24|25|26|40|49|50|51|56|57|58|59|60|61|62) echo "extrun" ;;
-    31|34|36|37|38|47) echo "compare" ;;
+    15|24|25|26|40|49|50|51|56|57|58|59|60|61|62|70) echo "extrun" ;;
+    31|34|36|37|38|47|68|69) echo "compare" ;;
     32|48|63|66) echo "patchcheck" ;;
     39|55) echo "stagewt" ;;
     41|42|46|64|65) echo "parity" ;;
     44|45) echo "paritysuite" ;;
     43|52|53|54) echo "parityreport" ;;
+    67) echo "reviewstage" ;;
     *) echo "" ;;
   esac
 }
@@ -243,6 +255,7 @@ suite_file() {
     parity) echo "test/parity-scenarios.mjs" ;;
     paritysuite) echo "test/parity-suite.sh" ;;
     parityreport) echo "test/parity-report.sh" ;;
+    reviewstage) echo "test/review-stage.sh" ;;
     *) echo "" ;;
   esac
 }
@@ -830,6 +843,35 @@ MUT65
 MUT66
       mut_replace_block "$target" '  ( cd "$WT" && export XDG_CACHE_HOME="$CACHE" TMPDIR="$CACHE" GRANTFORGE_CACHE_DIR="$CACHE" && eval "$ENV_LINES" && exec bash -c "$CHECK" ) > "$1" 2>&1 < /dev/null &' 1 "$rep"
       ;;
+    67)
+      # review-stage.sh: split_hard lets a TRACKED path through (hard excludes
+      # behave like .gitignore, which never un-tracks a committed file).
+      cat > "$rep" <<'MUT67'
+    if ! git -C "$R" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1 && pat=$(hard_match "$rel"); then printf '%s\t%s\n' "$rel" "$pat" >> "$3"; continue; fi # MUTATED: hard exclude skipped for tracked paths
+MUT67
+      mut_replace_block "$target" '    if pat=$(hard_match "$rel"); then printf' 1 "$rep"
+      ;;
+    68)
+      # triage-compare.js: each blind item carries its anonymized provenance.
+      cat > "$rep" <<'MUT68'
+  const blindItem = it => JSON.stringify({ id: it.id, file: it.file, line: it.line, severity: it.severity, category: it.category, claim: it.claim, evidence: it.evidence, suggestedFix: it.suggestedFix, reportedBy: it.prov }) // MUTATED: adjudicator sees provenance
+MUT68
+      mut_replace_block "$target" '  const blindItem = it => JSON.stringify({ id: it.id,' 1 "$rep"
+      ;;
+    69)
+      # triage-compare.js: disputed items score as real.
+      cat > "$rep" <<'MUT69'
+  const isReal = it => it.verdict === 'real' || it.verdict === 'disputed' // MUTATED: disputed counted as real
+MUT69
+      mut_replace_block "$target" "  const isReal = it => it.verdict === 'real'" 1 "$rep"
+      ;;
+    70)
+      # ext-run.sh: a symlink leaving the --input-dir tree is let through.
+      cat > "$rep" <<'MUT70'
+      *) : ;; # MUTATED: input-dir follows an outside symlink
+MUT70
+      mut_replace_block "$target" '      *) die "REFUSED: --input-dir $real holds a symlink that leaves it' 1 "$rep"
+      ;;
     *)
       return 1
       ;;
@@ -907,6 +949,10 @@ verify_mutation() {
     64) grep -qF 'MUTATED: fingerprint skipped for review tasks' "$target" && ! grep -qF "if (mat.fp.source === 'git' && rows.length && !leakAbort) rows" "$target" ;;
     65) grep -qF 'MUTATED: judge gets repo path' "$target" && grep -qF '${t.mat.repo}.)' "$target" ;;
     66) grep -qF 'MUTATED: cache env not set' "$target" && ! grep -qF 'export XDG_CACHE_HOME="$CACHE"' "$target" ;;
+    67) grep -qF 'MUTATED: hard exclude skipped for tracked paths' "$target" && ! grep -qF '    if pat=$(hard_match "$rel"); then printf' "$target" ;;
+    68) grep -qF 'MUTATED: adjudicator sees provenance' "$target" && grep -qF 'reportedBy: it.prov' "$target" ;;
+    69) grep -qF 'MUTATED: disputed counted as real' "$target" && ! grep -qxF "  const isReal = it => it.verdict === 'real'" "$target" ;;
+    70) grep -qF 'MUTATED: input-dir follows an outside symlink' "$target" && ! grep -qF 'holds a symlink that leaves it' "$target" ;;
     *) return 1 ;;
   esac
 }
@@ -946,6 +992,7 @@ run_suite() { # $1 = repo copy dir, $2 = suite name (see suite_file) -> exit cod
     parity) ( cd "$copy" && node test/parity-scenarios.mjs ) >"$WORK_ROOT/last-suite.log" 2>&1 ;;
     paritysuite) ( cd "$copy" && bash test/parity-suite.sh ) >"$WORK_ROOT/last-suite.log" 2>&1 ;;
     parityreport) ( cd "$copy" && bash test/parity-report.sh ) >"$WORK_ROOT/last-suite.log" 2>&1 ;;
+    reviewstage) ( cd "$copy" && bash test/review-stage.sh ) >"$WORK_ROOT/last-suite.log" 2>&1 ;;
     *) return 1 ;;
   esac
 }
@@ -970,6 +1017,7 @@ BASELINE_STAGEWT_OK=1
 BASELINE_PARITY_OK=1
 BASELINE_PARITYSUITE_OK=1
 BASELINE_PARITYREPORT_OK=1
+BASELINE_REVIEWSTAGE_OK=1
 if run_suite "$BASELINE_DIR" roundtrip; then
   BASELINE_ROUNDTRIP_OK=0
 else
@@ -1018,6 +1066,11 @@ if run_suite "$BASELINE_DIR" parityreport; then
 else
   echo "  ⚠ baseline $(suite_file parityreport) is already RED on unmutated code — mutations using it will be reported ERROR (baseline-red), not KILLED/SURVIVOR."
 fi
+if run_suite "$BASELINE_DIR" reviewstage; then
+  BASELINE_REVIEWSTAGE_OK=0
+else
+  echo "  ⚠ baseline $(suite_file reviewstage) is already RED on unmutated code — mutations using it will be reported ERROR (baseline-red), not KILLED/SURVIVOR."
+fi
 echo ""
 
 # -----------------------------------------------------------------------------
@@ -1054,6 +1107,7 @@ for id in $RUN_IDS; do
     parity) baseline_ok=$BASELINE_PARITY_OK ;;
     paritysuite) baseline_ok=$BASELINE_PARITYSUITE_OK ;;
     parityreport) baseline_ok=$BASELINE_PARITYREPORT_OK ;;
+    reviewstage) baseline_ok=$BASELINE_REVIEWSTAGE_OK ;;
     *) baseline_ok=1 ;;
   esac
 

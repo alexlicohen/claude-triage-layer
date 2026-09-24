@@ -8,7 +8,11 @@
 // from the final quick-task result alone (worktree diff + patch-check + leakcheck), a
 // leak voiding every grade, BASE_MOVED flagged, cleanup on every path, the
 // work-only-inside line, and $PARITY_ checks shown unexpanded (.parity-env only
-// with selfCheckEnv).
+// with selfCheckEnv). kind:'review' (RV*): validation before any spawn, the
+// snapshot first, reviewers in parallel on the snapshot + range diff only (never
+// the live repo), a blind merge, blind adjudicators (no labels, no provenance),
+// the verdict combination rule, scores over non-disputed items only, unavailable
+// never zero, the ⚠ Fable line, SOURCE_CHANGED, codex deny carried over.
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -565,6 +569,350 @@ const repoAsWorkdir = p => /(^|\s)cd\s+'?\/r\/repo'?(\s|$|\/)/.test(p) || /WORKD
   chk('C19: checks with no $PARITY_ variable get no env line at all', !cands(plain.calls)[0].prompt.includes('PARITY_'))
   const r = await throws(A({ selfCheckEnv: 'yes', candidates: [{ vendor: 'claude', level: 'builder' }] }))
   chk('C19: a non-boolean selfCheckEnv throws before any spawn', r.threw && r.calls.length === 0 && /args\.selfCheckEnv/.test(r.message))
+}
+
+// ═══ kind:'review' — the review bake-off ════════════════════════════════════════
+const RB = 'b'.repeat(40)
+const RH = 'c'.repeat(40)
+const LIVE = '/r/live-repo'
+const ROUT = '/o/rv'
+const SNAPDIR = `${ROUT}/snap`
+const SNAP_OK = (over = {}, fp = { rc: 0, head: RH }) => ({ snapshot: Object.assign({ ok: true, base: RB, head: RH, files: 3, bytes: 100, diffBytes: 50, extras: 0, excluded: 1, codexDenied: false }, over), fingerprint: fp })
+const RF = (file, line, claim, severity = 'major') => ({ file, line, severity, category: 'U1', claim, evidence: `page image p${line}`, suggestedFix: 'fix it' })
+const CX = (obj, n = 500, sec = 12, model = 'gpt-6-sol') => `CROSS-REVIEW (codex · read · exit 0)\n${JSON.stringify(obj)}\next-run: ${n} tokens (${sec}s, codex/${model}) out=100`
+// The merge mock: clusters findings with the same claim text (what a good merger does).
+const MERGE_BY_CLAIM = prompt => {
+  const fs = prompt.split('\n').filter(l => l.startsWith('{"id":"F')).map(l => JSON.parse(l))
+  const g = new Map()
+  for (const f of fs) { if (!g.has(f.claim)) g.set(f.claim, []); g.get(f.claim).push(f) }
+  return { items: [...g.values()].map(list => ({ members: list.map(f => f.id), file: list[0].file, line: list[0].line, severity: list[0].severity, category: list[0].category, claim: list[0].claim, evidence: list[0].evidence, suggestedFix: list[0].suggestedFix })) }
+}
+// Adjudicator mocks: the verdict is keyed off a word in the claim, per adjudicator.
+const decide = (who, claim) => {
+  if (/SPLIT/.test(claim)) return who === 'claude' ? 'real' : 'not-real'
+  if (/UNSURE/.test(claim)) return who === 'claude' ? 'real' : 'unsure'
+  if (/MIXREJ/.test(claim)) return who === 'claude' ? 'not-real' : 'accepted-deviation'
+  if (/ACCDEV/.test(claim)) return 'accepted-deviation'
+  if (/FAKE/.test(claim)) return 'not-real'
+  return 'real'
+}
+const blindItems = prompt => prompt.split('\n').filter(l => l.startsWith('{"id":"M')).map(l => JSON.parse(l))
+const ADJ = who => prompt => {
+  const v = blindItems(prompt).map(it => ({ id: it.id, verdict: decide(who, it.claim), evidence: `${who} checked ${it.file}:${it.line}` }))
+  return who === 'codex' ? CX({ verdicts: v }, 300, 5, 'gpt-6-astra') : { verdicts: v }
+}
+const RV_REVIEWERS = [
+  { vendor: 'claude', level: 'builder', model: 'sonnet', effort: 'high', label: 'rv-sonnet' },
+  { vendor: 'claude', level: 'deep', model: 'opus', effort: 'high', label: 'rv-opus' },
+  { vendor: 'codex', level: 'deep', model: 'gpt-6-sol', effort: 'medium', label: 'rv-sol' },
+  { vendor: 'codex', level: 'deep', model: 'gpt-6-astra', effort: 'high', label: 'rv-astra' },
+  { vendor: 'claude', level: 'quick', label: 'rv-bad' },
+]
+const RBASE = {
+  kind: 'review', repo: LIVE, repoName: 'voron', base: 'abc123', head: 'HEAD', include: ['docs/**/*.md'], context: ['review/RUBRIC.md'],
+  groundTruth: 'GT-TEXT: page images under assets are authoritative', accepted: 'ACCEPTED-TEXT: parts-first render order', conventions: 'CONV-TEXT: Do <= 40 words',
+  outDir: ROUT, reviewers: RV_REVIEWERS,
+}
+const RA = extra => Object.assign({}, RBASE, extra)
+const RV_SCRIPT = (extra = {}) => Object.assign({
+  'review:snapshot': [SNAP_OK()],
+  'reviewer:rv-sonnet': [{ findings: [RF('docs/a.md', 3, 'REAL typo in step 1'), RF('docs/a.md', 10, 'FAKE missing tag', 'minor'), RF('docs/b.md', 5, 'SPLIT wrong torque', 'blocker')] }],
+  'reviewer:rv-opus': [{ findings: [RF('docs/a.md', 3, 'REAL typo in step 1'), RF('docs/b.md', 8, 'REAL wrong bolt count')] }],
+  'reviewer:rv-sol': [CX({ findings: [RF('docs/a.md', 3, 'REAL typo in step 1'), RF('docs/c.md', 1, 'ACCDEV parts-first order'), RF('docs/c.md', 2, 'UNSURE ambiguous step'), RF('docs/c.md', 9, 'MIXREJ lids first')] })],
+  'reviewer:rv-astra': ['UNAVAILABLE: codex exited 1 — rate limited'],
+  'reviewer:rv-bad': [null],
+  'review:merge': [MERGE_BY_CLAIM],
+  'adjudicate:claude': [ADJ('claude')],
+  'adjudicate:codex': [ADJ('codex')],
+  'review:fingerprint': [{ rc: 0, same: true, changed: [], headMoved: false, detail: 'SAME: nothing under the paths changed' }],
+}, extra)
+const rvItem = (res, file, line) => res.items.find(it => it.file === file && it.line === line) || {}
+const rvRev = (res, l) => res.reviewers.find(r => r.label === l) || {}
+const near = (x, y) => x != null && Math.abs(x - y) < 1e-9
+
+// ---- RV1: validation throws before ANY spawn ----------------------------------
+{
+  const cases = [
+    ['unknown kind', RA({ kind: 'audit' })],
+    ['no repoName', RA({ repoName: undefined })],
+    ['repoName that is a path', RA({ repoName: 'a/b' })],
+    ['relative repo', RA({ repo: 'repo' })],
+    ['no base', RA({ base: undefined })],
+    ['no include', RA({ include: undefined })],
+    ['empty include', RA({ include: [] })],
+    ['absolute include', RA({ include: ['/etc/passwd'] })],
+    ['.. in include', RA({ include: ['docs/../../x'] })],
+    ['pathspec magic in include', RA({ include: [':(top)x'] })],
+    ['flag-like include', RA({ include: ['--out'] })],
+    ['.. in context', RA({ context: ['../secret.md'] })],
+    ['no groundTruth', RA({ groundTruth: '' })],
+    ['non-string accepted', RA({ accepted: 5 })],
+    ['relative outDir', RA({ outDir: 'out' })],
+    ['outDir inside repo', RA({ outDir: `${LIVE}/rv` })],
+    ['outDir === repo', RA({ outDir: LIVE })],
+    ['outDir containing the repo', RA({ outDir: '/r' })],
+    ['extras src relative', RA({ extras: [{ src: 'cache.json', dest: 'cad/index.json' }] })],
+    ['extras src inside repo', RA({ extras: [{ src: `${LIVE}/cache.json`, dest: 'cad/index.json' }] })],
+    ['extras dest with ..', RA({ extras: [{ src: '/c/cache.json', dest: '../index.json' }] })],
+    ['no reviewers', RA({ reviewers: [] })],
+    ['retired agy reviewer', RA({ reviewers: [{ vendor: 'agy', level: 'deep' }] })],
+    ['codex reviewer without model/effort', RA({ reviewers: [{ vendor: 'codex', level: 'deep' }] })],
+    ['duplicate reviewer labels', RA({ reviewers: [{ vendor: 'claude', level: 'deep', label: 'x' }, { vendor: 'claude', level: 'top', label: 'x' }] })],
+    ['path-unsafe reviewer label', RA({ reviewers: [{ vendor: 'claude', level: 'deep', label: '../x' }] })],
+    ['a single adjudicator', RA({ adjudicators: [{ vendor: 'claude', level: 'deep' }] })],
+    ['agy adjudicator', RA({ adjudicators: [{ vendor: 'claude', level: 'deep' }, { vendor: 'agy', level: 'deep' }] })],
+    ['batchSize 0', RA({ batchSize: 0 })],
+  ]
+  for (const [name, args] of cases) {
+    const r = await throws(args)
+    chk(`RV1: ${name} throws before any spawn`, r.threw && r.calls.length === 0 && /triage-compare/.test(r.message))
+  }
+  const agy = await throws(RA({ reviewers: [{ vendor: 'agy', level: 'deep' }] }))
+  chk('RV1: an agy reviewer is refused by name, naming its retirement', agy.threw && agy.message.includes('agy was retired 2026-09-24'))
+  const cx = await throws(RA({ reviewers: [{ vendor: 'codex', level: 'deep' }] }))
+  chk('RV1: the codex refusal says why (read mode would run its own default model)', cx.threw && /must pin model and effort/.test(cx.message))
+}
+
+// ---- RV2: the flow — snapshot, parallel reviewers, merge, adjudicate, fingerprint
+const RV = await run(RA({}), RV_SCRIPT())
+{
+  const { calls, maxInflight, result } = RV
+  const L = calls.map(c => c.label)
+  const idx = pfx => L.findIndex(l => l.startsWith(pfx))
+  const last = pfx => L.map((l, i) => (l.startsWith(pfx) ? i : -1)).filter(i => i >= 0).pop()
+  chk('RV2: ONE snapshot spawn first, on triage-quick-task with a snapshot/fingerprint schema', L[0] === 'review:snapshot' && calls[0].opts.agentType === 'triage-quick-task' &&
+    ['snapshot', 'fingerprint'].every(k => calls[0].opts.schema.required.includes(k)) && L.filter(l => l === 'review:snapshot').length === 1)
+  chk('RV2: every reviewer spawns (5), all before the merge; the merge before any adjudicator; the fingerprint last',
+    L.filter(l => l.startsWith('reviewer:')).length === 5 && last('reviewer:') < idx('review:merge') && idx('review:merge') < idx('adjudicate:') &&
+    last('adjudicate:') < idx('review:fingerprint') && L[L.length - 1] === 'review:fingerprint')
+  chk('RV2: reviewers run IN PARALLEL (all five in flight at once)', maxInflight >= 5)
+  chk('RV2: the review flow never stages worktrees, grades patches or cleans a stage', !L.some(l => /^(stage:|grade:|cleanup:|candidate:)/.test(l)))
+  chk('RV2: returns kind review, the resolved base/head shas, sourceChanged false', result.kind === 'review' && result.base === RB && result.head === RH && result.sourceChanged === false)
+}
+
+// ---- RV3: the snapshot + fingerprint commands are exact -------------------------
+{
+  const p = RV.calls[0].prompt
+  chk('RV3: the snapshot command names repo, base, head, include, context and outDir exactly (review-stage.sh)',
+    p.includes(`~/.claude/scripts/review-stage.sh snapshot --repo '${LIVE}' --base 'abc123' --head 'HEAD' --include 'docs/**/*.md' --context 'review/RUBRIC.md' --out '${ROUT}'`))
+  chk('RV3: the fingerprint covers include + context and is written to <outDir>/fingerprint-before.json',
+    p.includes(`~/.claude/scripts/review-stage.sh fingerprint --repo '${LIVE}' --path 'docs/**/*.md' 'review/RUBRIC.md' --out '${ROUT}/fingerprint-before.json'`))
+  const { calls } = await run(RA({ exclude: ['site'], hardExclude: ['secret/'], extras: [{ src: '/c/voron-cad/index.json', dest: 'cad/index.json' }] }), RV_SCRIPT())
+  chk('RV3: exclude, extras (SRC:DEST) and hard excludes are passed through to the snapshot, hard excludes to the fingerprint too',
+    calls[0].prompt.includes(` --exclude 'site' --context 'review/RUBRIC.md' --extra '/c/voron-cad/index.json:cad/index.json' --hard-exclude 'secret/' --out '${ROUT}'`) &&
+    calls[0].prompt.includes(`--path 'docs/**/*.md' 'review/RUBRIC.md' --hard-exclude 'secret/' --out '${ROUT}/fingerprint-before.json'`))
+}
+
+// ---- RV4: reviewers get ONLY the snapshot + range diff ------------------------
+{
+  const rv = RV.calls.filter(c => c.label.startsWith('reviewer:'))
+  const by = l => rv.find(c => c.label === `reviewer:${l}`)
+  const claude = rv.filter(c => !/^VENDOR=/.test(c.prompt))
+  const codex = rv.filter(c => /^VENDOR=/.test(c.prompt))
+  chk('RV4: a Claude reviewer spawns its level\'s agent with its model/effort and the findings schema',
+    by('rv-sonnet').opts.agentType === 'triage-builder' && by('rv-sonnet').opts.model === 'sonnet' && by('rv-sonnet').opts.effort === 'high' &&
+    by('rv-opus').opts.agentType === 'triage-deep-reasoner' && by('rv-bad').opts.agentType === 'triage-quick-task' && !('model' in by('rv-bad').opts) &&
+    claude.every(c => c.opts.schema && c.opts.schema.required.includes('findings')))
+  chk('RV4: a Claude reviewer reads only <outDir>/snap and <outDir>/range.diff, with `cd <snap> && ` on every command, read-only, no git',
+    claude.every(c => c.prompt.includes(`Your ONLY inputs: the snapshot directory ${SNAPDIR}`) && c.prompt.includes(`range diff ${ROUT}/range.diff`) &&
+      c.prompt.includes(`EVERY shell command you run MUST start with \`cd ${SNAPDIR} && \``) && /READ-ONLY/.test(c.prompt) && /never run git/.test(c.prompt) &&
+      /image files under the snapshot/.test(c.prompt)))
+  chk('RV4: every cd in a Claude reviewer prompt targets the snapshot, chained with &&',
+    claude.every(c => [...c.prompt.matchAll(/(^|[\s`])cd\s+(\/\S*)/g)].every(m => m[2] === SNAPDIR && c.prompt.slice(m.index + m[0].length).startsWith(' && '))))
+  chk('RV4: a codex reviewer is triage-cross-reviewer in MODE=read with MODEL/EFFORT pinned and INPUT_DIR = the snapshot, plus the range diff as --input',
+    codex.length === 2 && codex.every(c => c.opts.agentType === 'triage-cross-reviewer' && !('model' in c.opts)) &&
+    by('rv-sol').prompt.startsWith(`VENDOR=codex\nMODE=read\nMODEL=gpt-6-sol\nEFFORT=medium\nINPUT_DIR=${SNAPDIR}\n`) &&
+    by('rv-sol').prompt.includes(`--input ${ROUT}/range.diff`) && by('rv-sol').prompt.includes('The data boundary has been checked') &&
+    by('rv-sol').prompt.includes('"required":["file","line","severity","category","claim","evidence","suggestedFix"]'))
+}
+
+// ---- RV5: the live repo path appears in NO reviewer, merge or adjudicator prompt --
+{
+  const judged = RV.calls.filter(c => /^(reviewer:|review:merge|adjudicate:)/.test(c.label))
+  chk('RV5: the live repo path appears in no reviewer / merge / adjudicator prompt (only the snapshot + fingerprint commands name it)',
+    judged.length > 0 && judged.every(c => !c.prompt.includes(LIVE)) && RV.calls.filter(c => c.prompt.includes(LIVE)).every(c => /^review:(snapshot|fingerprint)$/.test(c.label)))
+  chk('RV5: …and neither does the repo name (metadata-free prompts)', judged.every(c => !c.prompt.includes('voron')))
+}
+
+// ---- RV6: ground truth, conventions, accepted deviations — verbatim ------------
+{
+  const rv = RV.calls.filter(c => /^(reviewer:|adjudicate:)/.test(c.label))
+  chk('RV6: every reviewer and adjudicator prompt carries groundTruth, conventions and accepted verbatim',
+    rv.every(c => c.prompt.includes(RBASE.groundTruth) && c.prompt.includes(RBASE.conventions) && c.prompt.includes(RBASE.accepted)))
+  chk('RV6: accepted deviations come with "do not flag these unless you cite NEW ground-truth evidence"; summaries are never ground truth',
+    rv.every(c => c.prompt.includes('do not flag these unless you cite NEW ground-truth evidence') && c.prompt.includes('is NEVER ground truth')))
+}
+
+// ---- RV7/RV8: merge and adjudicators are blind ---------------------------------
+{
+  const m = RV.calls.find(c => c.label === 'review:merge')
+  chk('RV7: ONE merge spawn on the deep agent, with a members/items schema', RV.calls.filter(c => c.label.startsWith('review:merge')).length === 1 &&
+    m.opts.agentType === 'triage-deep-reasoner' && m.opts.schema.required.includes('items'))
+  chk('RV7: the merge sees opaque finding ids only — no reviewer label, vendor or reviewer id', !/rv-|\bR\d+\b|codex|claude/.test(m.prompt) && /"id":"F1"/.test(m.prompt))
+  const adj = RV.calls.filter(c => c.label.startsWith('adjudicate:'))
+  chk('RV8: adjudicator prompts name no reviewer label, no reviewer id and no provenance field',
+    adj.length === 2 && adj.every(c => !/rv-|\bR\d+\b|"prov"|"members"|"foundBy"|[Ff]ound by|reported by \d/.test(c.prompt)))
+  chk('RV8: each adjudicator got every item, blind JSON lines with id/file/line/claim/evidence',
+    adj.every(c => blindItems(c.prompt).length === RV.result.items.length && blindItems(c.prompt).every(it => /^M\d+$/.test(it.id) && Object.keys(it).join() === 'id,file,line,severity,category,claim,evidence,suggestedFix')))
+  const cj = adj.find(c => c.label.startsWith('adjudicate:claude'))
+  const xj = adj.find(c => c.label.startsWith('adjudicate:codex'))
+  chk('RV8: default adjudicators = claude deep (opus·high, triage-deep-reasoner, schema) + codex deep (gpt-6-astra·high, MODE=read, INPUT_DIR = snapshot only)',
+    cj.opts.agentType === 'triage-deep-reasoner' && cj.opts.model === 'opus' && cj.opts.effort === 'high' && cj.opts.schema.required.includes('verdicts') &&
+    cj.prompt.includes(`Your ONLY input is the snapshot directory ${SNAPDIR}`) && !cj.prompt.includes('range.diff') &&
+    xj.opts.agentType === 'triage-cross-reviewer' && xj.prompt.startsWith(`VENDOR=codex\nMODE=read\nMODEL=gpt-6-astra\nEFFORT=high\nINPUT_DIR=${SNAPDIR}\n`) && !xj.prompt.includes('--input '))
+}
+
+// ---- RV9: verdict combination ------------------------------------------------------
+{
+  const r = RV.result
+  chk('RV9: duplicates merged into one item (docs/a.md:3 found by three reviewers)', r.items.filter(it => it.file === 'docs/a.md' && it.line === 3).length === 1 &&
+    rvItem(r, 'docs/a.md', 3).foundBy.join() === 'rv-opus,rv-sol,rv-sonnet')
+  chk('RV9: both real => real', rvItem(r, 'docs/a.md', 3).verdict === 'real' && rvItem(r, 'docs/b.md', 8).verdict === 'real')
+  chk('RV9: both not-real => rejected; both accepted-deviation => rejected; not-real + accepted-deviation => rejected',
+    rvItem(r, 'docs/a.md', 10).verdict === 'rejected' && rvItem(r, 'docs/c.md', 1).verdict === 'rejected' && rvItem(r, 'docs/c.md', 9).verdict === 'rejected')
+  chk('RV9: real vs not-real => disputed; real vs unsure => disputed', rvItem(r, 'docs/b.md', 5).verdict === 'disputed' && rvItem(r, 'docs/c.md', 2).verdict === 'disputed')
+  chk('RV9: disputed ids are listed, and each item keeps both adjudicators\' verdict + evidence',
+    r.disputed.slice().sort().join() === [rvItem(r, 'docs/b.md', 5).id, rvItem(r, 'docs/c.md', 2).id].sort().join() &&
+    rvItem(r, 'docs/b.md', 5).adjudication.map(x => `${x.adjudicator}:${x.verdict}`).join() === 'claude-deep-opus-high:real,codex-deep-gpt-6-astra-high:not-real' &&
+    rvItem(r, 'docs/b.md', 5).adjudication.every(x => /checked docs\/b\.md:5/.test(x.evidence)))
+  chk('RV9: item ids are M1..Mn in file/line order', r.items.map(it => it.id).join() === r.items.map((_, i) => `M${i + 1}`).join() &&
+    r.items.map(it => `${it.file}:${it.line}`).join() === 'docs/a.md:3,docs/a.md:10,docs/b.md:5,docs/b.md:8,docs/c.md:1,docs/c.md:2,docs/c.md:9')
+}
+
+// ---- RV10: scores — disputed excluded, unavailable never zero ------------------
+{
+  const r = RV.result
+  const s = rvRev(r, 'rv-sonnet')
+  const o = rvRev(r, 'rv-opus')
+  const x = rvRev(r, 'rv-sol')
+  chk('RV10: precision = real / adjudicated (disputed excluded): sonnet 1/2, opus 2/2, sol 1/3', near(s.precision, 0.5) && near(o.precision, 1) && near(x.precision, 1 / 3))
+  chk('RV10: recall = real found / all real (2): sonnet 1/2, opus 2/2, sol 1/2', near(s.recall, 0.5) && near(o.recall, 1) && near(x.recall, 0.5))
+  chk('RV10: per-reviewer counts: findings, real, rejected, disputed', [s.findings, s.real, s.rejected, s.disputed].join() === '3,1,1,1' && [x.findings, x.real, x.rejected, x.disputed].join() === '4,1,2,1')
+  chk('RV10: an UNAVAILABLE codex reply and an invalid (null) Claude reply are status unavailable with null scores — never zero',
+    ['rv-astra', 'rv-bad'].every(l => rvRev(r, l).status === 'unavailable' && rvRev(r, l).precision === null && rvRev(r, l).recall === null && rvRev(r, l).findings === null) &&
+    /rate limited/.test(rvRev(r, 'rv-astra').reason))
+  chk('RV10: codex tokens/seconds come from its ext-run line; a parallel Claude reviewer has none', x.tokens === 500 && x.seconds === 12 && s.tokens === null)
+  chk('RV10: each reviewer row carries label/vendor/level/model/effort/status', s.vendor === 'claude' && s.level === 'builder' && s.model === 'sonnet' && s.effort === 'high' && s.status === 'ok')
+}
+
+// ---- RV11: a reply that is not the findings JSON is unavailable -----------------
+{
+  const { result } = await run(RA({}), RV_SCRIPT({ 'reviewer:rv-sol': ['CROSS-REVIEW (codex · read · exit 0)\nI found some problems but here is prose.\next-run: 10 tokens (1s, codex/gpt-6-sol)'] }))
+  chk('RV11: a codex reply with no {"findings": [...]} JSON is unavailable, not a reviewer with zero findings', rvRev(result, 'rv-sol').status === 'unavailable' && rvRev(result, 'rv-sol').precision === null)
+  const { result: r2 } = await run(RA({}), RV_SCRIPT({ 'reviewer:rv-opus': [new Error('budget ceiling')] }))
+  chk('RV11: a reviewer spawn that throws is unavailable; the others still score', rvRev(r2, 'rv-opus').status === 'unavailable' && rvRev(r2, 'rv-sonnet').status === 'ok')
+  const { result: r3, logs } = await run(RA({}), RV_SCRIPT({ 'reviewer:rv-opus': [{ findings: [RF('docs/b.md', 8, 'REAL wrong bolt count'), { file: 'docs/x.md', line: 'n/a', severity: 'major', claim: 'x', evidence: 'y' }, { file: 'docs/x.md', line: 2, severity: 'fatal', claim: 'x', evidence: 'y' }] }] }))
+  chk('RV11: malformed findings (bad line / severity) are dropped and flagged; the valid one counts', rvRev(r3, 'rv-opus').findings === 1 && logs.some(l => /rv-opus: 2 malformed finding/.test(l)))
+}
+
+// ---- RV12: the ⚠ Fable line before a top-level Claude reviewer / adjudicator ------
+{
+  const { events } = await run(RA({
+    reviewers: [{ vendor: 'claude', level: 'top', model: 'fable', effort: 'xhigh', label: 'rv-fable' }, { vendor: 'claude', level: 'deep', label: 'rv-deep' }],
+    adjudicators: [{ vendor: 'claude', level: 'top', label: 'adj-top' }, { vendor: 'codex', level: 'deep', model: 'gpt-6-astra', effort: 'high' }],
+  }), RV_SCRIPT({
+    'reviewer:rv-fable': [{ findings: [RF('docs/a.md', 3, 'REAL typo')] }], 'reviewer:rv-deep': [{ findings: [] }],
+    'adjudicate:adj-top': [ADJ('claude')],
+  }))
+  const iW = events.indexOf('log:⚠ Escalating to Fable: triage-compare review reviewer rv-fable')
+  const iS = events.indexOf('agent:reviewer:rv-fable')
+  const iWA = events.indexOf('log:⚠ Escalating to Fable: triage-compare review adjudicator adj-top')
+  const iSA = events.findIndex(e => e.startsWith('agent:adjudicate:adj-top'))
+  chk('RV12: a top-level Claude reviewer logs the ⚠ Fable line BEFORE its spawn', iW >= 0 && iS > iW)
+  chk('RV12: a top-level Claude adjudicator too', iWA >= 0 && iSA > iWA)
+  chk('RV12: only top-level Claude spawns get it', events.filter(e => e.startsWith('log:⚠ Escalating to Fable')).length === 2)
+  const { events: e2 } = await run(RA({}), RV_SCRIPT())
+  chk('RV12: an external reviewer/adjudicator is announced as leaving the machine', e2.some(e => e.startsWith('log:⚠ External reviewer rv-sol')) && e2.some(e => e.startsWith('log:⚠ External adjudicator codex-deep-gpt-6-astra-high')))
+}
+
+// ---- RV13: adjudicator failure => those items disputed; batching ------------------
+{
+  const { result, calls, logs } = await run(RA({}), RV_SCRIPT({ 'adjudicate:codex': ['UNAVAILABLE: codex exited 1'] }))
+  chk('RV13: a failed adjudicator batch is retried once', calls.filter(c => c.label.startsWith('adjudicate:codex')).map(c => c.label).join() === 'adjudicate:codex-deep-gpt-6-astra-high@b1,adjudicate:codex-deep-gpt-6-astra-high@b1#retry')
+  chk('RV13: …then every item of the batch is disputed (a missing verdict is never agreement), flagged',
+    result.items.every(it => it.verdict === 'disputed') && logs.some(l => /returned no verdicts for 7 item/.test(l)))
+  chk('RV13: with everything disputed no reviewer has a precision or recall (nothing agreed), yet none is unavailable',
+    result.reviewers.filter(r => r.status === 'ok').every(r => r.precision === null && r.recall === null))
+  const many = Array.from({ length: 12 }, (_, i) => RF(`docs/m${String(i).padStart(2, '0')}.md`, 1, `REAL issue ${i}`))
+  const b = await run(RA({ batchSize: 5, reviewers: [{ vendor: 'claude', level: 'deep', label: 'rv-one' }] }), RV_SCRIPT({ 'reviewer:rv-one': [{ findings: many }] }))
+  const bj = b.calls.filter(c => c.label.startsWith('adjudicate:'))
+  chk('RV13: 12 items in batches of 5 → 3 batches per adjudicator (6 spawns), each with at most 5 items, every item judged by both',
+    bj.length === 6 && bj.every(c => blindItems(c.prompt).length <= 5) && b.result.items.every(it => it.verdict === 'real') &&
+    bj.filter(c => c.label.startsWith('adjudicate:claude')).map(c => blindItems(c.prompt).length).join() === '5,5,2')
+}
+
+// ---- RV14: merge fallback and membership enforcement ------------------------------
+{
+  const { result, logs } = await run(RA({}), RV_SCRIPT({ 'review:merge': [null] }))
+  chk('RV14: a dead merge agent (twice) → every finding its own item, mergeFallback true, flagged',
+    result.mergeFallback === true && result.items.length === 9 && logs.some(l => /duplicates NOT merged/.test(l)))
+  const sneaky = p => { const m = MERGE_BY_CLAIM(p); m.items[0].members.push('F99', m.items[0].members[0]); m.items.pop(); return m }
+  const { result: r2, logs: l2 } = await run(RA({}), RV_SCRIPT({ 'review:merge': [sneaky] }))
+  chk('RV14: an unknown id is ignored, and a finding the merge left out becomes its own item (flagged)',
+    r2.items.length === 7 && l2.some(l => /left 1 finding\(s\) unplaced/.test(l)))
+}
+
+// ---- RV15: the snapshot must succeed, or nothing runs ------------------------------
+{
+  const dead = await throws(RA({}), RV_SCRIPT({ 'review:snapshot': [{ snapshot: { ok: false, error: '--out exists and is not empty' }, fingerprint: { rc: null } }] }))
+  chk('RV15: a failed snapshot throws, naming why, and no reviewer is spawned', dead.threw && /snapshot failed/.test(dead.message) && /not empty/.test(dead.message) && dead.calls.length === 1)
+  const badSha = await throws(RA({}), RV_SCRIPT({ 'review:snapshot': [SNAP_OK({ head: 'HEAD' })] }))
+  chk('RV15: a snapshot reply without real shas aborts too', badSha.threw && badSha.calls.length === 1)
+}
+
+// ---- RV16: SOURCE_CHANGED is informational ----------------------------------------
+{
+  const { result, logs, calls } = await run(RA({}), RV_SCRIPT({ 'review:fingerprint': [{ rc: 7, same: false, changed: ['status'], headMoved: false, detail: 'SOURCE_CHANGED: status changed under the paths' }] }))
+  const fp = calls.find(c => c.label === 'review:fingerprint')
+  chk('RV16: the final quick task re-fingerprints to fingerprint-after.json and compares it with the before file',
+    fp.opts.agentType === 'triage-quick-task' && fp.prompt.includes(`--out '${ROUT}/fingerprint-after.json'`) &&
+    fp.prompt.includes(`review-stage.sh compare '${ROUT}/fingerprint-before.json' '${ROUT}/fingerprint-after.json'`))
+  chk('RV16: compare rc 7 → sourceChanged true, flagged SOURCE_CHANGED as informational; the verdicts still stand',
+    result.sourceChanged === true && logs.some(l => /SOURCE_CHANGED voron: .*informational/.test(l)) && rvItem(result, 'docs/a.md', 3).verdict === 'real')
+  const { result: r2, calls: c2 } = await run(RA({}), RV_SCRIPT({ 'review:snapshot': [SNAP_OK({}, { rc: 1 })] }))
+  chk('RV16: a failed initial fingerprint → no final fingerprint spawn, sourceChanged null (unknown, never false)',
+    r2.sourceChanged === null && !c2.some(c => c.label === 'review:fingerprint'))
+}
+
+// ---- RV17: codexDenied carried from the snapshot ------------------------------------
+{
+  const { result, calls } = await run(RA({}), RV_SCRIPT({ 'review:snapshot': [SNAP_OK({ codexDenied: true })] }))
+  chk('RV17: a snapshot that carries .codex-deny → no codex reviewer or adjudicator is spawned; they are unavailable',
+    !calls.some(c => /reviewer:rv-sol|reviewer:rv-astra|adjudicate:codex/.test(c.label)) && rvRev(result, 'rv-sol').status === 'unavailable' && /off-limits to codex/.test(rvRev(result, 'rv-sol').reason))
+  chk('RV17: …and with one adjudicator missing, every item is disputed (never decided by one side alone)', result.items.length > 0 && result.items.every(it => it.verdict === 'disputed'))
+}
+
+{
+  const { logs } = await run(RA({}), RV_SCRIPT({ 'review:snapshot': [SNAP_OK({ bytes: 300 * 1024 * 1024 })] }))
+  chk('RV17: a snapshot over ext-run\'s 200 MB --input-dir cap is flagged up front when codex takes part', logs.some(l => /300 MB — over ext-run\.sh's 200 MB --input-dir cap/.test(l)))
+  const { logs: l2 } = await run(RA({ reviewers: [{ vendor: 'claude', level: 'deep', label: 'rv-a' }], adjudicators: [{ vendor: 'claude', level: 'deep', label: 'j1' }, { vendor: 'claude', level: 'builder', label: 'j2' }] }),
+    RV_SCRIPT({ 'review:snapshot': [SNAP_OK({ bytes: 300 * 1024 * 1024 })], 'reviewer:rv-a': [{ findings: [] }] }))
+  chk('RV17: …but not for an all-Claude panel (no --input-dir involved)', !l2.some(l => /--input-dir cap/.test(l)))
+}
+
+// ---- RV18: no findings at all → no merge, no adjudication --------------------------
+{
+  const { result, calls } = await run(RA({ reviewers: [{ vendor: 'claude', level: 'deep', label: 'rv-a' }, { vendor: 'claude', level: 'builder', label: 'rv-b' }] }),
+    RV_SCRIPT({ 'reviewer:rv-a': [{ findings: [] }], 'reviewer:rv-b': [{ findings: [] }] }))
+  chk('RV18: zero findings → no merge and no adjudicator spawn; precision/recall null (nothing to score), findings 0',
+    !calls.some(c => /review:merge|adjudicate:/.test(c.label)) && result.items.length === 0 && result.reviewers.every(r => r.status === 'ok' && r.findings === 0 && r.precision === null && r.recall === null))
+}
+
+// ---- RV19: markdown for Alex --------------------------------------------------------
+{
+  const md = RV.result.markdown
+  const iReal = md.indexOf('## Real findings (2)')
+  const iDisp = md.indexOf('## Disputed — for Alex (2)')
+  chk('RV19: markdown lists real items first, grouped by file, then the disputed ones', iReal >= 0 && iDisp > iReal && md.indexOf('### docs/a.md') > iReal && md.indexOf('### docs/b.md') < iDisp)
+  const dsec = md.slice(iDisp)
+  chk('RV19: each disputed item shows BOTH adjudicators\' verdict and evidence', dsec.includes('- claude-deep-opus-high: **real** — claude checked docs/b.md:5') && dsec.includes('- codex-deep-gpt-6-astra-high: **not-real** — codex checked docs/b.md:5'))
+  chk('RV19: the markdown ends with the score table and says nothing was applied', /\| rv-opus \| claude \| opus \| high \| ok \| 2 \| 2 \| 0 \| 0 \| 1 \| 1 \|/.test(md) && md.includes('Nothing was applied'))
+}
+
+// ---- RV20: an explicit kind:'build' is the unchanged build flow ------------------
+{
+  const { result, calls } = await run(A({ kind: 'build', candidates: [{ vendor: 'claude', level: 'builder', label: 'a' }] }), { 'candidate:': ['done'], 'grade:': [FIN({ a: [true, 0] })] })
+  chk('RV20: kind "build" runs the build bake-off exactly as before', calls[0].label === 'stage:create' && byLabel(result, 'a').status === 'pass' && !('kind' in result))
 }
 
 console.log('')

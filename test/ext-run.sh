@@ -34,6 +34,9 @@
 #           zsh/git/python3/a PTY need), the generated profile, fail-closed
 #           (missing / not applying / not enforcing, either preflight canary)
 #   A*      --allow-read refusals and the prompt footer
+#   I*      --input-dir: a whole tree copied into the stage, refused when a link
+#           leaves it or a deny-listed repo / marker lies in or above it, the size
+#           cap, read-only modes only
 #   L*      the command audit log (fields, no output, failed runs, prune, dir)
 #   T*      tiers.json: ids come from the file, lookup order, missing or
 #           unparseable file, absent entry = refusal, vendor/model mismatch
@@ -1296,6 +1299,90 @@ chk "C14b check artifacts never enter the captured patch" \
 
 AGY_BOUNDARY_CLEARED=1 run_ext review --prompt-file "$BRIEF" --check true
 chk "C14d --check outside build mode is a usage error (exit 2)" '[ "$RC" -eq 2 ]'
+
+# --- I*: --input-dir — a whole tree staged as a copy, never a way out of it -------
+IDR=$(new_tmp)
+mkdir -p "$IDR/snap/sub/deeper"
+printf 'top\n' > "$IDR/snap/top.md"
+printf 'deep\n' > "$IDR/snap/sub/deeper/d.md"
+ln -s ../top.md "$IDR/snap/sub/inside-link.md"
+AGY_BOUNDARY_CLEARED=1 AGY_STAGE_KEEP=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok \
+  run_ext read --prompt-file "$BRIEF" --input-dir "$IDR/snap" --input "$DATA"
+KEPT=$(kept_stage)
+chk "I1 --input-dir stages a COPY of the whole tree at inputs/<basename> (nested files, same bytes), next to --input files" \
+  '[ "$RC" -eq 0 ] && [ -n "$KEPT" ] && [ "$(cat "$KEPT/ws/inputs/snap/top.md")" = top ] && [ "$(cat "$KEPT/ws/inputs/snap/sub/deeper/d.md")" = deep ] && [ -f "$KEPT/ws/inputs/note.txt" ]'
+chk "I1b a link that stays inside the tree is kept as a link and still resolves inside the COPY" \
+  '[ -L "$KEPT/ws/inputs/snap/sub/inside-link.md" ] && [ "$(cat "$KEPT/ws/inputs/snap/sub/inside-link.md")" = top ]'
+chk "I1c the prompt footer names the staged tree by absolute path with its file count" \
+  'grep -q "^  /.*/ws/inputs/snap/ (a directory: 2 files" "$STUB_PROMPT"'
+chk "I1d the caller's tree is untouched (still exactly its three entries)" \
+  '[ "$(find "$IDR/snap" | wc -l | tr -d " ")" = 6 ] && [ "$(cat "$IDR/snap/top.md")" = top ]'
+[ -n "$KEPT" ] && rm -rf "$KEPT"
+
+mkdir -p "$IDR/leaky" "$IDR/leaky-rel/in" "$IDR/leaky-dir"
+printf 'ok\n' > "$IDR/leaky/a.md"
+ln -s "$ROOT/projects/secret/secret.txt" "$IDR/leaky/s.md"
+printf 'outside\n' > "$IDR/outside.txt"
+ln -s ../../outside.txt "$IDR/leaky-rel/in/o.md"
+ln -s "$ROOT/projects/secret" "$IDR/leaky-dir/secretdir"
+AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input-dir "$IDR/leaky"
+chk "I2 an --input-dir holding an absolute symlink OUT of the tree is REFUSED (exit 3, names the link), codex never runs" \
+  '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "holds a symlink that leaves it" && printf "%s" "$ERR" | grep -q "s.md" && [ ! -s "$STUB_LOG" ]'
+AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input-dir "$IDR/leaky-rel"
+chk "I2b ...and a RELATIVE link climbing out of it (../../) is refused the same way (exit 3)" \
+  '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "holds a symlink that leaves it" && [ ! -s "$STUB_LOG" ]'
+AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input-dir "$IDR/leaky-dir"
+chk "I2c ...and a link to a DIRECTORY outside it (exit 3)" \
+  '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "holds a symlink that leaves it" && [ ! -s "$STUB_LOG" ]'
+
+AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input-dir "$DENY/clip-creator/inner"
+chk "I3 an --input-dir inside a deny-listed repo is REFUSED (exit 3, names clip-creator)" \
+  '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "clip-creator" && [ ! -s "$STUB_LOG" ]'
+AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input-dir "$DENY"
+chk "I3b an --input-dir with a deny-listed repo BENEATH it is REFUSED (exit 3, names it)" \
+  '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "contains .*clip-creator" && [ ! -s "$STUB_LOG" ]'
+AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input-dir "$MARKED"
+chk "I3c an --input-dir with a .codex-deny marker beneath it is REFUSED (exit 3)" \
+  '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "contains .*\.codex-deny" && [ ! -s "$STUB_LOG" ]'
+AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input-dir "$LCO/wt"
+chk "I3d an --input-dir that is a linked worktree of a .codex-deny repo is REFUSED via its main worktree (exit 3)" \
+  '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "\.codex-deny" && [ ! -s "$STUB_LOG" ]'
+AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input-dir "$ROOT"
+chk "I3e --input-dir \$HOME is REFUSED (exit 3)" '[ "$RC" -eq 3 ] && [ ! -s "$STUB_LOG" ]'
+
+mkdir -p "$IDR/big"
+dd if=/dev/zero of="$IDR/big/blob.bin" bs=1024 count=2200 2>/dev/null
+AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input-dir "$IDR/big" --input-dir-max-mb 1
+chk "I4 an --input-dir over --input-dir-max-mb is a usage error (exit 2) naming its size and the cap, codex never runs" \
+  '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q "over the 1 MB cap" && printf "%s" "$ERR" | grep -q -- "--input-dir-max-mb" && [ ! -s "$STUB_LOG" ]'
+AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input-dir "$IDR/big"
+chk "I4b ...the same tree runs under the default 200 MB cap (exit 0)" '[ "$RC" -eq 0 ]'
+for badmb in 0 abc -3; do
+  AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --input-dir "$IDR/snap" --input-dir-max-mb "$badmb"
+  chk "I4c --input-dir-max-mb $badmb is a usage error (exit 2)" '[ "$RC" -eq 2 ] && [ ! -s "$STUB_LOG" ]'
+done
+
+new_repo "$IDR/brepo"
+AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext build --level builder --prompt-file "$BRIEF" --workdir "$IDR/brepo" --input-dir "$IDR/snap"
+chk "I5 --input-dir in build mode is a usage error (exit 2)" '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q "read-only modes" && [ ! -s "$STUB_LOG" ]'
+AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --input-dir "$IDR/no-such-dir"
+chk "I6 a missing --input-dir is a usage error (exit 2)" '[ "$RC" -eq 2 ] && [ ! -s "$STUB_LOG" ]'
+AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --input-dir "$DATA"
+chk "I6b a FILE given as --input-dir is a usage error (exit 2)" '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q "not a directory"'
+mkdir -p "$IDR/note.txt"
+AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --input "$DATA" --input-dir "$IDR/note.txt"
+chk "I7 an --input file and an --input-dir with the same name are a usage error (exit 2), never one over the other" \
+  '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q "share the name" && [ ! -s "$STUB_LOG" ]'
+mkdir -p "$IDR/fifo"
+if mkfifo "$IDR/fifo/p" 2>/dev/null; then
+  AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --input-dir "$IDR/fifo"
+  chk "I8 an --input-dir holding a special file (a fifo) is a usage error (exit 2)" '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q "special file"'
+else
+  skip "I8 an --input-dir holding a special file" "mkfifo unavailable"
+fi
+AGY_BOUNDARY_CLEARED=1 run_bounded read --prompt-file "$BRIEF" --input-dir
+chk "I9 a trailing --input-dir with no value is exit 2, never a hang" \
+  '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q -- "--input-dir needs a value"'
 
 # --- P11: across this WHOLE suite, no codex run was ever unconfined ---------------
 RC=0; ERR=""

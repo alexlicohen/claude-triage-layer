@@ -297,6 +297,7 @@ install_file "scripts/triage-cache-segment.sh" "$CLAUDE_DIR/scripts/triage-cache
 install_file "scripts/ext-run.sh" "$CLAUDE_DIR/scripts/ext-run.sh" x
 install_file "scripts/patch-check.sh" "$CLAUDE_DIR/scripts/patch-check.sh" x
 install_file "scripts/stage-worktree.sh" "$CLAUDE_DIR/scripts/stage-worktree.sh" x
+install_file "scripts/review-stage.sh" "$CLAUDE_DIR/scripts/review-stage.sh" x
 install_file "scripts/parity-suite.sh" "$CLAUDE_DIR/scripts/parity-suite.sh" x
 install_file "scripts/parity-cost.sh" "$CLAUDE_DIR/scripts/parity-cost.sh" x
 install_file "scripts/parity-report.sh" "$CLAUDE_DIR/scripts/parity-report.sh" x

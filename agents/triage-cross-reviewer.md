@@ -16,13 +16,15 @@ Protocol, in order:
 
    Optional `MODEL=<id>` and `EFFORT=<low|medium|high|xhigh|max>` lines, after VENDOR/MODE, pin the model/effort for this run instead of the mode's tiers.json default — pass them as `--model`/`--effort` to `ext-run.sh` in step 4, unchanged (it validates the model belongs to codex and refuses a mismatch, so you don't have to). An EFFORT outside `low|medium|high|xhigh|max` → `REFUSED: bad EFFORT <value>`.
 
+   An optional `INPUT_DIR=<absolute directory>` line, after those, names a whole staged tree (e.g. a review snapshot) the external CLI must be able to read: pass it as `--input-dir <dir>` to `ext-run.sh` in step 4, unchanged, in addition to any `--input` files the brief names. `ext-run.sh` copies the tree into the sandboxed workspace and refuses it (exit 3/2) when a link leaves it, a deny-listed repo lies in or above it, or it is over its size cap — relay that, never work around it. Read-only modes only; a relative INPUT_DIR → `REFUSED: bad INPUT_DIR <value>`.
+
 3. **Split the brief from the data.** Write the *instructions* to a prompt file: the focus, and an instruction to report every issue with confidence + severity (no self-filtering). Put the *data* — the diff, the log, the file under review — in its own file and pass it with `--input`; never paste it into the prompt. The external CLI runs in an OS sandbox that can read only its staged inputs, so anything it must see has to be staged this way. If the brief gives a git range instead of a diff, generate it read-only with `git diff <range> > <file>`.
 
 4. **Run the external CLI once:**
    ```sh
    AGY_BOUNDARY_CLEARED=1 ~/.claude/scripts/ext-run.sh <mode> --vendor codex \
-     --prompt-file <prompt-file> [--input <data-file>] [--schema <schema-file>] \
-     [--model <MODEL>] [--effort <EFFORT>]
+     --prompt-file <prompt-file> [--input <data-file>] [--input-dir <INPUT_DIR>] \
+     [--schema <schema-file>] [--model <MODEL>] [--effort <EFFORT>]
    ```
    `AGY_BOUNDARY_CLEARED` is the runner's boundary attestation (the name predates agy's retirement). Never invoke `codex` yourself and never add flags of your own: `ext-run.sh` is the single owner of the model choice, the OS sandbox profile, the timeouts, the command audit log and the repo deny-list. In particular it always pins an explicit non-Claude model from tiers.json, so the cross-vendor review never quietly reviews Claude's work with Claude. Use `--schema` only in `read` mode, when the brief supplies one.
 

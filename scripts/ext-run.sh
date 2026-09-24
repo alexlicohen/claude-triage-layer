@@ -37,6 +37,15 @@
 #                        diff/log/corpus gets in. Read-only modes: inputs/<base>
 #                        in the stage; build: .codex-inputs/<base> in the
 #                        worktree, removed again before the result patch is captured.
+#   --input-dir DIR      read-only modes only: stage a COPY of the whole directory
+#                        tree DIR into the workspace as inputs/<basename> and name
+#                        it in the prompt footer (repeatable). DIR is deny-checked
+#                        like --input (itself and the main worktree of its repo),
+#                        and refused (exit 3) when a deny-listed repo or a
+#                        .codex-deny marker lies beneath it, or a symlink in it
+#                        resolves OUTSIDE it; a special file in it, or a tree over
+#                        the size cap, is a usage error (exit 2).
+#   --input-dir-max-mb N the --input-dir size cap in MB (default 200), per dir.
 #   --allow-read PATH    let codex READ one more file or directory (repeatable).
 #                        Its sandbox otherwise reads nothing under $HOME except
 #                        its workspace and ~/.codex. Refused (exit 3) when the deny
@@ -458,6 +467,46 @@ allow_read_check() { # $1 = path as given
   printf '%s\n' "$real"
 }
 
+# input_dir_check DIR — an --input-dir is copied WHOLE into the workspace, so
+# everything in it leaves the machine: the deny check on DIR (and its repo's main
+# worktree), no deny-listed repo or .codex-deny marker beneath it, and no symlink
+# in it that resolves outside it (a link out would smuggle in whatever it names).
+# Special files and trees over the size cap are usage errors. Exits on a hit;
+# prints the resolved dir.
+input_dir_check() { # $1 = dir as given
+  local real hit name l t kb
+  real=$(resolve_path "$1")
+  [ -d "$real" ] || die "USAGE: --input-dir is not a directory: $1" "$E_USAGE"
+  case "$real" in *"
+"*) die "USAGE: --input-dir path contains a newline: $1" "$E_USAGE" ;; esac
+  deny_check "$real" >&2
+  if [ "$real" = / ] || [ "$real" = "$HOME_P" ]; then
+    die "REFUSED: --input-dir $real would copy all of \$HOME ($HOME_P) to codex." "$E_REFUSED"
+  fi
+  case "$HOME_P/" in
+    "$real"/*) die "REFUSED: --input-dir $real is an ancestor of \$HOME ($HOME_P)." "$E_REFUSED" ;;
+  esac
+  set -- -name ".$VENDOR-deny"
+  for name in $(deny_names); do set -- "$@" -o -name "$name"; done
+  hit=$(find "$real" \( "$@" \) -print -quit 2>/dev/null)
+  [ -z "$hit" ] || die "REFUSED: --input-dir $real contains $hit — a deny-listed repo or a .$VENDOR-deny marker lies beneath it." "$E_REFUSED"
+  while IFS= read -r -d '' l; do
+    t=$(resolve_path "$l")
+    case "$t/" in
+      "$real"/*) ;;
+      *) die "REFUSED: --input-dir $real holds a symlink that leaves it ($l -> $(readlink "$l")) — stage the target itself, or drop the link." "$E_REFUSED" ;;
+    esac
+  done < <(find "$real" -type l -print0 2>/dev/null)
+  hit=$(find "$real" ! -type f ! -type d ! -type l -print -quit 2>/dev/null)
+  [ -z "$hit" ] || die "USAGE: --input-dir $real holds a special file ($hit) — only regular files, directories and links inside it can be staged." "$E_USAGE"
+  kb=$(du -sk "$real" 2>/dev/null | cut -f1)
+  case "$kb" in ''|*[!0-9]*) die "USAGE: could not measure --input-dir $real" "$E_USAGE" ;; esac
+  if [ "$kb" -gt $((INPUT_DIR_MAX_MB * 1024)) ]; then
+    die "USAGE: --input-dir $real is $(( (kb + 1023) / 1024 )) MB, over the ${INPUT_DIR_MAX_MB} MB cap — stage less, or raise the cap with --input-dir-max-mb." "$E_USAGE"
+  fi
+  printf '%s\n' "$real"
+}
+
 # resolve_bin NAME|PATH — the real file an executable name or path runs: a name
 # is looked up on PATH only (type -P: never a shell function or alias), then the
 # whole symlink chain is resolved. Prints nothing (rc 1) when there is none.
@@ -493,6 +542,8 @@ EFFORT=""
 TIMEOUT="$(mode_timeout "$MODE")"
 RAW=0
 INPUTS=()
+INPUT_DIRS=()
+INPUT_DIR_MAX_MB=200
 ALLOW_READS=()
 
 # Every value-taking option REQUIRES its value: a trailing `--vendor` would make
@@ -500,7 +551,7 @@ ALLOW_READS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --raw) RAW=1; shift; continue ;;
-    --vendor|--level|--prompt-file|--input|--allow-read|--schema|--workdir|--output|--patch-out|--check|--model|--effort|--timeout)
+    --vendor|--level|--prompt-file|--input|--input-dir|--input-dir-max-mb|--allow-read|--schema|--workdir|--output|--patch-out|--check|--model|--effort|--timeout)
       [ $# -ge 2 ] || die "USAGE: $1 needs a value" "$E_USAGE" ;;
     *) die "USAGE: unknown argument '$1'" "$E_USAGE" ;;
   esac
@@ -509,6 +560,8 @@ while [ $# -gt 0 ]; do
     --level)       LEVEL="$2" ;;
     --prompt-file) PROMPT_FILE="$2" ;;
     --input)       INPUTS+=("$2") ;;
+    --input-dir)   INPUT_DIRS+=("$2") ;;
+    --input-dir-max-mb) INPUT_DIR_MAX_MB="$2" ;;
     --allow-read)  ALLOW_READS+=("$2") ;;
     --schema)      SCHEMA="$2" ;;
     --workdir)     WORKDIR="$2" ;;
@@ -579,6 +632,12 @@ fi
 if [ -n "$PATCH_OUT" ] && ! mode_writes "$MODE"; then
   die "USAGE: --patch-out is only valid in build mode" "$E_USAGE"
 fi
+if [ ${#INPUT_DIRS[@]} -gt 0 ] && mode_writes "$MODE"; then
+  die "USAGE: --input-dir is only valid in read-only modes (build mode works in a disposable worktree of --workdir)" "$E_USAGE"
+fi
+case "$INPUT_DIR_MAX_MB" in
+  ''|*[!0-9]*|0) die "USAGE: --input-dir-max-mb must be a positive whole number of MB (got '$INPUT_DIR_MAX_MB')" "$E_USAGE" ;;
+esac
 if [ -n "$CHECK_CMD" ] && ! mode_writes "$MODE"; then
   die "USAGE: --check is only valid in build mode (it runs in the build worktree)" "$E_USAGE"
 fi
@@ -619,6 +678,17 @@ for src in ${INPUTS+"${INPUTS[@]}"}; do
   deny_check "$real"
   INPUT_REALS+=("$real")
 done
+# --input-dir trees: checked now too (copied into the stage below). Each lands at
+# inputs/<basename>, so no two staged names may collide.
+INPUT_DIR_REALS=()
+for src in ${INPUT_DIRS+"${INPUT_DIRS[@]}"}; do
+  real=$(input_dir_check "$src") || exit $?
+  INPUT_DIR_REALS+=("$real")
+done
+if [ ${#INPUT_DIRS[@]} -gt 0 ]; then
+  dup=$(for src in ${INPUTS+"${INPUTS[@]}"} "${INPUT_DIRS[@]}"; do basename "$src"; done | sort | uniq -d | head -n 1)
+  [ -z "$dup" ] || die "USAGE: two staged inputs share the name '$dup' (--input files and --input-dir trees land side by side in inputs/)" "$E_USAGE"
+fi
 
 # Build mode: the repo behind --workdir, checked before anything is staged.
 if mode_writes "$MODE"; then
@@ -734,6 +804,18 @@ while [ "$i" -lt ${#INPUT_REALS[@]} ]; do
   # Staged under the name the caller gave, read from the path that was checked.
   cp "${INPUT_REALS[$i]}" "$INPUT_DIR/$(basename "$src")" || die "UNAVAILABLE: could not stage --input $src" "$E_UNAVAIL"
   STAGED_LIST="$STAGED_LIST  $INPUT_DIR/$(basename "$src")
+"
+  i=$((i + 1))
+done
+
+# --input-dir trees (read-only modes): a copy, links kept as links — every one
+# of them was proven above to resolve inside its own tree.
+i=0
+while [ "$i" -lt ${#INPUT_DIR_REALS[@]} ]; do
+  dst="$INPUT_DIR/$(basename "${INPUT_DIRS[$i]}")"
+  { mkdir "$dst" && cp -RP "${INPUT_DIR_REALS[$i]}/." "$dst/"; } 2>"$STAGE/meta/input-dir.err" ||
+    die "UNAVAILABLE: could not stage --input-dir ${INPUT_DIRS[$i]} — $(head -c 300 "$STAGE/meta/input-dir.err")" "$E_UNAVAIL"
+  STAGED_LIST="$STAGED_LIST  $dst/ (a directory: $(find "$dst" -type f | wc -l | tr -d ' ') files; read what you need from it)
 "
   i=$((i + 1))
 done

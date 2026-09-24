@@ -270,7 +270,8 @@ footer: non-interactive worker, ask nothing, never touch `PROJECT_MEMORY.md`/han
 memory files, touch only the workspace, and "Your filesystem access is limited to this
 workspace; other paths will fail - do not search the disk." (plus the `--allow-read` paths).
 
-Options: `--prompt-file FILE` (required), `--input FILE` (repeatable), `--allow-read PATH`
+Options: `--prompt-file FILE` (required), `--input FILE` (repeatable), `--input-dir DIR`
+(repeatable, read-only modes) with `--input-dir-max-mb N` (default 200), `--allow-read PATH`
 (repeatable), `--schema FILE|JSON` (read only), `--workdir DIR`, `--output FILE`,
 `--patch-out FILE`, `--check CMD` and `--level` (build only), `--vendor`, `--model`,
 `--effort`, `--timeout`, `--raw`.
@@ -280,6 +281,18 @@ lets codex read only its workspace, so staging is the way in. A prompt file over
 usage error that names `--input`. Staged inputs are copied into the workspace and named in a
 `--- Workspace ---` prompt footer by **absolute** path. A `--schema` file is copied into
 codex's scratch dir (it reads it inside the sandbox).
+
+`--input-dir DIR` stages a **copy of a whole tree** (a review snapshot: many files plus page
+images) at `inputs/<basename>` and names it, with its file count, in the same footer. It is
+checked before anything is staged, like `--input` and more: the deny check on DIR and on the main
+worktree of the repo it sits in (exit 3); DIR is not `$HOME` or an ancestor of it (exit 3); no
+deny-listed repo or `.codex-deny` marker anywhere beneath it (exit 3); **no symlink in it may
+resolve outside it** — absolute, `../` or directory links alike (exit 3: a link out would smuggle
+in whatever it names); links that stay inside are copied as links and still resolve inside the
+copy; a special file (fifo, socket, device) is exit 2; a tree over `--input-dir-max-mb` (`du -sk`)
+is exit 2 naming its size and the cap. Two staged inputs with one basename are exit 2. Read-only
+modes only (build mode is exit 2). `triage-cross-reviewer` passes a brief's `INPUT_DIR=<dir>`
+header line through as `--input-dir`.
 
 ### OS confinement (sandbox-exec) — fail closed
 
@@ -486,12 +499,15 @@ allow-by-default write rule, both caught by the outside canary, which is then re
 `sandbox-exec` does not exist (Linux CI) a NON-confining test double that forges the
 preflight canary stands in, the enforcement checks SKIP, and everything else — the profile
 text included — still runs. Also covered: the flag table, the
-deny-list, `--allow-read` refusals, the audit log (fields, no output, failed runs, prune), the
-exit-code contract, the watchdog, `--patch-out`/`--check`, the build-worktree round trip, symlink
+deny-list, `--allow-read` refusals, `--input-dir` (I*: a whole tree copied, links inside kept,
+absolute / `../` / directory links out refused, deny-listed repos and markers in or above it,
+`$HOME`, the size cap, special files, name collisions, read-only modes only), the audit log
+(fields, no output, failed runs, prune), the exit-code contract, the watchdog, `--patch-out`/`--check`, the build-worktree round trip, symlink
 chains, a marker at `$HOME`, an inherited `GIT_DIR`, a trailing option with no value, and
 `tiers-sync.sh`/`triage-tiers.sh`. `qc/mutate.sh` proves the confinement, audit and agy-refusal
 guards have teeth (#56–#59), deny-by-default writes, the temp-dir read rule and the outside
-canary (#60–#62), as well as the git-env, symlink and apply-back guards (#49–#51).
+canary (#60–#62), the `--input-dir` outside-symlink refusal (#70), as well as the git-env,
+symlink and apply-back guards (#49–#51).
 
 **Known limitation — `--check` is not sandboxed.** The check command runs in the disposable
 worktree with this user's full rights, OUTSIDE the model sandbox, and it may execute code
@@ -632,6 +648,106 @@ a clean 3-way merge, a conflicting patch (exit 6, tree incl. untracked/unstaged 
 byte-identical, no markers), an empty patch and a relative path. `qc/mutate.sh` #39 proves the
 new-file capture has teeth, #55 the apply conflict pre-check.
 
+## `review-stage.sh` — the staging area of a review bake-off
+
+```
+review-stage.sh snapshot    --repo R --base B --head H --include GLOB... [--exclude GLOB...]
+                            [--context PATH...] [--extra SRC:DEST...] [--hard-exclude PATTERN...]
+                            --out DIR
+review-stage.sh fingerprint --repo R --path P... [--hard-exclude PATTERN...] [--out FILE]
+review-stage.sh compare     A.json B.json
+```
+
+A multi-value flag takes every argument up to the next `--flag` (and may repeat). Globs are git
+pathspecs with `:(glob)` magic relative to the repo root (`*` stays in one directory, `**/` spans
+any depth, so `docs/**/*.md` matches `docs/a.md`; a directory matches everything below it); no
+leading `/`, `-` or `:`, no `.`/`..` components.
+
+`snapshot` resolves B and H to shas and writes, into a DIR that is absolute, outside R, not
+containing R and absent or empty: `DIR/snap` — the files of **commit H** (`git archive H`, never
+the live tree, no `.git`) selected as (include − exclude) + context, symlinks and submodules
+dropped, each `--extra SRC:DEST` (an absolute regular file **outside** R, e.g. a CAD cache) copied
+to `snap/_extra/DEST`; `DIR/range.diff` — `git diff B H` over (include − exclude), no renames, no
+external diff/textconv, `a/`/`b/` prefixes; `DIR/manifest.json` — `{base, head, baseRef, headRef,
+include, exclude, context, hardExclude, files:[{path,bytes}], extras:[{src,dest,bytes}],
+excluded:[{path, reason: hard-exclude|symlink|submodule, pattern?}], codexDenied}`. It prints one
+JSON line `{step, ok, base, head, snap, diff, manifest, files, bytes, diffBytes, extras, excluded,
+codexDenied}`; a failure removes what it wrote.
+
+**Hard excludes** — `context/` and `PROJECT_MEMORY*.md` always, plus each `--hard-exclude` — are
+applied to everything written into DIR whatever git thinks of the path (tracked, ignored or
+untracked) and whatever `--include`/`--context` name. gitignore semantics, erring wide: a pattern
+with no inner slash matches **any** path component (`context/` also drops `docs/context/x.md`); one
+with a slash is anchored at the repo root and its `*` may cross directories. A hard-excluded path
+is never archived and never in range.diff (only its name, in `manifest.excluded`); an `--extra`
+whose DEST, or any component of whose SRC, matches is refused (exit 2). **Deny carries over:** when
+R (or its main worktree) or an extra SRC is under a hard-denied repo (clip-creator), or a
+`.codex-deny` marker lies inside R or on the way up to `$HOME`, DIR gets a `.codex-deny` of its
+own — `ext-run.sh` then refuses the snapshot and the diff for codex exactly as it would the repo;
+Claude reviewers may still read them.
+
+`fingerprint` is the review's SOURCE_CHANGED guard, scoped to its paths: `{step, head, paths,
+status (git status --porcelain=v1 -uall --no-renames -- paths), tree (a hash over the content of
+every changed/untracked path there, so a second edit to a dirty file counts), committed (a hash
+over HEAD's blobs at the paths)}`, hard-excluded paths left out of all three, read-only
+(`--no-optional-locks`). `compare` exits 0 when status, tree and committed are equal — a change
+outside the paths, or HEAD moving by a commit outside them, is no change (`headMoved` says so) —
+and **7** otherwise, printing `{step, same, changed, headMoved, detail}`.
+
+Exit codes: 0 ok / same; 1 the step failed; 2 usage, nothing written; 7 compare: changed.
+`test/review-stage.sh` (in `make test`): the archive of H, never live edits or untracked files;
+include/exclude/context; hard excludes winning over include, context and tracking at any depth,
+in the snapshot and the diff, with the manifest listing them; symlinks dropped; extras (and their
+refusals); range.diff byte-equal to `git diff B H` of the included paths; out-dir refusals; the
+deny carry-over; R untouched; fingerprint scoping and compare codes; `HARD_DENY_REPOS` equal to
+ext-run.sh's. `qc/mutate.sh` #67 proves the hard exclude holds for tracked paths.
+
+### The review bake-off (`triage-compare` kind `review`)
+
+`Workflow({name:'triage-compare', args:{kind:'review', repo, repoName, base, head?, include,
+exclude?, context?, extras?:[{src,dest}], hardExclude?, groundTruth, accepted?, conventions?,
+outDir, reviewers:[{vendor, level, model?, effort?, label?}], adjudicators?, batchSize?:10}}`:
+
+1. one quick task runs `review-stage.sh snapshot` and `fingerprint` (to
+   `<outDir>/fingerprint-before.json`); a failed snapshot throws before any reviewer;
+2. every reviewer runs **in parallel** on the snapshot + range.diff only — Claude: its level's
+   agent (model/effort passed through) with a findings schema, told to read nothing else, to
+   prefix every command with `cd <snap> && `, never to run git, and that it may view images;
+   codex: `triage-cross-reviewer` with `VENDOR=codex MODE=read MODEL= EFFORT= INPUT_DIR=<snap>`
+   and `--input range.diff` (codex reviewers must pin model **and** effort: read mode's default
+   model is the read-mode one, not the level's). Findings: `{file, line, severity:
+   blocker|major|minor, category, claim, evidence (a ground-truth path/page), suggestedFix}`.
+   Every prompt carries groundTruth, conventions and accepted deviations verbatim ("do not flag
+   these unless you cite NEW ground-truth evidence"; a summary or replacement text is never
+   ground truth). The live repo path and repo name appear in no reviewer, merge or adjudicator
+   prompt. A reviewer that fails or returns no valid findings JSON is **unavailable** — never
+   scored as zero; malformed single findings are dropped and flagged;
+3. one deep merge agent clusters duplicates over opaque finding ids (it sees no reviewer label or
+   id); membership is enforced by the workflow, which keeps the provenance (anonymized `R1..Rn`,
+   label-blind order);
+4. items (ids `M1..` in file/line order) go in batches to each adjudicator (default: claude deep
+   opus·high + codex deep gpt-6-astra·high, i.e. `levels.deep` — `make lint` checks the pair
+   against tiers.json), **blind** to labels, reviewer ids and provenance, reading only the
+   snapshot; verdict per item `real | not-real | accepted-deviation | unsure` with evidence; a
+   failed batch is retried once. Every adjudicator real → **real**; every one not-real or
+   accepted-deviation → **rejected**; unsure, a missing verdict or any disagreement →
+   **disputed** (for Alex);
+5. per reviewer, over non-disputed items only: precision = its real / its adjudicated, recall =
+   its real / all real (null when the denominator is 0), plus findings, real, rejected,
+   disputed, tokens and seconds (codex from its ext-run line; parallel Claude spawns have none);
+6. a final quick task re-fingerprints and runs `compare`: `sourceChanged` true is flagged
+   SOURCE_CHANGED but is informational — every reviewer read the pinned snapshot.
+
+Returns `{kind:'review', repoName, base, head, outDir, reviewers, items:[{id, file, line, severity,
+category, claim, evidence, suggestedFix, verdict, adjudication, foundBy}], disputed, sourceChanged,
+mergeFallback, flags, markdown}` — the markdown lists real items by file, then the disputed ones
+with both adjudicators' evidence, the rejected, and the score table. ⚠ Fable before any top-level
+Claude reviewer or adjudicator; a snapshot carrying `.codex-deny` makes every codex reviewer and
+adjudicator unavailable without a spawn. Nothing is applied, nothing written outside outDir.
+Known limit: an adjudicator of the same model as a reviewer judges its own kind of finding blind,
+not independently. `test/compare-scenarios.mjs` RV* covers it; `qc/mutate.sh` #68 (provenance
+reaching an adjudicator) and #69 (a disputed item scored as real) prove the blind + scoring rules.
+
 ## `parity-suite.sh` — the task suite of a parity run
 
 ```
@@ -741,6 +857,7 @@ a repo path) cover the workflow side in `test/parity-scenarios.mjs`.
 parity-report.sh ingest-compare --result FILE --repo-name NAME --level L --source inline|suite
                                 [--task ID] [--applied LABEL] [--run ID] [--ts ISO]
 parity-report.sh ingest-parity  --result FILE [--ts ISO]
+parity-report.sh ingest-review  --result FILE --repo-name NAME [--resolved FILE] [--run ID] [--ts ISO]
 parity-report.sh migrate        [--from ~/.agents/evidence/vendor-parity.jsonl]
 parity-report.sh report         [--json]
       every subcommand also takes [--ledger F] [--tiers F]
@@ -780,6 +897,24 @@ best-effort: a compare line → one line; a parity aggregate → one pass/fail l
 outcome per band (it had no task ids or per-task tokens; models resolved from the label via the
 tiers file); idempotent by run id.
 
+`ingest-review` takes a `triage-compare` kind `review` result and writes **one** line with
+`source: "inline-review"` and no `candidates` (so it can never enter the build rule):
+
+```
+{"v":1, "ts", "source":"inline-review", "run":<id|null>, "repoName",
+ "reviewers":[{"label","vendor","level","model","effort","status":"ok|unavailable","precision",
+   "recall","n","real","rejected","disputed","findings","totalTokens","seconds"}],
+ "items":<merged items>, "real":<real items>, "disputed":<still disputed>, "resolved":<by Alex>}
+```
+
+Scores are **recomputed here** from the items' verdicts and `foundBy` after applying `--resolved`
+(Alex's verdicts for disputed ids, `{"M3":"real","M7":"not-real"}`; an id that is not a disputed
+item, or any other value, is exit 2): precision = real / (real + rejected) with `n` = that
+denominator, recall = real / all real, null for a zero denominator; an unavailable reviewer keeps
+null scores and n 0. No file path, claim, evidence, flag or markdown reaches the ledger. Run id =
+`--run`, else the result's outDir basename; a run already in the ledger is skipped — resolve the
+disputes first, then ingest once.
+
 **Rule** (`report`). Groups graded outcomes per level × vendor × (model, effort): n, passes,
 rate, Wilson 95% lower bound, excluded (non-graded) count, mean tokens and seconds. Per level ×
 vendor the incumbent is `levels.<level>.<vendor>`; every other (model, effort) there is a
@@ -797,15 +932,21 @@ xhigh < max.
 
 One proposal per level × vendor: a qualifying pricier challenger first (quality; highest rate,
 then cheapest), else the cheapest qualifying cheaper one. Markdown by default (a table per
-level, the decisions with their reasons, the proposals); `--json` gives
-`{ledger, tiers, lines, malformed, rule, groups, decisions, proposals, note}`. Malformed ledger
-lines are counted, not fatal.
+level, the decisions with their reasons, the proposals, then a separate **Reviews
+(inline-review)** section: per vendor × model × effort, reviews, mean precision and mean recall
+(each with its n) and unavailable count — never mixed into the build pass rates, and "Review
+metrics do not drive tier proposals yet"); `--json` gives `{ledger, tiers, lines, malformed, rule,
+groups, decisions, proposals, reviews: {lines, groups, note}, note}`. Malformed ledger lines are
+counted, not fatal.
 
 Exit codes: 0 ok; 1 ledger write failed; 2 usage / invalid input / invalid tiers file (nothing
 written). `test/parity-report.sh` (in `make test`) covers both ingest shapes, the refusals,
 no-repo-content, migrate + idempotence, Wilson bounds, every rule branch, exclusions and that
-tiers.json is never written; `qc/mutate.sh` #43 (cheapness order), #52 (minN), #53 (Wilson LB
-vs point rate) and #54 (non-graded status as fail) prove the rule has teeth.
+tiers.json is never written, and (RV*) ingest-review: the line schema, recomputed scores with
+and without resolutions, unavailable never zero, no review content, idempotence, and a report
+whose build groups/decisions/proposals are byte-identical with or without review lines; `qc/mutate.sh`
+#43 (cheapness order), #52 (minN), #53 (Wilson LB vs point rate) and #54 (non-graded status as
+fail) prove the rule has teeth.
 
 ## `parity-cost.sh` — Claude cost per parity candidate
 

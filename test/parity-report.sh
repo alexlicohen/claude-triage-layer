@@ -11,6 +11,10 @@
 # bounds; the rule — cheaper via the Wilson LB (not the point rate), pricier via
 # the margin, insufficient-n with the runs still needed, unranked; exclusion of
 # non-graded statuses; markdown/JSON output; and that tiers.json is never written.
+# ingest-review (RV*): the review line schema, precision/recall recomputed from the
+# items (disputed excluded, --resolved applied), unavailable never zero, no review
+# content in the ledger, idempotence, and a report section kept apart from the
+# build rule (which review lines never change).
 # shellcheck disable=SC2034  # *_SUM, L1 etc. are read inside chk's eval'd conditions
 set -u
 
@@ -242,6 +246,92 @@ run_pr report --tiers "$T/no-tuning.json" --ledger "$RL"
 chk "R8e a tiers file with no tuning block is refused (exit 2)" '[ "$RC" -eq 2 ]'
 run_pr frobnicate --tiers "$TIERS"
 chk "R8f an unknown subcommand is a usage error" '[ "$RC" -eq 2 ]'
+
+# --- RV: ingest-review — review bake-off scores, kept apart from build rates ----
+cat > "$T/review.json" <<'EOF'
+{"kind":"review","repoName":"voron","base":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","head":"cccccccccccccccccccccccccccccccccccccccc","outDir":"/o/reviews/rv-run-1",
+ "reviewers":[
+  {"label":"rv-sonnet","vendor":"claude","level":"builder","model":null,"effort":null,"status":"ok","precision":0.5,"recall":0.5,"findings":3,"real":1,"rejected":1,"disputed":1,"tokens":null,"seconds":null},
+  {"label":"rv-opus","vendor":"claude","level":"deep","model":"opus","effort":"high","status":"ok","precision":1,"recall":1,"findings":2,"real":2,"rejected":0,"disputed":0,"tokens":null,"seconds":null},
+  {"label":"rv-sol","vendor":"codex","level":"deep","model":"gpt-6-sol","effort":"medium","status":"ok","precision":0.333,"recall":0.5,"findings":4,"real":1,"rejected":2,"disputed":1,"tokens":500,"seconds":12},
+  {"label":"rv-astra","vendor":"codex","level":"deep","model":"gpt-6-astra","effort":"high","status":"unavailable","precision":null,"recall":null,"findings":null,"real":null,"rejected":null,"disputed":null,"tokens":null,"seconds":null,"reason":"SECRET rate limited"}],
+ "items":[
+  {"id":"M1","file":"docs/SECRETFILE.md","line":3,"severity":"major","category":"U1","claim":"SECRET claim","evidence":"SECRET evidence","suggestedFix":"x","verdict":"real","adjudication":[],"foundBy":["rv-opus","rv-sol","rv-sonnet"]},
+  {"id":"M2","file":"docs/a.md","line":10,"severity":"minor","category":"U1","claim":"c","evidence":"e","suggestedFix":"","verdict":"rejected","adjudication":[],"foundBy":["rv-sonnet"]},
+  {"id":"M3","file":"docs/b.md","line":5,"severity":"blocker","category":"U1","claim":"c","evidence":"e","suggestedFix":"","verdict":"disputed","adjudication":[],"foundBy":["rv-sonnet"]},
+  {"id":"M4","file":"docs/b.md","line":8,"severity":"major","category":"U1","claim":"c","evidence":"e","suggestedFix":"","verdict":"real","adjudication":[],"foundBy":["rv-opus"]},
+  {"id":"M5","file":"docs/c.md","line":1,"severity":"major","category":"U1","claim":"c","evidence":"e","suggestedFix":"","verdict":"rejected","adjudication":[],"foundBy":["rv-sol"]},
+  {"id":"M6","file":"docs/c.md","line":2,"severity":"major","category":"U1","claim":"c","evidence":"e","suggestedFix":"","verdict":"disputed","adjudication":[],"foundBy":["rv-sol"]},
+  {"id":"M7","file":"docs/c.md","line":9,"severity":"major","category":"U1","claim":"c","evidence":"e","suggestedFix":"","verdict":"rejected","adjudication":[],"foundBy":["rv-sol"]}],
+ "disputed":["M3","M6"],"sourceChanged":false,"flags":["SECRET flag"],"markdown":"SECRET markdown"}
+EOF
+VL="$T/l-review.jsonl"
+run_pr ingest-review --tiers "$TIERS" --ledger "$VL" --result "$T/review.json" --repo-name voron --ts 2026-09-24T12:00:00Z
+V1=$(head -n 1 "$VL" 2>/dev/null)
+rv() { printf '%s' "$V1" | jq -r --arg l "$1" ".reviewers[] | select(.label == \$l) | $2"; }
+chk "RV1 ingest-review appends ONE inline-review line with exactly the review schema keys (no candidates: never a build row)" \
+  '[ "$RC" -eq 0 ] && [ "$(nlines "$VL")" = 1 ] && [ "$(printf "%s" "$V1" | jq -c "keys")" = "[\"disputed\",\"items\",\"real\",\"repoName\",\"resolved\",\"reviewers\",\"run\",\"source\",\"ts\",\"v\"]" ] &&
+   [ "$(printf "%s" "$V1" | jq -r "[.source,.repoName,.run,.items,.real,.disputed,.resolved] | map(tostring) | join(\" \")")" = "inline-review voron rv-run-1 7 2 2 0" ]'
+chk "RV1b each reviewer has exactly label/vendor/level/model/effort/status/precision/recall/n/real/rejected/disputed/findings/totalTokens/seconds" \
+  '[ "$(printf "%s" "$V1" | jq -c "[.reviewers[] | keys] | unique")" = "[[\"disputed\",\"effort\",\"findings\",\"label\",\"level\",\"model\",\"n\",\"precision\",\"real\",\"recall\",\"rejected\",\"seconds\",\"status\",\"totalTokens\",\"vendor\"]]" ]'
+chk "RV1c precision/recall/n recomputed from the items over non-disputed ones: sonnet 1/2 (n 2), opus 2/2, sol 1/3 (n 3); recall over 2 real" \
+  '[ "$(rv rv-sonnet "[.precision,.recall,.n] | map(tostring) | join(\",\")")" = "0.5,0.5,2" ] && [ "$(rv rv-opus "[.precision,.recall,.n] | map(tostring) | join(\",\")")" = "1,1,2" ] &&
+   [ "$(rv rv-sol "(.precision * 1000 | round | tostring) + \",\" + (.recall | tostring) + \",\" + (.n | tostring)")" = "333,0.5,3" ]'
+chk "RV1d an unavailable reviewer keeps status unavailable with NULL scores and n 0 — never a zero precision" \
+  '[ "$(rv rv-astra "[.status, (.precision|tostring), (.recall|tostring), (.n|tostring)] | join(\",\")")" = "unavailable,null,null,0" ]'
+chk "RV1e a null model/effort is filled from the tiers file at its level (claude builder = sonnet/medium); vendor tokens kept" \
+  '[ "$(rv rv-sonnet ".model + \"/\" + .effort")" = "sonnet/medium" ] && [ "$(rv rv-sol ".totalTokens")" = 500 ]'
+chk "RV1f no review content reaches the ledger: no file path, claim, evidence, reason, flag or markdown" \
+  '! grep -qi "secret" "$VL" && ! grep -q "docs/" "$VL" && ! grep -q "claim\|evidence\|markdown\|/o/reviews" "$VL"'
+run_pr ingest-review --tiers "$TIERS" --ledger "$VL" --result "$T/review.json" --repo-name voron
+chk "RV2 ingesting the same review again is a no-op (run = the outDir basename)" '[ "$RC" -eq 0 ] && [ "$(j .lines)" = 0 ] && [ "$(nlines "$VL")" = 1 ]'
+
+printf '{"M3":"real","M6":"not-real"}\n' > "$T/resolved.json"
+VR="$T/l-review-resolved.jsonl"
+run_pr ingest-review --tiers "$TIERS" --ledger "$VR" --result "$T/review.json" --repo-name voron --resolved "$T/resolved.json" --run rv-run-1b
+V1=$(head -n 1 "$VR" 2>/dev/null)
+chk "RV3 --resolved applies Alex's verdicts to disputed ids: M3 real, M6 not-real -> 3 real, 0 disputed, 2 resolved" \
+  '[ "$RC" -eq 0 ] && [ "$(printf "%s" "$V1" | jq -r "[.real,.disputed,.resolved,.run] | map(tostring) | join(\" \")")" = "3 0 2 rv-run-1b" ]'
+chk "RV3b ...and the scores are recomputed with them: sonnet 2/3 & 2/3, sol 1/4 & 1/3, opus 1 & 2/3" \
+  '[ "$(rv rv-sonnet "[(.precision*1000|round), (.recall*1000|round), .n] | map(tostring) | join(\",\")")" = "667,667,3" ] &&
+   [ "$(rv rv-sol "[(.precision*1000|round), (.recall*1000|round), .n] | map(tostring) | join(\",\")")" = "250,333,4" ] &&
+   [ "$(rv rv-opus "[(.precision*1000|round), (.recall*1000|round)] | map(tostring) | join(\",\")")" = "1000,667" ]'
+VX="$T/l-review-refuse.jsonl"
+printf '{"M1":"real"}\n' > "$T/res-notdisputed.json"
+printf '{"M3":"maybe"}\n' > "$T/res-badvalue.json"
+printf '["M3"]\n' > "$T/res-array.json"
+for bad in res-notdisputed res-badvalue res-array; do
+  run_pr ingest-review --tiers "$TIERS" --ledger "$VX" --result "$T/review.json" --repo-name voron --resolved "$T/$bad.json"
+  chk "RV4 --resolved $bad is refused (exit 2), nothing written" '[ "$RC" -eq 2 ] && [ ! -e "$VX" ]'
+done
+run_pr ingest-review --tiers "$TIERS" --ledger "$VX" --result "$T/compare.json" --repo-name voron
+chk "RV4b a build compare result is not a review result (exit 2), nothing written" '[ "$RC" -eq 2 ] && [ ! -e "$VX" ]'
+run_pr ingest-review --tiers "$TIERS" --ledger "$VX" --result "$T/review.json" --repo-name /work/SECRETREPO
+chk "RV4c a --repo-name that is a path is refused (exit 2)" '[ "$RC" -eq 2 ] && [ ! -e "$VX" ]'
+
+# report: the review section is separate, and review lines change nothing in the build rule.
+run_pr report --tiers "$TIERS" --ledger "$RL" --json
+BUILD_ONLY=$(printf '%s' "$OUT" | jq -c '[.groups, .decisions, .proposals]')
+cat "$RL" "$VL" "$VR" > "$T/l-mixed.jsonl"
+run_pr report --tiers "$TIERS" --ledger "$T/l-mixed.jsonl" --json
+MIX="$OUT"
+chk "RV5 review lines leave the build groups, decisions and proposals byte-identical, and are not counted as malformed" \
+  '[ "$RC" -eq 0 ] && [ "$(printf "%s" "$MIX" | jq -c "[.groups, .decisions, .proposals]")" = "$BUILD_ONLY" ] && [ "$(printf "%s" "$MIX" | jq .malformed)" = 1 ] &&
+   ! printf "%s" "$MIX" | jq -e ".groups[] | select(.model == \"gpt-6-sol\" and .effort == \"medium\" and .level == null)" >/dev/null'
+chk "RV5b a separate reviews section per vendor x model x effort: sonnet·medium over 2 reviews = mean precision (0.5+0.667)/2, mean recall (0.5+0.667)/2" \
+  '[ "$(printf "%s" "$MIX" | jq -r ".reviews.lines")" = 2 ] &&
+   [ "$(printf "%s" "$MIX" | jq -r ".reviews.groups[] | select(.vendor == \"claude\" and .model == \"sonnet\") | [.reviews, (.meanPrecision*1000|round), (.meanRecall*1000|round), .nPrecision] | map(tostring) | join(\",\")")" = "2,583,583,2" ]'
+chk "RV5c an unavailable reviewer counts as unavailable in its group, never as a zero in the means" \
+  '[ "$(printf "%s" "$MIX" | jq -r ".reviews.groups[] | select(.model == \"gpt-6-astra\") | [.reviews, .unavailable, (.meanPrecision|tostring)] | map(tostring) | join(\",\")")" = "0,2,null" ]'
+chk "RV5d the JSON says review metrics do not drive tier proposals yet" 'printf "%s" "$MIX" | jq -r .reviews.note | grep -q "do not drive tier proposals yet"'
+run_pr report --tiers "$TIERS" --ledger "$T/l-mixed.jsonl"
+chk "RV6 markdown: its own Reviews section with the table, the not-a-proposal-input line, after the build proposals" \
+  '[ "$RC" -eq 0 ] && printf "%s" "$OUT" | grep -q "^## Reviews (inline-review) — separate from build pass rates" &&
+   printf "%s" "$OUT" | grep -q "^| claude | opus | high | 2 | 1 (2) | 0.833 (2) | 0 |$" &&
+   printf "%s" "$OUT" | grep -q "Review metrics do not drive tier proposals yet" &&
+   [ "$(printf "%s" "$OUT" | grep -n "^## Proposals" | cut -d: -f1)" -lt "$(printf "%s" "$OUT" | grep -n "^## Reviews" | cut -d: -f1)" ]'
+run_pr report --tiers "$TIERS" --ledger "$RL"
+chk "RV6b with no review lines the section says so" 'printf "%s" "$OUT" | grep -q "No review bake-offs ingested yet."'
 
 echo ""
 echo "RESULT: $PASS_COUNT passed, $FAIL_COUNT failed"

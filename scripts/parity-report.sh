@@ -11,6 +11,8 @@
 #                    --source inline|suite [--task ID] [--applied LABEL]
 #                    [--run ID] [--ts ISO] [--ledger F] [--tiers F]
 #   parity-report.sh ingest-parity  --result FILE [--ts ISO] [--ledger F] [--tiers F]
+#   parity-report.sh ingest-review  --result FILE --repo-name NAME [--resolved FILE]
+#                    [--run ID] [--ts ISO] [--ledger F] [--tiers F]
 #   parity-report.sh migrate        [--from F] [--ledger F] [--tiers F]
 #   parity-report.sh report         [--ledger F] [--tiers F] [--json]
 #
@@ -21,12 +23,25 @@
 #                 (task, candidate run), source "suite", level = the task's band's
 #                 level (B1 quick, B2 builder, B3 deep, B4 top), run = basename of
 #                 its outDir. A run already in the ledger is skipped (idempotent).
+# ingest-review   FILE = a triage-compare kind:"review" result. Appends ONE ledger line
+#                 (source "inline-review") with per-reviewer precision/recall/n,
+#                 recomputed here AFTER applying --resolved (Alex's verdicts for
+#                 disputed item ids: {"M3": "real", "M7": "not-real"}; a resolved
+#                 item then counts like an agreed one, an unresolved one stays out).
+#                 precision = its real items / its adjudicated (real + rejected)
+#                 items (n = that denominator), recall = its real items / all real
+#                 items; null when the denominator is 0; an unavailable reviewer is
+#                 recorded with null scores, never 0. Run id = --run, else the
+#                 result's outDir basename; a run already in the ledger is skipped.
 # migrate         converts the legacy ~/.agents/evidence/vendor-parity.jsonl (the
 #                 default --from) best-effort: a compare line -> one ledger line; a
 #                 parity aggregate -> one line per counted pass/fail per band (no
 #                 task ids or tokens existed). Idempotent: keyed by run id.
 # report          aggregates graded outcomes and applies tuning.rule (below).
-#                 Markdown by default, one JSON object with --json.
+#                 Markdown by default, one JSON object with --json. Review lines
+#                 (source inline-review) get their OWN section — mean precision /
+#                 recall per vendor x model x effort — never mixed into the build
+#                 pass rates, and they do not drive tier proposals (yet).
 #
 # Ledger: JSON lines, default tuning.ledger of the tiers file (~ expanded). Schema
 # (v 1), scores and metadata ONLY — never patch contents, briefs, checks or paths
@@ -35,6 +50,11 @@
 #    "level":"quick|builder|deep|top", "band":<1-4, suite only>, "task":<id|null>,
 #    "candidates":[{"label","vendor","model","effort","status","totalTokens","seconds"}],
 #    "applied":<label|null>, "migrated":<"vendor-parity.jsonl", migrated lines only>}
+#   Review line (ingest-review; no candidates, so it never enters the build rule):
+#   {"v":1, "ts", "source":"inline-review", "run":<id|null>, "repoName",
+#    "reviewers":[{"label","vendor","level","model","effort","status":"ok|unavailable",
+#      "precision","recall","n","real","rejected","disputed","findings","totalTokens","seconds"}],
+#    "items":<merged items>, "real":<real items>, "disputed":<still disputed>, "resolved":<by Alex>}
 #   status: pass | fail (GRADED) | unavailable | invalid | denied | unresolved |
 #   ungraded | skipped | unknown — only pass/fail ever count. A candidate's null
 #   model/effort is filled at ingest from the tiers file's levels.<its level>.<vendor>
@@ -65,11 +85,11 @@ command -v jq >/dev/null 2>&1 || usage "jq is required"
 
 SUB="${1:-}"
 [ $# -gt 0 ] && shift
-RESULT="" REPO_NAME="" LEVEL="" SOURCE="" TASK="" APPLIED="" RUN="" TS="" LEDGER="" TIERS="" FROM="" JSON=0
+RESULT="" REPO_NAME="" LEVEL="" SOURCE="" TASK="" APPLIED="" RUN="" TS="" LEDGER="" TIERS="" FROM="" RESOLVED="" JSON=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --json) JSON=1; shift; continue ;;
-    -h|--help) sed -n '2,60p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,78p' "$0"; exit 0 ;;
   esac
   [ $# -ge 2 ] || usage "$1 needs a value"
   case "$1" in
@@ -84,6 +104,7 @@ while [ $# -gt 0 ]; do
     --ledger)    LEDGER="$2" ;;
     --tiers)     TIERS="$2" ;;
     --from)      FROM="$2" ;;
+    --resolved)  RESOLVED="$2" ;;
     *)           usage "unknown argument $1" ;;
   esac
   shift 2
@@ -220,6 +241,64 @@ do_ingest_parity() {
 }
 
 # ---------------------------------------------------------------------------
+do_ingest_review() {
+  [ -n "$RESULT" ] && [ -n "$REPO_NAME" ] || usage "ingest-review needs --result --repo-name"
+  [ -f "$RESULT" ] || usage "--result is not a file: $RESULT"
+  printf '%s' "$REPO_NAME" | grep -Eq '^[A-Za-z0-9._-]{1,64}$' || usage "--repo-name must be a bare name (letters, digits, . _ -), never a path"
+  [ -z "$RUN" ] || is_token "$RUN" || usage "--run must be an id token"
+  if [ -n "$TS" ]; then check_ts "$TS"; else TS=$(now_ts); fi
+  jq -e 'type == "object" and .kind == "review" and (.reviewers | type == "array" and length > 0) and (.items | type == "array")' "$RESULT" >/dev/null 2>&1 ||
+    usage "--result is not a triage-compare review result (kind \"review\" with reviewers and items): $RESULT"
+  local res='{}'
+  if [ -n "$RESOLVED" ]; then
+    [ -f "$RESOLVED" ] || usage "--resolved is not a file: $RESOLVED"
+    jq -e 'type == "object" and all(.[]; . == "real" or . == "not-real")' "$RESOLVED" >/dev/null 2>&1 ||
+      usage "--resolved must be a JSON object {\"<disputed item id>\": \"real\" | \"not-real\"}"
+    res=$(jq -c . "$RESOLVED")
+    local bad
+    bad=$(jq -r --argjson r "$res" '[.items[] | select(.verdict == "disputed") | .id] as $d | [$r | keys[] | select(. as $k | $d | index($k) | not)] | join(", ")' "$RESULT")
+    [ -z "$bad" ] || usage "--resolved names id(s) that are not disputed items of this review: $bad"
+  fi
+  local run="$RUN"
+  if [ -z "$run" ]; then
+    run=$(jq -r '(.outDir // "") | tostring | sub("/+$"; "") | split("/") | last // ""' "$RESULT")
+    is_token "$run" || run=""
+  fi
+  if [ -n "$run" ] && ledger_runs | grep -qxF "$run"; then
+    jq -nc --arg l "$LEDGER" --arg r "$run" '{step:"ingest-review", ledger:$l, run:$r, lines:0, skipped:"run already in the ledger"}'
+    return 0
+  fi
+  jq -c --argjson cfg "$CFG" --argjson res "$res" --arg ts "$TS" --arg run "$run" --arg repo "$REPO_NAME" "$DEFS"'
+    ([.items[] | if .verdict == "disputed" and $res[.id] != null
+                 then .verdict = (if $res[.id] == "real" then "real" else "rejected" end) | .resolved = true else . end]) as $items
+    | ([$items[] | select(.verdict == "real")] | length) as $allReal
+    | [.reviewers[] | . as $r
+        | ($cfg.levels[$r.level // ""][$r.vendor] // {}) as $def
+        | {label, vendor, level: (if (LEVELS | index($r.level)) != null then $r.level else null end),
+           model: (if $r.model == null then ($def.model // null) else $r.model end),
+           effort: (if $r.effort == null then ($def.effort // null) else $r.effort end),
+           status: (if $r.status == "ok" then "ok" else "unavailable" end),
+           totalTokens: ($r.tokens | num_or_null), seconds: ($r.seconds | num_or_null)}
+        | if .status != "ok" then . + {precision: null, recall: null, n: 0, real: null, rejected: null, disputed: null, findings: null}
+          else ([$items[] | select((.foundBy // []) | index($r.label))]) as $mine
+            | ([$mine[] | select(.verdict == "real")] | length) as $real
+            | ([$mine[] | select(.verdict == "rejected")] | length) as $rej
+            | . + {precision: (if ($real + $rej) == 0 then null else $real / ($real + $rej) end),
+                   recall: (if $allReal == 0 then null else $real / $allReal end),
+                   n: ($real + $rej), real: $real, rejected: $rej,
+                   disputed: ([$mine[] | select(.verdict == "disputed")] | length),
+                   findings: ($r.findings | num_or_null)} end] as $revs
+    | if ($revs | all(cand_ok)) | not then error("a reviewer has an invalid label/vendor/model/effort")
+      else {v: 1, ts: $ts, source: "inline-review", run: (if $run == "" then null else $run end), repoName: $repo,
+            reviewers: $revs, items: ($items | length), real: $allReal,
+            disputed: ([$items[] | select(.verdict == "disputed")] | length),
+            resolved: ([$items[] | select(.resolved == true)] | length)} end' "$RESULT" > "$TMP/line" 2>"$TMP/err" ||
+    usage "could not ingest $RESULT: $(sed 's/^jq: error[^:]*: //' "$TMP/err" | head -c 300)"
+  append "$TMP/line"
+  jq -c --arg l "$LEDGER" '{step:"ingest-review", ledger:$l, run, lines:1, reviewers:(.reviewers | length), scored:([.reviewers[] | select(.precision != null)] | length), disputed, resolved}' "$TMP/line"
+}
+
+# ---------------------------------------------------------------------------
 do_migrate() {
   [ -n "$FROM" ] || FROM="$HOME/.agents/evidence/vendor-parity.jsonl"
   [ -f "$FROM" ] || usage "--from is not a file: $FROM"
@@ -286,7 +365,10 @@ def direction($c; $i):
     elif $kc < $ki then "cheaper" elif $kc > $ki then "pricier" else "unranked" end;
 def need($n): if $n >= $minN then 0 else $minN - $n end;
 
-($lines | map(fromjson? | select(type == "object" and (.candidates | type) == "array"))) as $ok
+($lines | map(fromjson? | select(type == "object"))) as $objs
+| ($objs | map(select((.candidates | type) == "array" and .source != "inline-review"))) as $ok
+# Review lines are their own section: never a build row, never a proposal input.
+| ($objs | map(select(.source == "inline-review" and (.reviewers | type) == "array"))) as $rv
 | ($lines | length) as $total
 | [$ok[] | . as $l | .candidates[] | select(type == "object")
    | {level: $l.level, vendor, model, effort, status: (.status | norm), totalTokens: (.totalTokens | num_or_null), seconds: (.seconds | num_or_null)}] as $rows
@@ -322,9 +404,18 @@ def need($n): if $n >= $minN then 0 else $minN - $n end;
     | ($up // $down)
     | {level, vendor, direction, from: {model: .incumbent.model, effort: .incumbent.effort}, to: {model: .challenger.model, effort: .challenger.effort},
        incumbent: {n: .incumbent.n, rate: .incumbent.rate}, challenger: {n: .challenger.n, rate: .challenger.rate, wilsonLB: .challenger.wilsonLB}, why} ] as $proposals
-| {ledger: $ledger, tiers: $tiersPath, lines: $total, malformed: ($total - ($ok | length)),
+| [ $rv[] | .reviewers[] | select(type == "object")
+    | {vendor, model, effort, status, precision: (.precision | num_or_null), recall: (.recall | num_or_null)} ]
+  | group_by([.vendor, .model, .effort])
+  | map(. as $g | {vendor: $g[0].vendor, model: $g[0].model, effort: $g[0].effort,
+        reviews: ([$g[] | select(.status == "ok")] | length), unavailable: ([$g[] | select(.status != "ok")] | length),
+        meanPrecision: ([$g[] | .precision | numbers] | mean), nPrecision: ([$g[] | .precision | numbers] | length),
+        meanRecall: ([$g[] | .recall | numbers] | mean), nRecall: ([$g[] | .recall | numbers] | length)}) as $rgroups
+| {ledger: $ledger, tiers: $tiersPath, lines: $total, malformed: ($total - ($ok | length) - ($rv | length)),
    rule: {minN: $minN, cheaperTolerance: $tol, pricierMargin: $margin, confidence: "wilson95"},
    groups: $groups, decisions: $decisions, proposals: $proposals,
+   reviews: {lines: ($rv | length), groups: $rgroups,
+             note: "review bake-offs (source inline-review) are reported separately from build pass rates and do not drive tier proposals yet"},
    note: "proposal only: parity-report.sh never writes tiers.json; Alex approves every change"}
 '
 
@@ -351,6 +442,11 @@ def isinc($r; $lv): ($lv[$r.level][$r.vendor] // null) as $i | $i != null and $i
   + ["", "## Proposals", ""]
   + (if (.proposals | length) == 0 then ["None: no challenger clears the rule."] else
       (.proposals | map("- \(.level)/\(.vendor): \(.from | me) -> \(.to | me) (\(.direction); \(.why))")) end)
+  + ["", "## Reviews (inline-review) — separate from build pass rates", ""]
+  + (if (.reviews.groups | length) == 0 then ["No review bake-offs ingested yet."] else
+      ["| Vendor | Model | Effort | Reviews | Mean precision (n) | Mean recall (n) | Unavailable |", "|---|---|---|---|---|---|---|"]
+      + (.reviews.groups | sort_by([.vendor, .model, .effort]) | map("| \(.vendor) | \(.model // "—") | \(.effort // "—") | \(.reviews) | \(.meanPrecision | f3) (\(.nPrecision)) | \(.meanRecall | f3) (\(.nRecall)) | \(.unavailable) |")) end)
+  + ["Review metrics do not drive tier proposals yet: the proposals above come from build pass rates only."]
   + ["", "Proposal only: parity-report.sh never writes tiers.json. Alex approves every change (edit config/tiers.json, make tiers, make verify)."]
 | .[]
 '
@@ -373,7 +469,8 @@ do_report() {
 case "$SUB" in
   ingest-compare) do_ingest_compare ;;
   ingest-parity)  do_ingest_parity ;;
+  ingest-review)  do_ingest_review ;;
   migrate)        do_migrate ;;
   report)         do_report ;;
-  *)              usage "parity-report.sh ingest-compare|ingest-parity|migrate|report [options] (see the header)" ;;
+  *)              usage "parity-report.sh ingest-compare|ingest-parity|ingest-review|migrate|report [options] (see the header)" ;;
 esac
