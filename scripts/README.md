@@ -502,7 +502,8 @@ need LibreOffice (grant-forge's docx rendering), so it is deliberately not done.
 ## `patch-check.sh` — the independent grader of a bake-off
 
 ```
-patch-check.sh --repo DIR --base REV --check CMD [--overlay DIR] [--timeout SECS] PATCH...
+patch-check.sh --repo DIR --base REV --check CMD [--overlay DIR] [--timeout SECS] [--env-map FILE] PATCH...
+patch-check.sh --print-env --check CMD [--env-map FILE]
 ```
 
 `workflows/triage-compare.js` runs one brief on several candidates (Claude levels, codex),
@@ -515,7 +516,13 @@ script is. For each PATCH, in argument order:
 3. copies `--overlay DIR` into the worktree after the patch: hidden tests the candidates
    never saw, kept out of the diffstat;
 4. runs CMD (`bash -c`) from the worktree root under a wall-clock watchdog (default 600s;
-   over time = rc 124);
+   over time = rc 124), with the mapped `$PARITY_` tool variables exported (see **Parity env
+   map** below) and `XDG_CACHE_HOME`, `TMPDIR` and `GRANTFORGE_CACHE_DIR` all pointed at a fresh
+   per-patch dir beside the grading worktree (`<tmp root>/cache-<n>`, removed with it) — a check
+   never refreshes a real user cache. grantforge honours `GRANTFORGE_CACHE_DIR` (its
+   `config.cache_dir()`, whose default is `~/Library/Caches/grant-forge`, not XDG); the other two
+   cover tools that follow XDG or `$TMPDIR`. (An old grant-forge base that still wrote its cache
+   inside the package dir writes into the grading worktree, which is discarded.);
 5. removes the worktree and its `.git/worktrees` bookkeeping (`cleanup_wt()`, also on every
    exit path via the trap).
 
@@ -531,7 +538,30 @@ but the `--overlay` copy failed, so the hidden tests are missing and the check w
 patch is ungradable — `triage-compare.js` maps it to `invalid`, `parity-suite.sh verify-task`
 to "neither base-fails nor solution-passes"; never a pass or a fail. `error` appears only then.
 Exit 0 = every patch was reported; exit 2 = usage error (bad flag, a flag with no value, not a
-repo, unknown REV), nothing ran. It never touches the caller's working tree, index or HEAD.
+repo, unknown REV, an unmapped `$PARITY_` variable), nothing ran. It never touches the caller's
+working tree, index or HEAD.
+
+### Parity env map — no real paths to candidates
+
+Task checks are shown to candidates, so they never name a real tool path (a
+`/Users/…/.venv/bin/python` tells a candidate where the source repo lives). A check names a tool
+only as an env var **`PARITY_[A-Z0-9_]+`**, quoted as usual: `"$PARITY_PY_3DP" -m pytest`. The
+**env map** — `--env-map FILE`, else `$PARITY_ENV_MAP`, else `~/.agents/parity/envs.json` — is a
+JSON object mapping each variable to an absolute path:
+
+```json
+{"PARITY_PY_3DP": "/abs/parity/env/3dp/bin/python", "PARITY_MKDOCS_3DP": "/abs/parity/env/3dp/bin/mkdocs"}
+```
+
+`resolve_env()` in `patch-check.sh` is the one owner of the rule: it collects every
+`$PARITY_…`/`${PARITY_…}` reference in CMD (bash's full name, so `$PARITY_py` is refused, not
+read as `PARITY_`), and exits 2 naming the variable when it is unmapped, when there is no map,
+or when the map is not `{"PARITY_<NAME>": "/abs"}`. A check that references none never reads the
+map. The mapped values are exported into the check at grading, OUTSIDE any sandbox. `--print-env`
+prints the same resolution as `export PARITY_X='…'` lines (`parity-suite.sh` materialize and
+verify-task call it). Candidates see the checks with the variables UNEXPANDED; only a task with
+`"selfCheckEnv": true` lets them run the checks themselves (see `parity-suite.sh`) — the
+trade-off: `.parity-env` reveals tool paths, never repo content.
 
 The check runs as its own process group; on timeout the whole tree is killed, and after every
 check `reap_tree` kills anything it left running (a background server, a TERM-ignoring child)
@@ -544,7 +574,11 @@ applies+fail, non-applying, empty, binary/new file, overlay visible to the check
 the diffstat and the caller's tree, caller tree/index/HEAD untouched, worktrees cleaned (also
 after a timeout), missing patch, usage errors (incl. a trailing flag with no value), overlay
 copy failure (`overlay-failed`), an inherited decoy `GIT_DIR`, grandchildren killed (timeout and
-normal exit). `qc/mutate.sh` #32 and #48 prove the cleanup and overlay assertions have teeth.
+normal exit), the env map (export with quoting intact, `PARITY_ENV_MAP`, `--env-map` precedence,
+unmapped / missing map / invalid map / bad name => exit 2 before anything runs, a map-free check
+never reading it, `--print-env`) and the per-patch cache dir (all three variables, one dir per
+patch beside its worktree, removed). `qc/mutate.sh` #32, #48, #63 (unmapped variable ignored) and
+#66 (cache env not set) prove those assertions have teeth.
 
 ## `stage-worktree.sh` — the staging area of a bake-off
 
@@ -602,8 +636,9 @@ new-file capture has teeth, #55 the apply conflict pre-check.
 
 ```
 parity-suite.sh list         --suite DIR
-parity-suite.sh materialize  --task DIR --out DIR
-parity-suite.sh verify-task  --task DIR --out DIR
+parity-suite.sh materialize  --task DIR --out DIR [--env-map FILE]
+parity-suite.sh verify-task  --task DIR --out DIR [--env-map FILE]
+parity-suite.sh fingerprint  --task DIR
 parity-suite.sh score-review --key FILE --findings FILE
 ```
 
@@ -623,13 +658,19 @@ ships the machinery and three tiny synthetic fixtures (`test/fixtures/parity/sui
 | `setup` | no | a patch applied at base and committed as the task's starting point |
 | `brief`, `acceptance` | yes | what the candidates are told |
 | `files` | yes | non-empty; the files the candidates may touch (build) or review |
-| `checks` | build | shell commands run from the materialized repo root; the grade |
+| `checks` | build | shell commands run from the materialized repo root; the grade. Tools only as `"$PARITY_<NAME>"` (see **Parity env map** under `patch-check.sh`) |
 | `overlay` | no | a dir (e.g. `hidden/`) copied only into GRADING worktrees — hidden tests |
 | `solution` | build, for `verify-task` | the reference fix; never shown to candidates |
 | `grading` | yes | `check` (the checks), `rubric` (checks + two blind judges vs the key), `seeded` (review tasks only) |
 | `key` | rubric/seeded | `key.md`/`key.json` (rubric), `key.json` = `[{file,line,id,desc}]` (seeded) |
 | `vendors` | yes | subset of `claude`, `codex` allowed on this task (`agy`, retired 2026-09-24, is still tolerated in older task files) |
 | `timeoutMin` | no | per-check wall clock for `verify-task` (default 10) |
+| `selfCheckEnv` | no | `true` = candidates get `.parity-env` so they can run the `$PARITY_` checks themselves (reveals tool paths, never repo content); default: they cannot |
+
+**No real paths to candidates.** `brief`, `acceptance` and every `checks` entry are what
+candidates see, so `list` (and every command that loads a task) rejects one naming a path under
+`$HOME` — lint-style: `/Users/`, `~/`, `$HOME`/`${HOME}`, or the actual home dir — exit 2 naming
+the field. `source.repo` is exempt: it is never shown to a candidate.
 
 `list` prints every task (task.json + `taskDir`) sorted by band then id; any invalid task, or a
 duplicate id, is exit 2 naming it. `materialize` builds `<out>/repo`: a git source is
@@ -651,8 +692,30 @@ status). ext-run finds that marker walking up from the clone and from any worktr
 what ext-run will see. (`.agy-deny` markers are no longer propagated: agy was retired
 2026-09-24.)
 
+**Env and `.parity-env`.** `materialize` resolves the task's checks against the env map first
+(`patch-check.sh --print-env`; an unmapped variable is exit 2 naming it, nothing made). Only a
+task with `"selfCheckEnv": true` gets `<out>/repo/.parity-env` — the `export PARITY_X='…'` lines
+for the variables its checks use — and `/.parity-env` in the repo's `.git/info/exclude`. The
+exclude lives in the common git dir, so it holds in every worktree of the repo: triage-compare
+(`selfCheckEnv: true`) copies the file into each staged worktree, candidates are told
+`To run the checks yourself, first run: . .parity-env`, and the file never enters a diff.
+Without the opt-in, candidates are told the checks run only at grading.
+
+**Source-repo leak guard.** `fingerprint` prints, for a git source,
+`{id, source:"git", name, head, tree}`: `name` is the repo directory's name (never its path),
+`head` its HEAD sha, `tree` one hash over `git status --porcelain=v1 -uall` and the content of
+every modified or untracked non-ignored file (so a second edit to an already-dirty file changes
+it too); everything runs with `--no-optional-locks`, so not even the index is refreshed. A
+generator source prints `{id, source:"generator"}` (nothing to guard). triage-parity takes it
+before a task's candidates run (in the materialize spawn, before materializing — no valid
+fingerprint, no run) and after grading, for EVERY task kind (build, rubric, review): any
+difference voids every result of the task (`invalid`, reason and flag
+`SOURCE_CHANGED <name>: HEAD moved|tree changed`); no after-fingerprint (one retry) is
+`SOURCE_UNVERIFIED`, also invalid. The run continues — a concurrent human commit is possible, so
+the flag tells the orchestrator to investigate rather than aborting.
+
 `verify-task` materializes, then for a build task runs `patch-check.sh` twice — an empty patch
-(the base) and `solution.patch`, both with the overlay — and prints
+(the base) and `solution.patch`, both with the overlay and the env map's variables exported — and prints
 `{id, kind, sha, baseFails, solutionPasses, ok}`: `ok` needs the base to FAIL (the task is not
 pre-solved) and the solution to PASS. For a review task it checks the key is a non-empty seed
 list whose files exist at the sha. Exit 0 = ok, 1 = not.
@@ -666,7 +729,11 @@ precision 0). triage-parity passes a review at recall ≥ 0.6 and precision ≥ 
 Exit codes: 0 ok; 1 the step failed; 2 usage error or invalid task; 3 refused (deny-listed).
 `test/parity-suite.sh` (in `make test`) covers every subcommand on the synthetic fixtures,
 including the real `ext-run.sh` refusing a clone of a marked source (stub CLIs that must not
-run); `qc/mutate.sh` #44 proves deny propagation has teeth.
+run), the `$HOME`-path lint, the env map through verify-task (exported, unmapped => exit 2),
+`.parity-env` only on opt-in and never in a staged worktree's diff, and `fingerprint` (HEAD move,
+tracked/re-edited/untracked changes, generator, clip-creator, missing repo). `qc/mutate.sh` #44
+proves deny propagation has teeth; #64 (review tasks not re-fingerprinted) and #65 (judges handed
+a repo path) cover the workflow side in `test/parity-scenarios.mjs`.
 
 ## `parity-report.sh` — the parity ledger and the tier-change decision rule
 

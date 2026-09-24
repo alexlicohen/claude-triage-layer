@@ -8,13 +8,23 @@
 #
 # Usage:
 #   parity-suite.sh list         --suite DIR
-#   parity-suite.sh materialize  --task DIR --out DIR
-#   parity-suite.sh verify-task  --task DIR --out DIR
+#   parity-suite.sh materialize  --task DIR --out DIR [--env-map FILE]
+#   parity-suite.sh verify-task  --task DIR --out DIR [--env-map FILE]
+#   parity-suite.sh fingerprint  --task DIR
 #   parity-suite.sh score-review --key FILE --findings FILE
 #
 # Task format: <suite>/<band>/<id>/task.json (<band> is N or bN), fields in
 # scripts/README.md. Paths inside task.json are relative to the task dir and
 # may not leave it.
+#
+# NO REAL PATHS TO CANDIDATES: brief, acceptance and checks are shown to the
+# candidates, so none may name a path under $HOME (/Users/, ~/, $HOME or the
+# actual home dir — a task failing this is invalid, exit 2). A check names a
+# tool only as "$PARITY_<NAME>" ([A-Z0-9_]+); the env map (--env-map FILE, else
+# $PARITY_ENV_MAP, else ~/.agents/parity/envs.json: {"PARITY_<NAME>": "/abs"})
+# supplies the path at grading, OUTSIDE any sandbox. patch-check.sh owns that
+# rule (--print-env); an unmapped variable a check references is exit 2 naming
+# it. source.repo is exempt: it is never shown to a candidate.
 #
 # list         prints a JSON array of every task (task.json + "taskDir":
 #              absolute path), sorted by band then id. Any invalid task => exit 2
@@ -45,14 +55,30 @@
 #              Prints {"repo","sha","denied":{"codex":bool}} — denied is what
 #              ext-run will see from <out>/repo. An <out> this command
 #              made before (it holds .parity-materialized) is rebuilt; any other
-#              non-empty <out> is refused.
+#              non-empty <out> is refused. A build task's checks must resolve
+#              against the env map (unmapped PARITY_ variable => exit 2, nothing
+#              made). SELF-CHECK ENV: only a task with "selfCheckEnv": true gets
+#              <out>/repo/.parity-env (the `export PARITY_X=...` lines, so a
+#              candidate can run `. .parity-env` and then the checks) — the
+#              trade-off: it reveals tool paths, never repo content. .parity-env
+#              is listed in the repo's .git/info/exclude (shared by every
+#              worktree of it), so it never enters a candidate's diff.
 # verify-task  materializes into --out, then:
-#                build   patch-check.sh runs the checks at base + overlay (an empty
+#                build   patch-check.sh runs the checks (the env map's PARITY_
+#                        variables exported) at base + overlay (an empty
 #                        patch) and with solution.patch + overlay; prints
 #                        {"id","kind","sha","baseFails","solutionPasses","ok"}.
 #                review  key.json is a non-empty seed list whose files exist at
 #                        the materialized sha; prints {"id","kind","sha","seeds","missing","ok"}.
 #              exit 0 when ok, 1 when not.
+# fingerprint  SOURCE-REPO LEAK GUARD (triage-parity runs it before a task's
+#              candidates and after grading). A git source prints
+#              {"id","source":"git","name":<repo dir name>,"head":<HEAD sha>,
+#               "tree":<hash of `status --porcelain=v1 -uall` + the content of
+#               every modified/untracked non-ignored file>}; a generator source
+#              prints {"id","source":"generator"} (nothing to guard). Read-only
+#              (--no-optional-locks: not even the index is refreshed). A missing
+#              or non-git source.repo => exit 1; clip-creator => exit 3.
 # score-review deterministic: key = [{file,line,id,desc}] (or {"seeds":[...]}),
 #              findings = [{file,line,desc}] (or {"findings":[...]}). A finding
 #              matches a seed when the file is the same (a finding path ending in
@@ -84,11 +110,12 @@ command -v git >/dev/null 2>&1 || usage "git is required"
 
 SUB="${1:-}"
 [ $# -gt 0 ] && shift
-SUITE="" TASK="" OUT="" KEY="" FINDINGS=""
+SUITE="" TASK="" OUT="" KEY="" FINDINGS="" ENV_MAP=""
 while [ $# -gt 0 ]; do
   [ $# -ge 2 ] || usage "$1 needs a value"
   case "$1" in
     --suite)    SUITE="$2" ;;
+    --env-map)  ENV_MAP="$2" ;;
     --task)     TASK="$2" ;;
     --out)      OUT="$2" ;;
     --key)      KEY="$2" ;;
@@ -111,6 +138,7 @@ phys() {
   printf '%s%s\n' "$p" "$rest"
 }
 within() { [ "$1" = "$2" ] || case "$1" in "$2"/*) return 0 ;; *) return 1 ;; esac; }
+HOME_P=$(cd "${HOME:-/}" 2>/dev/null && pwd -P) || HOME_P="${HOME:-/}"
 
 # ---------------------------------------------------------------------------
 # Task validation — SINGLE OWNER of the task format. validate_task DIR prints
@@ -121,6 +149,9 @@ JQ_VALIDATE='
 def str: type == "string" and length > 0;
 def rel: str and (startswith("/") | not) and ((split("/") | index("..")) == null);
 def opt(f; msg): if has(f) and .[f] != null then (if (.[f] | rel) then empty else msg end) else empty end;
+# A real path under $HOME in candidate-visible text (brief, acceptance, checks).
+def underhome: . as $s | type == "string" and (contains("/Users/") or contains("~/") or test("\\$\\{?HOME([^A-Za-z0-9_]|$)")
+  or ([$home, $homeRaw] | map(select(length > 1)) | any(. as $h | $s | contains($h + "/"))));
 if type != "object" then ["task.json is not a JSON object"] else [
   (if (.id | str) and (.id | test("^[A-Za-z0-9._-]+$")) then empty else "id must be a non-empty file-name-safe string" end),
   (if (.band | type) == "number" and (.band as $b | [1,2,3,4] | index($b)) != null then empty else "band must be 1, 2, 3 or 4" end),
@@ -150,7 +181,12 @@ if type != "object" then ["task.json is not a JSON object"] else [
   (if (.grading == "rubric" or .grading == "seeded") and ((.key | rel) | not) then "grading \(.grading) needs a key" else empty end),
   (if .grading == "seeded" and ((.key // "") | endswith(".json") | not) then "a seeded key must be a .json file" else empty end),
   (if (.vendors | type) == "array" and (.vendors | length) > 0 and all(.vendors[]; . == "claude" or . == "codex" or . == "agy") then empty else "vendors must be a non-empty subset of claude, codex (agy: retired 2026-09-24, still tolerated in older task files)" end),
-  (if has("timeoutMin") and .timeoutMin != null then (if (.timeoutMin | type) == "number" and .timeoutMin > 0 then empty else "timeoutMin must be a positive number" end) else empty end)
+  (if has("timeoutMin") and .timeoutMin != null then (if (.timeoutMin | type) == "number" and .timeoutMin > 0 then empty else "timeoutMin must be a positive number" end) else empty end),
+  (if has("selfCheckEnv") and .selfCheckEnv != null then (if (.selfCheckEnv | type) == "boolean" then empty else "selfCheckEnv must be true or false" end) else empty end),
+  ([{f: "brief", v: .brief}, {f: "acceptance", v: .acceptance}]
+   + (if (.checks | type) == "array" then [.checks | to_entries[] | {f: "checks[\(.key)]", v: .value}] else [] end)
+   | .[] | select(.v | underhome)
+   | "\(.f) names a path under $HOME (candidates see it): name a tool as \"$PARITY_<NAME>\" from the env map instead (scripts/README.md)")
 ] end'
 
 validate_task() { # $1 task dir -> merged JSON on stdout, or problems on stderr + return 1
@@ -160,7 +196,7 @@ validate_task() { # $1 task dir -> merged JSON on stdout, or problems on stderr 
   tj="$dir/task.json"
   [ -f "$tj" ] || { echo "$dir: no task.json" >&2; return 1; }
   jq -e . "$tj" >/dev/null 2>&1 || { echo "$tj: not valid JSON" >&2; return 1; }
-  errs=$(jq -r "$JQ_VALIDATE | .[]" "$tj" 2>&1)
+  errs=$(jq -r --arg home "$HOME_P" --arg homeRaw "${HOME:-}" "$JQ_VALIDATE | .[]" "$tj" 2>&1)
   if [ -n "$errs" ]; then printf '%s\n' "$errs" | sed "s#^#$tj: #" >&2; return 1; fi
   id=$(jq -r .id "$tj"); band=$(jq -r .band "$tj")
   [ "$id" = "$(basename "$dir")" ] || { echo "$tj: id \"$id\" must equal its directory name $(basename "$dir")" >&2; return 1; }
@@ -211,7 +247,6 @@ deny_names() { case "$1" in codex) echo "${CODEX_DENY_REPOS:-}" ;; esac; }
 # (a .VENDOR-deny marker from PATH up to AND INCLUDING $HOME, or / outside it —
 # the same walk as ext-run.sh — or a deny-listed name component); prints nothing
 # otherwise.
-HOME_P=$(cd "${HOME:-/}" 2>/dev/null && pwd -P) || HOME_P="${HOME:-/}"
 denied_at() {
   local v="$1" p="$2" d name
   for name in $(deny_names "$v"); do
@@ -235,11 +270,26 @@ main_worktree_of() {
   case "$common" in */.git) dirname "$common" ;; *) printf '%s\n' "$common" ;; esac
 }
 
+# task_env TASK_JSON — the `export PARITY_X=...` lines for the variables the
+# task's checks reference (empty when none), via patch-check.sh --print-env, the
+# ONE owner of the env-map rule. Non-zero (its stderr names why) when a
+# referenced variable is unmapped or the map is missing/invalid.
+task_env() {
+  local checks
+  checks=$(printf '%s' "$1" | jq -r '(.checks // []) | join(" && ")')
+  [ -n "$checks" ] || return 0
+  if [ -n "$ENV_MAP" ]; then
+    "$SCRIPT_DIR/patch-check.sh" --print-env --env-map "$ENV_MAP" --check "$checks"
+  else
+    "$SCRIPT_DIR/patch-check.sh" --print-env --check "$checks"
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # materialize_task TASKDIR OUT — SINGLE OWNER of turning a task into a repo.
 # Sets TASK_JSON, MAT_REPO, MAT_SHA, DENIED_CODEX. Exits on error.
 materialize_task() {
-  local tdir="$1" out="$2" type src base script setup srcTop srcMain p v why made_repo=0 wrote
+  local tdir="$1" out="$2" type src base script setup srcTop srcMain p v why made_repo=0 wrote excl
   case "$out" in /*) ;; *) usage "--out must be an absolute path (got '$out')" ;; esac
   case "/$out/" in */../*|*/./*) usage "--out must not contain . or .. components" ;; esac
   TASK_JSON=$(validate_task "$tdir") || die "invalid task: $tdir" 2
@@ -275,6 +325,9 @@ materialize_task() {
   for p in "${DENY_SOURCES[@]}"; do
     has_hard_deny "$p" && die "REFUSED: $p is under a hard-denied repo ($HARD_DENY_REPOS)" 3
   done
+  # The checks' PARITY_ tool variables must all resolve BEFORE anything is made
+  # (patch-check.sh owns the rule; its stderr names an unmapped variable).
+  ENV_EXPORTS=$(task_env "$TASK_JSON") || die "the task's checks do not resolve against the env map (see above): $tdir" 2
 
   if [ -d "$out" ] && [ -n "$(ls -A "$out" 2>/dev/null)" ]; then
     [ -f "$out/$MATERIALIZED_MARK" ] || usage "refusing: --out $out is not empty and was not made by materialize"
@@ -322,6 +375,14 @@ materialize_task() {
   done
   git -C "$MAT_REPO" reflog expire --expire=now --all >&2 || fail "reflog expire failed"
   git -C "$MAT_REPO" -c gc.reflogExpire=now -c gc.reflogExpireUnreachable=now gc --prune=now -q >&2 || fail "gc failed"
+  # Self-check env (opt-in): excluded FIRST, so the clean-tree check below also
+  # proves it can never show up in a status or a diff of this repo or its worktrees.
+  if [ "$(printf '%s' "$TASK_JSON" | jq -r '.selfCheckEnv == true')" = true ]; then
+    excl=$(git -C "$MAT_REPO" rev-parse --path-format=absolute --git-path info/exclude) || fail "could not locate info/exclude in $MAT_REPO"
+    mkdir -p "$(dirname "$excl")" && printf '/.parity-env\n' >> "$excl" || fail "could not write $excl"
+    { printf '# parity-suite.sh materialize (selfCheckEnv): the tool paths the checks use. Run: . .parity-env\n'
+      [ -z "$ENV_EXPORTS" ] || printf '%s\n' "$ENV_EXPORTS"; } > "$MAT_REPO/.parity-env" || fail "could not write $MAT_REPO/.parity-env"
+  fi
   [ -z "$(git -C "$MAT_REPO" status --porcelain 2>/dev/null)" ] || fail "materialized tree is not clean (generator or setup left uncommitted files)"
   MAT_SHA=$(git -C "$MAT_REPO" rev-parse HEAD) || fail "no HEAD in $MAT_REPO"
 
@@ -388,6 +449,7 @@ do_verify() {
   : > "$out/base.patch"
   set -- --repo "$MAT_REPO" --base "$MAT_SHA" --check "$checks" --timeout "$tmin"
   [ -n "$overlay" ] && set -- "$@" --overlay "$tdir/$overlay"
+  [ -n "$ENV_MAP" ] && set -- "$@" --env-map "$ENV_MAP"
   lines=$("$SCRIPT_DIR/patch-check.sh" "$@" "$out/base.patch" "$tdir/$sol") || die "patch-check.sh failed: $lines"
   rm -f "$out/base.patch"
   l1=$(printf '%s\n' "$lines" | sed -n 1p); l2=$(printf '%s\n' "$lines" | sed -n 2p)
@@ -403,6 +465,44 @@ do_verify() {
      + (if ($l1.error // $l2.error) != null then {error: ($l1.error // $l2.error)} else {} end)'
   [ "$ok" = true ] && exit 0
   exit 1
+}
+
+# ---------------------------------------------------------------------------
+# fingerprint — SINGLE OWNER of the source-repo leak-guard fingerprint.
+# source_tree TOP — one hash over TOP's porcelain status and the content of every
+# modified or untracked non-ignored file (so a second edit to an already-dirty
+# file changes it too). Read-only: --no-optional-locks everywhere.
+source_tree() {
+  local top="$1" st
+  st=$(git -C "$top" --no-optional-locks status --porcelain=v1 -uall) || return 1
+  { printf '%s\n' "$st"
+    git -C "$top" --no-optional-locks ls-files -z -m -o --exclude-standard | while IFS= read -r -d '' p; do
+      if [ -L "$top/$p" ]; then printf 'link %s %s\n' "$(readlink "$top/$p")" "$p"
+      elif [ -f "$top/$p" ]; then printf '%s %s\n' "$(git -C "$top" hash-object --no-filters -- "$p")" "$p"
+      fi
+    done
+  } | git -C "$top" hash-object --stdin
+}
+do_fingerprint() {
+  [ -n "$TASK" ] || usage "fingerprint needs --task"
+  local tj id src top head tree
+  tj=$(validate_task "$TASK") || die "invalid task: $TASK" 2
+  id=$(printf '%s' "$tj" | jq -r .id)
+  if [ "$(printf '%s' "$tj" | jq -r .source.type)" != git ]; then
+    jq -nc --arg id "$id" '{id: $id, source: "generator"}'
+    return 0
+  fi
+  src=$(printf '%s' "$tj" | jq -r .source.repo)
+  has_hard_deny "$src" && die "REFUSED: source $src is under a hard-denied repo ($HARD_DENY_REPOS)" 3
+  [ -d "$src" ] || die "source.repo is not a directory: $src"
+  top=$(git -C "$src" rev-parse --show-toplevel 2>/dev/null) || die "source.repo is not a git work tree: $src"
+  top=$(cd "$top" && pwd -P)
+  has_hard_deny "$top" && die "REFUSED: source $top is under a hard-denied repo ($HARD_DENY_REPOS)" 3
+  head=$(git -C "$top" --no-optional-locks rev-parse --verify --quiet HEAD) || head=""
+  tree=$(source_tree "$top") || die "could not read the status of $top"
+  [ -n "$tree" ] || die "could not fingerprint $top"
+  jq -nc --arg id "$id" --arg name "$(basename "$top")" --arg head "$head" --arg tree "$tree" \
+    '{id: $id, source: "git", name: $name, head: $head, tree: $tree}'
 }
 
 # ---------------------------------------------------------------------------
@@ -438,6 +538,7 @@ case "$SUB" in
   list)         do_list ;;
   materialize)  do_materialize ;;
   verify-task)  do_verify ;;
+  fingerprint)  do_fingerprint ;;
   score-review) do_score ;;
-  *)            usage "parity-suite.sh <list|materialize|verify-task|score-review> [flags] (see the header)" ;;
+  *)            usage "parity-suite.sh <list|materialize|verify-task|fingerprint|score-review> [flags] (see the header)" ;;
 esac

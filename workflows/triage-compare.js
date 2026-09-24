@@ -1,7 +1,7 @@
 export const meta = {
   name: 'triage-compare',
   description: 'Implementation bake-off: run one brief on several candidates (Claude levels, codex), each in its own staged worktree outside the repo, then grade every worktree diff independently with patch-check.sh. Never applies a patch; the real repo is never a candidate workdir.',
-  whenToUse: 'Compare vendors/levels/models on the SAME well-specified task: /triage-compare with args = {repo, base?, brief, files, acceptance, checks:[cmd...], outDir, overlay?, candidates:[{vendor:claude|codex, level:quick|builder|deep|top, model?, effort?, label?}]} (agy was retired 2026-09-24 and is refused). repo is any absolute git repo path (not necessarily the session repo) and may be dirty: base (default HEAD) is resolved to ONE sha up front and each candidate works in its own detached worktree at that sha under <outDir>/stage (scripts/stage-worktree.sh), never in repo. outDir/overlay must be OUTSIDE repo and <outDir>/stage must not already exist. External (non-claude) candidates require args.files. Candidates run one at a time (parallel:true runs them concurrently; Claude outTokens is then null); the grade is scripts/patch-check.sh on each worktree diff at the sha (plus the hidden overlay), never the candidate self-report; a leakcheck then proves repo did not change (only leak:false lets a grade stand: leak true OR unknown => every candidate invalid, graded:false; a patch patch-check could not grade, e.g. overlay-failed, is invalid). Returns sha/leak/baseMoved and per-candidate status/applies/rc/diffstat/patch/tokens; the orchestrator picks and applies.',
+  whenToUse: 'Compare vendors/levels/models on the SAME well-specified task: /triage-compare with args = {repo, base?, brief, files, acceptance, checks:[cmd...], outDir, overlay?, selfCheckEnv?, candidates:[{vendor:claude|codex, level:quick|builder|deep|top, model?, effort?, label?}]} (agy was retired 2026-09-24 and is refused). repo is any absolute git repo path (not necessarily the session repo) and may be dirty: base (default HEAD) is resolved to ONE sha up front and each candidate works in its own detached worktree at that sha under <outDir>/stage (scripts/stage-worktree.sh), never in repo. outDir/overlay must be OUTSIDE repo and <outDir>/stage must not already exist. External (non-claude) candidates require args.files. Checks may name tools only as $PARITY_<NAME> variables (exported at grading by patch-check.sh from the parity env map; candidates see them unexpanded); selfCheckEnv:true copies <repo>/.parity-env into each worktree and tells candidates to source it. Candidates run one at a time (parallel:true runs them concurrently; Claude outTokens is then null); the grade is scripts/patch-check.sh on each worktree diff at the sha (plus the hidden overlay), never the candidate self-report; a leakcheck then proves repo did not change (only leak:false lets a grade stand: leak true OR unknown => every candidate invalid, graded:false; a patch patch-check could not grade, e.g. overlay-failed, is invalid). Returns sha/leak/baseMoved and per-candidate status/applies/rc/diffstat/patch/tokens; the orchestrator picks and applies.',
   phases: [
     { title: 'Stage' },
     { title: 'Candidates' },
@@ -32,6 +32,7 @@ const USAGE = 'Expected args = {\n' +
   '  checks: string[]            // at least one; the grade\n' +
   '  outDir: "/abs/dir"          // must be outside repo; worktrees are staged in <outDir>/stage (must not exist yet), patches land at <outDir>/<label>.patch\n' +
   '  overlay?: "/abs/dir"        // hidden tests copied in before the check; never shown to candidates; must be outside repo\n' +
+  '  selfCheckEnv?: false        // true = copy <repo>/.parity-env (parity-suite.sh materialize) into each worktree so candidates can run $PARITY_ checks\n' +
   `  candidates: [{ vendor: ${VENDORS.join('|')}, level: ${LEVELS.join('|')}, model?, effort?: ${EFFORTS.join('|')}, label? }]\n` +
   '  parallel?: false            // true = candidates run concurrently (Claude outTokens then null)\n}'
 
@@ -72,7 +73,9 @@ if (args.overlay != null && isAbsPath(args.repo) && isAbsPath(args.overlay)) {
 }
 if (!Array.isArray(args.candidates) || args.candidates.length === 0) bad('args.candidates must be a non-empty array.')
 if (args.parallel != null && typeof args.parallel !== 'boolean') bad(`args.parallel must be true or false (got ${JSON.stringify(args.parallel)}).`)
+if (args.selfCheckEnv != null && typeof args.selfCheckEnv !== 'boolean') bad(`args.selfCheckEnv must be true or false (got ${JSON.stringify(args.selfCheckEnv)}).`)
 const runParallel = args.parallel === true
+const selfCheckEnv = args.selfCheckEnv === true
 
 const repo = args.repo.trim()
 const base = (args.base || 'HEAD').trim()
@@ -82,6 +85,13 @@ const stageDir = `${outDir}/stage`
 const files = (args.files || []).map(f => f.trim())
 const checks = args.checks.map(c => c.trim())
 const checkCmd = checks.join(' && ')
+// NO REAL PATHS TO CANDIDATES: a check names a tool only as $PARITY_<NAME>; the
+// prompts show it UNEXPANDED. patch-check.sh exports the mapped paths at grading.
+// A candidate can run such checks itself only when the task opted in
+// (selfCheckEnv: <repo>/.parity-env is copied into its worktree — git-excluded, so
+// it never enters the diff); otherwise it is told the checks run only at grading.
+const usesParityEnv = checks.some(c => /\$\{?PARITY_[A-Z0-9_]/.test(c))
+const ENV_LINE = 'To run the checks yourself, first run: . .parity-env'
 
 const seen = new Set()
 const candidates = args.candidates.map((raw, i) => {
@@ -129,7 +139,8 @@ const selfRcOf = out => {
 const SHA_RE = /^[0-9a-f]{40}([0-9a-f]{24})?$/
 
 const task = `${args.brief.trim()}\n\nRelevant files: ${files.join(', ') || '(discover)'}\nAcceptance criteria: ${args.acceptance.trim()}`
-const stageCmd = `${STAGE_WT} create --repo ${shq(repo)} --base ${shq(base)} --count ${candidates.length} --dir ${shq(stageDir)}`
+const stageCmd = `${STAGE_WT} create --repo ${shq(repo)} --base ${shq(base)} --count ${candidates.length} --dir ${shq(stageDir)}` +
+  (selfCheckEnv ? candidates.map(c => ` && cp ${shq(`${repo}/.parity-env`)} ${shq(`${c.worktree}/.parity-env`)}`).join('') : '')
 const cleanupCmd = `${STAGE_WT} cleanup --repo ${shq(repo)} --dir ${shq(stageDir)}`
 
 // The real repo is never a candidate's working directory: each one is pointed at
@@ -140,13 +151,20 @@ const cleanupCmd = `${STAGE_WT} cleanup --repo ${shq(repo)} --dir ${shq(stageDir
 // the session repo — a wrong selfRc and a false LEAK.
 function claudePrompt(c, sha) {
   const cdPrefix = `cd ${c.worktree} && `
+  // With a self-check env, the env is sourced in the SAME command (nothing persists).
+  const runPrefix = usesParityEnv && selfCheckEnv ? `${cdPrefix}. .parity-env && ` : cdPrefix
   return `${task}\n\n` +
     `--- Bake-off protocol (you are one candidate; others get the same brief) ---\n` +
     `Your workspace is the staged git worktree ${c.worktree} (detached at ${sha}).\n` +
-    `Your shell's working directory is reset between commands, so a cd on its own does not stick: EVERY shell command you run MUST start with \`${cdPrefix}\` — for example \`${cdPrefix}${checks[0]}\`.\n` +
+    `Work only inside ${c.worktree}. Do not read, list or search any other directory on this machine (including other copies of this project); the task is graded only from your worktree.\n` +
+    `Your shell's working directory is reset between commands, so a cd on its own does not stick: EVERY shell command you run MUST start with \`${cdPrefix}\` — for example \`${runPrefix}${checks[0]}\`.\n` +
     `Every file edit uses an absolute path under ${c.worktree}/.\n` +
     `The repository at ${repo} is NOT your workspace: never use a path under it, and never read from, modify, or run anything in it.\n` +
-    `Run these checks, each prefixed with \`${cdPrefix}\`:\n${checks.map(c2 => `  ${c2}`).join('\n')}\n` +
+    (usesParityEnv && !selfCheckEnv
+      ? 'The checks name their tools as $PARITY_ variables that are set only when your work is graded: you cannot run them here, so do not look for those tools, and end with CHECK rc=none. They are:\n'
+      : (usesParityEnv ? `The checks name their tools as $PARITY_ variables. ${ENV_LINE} — in the same command, after the cd: \`${runPrefix}<check>\`.\n` : '') +
+        `Run these checks, each prefixed with \`${runPrefix}\`:\n`) +
+    `${checks.map(c2 => `  ${c2}`).join('\n')}\n` +
     `Leave your changes in the worktree as they are — do not commit, stash, or write a patch; they are collected from ${c.worktree} after you finish.\n` +
     `End your reply with two lines: \`CHECK rc=<exit status of the checks joined with &&>\` and \`DONE\`.`
 }
@@ -161,6 +179,8 @@ function externalPrompt(c, sha) {
     ` WORKDIR=${c.worktree}`
   return `${header}\n\n${task}\n\n` +
     `Check command (run from the workdir root): ${checkCmd}\n` +
+    (usesParityEnv ? (selfCheckEnv ? `The check names its tools as $PARITY_ variables. ${ENV_LINE}\n`
+      : 'The check names its tools as $PARITY_ variables that are set only at grading: it cannot be run in the workdir.\n') : '') +
     `The data boundary has been cleared by the orchestrator for this repository.\n` +
     `This is a bake-off candidate: the workdir is a throwaway checkout at ${sha}; the change is collected from it afterwards.`
 }

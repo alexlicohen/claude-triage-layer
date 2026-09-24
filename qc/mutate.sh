@@ -58,7 +58,10 @@ done
 # the profile's $HOME read rule, the output-free audit log and the agy refusal.
 # 60-62 cover the confinement review fixes: deny-by-default writes, the
 # temp-dir read rule and the preflight's second (outside) canary.
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62"
+# 63-66 cover the parity confinement fixes (Wave 13): the PARITY_ env map's
+# unmapped-variable refusal, the source fingerprint on every task kind, judges
+# given only patch + key, and the per-check cache isolation.
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -134,6 +137,8 @@ mut_file() {
     54) echo "scripts/parity-report.sh" ;;
     55) echo "scripts/stage-worktree.sh" ;;
     56|57|58|59|60|61|62) echo "scripts/ext-run.sh" ;;
+    63|66) echo "scripts/patch-check.sh" ;;
+    64|65) echo "workflows/triage-parity.js" ;;
     *) echo "" ;;
   esac
 }
@@ -197,6 +202,10 @@ mut_desc() {
     60) echo "ext-run.sh: writes are allowed by default again outside \$HOME, the temp dirs and the stage (a user-owned /opt/homebrew binary, /Users/Shared, /private/var/tmp are writable)" ;;
     61) echo "ext-run.sh: the temp-dir read rule is dropped (sibling compare stages, other runs' patches and Claude scratchpads under /private/tmp and /private/var/folders are readable)" ;;
     62) echo "ext-run.sh: the preflight writes only the stage-root canary (a profile that confines \$HOME, the temp dirs and the stage but allows writes elsewhere passes)" ;;
+    63) echo "patch-check.sh: an unmapped \$PARITY_ variable a check references is silently ignored (the check runs with a bogus value instead of exit 2)" ;;
+    64) echo "triage-parity.js: the after-grading source fingerprint is skipped for review tasks (a review candidate that writes into the source repo goes unnoticed)" ;;
+    65) echo "triage-parity.js: judges are handed the materialized repo path again (a judge can cd into a repo and read beyond the patch + key)" ;;
+    66) echo "patch-check.sh: checks run without XDG_CACHE_HOME/TMPDIR/GRANTFORGE_CACHE_DIR pointed at the per-patch dir (a check refreshes the real user cache)" ;;
     *) echo "" ;;
   esac
 }
@@ -212,9 +221,9 @@ mut_suite() {
     7|8|9|11|16|17|22|23|28|29) echo "scenarios" ;;
     15|24|25|26|40|49|50|51|56|57|58|59|60|61|62) echo "extrun" ;;
     31|34|36|37|38|47) echo "compare" ;;
-    32|48) echo "patchcheck" ;;
+    32|48|63|66) echo "patchcheck" ;;
     39|55) echo "stagewt" ;;
-    41|42|46) echo "parity" ;;
+    41|42|46|64|65) echo "parity" ;;
     44|45) echo "paritysuite" ;;
     43|52|53|54) echo "parityreport" ;;
     *) echo "" ;;
@@ -792,6 +801,35 @@ MUT61
 MUT62
       mut_replace_block "$target" "/bin/sh -c 'true > \"\$1\"; true > \"\$2\"; exit 0' sh \"\$canary\" \"\$outside\" ) \\" 1 "$rep"
       ;;
+    63)
+      # patch-check.sh: the unmapped-variable refusal is gone — a check naming a
+      # $PARITY_ variable the env map lacks runs anyway (with "null" exported).
+      cat > "$rep" <<'MUT63'
+  : # MUTATED: unmapped PARITY_ variable silently ignored
+MUT63
+      mut_replace_block "$target" '  [ -z "$unmapped" ] || usage "unmapped PARITY_ variable(s) referenced by the check: ${unmapped% } (env map $map)"' 1 "$rep"
+      ;;
+    64)
+      # triage-parity.js: only build tasks are re-fingerprinted after grading.
+      cat > "$rep" <<'MUT64'
+  if (mat.fp.source === 'git' && rows.length && !leakAbort && t.kind === 'build') rows = await sourceGuard(tm, b, rows) // MUTATED: fingerprint skipped for review tasks
+MUT64
+      mut_replace_block "$target" "  if (mat.fp.source === 'git' && rows.length && !leakAbort) rows = await sourceGuard(tm, b, rows)" 1 "$rep"
+      ;;
+    65)
+      # triage-parity.js: the judge instruction names the materialized repo again.
+      cat > "$rep" <<'MUT65'
+  const ONLY_TWO = 'Read only these two files; do not cd anywhere or read, list or search any other path. You have no repository access: grade from the patch and the key alone.' + ` (The candidates worked in ${t.mat.repo}.)` // MUTATED: judge gets repo path
+MUT65
+      mut_replace_block "$target" "  const ONLY_TWO = 'Read only these two files; do not cd anywhere" 1 "$rep"
+      ;;
+    66)
+      # patch-check.sh: the check inherits the caller's cache/temp locations.
+      cat > "$rep" <<'MUT66'
+  ( cd "$WT" && eval "$ENV_LINES" && exec bash -c "$CHECK" ) > "$1" 2>&1 < /dev/null & # MUTATED: cache env not set
+MUT66
+      mut_replace_block "$target" '  ( cd "$WT" && export XDG_CACHE_HOME="$CACHE" TMPDIR="$CACHE" GRANTFORGE_CACHE_DIR="$CACHE" && eval "$ENV_LINES" && exec bash -c "$CHECK" ) > "$1" 2>&1 < /dev/null &' 1 "$rep"
+      ;;
     *)
       return 1
       ;;
@@ -865,6 +903,10 @@ verify_mutation() {
     60) grep -qF 'MUTATED: writes allowed by default' "$target" && ! grep -qF "printf '(deny file-write* (subpath \"/\"))" "$target" ;;
     61) grep -qF 'MUTATED: temp-dir reads open' "$target" && ! grep -qF '(subpath "/private/tmp") (subpath "/private/var/folders") (subpath "/tmp") (subpath "/var/folders"))' "$target" ;;
     62) grep -qF "/bin/sh -c 'true > \"\$1\"; exit 0' sh \"\$canary\" \"\$outside\"" "$target" && ! grep -qF 'true > "$2"' "$target" ;;
+    63) grep -qF 'MUTATED: unmapped PARITY_ variable silently ignored' "$target" && ! grep -qF '|| usage "unmapped PARITY_ variable(s)' "$target" ;;
+    64) grep -qF 'MUTATED: fingerprint skipped for review tasks' "$target" && ! grep -qF "if (mat.fp.source === 'git' && rows.length && !leakAbort) rows" "$target" ;;
+    65) grep -qF 'MUTATED: judge gets repo path' "$target" && grep -qF '${t.mat.repo}.)' "$target" ;;
+    66) grep -qF 'MUTATED: cache env not set' "$target" && ! grep -qF 'export XDG_CACHE_HOME="$CACHE"' "$target" ;;
     *) return 1 ;;
   esac
 }

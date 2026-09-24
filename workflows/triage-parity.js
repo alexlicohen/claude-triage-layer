@@ -1,7 +1,7 @@
 export const meta = {
   name: 'triage-parity',
   description: 'Parity research run: every candidate (vendor x model x effort) climbs a private task suite band by band (B1 mechanical to B4 danger/judgment), each build task graded by a nested triage-compare bake-off, rubric tasks by two blind judges, review tasks by seeded-defect recall/precision. Returns a ranking, plateau clusters and flags; never writes tiers.json or anything outside outDir. Tier-change proposals are not made here: the orchestrator saves the result, runs scripts/parity-report.sh ingest-parity, then report (the ONE owner of the ledger and the decision rule).',
-  whenToUse: 'Re-rank models and efforts when a model ships or on request: /triage-parity with args = {suite:"/abs task suite dir", outDir:"/abs fresh dir outside any source repo", candidates:[{vendor:claude|codex, level:quick|builder|deep|top, model?, effort?, label?}] (agy was retired 2026-09-24 and is refused, as a candidate and as a judge), bands?:[1,2,3,4], reps?:1, stopAfterFailedBands?:2, bandPassRate?:0.5, judges?:[{vendor,level,label?}], taskFilter?:[ids], desk?:true}. Adaptive: a candidate stops after stopAfterFailedBands consecutive failed bands. unavailable/denied/invalid/unresolved never count as pass or fail; a compare LEAK aborts the run. Afterwards: parity-report.sh ingest-parity --result <saved result> then parity-report.sh report proposes any tiers.json change (min-n + margin rule; Alex approves); Claude cost per candidate comes from scripts/parity-cost.sh on the run transcript.',
+  whenToUse: 'Re-rank models and efforts when a model ships or on request: /triage-parity with args = {suite:"/abs task suite dir", outDir:"/abs fresh dir outside any source repo", candidates:[{vendor:claude|codex, level:quick|builder|deep|top, model?, effort?, label?}] (agy was retired 2026-09-24 and is refused, as a candidate and as a judge), bands?:[1,2,3,4], reps?:1, stopAfterFailedBands?:2, bandPassRate?:0.5, judges?:[{vendor,level,label?}], taskFilter?:[ids], desk?:true}. Adaptive: a candidate stops after stopAfterFailedBands consecutive failed bands. unavailable/denied/invalid/unresolved never count as pass or fail; a compare LEAK aborts the run. Every task with a git source (build, rubric, review) is fingerprinted (parity-suite.sh fingerprint) before its candidates run and after grading: a change voids that task (invalid, flag SOURCE_CHANGED <repo>: HEAD moved|tree changed) and the run continues. Rubric judges get only the staged patch + key. Afterwards: parity-report.sh ingest-parity --result <saved result> then parity-report.sh report proposes any tiers.json change (min-n + margin rule; Alex approves); Claude cost per candidate comes from scripts/parity-cost.sh on the run transcript.',
   phases: [
     { title: 'Load' },
     { title: 'Desk' },
@@ -149,7 +149,8 @@ const TASK_ITEM = {
     acceptance: { type: 'string' }, checks: { type: 'array', items: { type: 'string' } },
     overlay: { type: ['string', 'null'] }, grading: { type: 'string', enum: ['check', 'rubric', 'seeded'] },
     key: { type: ['string', 'null'] }, vendors: { type: 'array', items: { type: 'string' } },
-    timeoutMin: { type: ['number', 'null'] },
+    timeoutMin: { type: ['number', 'null'] }, selfCheckEnv: { type: ['boolean', 'null'] },
+    source: { type: 'object', properties: { type: { type: 'string' } } },
   },
   required: ['id', 'band', 'kind', 'taskDir', 'brief', 'files', 'acceptance', 'grading', 'vendors'],
 }
@@ -194,14 +195,22 @@ const deskRun = args.desk === false ? Promise.resolve(null) : parallel(['codex']
   agent(deskPrompt(v), { phase: 'Desk', agentType: 'triage-cross-reviewer', label: `desk:${v}` })))
 
 // ─── Per-task work ──────────────────────────────────────────────────────────
+// A source fingerprint (parity-suite.sh fingerprint): git sources carry name,
+// head and tree; a generator source has nothing to guard.
+const FP_SCHEMA = {
+  type: 'object',
+  properties: { id: { type: 'string' }, source: { type: 'string', enum: ['git', 'generator'] }, name: { type: 'string' }, head: { type: 'string' }, tree: { type: 'string' }, rc: { type: ['integer', 'null'] } },
+  required: ['source'],
+}
 const MAT_SCHEMA = {
   type: 'object',
   properties: {
+    fingerprint: FP_SCHEMA,
     repo: { type: 'string' }, sha: { type: 'string' },
     denied: { type: 'object', properties: { codex: { type: 'boolean' } }, required: ['codex'] },
     rc: { type: ['integer', 'null'] },
   },
-  required: ['repo', 'sha', 'denied'],
+  required: ['fingerprint', 'repo', 'sha', 'denied'],
 }
 const FINDINGS_SCHEMA = {
   type: 'object',
@@ -222,12 +231,28 @@ const fableLog = (who, label) => log(`⚠ Escalating to Fable: parity ${who} ${l
 // One result row per (task, candidate run).
 const row = (c, runLabel, status, extra) => Object.assign({ label: c.label, runLabel, vendor: c.vendor, status, reason: null, totalTokens: null, seconds: null }, extra || {})
 
+// ─── Source-repo leak guard (every task kind) ───────────────────────────────
+// Staging and deny markers only control what a candidate is HANDED, not what it
+// can reach: each git source.repo is fingerprinted before the task's candidates
+// run (in the materialize spawn, BEFORE materializing) and again after grading.
+const fpCmd = t => `${PARITY_SUITE} fingerprint --task ${shq(taskDirOf(t))}`
+const FP_HASH = /^[0-9a-f]{40}([0-9a-f]{24})?$/
+function fpOk(fp, t) {
+  if (!fp || typeof fp !== 'object') return false
+  // The loaded task says which kind of source it has; a reply may not downgrade it.
+  if (t.source && isStr(t.source.type) && t.source.type !== fp.source) return false
+  if (fp.source === 'generator') return true
+  return fp.source === 'git' && isStr(fp.name) && typeof fp.head === 'string' && (fp.head === '' || SHA_RE.test(fp.head)) && FP_HASH.test(String(fp.tree || ''))
+}
+
 async function materialize(t, b) {
   const out = `${bandDir(b, t)}/mat`
   const cmd = `${PARITY_SUITE} materialize --task ${shq(taskDirOf(t))} --out ${shq(out)}`
   let r = null
   try {
-    r = await agent(`Run this one command exactly as written and return its stdout JSON object field for field, plus rc = its exit status. Do not run anything else, and do not interpret or fix anything.\n${cmd}`,
+    r = await agent('Run these two commands in order, each exactly as written. Do not run anything else, and do not interpret or fix anything. ' +
+      'Return fingerprint = the FIRST command\'s stdout JSON object field for field; then repo, sha and denied field for field from the SECOND command\'s stdout JSON object, plus rc = the second command\'s exit status.\n' +
+      `${fpCmd(t)}\n${cmd}`,
       { phase: `Band ${b}`, agentType: 'triage-quick-task', label: `materialize:${t.id}`, schema: MAT_SCHEMA })
   } catch (e) {
     return { error: errText(e) }
@@ -237,7 +262,32 @@ async function materialize(t, b) {
       typeof r.denied.codex !== 'boolean') {
     return { error: `materialize returned ${JSON.stringify(r).slice(0, 200)}` }
   }
-  return { repo: `${out}/repo`, sha: r.sha.trim(), denied: r.denied }
+  if (!fpOk(r.fingerprint, t)) return { error: `no valid source fingerprint before the run (${JSON.stringify(r.fingerprint || null).slice(0, 160)})` }
+  return { repo: `${out}/repo`, sha: r.sha.trim(), denied: r.denied, fp: r.fingerprint }
+}
+
+// sourceGuard(t, b, rows) — SINGLE OWNER of the source-change verdict. Re-
+// fingerprints t's git source after grading (one retry); any difference, or no
+// usable fingerprint, voids every row of the task (invalid, never pass or fail)
+// and flags it — the run continues (a concurrent human commit is possible: the
+// flag tells the orchestrator to investigate).
+async function sourceGuard(t, b, rows) {
+  const before = t.mat.fp
+  let after = null
+  for (let attempt = 1; attempt <= 2 && !after; attempt++) {
+    try {
+      const r = await agent(`Run this one command exactly as written and return its stdout JSON object field for field, plus rc = its exit status. Do not run anything else, and do not interpret or fix anything.\n${fpCmd(t)}`,
+        { phase: `Band ${b}`, agentType: 'triage-quick-task', label: attempt === 1 ? `source:after@${t.id}` : `source:after@${t.id}#retry`, schema: FP_SCHEMA })
+      if (fpOk(r, t) && r.source === 'git') after = r
+    } catch (e) {
+      after = null
+    }
+  }
+  const what = after ? [after.head !== before.head ? 'HEAD moved' : null, after.tree !== before.tree ? 'tree changed' : null].filter(Boolean).join(', ') : null
+  if (after && !what) return rows
+  const reason = after ? `SOURCE_CHANGED ${before.name}: ${what}` : `SOURCE_UNVERIFIED ${before.name}: could not re-fingerprint the source repo after grading`
+  flag(`${reason} (task ${t.id}) — every result of the task is invalid; investigate the source repo before trusting anything from it`)
+  return rows.map(r => (['skipped', 'denied'].includes(r.status) ? r : Object.assign({}, r, { status: 'invalid', reason })))
 }
 
 async function judgeTask(t, b, rows) {
@@ -249,7 +299,13 @@ async function judgeTask(t, b, rows) {
   const jd = `${bandDir(b, t)}/judge`
   const order = graded.slice().sort((x, y) => hashStr(`${t.id}:${x.runLabel}`) - hashStr(`${t.id}:${y.runLabel}`) || (x.runLabel < y.runLabel ? -1 : 1))
   order.forEach((r, i) => { r.anon = `s${i + 1}` })
-  const copyCmd = `mkdir -p ${shq(jd)} && ` + order.map(r => `cp ${shq(r.patch)} ${shq(`${jd}/${r.anon}.patch`)}`).join(' && ')
+  // JUDGES GET ONLY THE PATCH AND THE KEY: each anonymized patch gets a fresh dir
+  // under outDir holding exactly <anon>.patch and a copy of the key — no repo, no
+  // task dir, no other patch is ever named to a judge.
+  const keyName = `key${(String(t.key).match(/\.[A-Za-z0-9]+$/) || [''])[0]}`
+  const staged = r => ({ patch: `${jd}/${r.anon}/${r.anon}.patch`, key: `${jd}/${r.anon}/${keyName}` })
+  const copyCmd = `mkdir -p ${order.map(r => shq(`${jd}/${r.anon}`)).join(' ')} && ` +
+    order.map(r => `cp ${shq(r.patch)} ${shq(staged(r).patch)} && cp ${shq(`${taskDirOf(t)}/${t.key}`)} ${shq(staged(r).key)}`).join(' && ')
   let copied = null
   try {
     copied = await agent(`Run this one command exactly as written and return ok = true if it exited 0, and rc = its exit status. Do not run anything else.\n${copyCmd}`,
@@ -262,22 +318,22 @@ async function judgeTask(t, b, rows) {
     flag(`${t.id}: judges not run (patch staging failed) — ${graded.length} candidate(s) unresolved`)
     return
   }
-  const keyPath = `${taskDirOf(t)}/${t.key}`
   const spec = `Task brief given to the candidates:\n${t.brief}\n\nAcceptance criteria:\n${t.acceptance}\n\n` +
     `Grade how fully and correctly the patch meets the brief, against the grading key (the ground truth). Score 0..1: 1 = fully correct and complete, 0.7 = acceptable with minor gaps, below 0.5 = wrong or incomplete. You do not know who wrote the patch; do not guess.`
+  const ONLY_TWO = 'Read only these two files; do not cd anywhere or read, list or search any other path. You have no repository access: grade from the patch and the key alone.'
   const jobs = []
   for (const j of judges) {
     for (const r of order) {
-      const patchPath = `${jd}/${r.anon}.patch`
+      const { patch: patchPath, key: keyPath } = staged(r)
       jobs.push({ j, r, run: () => {
         if (j.vendor === 'claude') {
-          return agent(`${spec}\n\nRead these two files (read-only; change nothing):\n  patch: ${patchPath}\n  key:   ${keyPath}\n\nReturn score (0..1) and a one-paragraph rationale.`,
+          return agent(`${spec}\n\nYour two files (read-only; change nothing):\n  patch: ${patchPath}\n  key:   ${keyPath}\n${ONLY_TWO}\n\nReturn score (0..1) and a one-paragraph rationale.`,
             Object.assign({ phase: `Band ${b}`, agentType: CLAUDE_AGENT[j.level], label: `judge:${j.label}@${t.id}:${r.anon}`, schema: JUDGE_SCHEMA },
               j.model ? { model: j.model } : {}, j.effort ? { effort: j.effort } : {}))
         }
         return agent(`VENDOR=${j.vendor}\nMODE=review\n` +
           'The data boundary has been checked by the orchestrator for this material (a synthetic or cleared parity task).\n' +
-          `Pass exactly these two files to ext-run.sh: --input ${patchPath} --input ${keyPath}\n\n${spec}\n\n` +
+          `Pass exactly these two files to ext-run.sh, and nothing else: --input ${patchPath} --input ${keyPath}\n${ONLY_TWO}\n\n${spec}\n\n` +
           'Output ONLY one JSON object: {"score": <number 0..1>, "rationale": "<one paragraph>"} — no other text.',
           { phase: `Band ${b}`, agentType: 'triage-cross-reviewer', label: `judge:${j.label}@${t.id}:${r.anon}` })
       } })
@@ -326,6 +382,8 @@ async function buildTask(t, b, runnable) {
       x.c.model ? { model: x.c.model } : {}, x.c.effort ? { effort: x.c.effort } : {})),
   }
   if (t.overlay) cmpArgs.overlay = `${taskDirOf(t)}/${stripSlash(t.overlay)}`
+  // Only an opted-in task's candidates get <mat repo>/.parity-env (tool paths).
+  if (t.selfCheckEnv === true) cmpArgs.selfCheckEnv = true
   let res = null
   try {
     res = await workflow('triage-compare', cmpArgs)
@@ -365,6 +423,7 @@ async function reviewTask(t, b, runnable) {
       return agent(`${t.brief}\n\nFiles to review (paths relative to the repository root): ${t.files.join(', ')}\nAcceptance: ${t.acceptance}\n\n` +
         `--- Review protocol (you are one reviewer; others get the same brief) ---\n` +
         `The repository is ${repo}. This is READ-ONLY work: never edit, create, stage or commit anything.\n` +
+        `Work only inside ${repo}. Do not read, list or search any other directory on this machine (including other copies of this project); the review is graded only from what you report on these files.\n` +
         `Read only the files themselves. Never inspect git history or run any git command — the repository carries no history to read, and its objects are not part of the review.\n` +
         `Your shell's working directory is reset between commands, so EVERY shell command you run MUST start with \`${cdPrefix}\` — for example \`${cdPrefix}cat ${t.files[0]}\`.\n` +
         'Return findings = every defect you find, each {file: path relative to the repository root, line: the 1-based line number, desc: one line}. Report each defect once.',
@@ -455,6 +514,8 @@ async function runTask(t, b, active) {
   const tm = Object.assign({}, t, { mat })
   let rows = []
   if (runnable.length) rows = t.kind === 'build' ? await buildTask(tm, b, runnable) : await reviewTask(tm, b, runnable)
+  // Every task kind — build, rubric AND review — is re-fingerprinted after grading.
+  if (mat.fp.source === 'git' && rows.length && !leakAbort) rows = await sourceGuard(tm, b, rows)
   return { t, sha: mat.sha, rows: skipped.concat(denied.map(c => row(c, c.label, 'denied', { reason: `source deny-marked for ${c.vendor}` })), rows) }
 }
 

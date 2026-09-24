@@ -14,7 +14,10 @@
 # ext-run.sh for the clone and a worktree of it, a retired .agy-deny marker NOT
 # propagated; out-dir guards; rollback);
 # verify-task (ok, pre-solved base, broken solution, non-applying solution,
-# review keys); score-review math; parity-cost.sh on a synthetic transcript.
+# review keys); the $HOME-path lint; the PARITY_ env map (verify-task export,
+# unmapped => exit 2, .parity-env only with selfCheckEnv and never in a diff);
+# fingerprint (HEAD move, tree/content change, generator, refusals);
+# score-review math; parity-cost.sh on a synthetic transcript.
 # shellcheck disable=SC2034  # values are read inside chk's eval'd conditions
 set -u
 
@@ -109,6 +112,12 @@ bad_case "build task with no checks" 2/gen-fix '.checks = []'
 bad_case "missing solution file" 2/gen-fix '.solution = "nope.patch"'
 bad_case "generator not executable" 2/gen-fix '' 'chmod -x "$s/2/gen-fix/gen.sh"'
 bad_case "not JSON" 3/rev-seed '' 'printf "{" > "$s/3/rev-seed/task.json"'
+# NO REAL PATHS TO CANDIDATES: brief/acceptance/checks never name a path under $HOME.
+bad_case "a check runs a tool by its /Users/ path" 1/g-fix '.checks = ["/Users/someone/proj/.venv/bin/python -m pytest"]'
+bad_case "a brief names ~/ " 2/gen-fix '.brief = "See ~/projects/x/CONVENTIONS.md for the style."'
+bad_case "acceptance names \$HOME" 2/gen-fix '.acceptance = "${HOME}/proj/.venv/bin/mkdocs build passes"'
+bad_case "a check names the actual home dir (Linux-style)" 1/g-fix '.checks = ["'"$T"'/tools/bin/lint x"]'
+bad_case "selfCheckEnv not a boolean" 2/gen-fix '.selfCheckEnv = "yes"'
 DUP="$T/dup"
 mksuite "$DUP" "$SRC"
 mkdir -p "$DUP/b4"; cp -R "$DUP/2/gen-fix" "$DUP/b4/gen-fix"; edit_task "$DUP/b4/gen-fix/task.json" '.band = 4'
@@ -117,6 +126,11 @@ chk "L3: a duplicate id across bands => exit 2 naming it (a bN band dir is accep
   '[ "$RC" -eq 2 ] && [ -z "$OUT" ] && printf "%s" "$ERR" | grep -q "duplicate task id.*gen-fix"'
 run_ps list --suite "$T/no-such-suite"
 chk "L4: a missing suite dir is a usage error" '[ "$RC" -eq 2 ]'
+HOK="$T/homeok"; mksuite "$HOK" "$SRC"
+edit_task "$HOK/1/g-fix/task.json" '.checks = ["\"$PARITY_SH\" test_calc.sh"] | .selfCheckEnv = true'
+run_ps list --suite "$HOK"
+chk "L5: source.repo under \$HOME is exempt (never shown to candidates); \$PARITY_ checks and selfCheckEnv are valid" \
+  '[ "$RC" -eq 0 ] && case "$SRC" in "$HOME"/*) true ;; *) false ;; esac && [ "$(j ".[0].checks[0]")" = "\"\$PARITY_SH\" test_calc.sh" ]'
 
 # ---- materialize: determinism, identity, source untouched -------------------
 printf 'uncommitted\n' >> "$SRC/calc.sh"   # the source may be dirty; that must survive untouched
@@ -314,6 +328,74 @@ chk "V9: an empty seed list => ok false" '[ "$RC" -eq 1 ] && [ "$(j .ok)" = fals
 RM="$T/rm"; mksuite "$RM" "$SRC"; printf '[{"file":"gone.py","line":1,"id":"S1","desc":"d"}]\n' > "$RM/3/rev-seed/key.json"
 run_ps verify-task --task "$RM/3/rev-seed" --out "$T/v9"
 chk "V10: a seed naming a file absent at the sha => missing lists it, ok false" '[ "$RC" -eq 1 ] && [ "$(j ".missing[0]")" = gone.py ]'
+
+# ---- (d) env map: $PARITY_ tool variables, .parity-env only on opt-in ----------
+EM="$T/envs.json"; printf '{"PARITY_SH":"/bin/sh","PARITY_UNUSED":"/nowhere"}\n' > "$EM"
+ES="$T/envsuite"; mksuite "$ES" "$SRC"
+edit_task "$ES/1/g-fix/task.json" '.checks = ["\"$PARITY_SH\" test_calc.sh"]'
+cp -R "$ES/1/g-fix" "$ES/1/g-self"; edit_task "$ES/1/g-self/task.json" '.id = "g-self" | .selfCheckEnv = true'
+run_ps verify-task --task "$ES/1/g-fix" --out "$T/e1" --env-map "$EM"
+chk "E1: verify-task exports the mapped PARITY_ variable into the checks (base fails, solution passes: the tool ran)" \
+  '[ "$RC" -eq 0 ] && [ "$(j .baseFails)" = true ] && [ "$(j .solutionPasses)" = true ] && [ "$(j .ok)" = true ]'
+OUT=$(PARITY_ENV_MAP="$EM" "$PS" verify-task --task "$ES/1/g-fix" --out "$T/e1b" 2>"$T/err"); RC=$?; ERR=$(cat "$T/err")
+chk "E1b: ...and PARITY_ENV_MAP names the map when --env-map is absent" '[ "$RC" -eq 0 ] && [ "$(j .ok)" = true ]'
+printf '{"PARITY_OTHER":"/bin/sh"}\n' > "$T/envs-other.json"
+run_ps verify-task --task "$ES/1/g-fix" --out "$T/e2" --env-map "$T/envs-other.json"
+chk "E2: an UNMAPPED variable a check references => exit 2 naming it, nothing materialized" \
+  '[ "$RC" -eq 2 ] && [ -z "$OUT" ] && printf "%s" "$ERR" | grep -q "PARITY_SH" && [ ! -e "$T/e2/repo" ]'
+run_ps materialize --task "$ES/1/g-fix" --out "$T/e3"
+chk "E3: materialize with no env map (HOME has none) and a \$PARITY_ check => exit 2 naming it" \
+  '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q "PARITY_SH" && [ ! -e "$T/e3/repo" ]'
+run_ps materialize --task "$ES/1/g-fix" --out "$T/e4" --env-map "$EM"
+chk "E4: a task that does not opt in gets NO .parity-env (and no exclude line for it)" \
+  '[ "$RC" -eq 0 ] && [ ! -e "$T/e4/repo/.parity-env" ] && ! grep -q parity-env "$T/e4/repo/.git/info/exclude" 2>/dev/null'
+run_ps materialize --task "$ES/1/g-self" --out "$T/e5" --env-map "$EM"
+E5_SHA=$(j .sha)
+chk "E5: selfCheckEnv:true writes <repo>/.parity-env holding ONLY the referenced variables' export lines" \
+  '[ "$RC" -eq 0 ] && grep -qx "export PARITY_SH='"'"'/bin/sh'"'"'" "$T/e5/repo/.parity-env" && ! grep -q PARITY_UNUSED "$T/e5/repo/.parity-env"'
+chk "E5b: ...it is git-excluded: the tree stays clean and the committed tree is the same as without it" \
+  '[ -z "$(git -C "$T/e5/repo" status --porcelain --ignored=no)" ] && git -C "$T/e5/repo" check-ignore -q .parity-env && [ "$(git -C "$T/e5/repo" rev-parse "HEAD^{tree}")" = "$(git -C "$T/e4/repo" rev-parse "HEAD^{tree}")" ]'
+chk "E5c: ...and sourcing it gives a candidate the tool (the checks run by hand)" \
+  '( cd "$T/e5/repo" && . ./.parity-env && [ "$PARITY_SH" = /bin/sh ] )'
+SW="$REPO_DIR/scripts/stage-worktree.sh"
+git -C "$T/e5/repo" worktree add -q --detach "$T/e5-wt" >/dev/null 2>&1
+cp "$T/e5/repo/.parity-env" "$T/e5-wt/.parity-env"; printf 'x\n' > "$T/e5-wt/candidate-change.txt"
+"$SW" diff --worktree "$T/e5-wt" --base "$E5_SHA" --out "$T/e5.patch" >/dev/null 2>&1
+chk "E5d: a .parity-env copied into a worktree never enters the candidate's patch (the exclude is shared)" \
+  'grep -q "candidate-change.txt" "$T/e5.patch" && ! grep -q "parity-env" "$T/e5.patch"'
+
+# ---- (b) fingerprint: the source-repo leak guard ----------------------------------
+FS="$T/fpsrc"; mksrc "$FS"; FPS="$T/fpsuite"; mksuite "$FPS" "$FS"
+fp_state() { git -C "$FS" --no-optional-locks status --porcelain=v1 -uall; git -C "$FS" rev-parse HEAD; cksum < "$FS/.git/index"; }
+FS_BEFORE=$(fp_state)
+run_ps fingerprint --task "$FPS/1/g-fix"
+FP0="$OUT"
+chk "F1: a git source prints {id, source:git, name, head, tree} — the repo NAME only, never its path" \
+  '[ "$RC" -eq 0 ] && [ "$(j .source)" = git ] && [ "$(j .name)" = fpsrc ] && [ "$(j .head)" = "$(git -C "$FS" rev-parse HEAD)" ] && printf "%s" "$(j .tree)" | grep -Eq "^[0-9a-f]{40}$" && ! printf "%s" "$OUT" | grep -qF "$FS"'
+chk "F1b: fingerprinting leaves the source untouched (status, HEAD, index bytes)" '[ "$(fp_state)" = "$FS_BEFORE" ]'
+run_ps fingerprint --task "$FPS/1/g-fix"
+chk "F2: an unchanged source fingerprints identically" '[ "$OUT" = "$FP0" ]'
+printf 'dirty\n' >> "$FS/calc.sh"
+run_ps fingerprint --task "$FPS/1/g-fix"; FP1="$OUT"
+chk "F3: a tracked edit changes tree, not head (tree changed)" \
+  '[ "$(printf "%s" "$FP1" | jq -r .head)" = "$(printf "%s" "$FP0" | jq -r .head)" ] && [ "$(printf "%s" "$FP1" | jq -r .tree)" != "$(printf "%s" "$FP0" | jq -r .tree)" ]'
+printf 'dirtier\n' >> "$FS/calc.sh"
+run_ps fingerprint --task "$FPS/1/g-fix"
+chk "F4: a second edit to an already-dirty file changes tree again (content, not just status)" '[ "$(j .tree)" != "$(printf "%s" "$FP1" | jq -r .tree)" ]'
+FP2="$OUT"
+printf 'new\n' > "$FS/planted.md"
+run_ps fingerprint --task "$FPS/1/g-fix"
+chk "F5: an untracked file planted in the source changes tree" '[ "$(j .tree)" != "$(printf "%s" "$FP2" | jq -r .tree)" ]'
+git -C "$FS" add -A; git -C "$FS" commit -qm "a concurrent commit"
+run_ps fingerprint --task "$FPS/1/g-fix"
+chk "F6: a commit moves head (HEAD moved)" '[ "$(j .head)" = "$(git -C "$FS" rev-parse HEAD)" ] && [ "$(j .head)" != "$(printf "%s" "$FP0" | jq -r .head)" ]'
+run_ps fingerprint --task "$FPS/2/gen-fix"
+chk "F7: a generator source prints {id, source:generator} and nothing to compare" '[ "$RC" -eq 0 ] && [ "$OUT" = "{\"id\":\"gen-fix\",\"source\":\"generator\"}" ]'
+run_ps fingerprint --task "$CCS/1/g-fix"
+chk "F8: a clip-creator source is REFUSED (exit 3)" '[ "$RC" -eq 3 ]'
+GONE="$T/gonesuite"; mksuite "$GONE" "$SRC"; edit_task "$GONE/1/g-fix/task.json" '.source.repo = "'"$T"'/no/such/repo"'
+run_ps fingerprint --task "$GONE/1/g-fix"
+chk "F9: a missing source repo => exit 1 (the guard reports unverified, never clean)" '[ "$RC" -eq 1 ] && [ -z "$OUT" ]'
 
 # ---- score-review -------------------------------------------------------------
 KEY="$FIX/3/rev-seed/key.json"   # S1 app.py:3, S2 app.py:9, S3 app.py:13

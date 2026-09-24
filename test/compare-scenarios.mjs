@@ -6,7 +6,9 @@
 // strictly sequential candidates each pointed at its OWN staged worktree and never at
 // the real repo, the spawn options per vendor/level, unavailable != fail, the grade
 // from the final quick-task result alone (worktree diff + patch-check + leakcheck), a
-// leak voiding every grade, BASE_MOVED flagged, and cleanup on every path.
+// leak voiding every grade, BASE_MOVED flagged, cleanup on every path, the
+// work-only-inside line, and $PARITY_ checks shown unexpanded (.parity-env only
+// with selfCheckEnv).
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -529,6 +531,40 @@ const repoAsWorkdir = p => /(^|\s)cd\s+'?\/r\/repo'?(\s|$|\/)/.test(p) || /WORKD
     { 'candidate:': ['done'], 'grade:': [FIN({ a: [true, 0], b: [true, 0] })] }, { spend: { 'candidate:a': 10, 'candidate:b': 20 } })
   chk('C17: parallel:false (and the default) stays strictly sequential with per-candidate budget deltas',
     maxInflight === 1 && byLabel(result, 'a').outTokens === 10 && byLabel(result, 'b').outTokens === 20)
+}
+
+// ---- C18: (i) every Claude candidate is told to work only inside its worktree ---
+{
+  const { calls } = await run(A({ candidates: [{ vendor: 'claude', level: 'builder', label: 'a' }, { vendor: 'claude', level: 'deep', label: 'b' }] }),
+    { 'candidate:': ['done'], 'grade:': [FIN({})] })
+  chk('C18: every Claude prompt says work only inside <its worktree>, search no other directory (incl. other copies), graded only from the worktree',
+    cands(calls).every((c, i) => c.prompt.includes(`Work only inside ${STAGE}/wt-${i + 1}. Do not read, list or search any other directory on this machine (including other copies of this project); the task is graded only from your worktree.`)))
+}
+
+// ---- C19: (d) $PARITY_ checks stay unexpanded; .parity-env only when opted in ---
+{
+  const PCHECK = '"$PARITY_PY" -m pytest tests/test_x.py'
+  const cs = [{ vendor: 'claude', level: 'builder', label: 'a' }, { vendor: 'codex', level: 'deep', label: 'x' }]
+  const opt = await run(A({ checks: [PCHECK], selfCheckEnv: true, candidates: cs }),
+    { 'candidate:a': ['done'], 'candidate:x': [EXT_OK('codex', 'gpt-6-sol')], 'grade:': [FIN({})] })
+  const [ca, cx] = cands(opt.calls)
+  chk('C19: the checks reach every candidate prompt with $PARITY_ UNEXPANDED, plus the one self-check line',
+    [ca, cx].every(c => c.prompt.includes(PCHECK) && c.prompt.includes('To run the checks yourself, first run: . .parity-env')))
+  chk('C19: the Claude candidate sources it in the SAME command, after its cd prefix',
+    ca.prompt.includes(`\`cd ${STAGE}/wt-1 && . .parity-env && ${PCHECK}\``))
+  const st = opt.calls.find(c => c.label === 'stage:create')
+  chk('C19: selfCheckEnv: the stage command copies <repo>/.parity-env into EACH staged worktree (never the other way)',
+    st && [1, 2].every(i => st.prompt.includes(`cp '${REPO}/.parity-env' '${STAGE}/wt-${i}/.parity-env'`)))
+  const no = await run(A({ checks: [PCHECK], candidates: cs }),
+    { 'candidate:a': ['done'], 'candidate:x': [EXT_OK('codex', 'gpt-6-sol')], 'grade:': [FIN({})] })
+  const [na, nx] = cands(no.calls)
+  chk('C19: without selfCheckEnv: no .parity-env line, no copy, and the candidates are told the checks run only at grading',
+    [na, nx].every(c => c.prompt.includes(PCHECK) && !c.prompt.includes('.parity-env') && /set only (when your work is graded|at grading)/.test(c.prompt)) &&
+    !no.calls.find(c => c.label === 'stage:create').prompt.includes('.parity-env'))
+  const plain = await run(A({ selfCheckEnv: true, candidates: [{ vendor: 'claude', level: 'builder', label: 'a' }] }), { 'candidate:': ['done'], 'grade:': [FIN({})] })
+  chk('C19: checks with no $PARITY_ variable get no env line at all', !cands(plain.calls)[0].prompt.includes('PARITY_'))
+  const r = await throws(A({ selfCheckEnv: 'yes', candidates: [{ vendor: 'claude', level: 'builder' }] }))
+  chk('C19: a non-boolean selfCheckEnv throws before any spawn', r.threw && r.calls.length === 0 && /args\.selfCheckEnv/.test(r.message))
 }
 
 console.log('')
