@@ -9,9 +9,10 @@
 # Covers: list (merge + taskDir, band/id order, every validation failure => exit
 # 2 naming the task, duplicate ids); materialize (deterministic sha for git+setup
 # and generator sources, fixed identity, origin removed, clean tree; the source
-# repo's status/HEAD/index/refs untouched; clip-creator refused; .agy-deny /
-# .codex-deny / *_DENY_REPOS propagated next to the clone and honoured by the
-# REAL ext-run.sh for the clone and a worktree of it; out-dir guards; rollback);
+# repo's status/HEAD/index/refs untouched; clip-creator refused; .codex-deny /
+# CODEX_DENY_REPOS propagated next to the clone and honoured by the REAL
+# ext-run.sh for the clone and a worktree of it, a retired .agy-deny marker NOT
+# propagated; out-dir guards; rollback);
 # verify-task (ok, pre-solved base, broken solution, non-applying solution,
 # review keys); score-review math; parity-cost.sh on a synthetic transcript.
 # shellcheck disable=SC2034  # values are read inside chk's eval'd conditions
@@ -31,7 +32,7 @@ done
 
 export GIT_CONFIG_GLOBAL=/dev/null
 export GIT_CONFIG_SYSTEM=/dev/null
-unset AGY_DENY_REPOS CODEX_DENY_REPOS
+unset CODEX_DENY_REPOS
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -41,7 +42,7 @@ trap 'rm -rf "$T"' EXIT
 export TMPDIR="$T/tmp"
 mkdir -p "$TMPDIR"
 # Hermetic: the deny walk stops at $HOME, so a machine-level marker above $T
-# (e.g. a real $TMPDIR/.agy-deny kill switch) never leaks into these cases.
+# (e.g. a real $TMPDIR/.codex-deny) never leaks into these cases.
 export HOME="$T"
 
 OUT=""; ERR=""; RC=0
@@ -126,7 +127,7 @@ run_ps materialize --task "$SUITE/1/g-fix" --out "$T/m1"
 M1_SHA=$(j .sha); M1_REPO=$(j .repo)
 run_ps materialize --task "$SUITE/1/g-fix" --out "$T/m2"
 chk "M1: git+setup materialize is deterministic (same sha in two fresh outs) and prints {repo, sha, denied}" \
-  '[ "$RC" -eq 0 ] && [ -n "$M1_SHA" ] && [ "$(j .sha)" = "$M1_SHA" ] && [ "$M1_REPO" = "$T/m1/repo" ] && [ "$(j .denied.agy)" = false ] && [ "$(j .denied.codex)" = false ]'
+  '[ "$RC" -eq 0 ] && [ -n "$M1_SHA" ] && [ "$(j .sha)" = "$M1_SHA" ] && [ "$M1_REPO" = "$T/m1/repo" ] && [ "$(printf "%s" "$OUT" | jq -c .denied)" = "{\"codex\":false}" ]'
 chk "M2: the tree + setup is ONE orphan root commit with the fixed identity; tree clean; HEAD detached" \
   '[ "$(git -C "$T/m1/repo" log -1 --format=%an/%ae/%cn/%ad --date=unix)" = "parity/parity@localhost/parity/946684800" ] && [ -f "$T/m1/repo/NOTES.txt" ] && [ -z "$(git -C "$T/m1/repo" status --porcelain)" ] && ! git -C "$T/m1/repo" symbolic-ref -q HEAD >/dev/null'
 chk "M2b: no source history — exactly one commit reachable, no branches/tags/remotes, no unreachable objects" \
@@ -187,26 +188,32 @@ chk "D2: a task (generator source) under clip-creator is REFUSED (exit 3)" '[ "$
 chk "D3: parity-suite.sh's HARD_DENY_REPOS equals ext-run.sh's (ext-run owns deny decisions)" \
   '[ "$(sed -n "s/^HARD_DENY_REPOS=//p" "$PS")" = "$(sed -n "s/^HARD_DENY_REPOS=//p" "$EXT_RUN")" ]'
 
-AD="$T/agydenied/area"; mkdir -p "$AD"; : > "$T/agydenied/.agy-deny"
+AD="$T/codexdenied/area"; mkdir -p "$AD"; : > "$T/codexdenied/.codex-deny"
 mksrc "$AD/src"; ADS="$T/adsuite"; mksuite "$ADS" "$AD/src"
 run_ps materialize --task "$ADS/1/g-fix" --out "$T/ad-out"
-chk "D4: an .agy-deny above the source is propagated as <out>/.agy-deny (denied.agy true, codex false)" \
-  '[ "$RC" -eq 0 ] && [ -f "$T/ad-out/.agy-deny" ] && [ ! -e "$T/ad-out/.codex-deny" ] && [ "$(j .denied.agy)" = true ] && [ "$(j .denied.codex)" = false ] && grep -q "$T/agydenied/.agy-deny" "$T/ad-out/.agy-deny"'
+chk "D4: a .codex-deny above the source is propagated as <out>/.codex-deny (denied.codex true)" \
+  '[ "$RC" -eq 0 ] && [ -f "$T/ad-out/.codex-deny" ] && [ "$(j .denied.codex)" = true ] && grep -q "$T/codexdenied/.codex-deny" "$T/ad-out/.codex-deny"'
 chk "D5: the propagated marker sits outside the clone (the clone stays clean)" '[ -z "$(git -C "$T/ad-out/repo" status --porcelain)" ]'
+
+AG="$T/agyleft/area"; mkdir -p "$AG"; : > "$T/agyleft/.agy-deny"
+mksrc "$AG/src"; AGS="$T/agsuite"; mksuite "$AGS" "$AG/src"
+run_ps materialize --task "$AGS/1/g-fix" --out "$T/ag-out"
+chk "D4b: a leftover .agy-deny (agy retired) is NOT propagated and denied has only codex (false)" \
+  '[ "$RC" -eq 0 ] && [ ! -e "$T/ag-out/.agy-deny" ] && [ ! -e "$T/ag-out/.codex-deny" ] && [ "$(printf "%s" "$OUT" | jq -c .denied)" = "{\"codex\":false}" ]'
 
 mksrc "$T/cdn/src"; : > "$T/cdn/src/.codex-deny"; CDS="$T/cdsuite"; mksuite "$CDS" "$T/cdn/src"
 run_ps materialize --task "$CDS/1/g-fix" --out "$T/cd-out"
-chk "D6: a .codex-deny in the source repo root is propagated (denied.codex true, agy false)" \
-  '[ "$RC" -eq 0 ] && [ -f "$T/cd-out/.codex-deny" ] && [ ! -e "$T/cd-out/.agy-deny" ] && [ "$(j .denied.codex)" = true ] && [ "$(j .denied.agy)" = false ]'
+chk "D6: a .codex-deny in the source repo root is propagated (denied.codex true)" \
+  '[ "$RC" -eq 0 ] && [ -f "$T/cd-out/.codex-deny" ] && [ "$(j .denied.codex)" = true ]'
 
 mksrc "$T/named/secretproj"; NS="$T/nsuite"; mksuite "$NS" "$T/named/secretproj"
 OUT=$(CODEX_DENY_REPOS="secretproj" "$PS" materialize --task "$NS/1/g-fix" --out "$T/n-out" 2>"$T/err"); RC=$?; ERR=$(cat "$T/err")
 chk "D7: a CODEX_DENY_REPOS name matching the source path is propagated as <out>/.codex-deny" \
   '[ "$RC" -eq 0 ] && [ -f "$T/n-out/.codex-deny" ] && [ "$(j .denied.codex)" = true ]'
 
-TD="$T/taskdeny"; mkdir -p "$TD"; mksuite "$TD/suite" "$SRC"; : > "$TD/.agy-deny"
+TD="$T/taskdeny"; mkdir -p "$TD"; mksuite "$TD/suite" "$SRC"; : > "$TD/.codex-deny"
 run_ps materialize --task "$TD/suite/2/gen-fix" --out "$T/td-out"
-chk "D8: a generator task under an .agy-deny tree carries that status to its repo" '[ "$RC" -eq 0 ] && [ "$(j .denied.agy)" = true ] && [ -f "$T/td-out/.agy-deny" ]'
+chk "D8: a generator task under a .codex-deny tree carries that status to its repo" '[ "$RC" -eq 0 ] && [ "$(j .denied.codex)" = true ] && [ -f "$T/td-out/.codex-deny" ]'
 
 # A source path WITH SPACES keeps its deny status (the source list is an array,
 # never whitespace-split text).
@@ -218,10 +225,10 @@ chk "D13: a .codex-deny in a source repo whose path has a space is propagated (d
   '[ "$RC" -eq 0 ] && [ -f "$T/sp-out/.codex-deny" ] && [ "$(j .denied.codex)" = true ] && grep -qF "$T/sp ace/src/.codex-deny" "$T/sp-out/.codex-deny"'
 
 # A marker exactly AT $HOME counts (the same walk as ext-run.sh, $HOME included).
-HP="$T/homedeny"; mksrc "$HP/src"; : > "$HP/.agy-deny"; HPS="$T/hpsuite"; mksuite "$HPS" "$HP/src"
+HP="$T/homedeny"; mksrc "$HP/src"; : > "$HP/.codex-deny"; HPS="$T/hpsuite"; mksuite "$HPS" "$HP/src"
 OUT=$(HOME="$HP" "$PS" materialize --task "$HPS/1/g-fix" --out "$T/hp-out" 2>"$T/err"); RC=$?; ERR=$(cat "$T/err")
-chk "D14: a .agy-deny at \$HOME itself is propagated (denied.agy true)" \
-  '[ "$RC" -eq 0 ] && [ -f "$T/hp-out/.agy-deny" ] && [ "$(j .denied.agy)" = true ]'
+chk "D14: a .codex-deny at \$HOME itself is propagated (denied.codex true)" \
+  '[ "$RC" -eq 0 ] && [ -f "$T/hp-out/.codex-deny" ] && [ "$(j .denied.codex)" = true ]'
 
 # An inherited GIT_DIR/GIT_WORK_TREE (a hook's environment) must not redirect the
 # source lookup or the materialized repo.
@@ -239,21 +246,21 @@ chk "G1: a trailing --out with no value is exit 2 (needs a value)" '[ "$RC" -eq 
 # worktree of it — with stub CLIs that must never be invoked.
 if [ -x "$EXT_RUN" ]; then
   mkdir -p "$T/bin"
-  printf '#!/bin/sh\n: > "%s/stub-called"\nexit 1\n' "$T" > "$T/bin/agy"; cp "$T/bin/agy" "$T/bin/codex"; chmod +x "$T/bin/agy" "$T/bin/codex"
+  printf '#!/bin/sh\n: > "%s/stub-called"\nexit 1\n' "$T" > "$T/bin/codex"; chmod +x "$T/bin/codex"
   printf 'Review this.\n' > "$T/brief.txt"
-  ext() { OUT=$(AGY_BOUNDARY_CLEARED=1 AGY_BIN="$T/bin/agy" CODEX_BIN="$T/bin/codex" "$EXT_RUN" "$@" 2>"$T/err"); RC=$?; ERR=$(cat "$T/err"); }
+  ext() { OUT=$(AGY_BOUNDARY_CLEARED=1 CODEX_BIN="$T/bin/codex" "$EXT_RUN" "$@" 2>"$T/err"); RC=$?; ERR=$(cat "$T/err"); }
   rm -f "$T/stub-called"
-  ext read --vendor agy --prompt-file "$T/brief.txt" --input "$T/ad-out/repo/calc.sh"
-  chk "D9: ext-run.sh REFUSES agy on a file in the materialized clone (exit 3) — the propagated marker works" \
-    '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "\.agy-deny" && [ ! -e "$T/stub-called" ]'
+  ext read --prompt-file "$T/brief.txt" --input "$T/ad-out/repo/calc.sh"
+  chk "D9: ext-run.sh REFUSES codex on a file in the materialized clone (exit 3) — the propagated marker works" \
+    '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "\.codex-deny" && [ ! -e "$T/stub-called" ]'
   git -C "$T/ad-out/repo" worktree add -q --detach "$T/ad-wt" >/dev/null 2>&1
-  ext read --vendor agy --prompt-file "$T/brief.txt" --input "$T/ad-wt/calc.sh"
+  ext read --prompt-file "$T/brief.txt" --input "$T/ad-wt/calc.sh"
   chk "D10: ...and on a file in a linked worktree of the clone staged elsewhere (triage-compare's layout)" \
-    '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "\.agy-deny" && [ ! -e "$T/stub-called" ]'
-  ext read --vendor codex --prompt-file "$T/brief.txt" --input "$T/ad-out/repo/calc.sh"
-  chk "D11: ...while codex is NOT refused there (the marker is per vendor)" '[ "$RC" -ne 3 ]'
+    '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "\.codex-deny" && [ ! -e "$T/stub-called" ]'
+  ext read --prompt-file "$T/brief.txt" --input "$T/ag-out/repo/calc.sh"
+  chk "D11: ...while a clone of an .agy-deny source is NOT refused (the retired marker is inert)" '[ "$RC" -ne 3 ]'
   rm -f "$T/stub-called"
-  ext read --vendor agy --prompt-file "$T/brief.txt" --input "$T/m1/repo/calc.sh"
+  ext read --prompt-file "$T/brief.txt" --input "$T/m1/repo/calc.sh"
   chk "D12: an unmarked clone is not refused by ext-run.sh" '[ "$RC" -ne 3 ]'
 else
   chk "D9-D12: ext-run.sh present" 'false'

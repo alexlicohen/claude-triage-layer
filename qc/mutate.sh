@@ -51,7 +51,14 @@ done
 # moot — the grade is now the worktree diff, never a patch file a candidate wrote.
 # 43 (cheapness order) moved with the proposal from triage-parity.js to
 # scripts/parity-report.sh, its single owner (Wave 13) — re-anchored there.
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55"
+# 13/14 (agy's denied_actions / empty-response gates), 27 (codex's
+# exclude_slash_tmp flag) and 30 (crossReview 'both' spawning one) were retired
+# with agy (2026-09-24): the agy adapter, codex's own sandbox flags and the
+# 'both' mode are gone. 56-59 cover what replaced them: the sandbox-exec wrapper,
+# the profile's $HOME read rule, the output-free audit log and the agy refusal.
+# 60-62 cover the confinement review fixes: deny-by-default writes, the
+# temp-dir read rule and the preflight's second (outside) canary.
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -88,8 +95,6 @@ mut_file() {
     10) echo "drift.sh" ;;
     11) echo "workflows/triage-exec.js" ;;
     12) echo "scripts/triage-cache-segment.sh" ;;
-    13) echo "scripts/ext-run.sh" ;;
-    14) echo "scripts/ext-run.sh" ;;
     15) echo "scripts/ext-run.sh" ;;
     16) echo "workflows/triage-exec.js" ;;
     17) echo "workflows/triage-exec.js" ;;
@@ -102,10 +107,8 @@ mut_file() {
     24) echo "scripts/ext-run.sh" ;;
     25) echo "scripts/ext-run.sh" ;;
     26) echo "scripts/ext-run.sh" ;;
-    27) echo "scripts/ext-run.sh" ;;
     28) echo "workflows/triage-exec.js" ;;
     29) echo "workflows/triage-exec.js" ;;
-    30) echo "workflows/triage-exec.js" ;;
     31) echo "workflows/triage-compare.js" ;;
     32) echo "scripts/patch-check.sh" ;;
     33) echo "install.sh" ;;
@@ -130,6 +133,7 @@ mut_file() {
     53) echo "scripts/parity-report.sh" ;;
     54) echo "scripts/parity-report.sh" ;;
     55) echo "scripts/stage-worktree.sh" ;;
+    56|57|58|59|60|61|62) echo "scripts/ext-run.sh" ;;
     *) echo "" ;;
   esac
 }
@@ -148,10 +152,8 @@ mut_desc() {
     10) echo "drift.sh: remove UNEXPECTED_DRIFT=1 from the MISSING branch" ;;
     11) echo "triage-exec.js: make bad() a no-op (malformed plan args no longer throw before spawning)" ;;
     12) echo "triage-cache-segment.sh: revert the warm-boolean jq filter to '// empty' (jq's // swallows a literal false, so a cold cache silently renders nothing)" ;;
-    13) echo "ext-run.sh: drop the denied_actions gate (a run whose tool calls were all denied is reported as a pass)" ;;
-    14) echo "ext-run.sh: drop the empty-response gate (exit 0 + status SUCCESS alone is treated as usable output)" ;;
     15) echo "ext-run.sh: weaken the deny-list path match from path-component equality to substring (a sibling repo such as clip-creators-lab is refused too)" ;;
-    16) echo "triage-exec.js: danger-zone routing no longer reroutes agy, so overflow:true / vendor agy sends danger subtasks off-vendor" ;;
+    16) echo "triage-exec.js: danger-zone routing no longer reroutes overflow, so overflow:true / tier overflow sends danger subtasks to codex" ;;
     17) echo "triage-exec.js: an external subtask whose CLI produced no work falls back to Claude builder instead of the SAME level" ;;
     18) echo "install.sh: neuter check_force_override (the CLAUDE_CODE_SUBAGENT_MODEL_FORCE warning never prints)" ;;
     19) echo "install.sh: neuter is_legacy_subagent_model (a previous installer default is never upgraded, dry-run never says so)" ;;
@@ -162,10 +164,8 @@ mut_desc() {
     24) echo "ext-run.sh: a level/mode missing from tiers.json falls back to a default model instead of refusing" ;;
     25) echo "ext-run.sh: drop the codex empty-response gate (rc 0 with an empty -o final message is treated as usable output)" ;;
     26) echo "ext-run.sh: the deny check is skipped for codex (clip-creator / .codex-deny no longer refuse)" ;;
-    27) echo "ext-run.sh: drop -c sandbox_workspace_write.exclude_slash_tmp=true (codex workspace-write can write anywhere under /tmp)" ;;
     28) echo "triage-exec.js: the codex danger effort floor is dropped (danger work runs on codex below effort high)" ;;
     29) echo "triage-exec.js: a failed external subtask is retried sideways on the same vendor instead of on Claude" ;;
-    30) echo "triage-exec.js: crossReview 'both' spawns only one cross-reviewer (codex never asked)" ;;
     31) echo "triage-compare.js: grades a candidate from its own CHECK rc self-report instead of patch-check's result" ;;
     32) echo "patch-check.sh: cleanup_wt is a no-op (worktrees and their git bookkeeping are left behind)" ;;
     33) echo "install.sh: the .driftignore fork skip is limited to --files-only again (a bare install clobbers triage.md)" ;;
@@ -174,11 +174,11 @@ mut_desc() {
     37) echo "triage-compare.js: an external candidate gets the REAL repo as WORKDIR instead of its staged worktree (the live-run leak: ext-run applies into the real tree)" ;;
     38) echo "triage-compare.js: the leakcheck result is ignored (a candidate that wrote into the real repo is graded as if nothing happened)" ;;
     39) echo "stage-worktree.sh: diff stages only tracked files (git add -u), so new/untracked files a candidate created are silently dropped from its patch" ;;
-    40) echo "ext-run.sh: drop the git-common-dir deny check (a linked worktree created outside a deny-listed repo, or an --input file in one, bypasses clip-creator and the .agy-deny/.codex-deny markers)" ;;
+    40) echo "ext-run.sh: drop the git-common-dir deny check (a linked worktree created outside a deny-listed repo, or an --input file in one, bypasses clip-creator and the .codex-deny markers)" ;;
     41) echo "triage-parity.js: an unavailable/denied/invalid/unresolved run is tallied as a FAIL (a flaky vendor or a deny marker drops a candidate from the climb)" ;;
     42) echo "triage-parity.js: the stop rule ignores 'consecutive' (a cleared band no longer resets the failed-band streak, so fail/pass/fail stops a candidate)" ;;
     43) echo "parity-report.sh: the cheapness order is ignored (every ranked challenger is judged by the cheaper rule, so a pricier one below the margin is proposed on its Wilson bound)" ;;
-    44) echo "parity-suite.sh: materialize skips deny-marker propagation (a clone of a .agy-deny/.codex-deny source is handed to that vendor, because ext-run no longer sees the source)" ;;
+    44) echo "parity-suite.sh: materialize skips deny-marker propagation (a clone of a .codex-deny source is handed to codex, because ext-run no longer sees the source)" ;;
     45) echo "parity-suite.sh: materialize keeps source history/refs reachable (the post-commit ref-deletion loop is skipped, so a generator source's own commits — and any other branch — stay in the materialized repo, defeating the no-history guarantee)" ;;
     46) echo "triage-parity.js: an external review candidate omits its MODEL line (the read-mode spawn falls back to triage-cross-reviewer's mode default model instead of the candidate's own, silently reintroducing the wrong-model bug for a candidate with an explicit model)" ;;
     47) echo "triage-compare.js: an UNKNOWN leak state (leakcheck errored / relayed no status) no longer voids the grades, so a candidate is reported pass while the real repo may have changed" ;;
@@ -190,6 +190,13 @@ mut_desc() {
     53) echo "parity-report.sh: the cheaper rule uses the challenger's point rate instead of its Wilson 95% lower bound (10/10 beats a 9/10 incumbent)" ;;
     54) echo "parity-report.sh: a non-graded status (unavailable/invalid/...) is ingested and counted as a fail" ;;
     55) echo "stage-worktree.sh: apply runs the 3-way merge without the conflict pre-check (a conflicting patch leaves markers in the caller's tree while exit 6 promises it unchanged)" ;;
+    56) echo "ext-run.sh: codex runs WITHOUT sandbox-exec (--dangerously-bypass-approvals-and-sandbox with no OS confinement: the whole disk is readable, \$HOME writable)" ;;
+    57) echo "ext-run.sh: the profile allows reads of all of \$HOME (subpath, not literal), re-opening every repo under it" ;;
+    58) echo "ext-run.sh: the command audit log records aggregated_output (command output / file content lands in a log outside the sandbox)" ;;
+    59) echo "ext-run.sh: --vendor agy is accepted again (the retired vendor is no longer refused by name)" ;;
+    60) echo "ext-run.sh: writes are allowed by default again outside \$HOME, the temp dirs and the stage (a user-owned /opt/homebrew binary, /Users/Shared, /private/var/tmp are writable)" ;;
+    61) echo "ext-run.sh: the temp-dir read rule is dropped (sibling compare stages, other runs' patches and Claude scratchpads under /private/tmp and /private/var/folders are readable)" ;;
+    62) echo "ext-run.sh: the preflight writes only the stage-root canary (a profile that confines \$HOME, the temp dirs and the stage but allows writes elsewhere passes)" ;;
     *) echo "" ;;
   esac
 }
@@ -202,8 +209,8 @@ mut_desc() {
 mut_suite() {
   case "$1" in
     1|2|3|4|5|6|10|12|18|19|20|21|33) echo "roundtrip" ;;
-    7|8|9|11|16|17|22|23|28|29|30) echo "scenarios" ;;
-    13|14|15|24|25|26|27|40|49|50|51) echo "extrun" ;;
+    7|8|9|11|16|17|22|23|28|29) echo "scenarios" ;;
+    15|24|25|26|40|49|50|51|56|57|58|59|60|61|62) echo "extrun" ;;
     31|34|36|37|38|47) echo "compare" ;;
     32|48) echo "patchcheck" ;;
     39|55) echo "stagewt" ;;
@@ -397,17 +404,6 @@ MUT6
         "WARM_RAW=\$(printf '%s' \"\$input\" | jq -r 'if .prompt_cache.warm == true then \"true\" elif .prompt_cache.warm == false then \"false\" else empty end' 2>/dev/null)" \
         1 "$rep"
       ;;
-    13)
-      # ext-run.sh: delete agy's 3-line denied_actions gate. agy reports
-      # status:SUCCESS with an empty .response when every tool call was denied,
-      # so without this gate a denied run is indistinguishable from a good one.
-      mut_delete_block "$target" 'if [ -n "$DENIED" ]; then' 3
-      ;;
-    14)
-      # ext-run.sh: delete agy's 3-line empty-response gate — exit 0 and
-      # status SUCCESS are NOT sufficient (a timed-out run looks exactly so).
-      mut_delete_block "$target" 'if [ -z "$RESPONSE" ]; then' 3
-      ;;
     15)
       # ext-run.sh: deny_check's path match goes from component equality
       # (*/"$name"/*) to substring (*"$name"*) — the classic over-broad-glob bug.
@@ -421,15 +417,15 @@ MUT15
         '      */"$name"/*) die "REFUSED: $p$why is under a deny-listed repo' 1 "$rep"
       ;;
     16)
-      # triage-exec.js: the danger guard's agy arm never fires. A danger builder
-      # subtask on agy (overflow:true, tier overflow, vendor agy) then falls through
-      # to the Claude arm, which lifts the LEVEL to deep but leaves the vendor on
-      # agy — correctness-critical work goes off-vendor.
+      # triage-exec.js: the danger guard's overflow arm never fires. A danger
+      # builder subtask routed by overflow (overflow:true, tier overflow) then falls
+      # through to the codex arm, which lifts it to codex deep@high — correctness-
+      # critical work goes off-vendor for throughput.
       cat > "$rep" <<'MUT16'
-    if (false) { vendor = 'claude'; level = 'deep' } // MUTATED: agy dropped from the danger guard
+    if (false) { vendor = 'claude'; level = 'deep' } // MUTATED: overflow dropped from the danger guard
 MUT16
       mut_replace_block "$target" \
-        "    if (vendor === 'agy') { vendor = 'claude'; level = 'deep' }" 1 "$rep"
+        "    if (viaOverflow) { vendor = 'claude'; level = 'deep' }" 1 "$rep"
       ;;
     17)
       # triage-exec.js: runOn()'s no-work fallback is hard-coded to builder (the
@@ -499,7 +495,7 @@ MUT21
       # per-vendor default model — exactly the "never fall back to a default"
       # the tiers contract forbids (a level removed for lost parity would still run).
       cat > "$rep" <<'MUT24'
-    case "$VENDOR" in agy) TIER_MODEL=gemini-3.1-pro-high ;; codex) TIER_MODEL=gpt-6-sol; TIER_EFFORT=medium ;; esac # MUTATED: default model fallback
+    TIER_MODEL=gpt-6-sol; TIER_EFFORT=medium # MUTATED: default model fallback
 MUT24
       mut_replace_block "$target" '    die "REFUSED: $TIERS has no $where entry' 1 "$rep"
       ;;
@@ -517,11 +513,6 @@ deny_check() { [ "$VENDOR" = "codex" ] && return 0 # MUTATED: deny check skipped
 MUT26
       mut_replace_block "$target" 'deny_check() { # $1 = path. exits E_REFUSED on a hit.' 1 "$rep"
       ;;
-    27)
-      # ext-run.sh: drop the exclude_slash_tmp override. Verified live: without it
-      # codex's workspace-write sandbox can write anywhere under /tmp.
-      mut_delete_block "$target" '  set -- "$@" -c sandbox_workspace_write.exclude_slash_tmp=true' 1
-      ;;
     28)
       # triage-exec.js: the codex arm of the danger guard keeps its level lift but
       # loses codexDangerEffort(), so danger work runs on codex at whatever effort the
@@ -533,21 +524,13 @@ MUT28
         "    else if (vendor === 'codex') { level = atLeast(level, 'deep'); effort = codexDangerEffort(level, effort) }" 1 "$rep"
       ;;
     29)
-      # triage-exec.js: redoStep() keeps the failed result's vendor, so a codex/agy
+      # triage-exec.js: redoStep() keeps the failed result's vendor, so a codex
       # attempt that failed verification is re-run on the SAME external vendor —
       # the sideways retry the ladder forbids.
       cat > "$rep" <<'MUT29'
   const vendor = r.vendor // MUTATED: retried sideways on the same vendor
 MUT29
       mut_replace_block "$target" "  const vendor = 'claude' // every redo runs on Claude" 1 "$rep"
-      ;;
-    30)
-      # triage-exec.js: crossReview 'both' maps to agy alone — one spawn, and the
-      # codex second opinion the plan asked for silently never happens.
-      cat > "$rep" <<'MUT30'
-const CROSS_REVIEW_VENDORS = { agy: ['agy'], codex: ['codex'], both: ['agy'] } // MUTATED: 'both' spawns one
-MUT30
-      mut_replace_block "$target" "const CROSS_REVIEW_VENDORS = { agy: ['agy'], codex: ['codex'], both: ['agy', 'codex'] }" 1 "$rep"
       ;;
     31)
       # triage-compare.js: grade() trusts the candidate's own `CHECK rc=` line — the
@@ -752,6 +735,63 @@ MUT54
 MUT55
       mut_replace_block "$target" '  if git -C "$R" apply --3way --check "$PATCH" >"$chk3" 2>&1 && ! grep -qi '"'"'conflict'"'"' "$chk3"; then' 1 "$rep"
       ;;
+    56)
+      # ext-run.sh: codex is exec'd directly — the sandbox-exec wrapper (and so
+      # the whole OS confinement) is gone, while codex's own sandbox stays
+      # bypassed. The preflight still passes; only the real run is unconfined.
+      cat > "$rep" <<'MUT56'
+    exec "$CODEX_REAL" "$@" ) < "$PROMPT" > "$EVENTS" 2> "$ERRLOG" & # MUTATED: codex run without sandbox-exec
+MUT56
+      mut_replace_block "$target" '    exec "$SANDBOX_EXEC" -f "$PROFILE" "$CODEX_REAL" "$@" ) < "$PROMPT" > "$EVENTS" 2> "$ERRLOG" &' 1 "$rep"
+      ;;
+    57)
+      # ext-run.sh: $HOME is re-allowed as a subpath instead of a literal, so the
+      # deny of every read under $HOME is undone: ~/projects is readable again.
+      cat > "$rep" <<'MUT57'
+    printf '(allow file-read* (subpath %s) (subpath %s) (subpath %s) (subpath %s)' \
+MUT57
+      mut_replace_block "$target" "    printf '(allow file-read* (literal %s) (subpath %s) (subpath %s) (subpath %s)' \\" 1 "$rep"
+      ;;
+    58)
+      # ext-run.sh: the audit line gains the command's aggregated_output.
+      cat > "$rep" <<'MUT58'
+         exitCode: (.exit_code | if type == "number" then . else null end), output: .aggregated_output}' 2>/dev/null) # MUTATED: audit records aggregated_output
+MUT58
+      mut_replace_block "$target" "         exitCode: (.exit_code | if type == \"number\" then . else null end)}' 2>/dev/null)" 1 "$rep"
+      ;;
+    59)
+      # ext-run.sh: the agy refusal is gone — --vendor agy falls through to the
+      # tiers lookup (and is refused there only by accident of a missing entry).
+      cat > "$rep" <<'MUT59'
+  agy) ;; # MUTATED: agy accepted
+MUT59
+      mut_replace_block "$target" '  agy) die "REFUSED: agy retired 2026-09-24' 1 "$rep"
+      ;;
+    60)
+      # ext-run.sh: the deny-by-default write rule is rolled back to the
+      # pre-review one — writes denied only under $HOME, the temp dirs and the
+      # stage, allowed by default everywhere else.
+      cat > "$rep" <<'MUT60'
+    printf '(deny file-write* (subpath %s) (subpath "/private/tmp") (subpath "/private/var/folders") (subpath %s))\n' "$(sbpl_q "$HOME_P")" "$(sbpl_q "$STAGE_ABS")" # MUTATED: writes allowed by default
+MUT60
+      mut_replace_block "$target" "    printf '(deny file-write* (subpath \"/\"))\\n'" 1 "$rep"
+      ;;
+    61)
+      # ext-run.sh: reads are denied under $HOME only again — the temp dirs
+      # (other stages, patches, Claude scratchpads) are readable.
+      cat > "$rep" <<'MUT61'
+    printf '(deny file-read* (subpath %s))\n' "$(sbpl_q "$HOME_P")" # MUTATED: temp-dir reads open
+MUT61
+      mut_replace_block "$target" "    printf '(deny file-read* (subpath %s) (subpath \"/private/tmp\")" 1 "$rep"
+      ;;
+    62)
+      # ext-run.sh: the preflight's sandboxed command writes only its first
+      # argument (the stage-root canary); the outside canary is never attempted.
+      cat > "$rep" <<'MUT62'
+  ( cd "$RUNDIR_ABS" && export TMPDIR="$CX/tmp" && exec "$SANDBOX_EXEC" -f "$PROFILE" /bin/sh -c 'true > "$1"; exit 0' sh "$canary" "$outside" ) \
+MUT62
+      mut_replace_block "$target" "/bin/sh -c 'true > \"\$1\"; true > \"\$2\"; exit 0' sh \"\$canary\" \"\$outside\" ) \\" 1 "$rep"
+      ;;
     *)
       return 1
       ;;
@@ -780,10 +820,8 @@ verify_mutation() {
     10) [ "$(grep -cF 'UNEXPECTED_DRIFT=1' "$target")" -eq 1 ] ;;
     11) grep -qF 'MUTATED: args validation disabled' "$target" && ! grep -qF 'throw new Error(`triage-exec:' "$target" ;;
     12) grep -qF 'MUTATED: swallows false' "$target" && ! grep -qF 'elif .prompt_cache.warm == false' "$target" ;;
-    13) ! grep -qF 'agy tool calls were denied' "$target" && grep -qF 'RESPONSE=$(jq -r' "$target" ;;
-    14) ! grep -qF 'agy returned an empty response' "$target" && grep -qF 'agy tool calls were denied' "$target" ;;
     15) grep -qF 'MUTATED: substring match' "$target" && ! grep -qF '*/"$name"/*)' "$target" ;;
-    16) grep -qF 'MUTATED: agy dropped from the danger guard' "$target" && ! grep -qF "if (vendor === 'agy') { vendor = 'claude'; level = 'deep' }" "$target" ;;
+    16) grep -qF 'MUTATED: overflow dropped from the danger guard' "$target" && ! grep -qF "if (viaOverflow) { vendor = 'claude'; level = 'deep' }" "$target" ;;
     17) grep -qF 'MUTATED: fallback hard-coded to builder' "$target" && ! grep -qF "const onClaude = { level: step.level," "$target" ;;
     18) grep -qF 'MUTATED: FORCE warning suppressed' "$target" ;;
     19) grep -qF 'MUTATED: legacy upgrade disabled' "$target" ;;
@@ -794,10 +832,8 @@ verify_mutation() {
     24) grep -qF 'MUTATED: default model fallback' "$target" && ! grep -qF 'an absent entry is a refusal, never a default model' "$target" ;;
     25) ! grep -qF 'codex wrote no final message' "$target" && grep -qF 'RESPONSE=$(cat "$LASTMSG")' "$target" ;;
     26) grep -qF 'MUTATED: deny check skipped for codex' "$target" ;;
-    27) ! grep -qF 'set -- "$@" -c sandbox_workspace_write.exclude_slash_tmp=true' "$target" && grep -qF 'set -- "$@" -c sandbox_workspace_write.exclude_tmpdir_env_var=true' "$target" ;;
     28) grep -qF 'MUTATED: codex danger effort floor dropped' "$target" && ! grep -qF 'effort = codexDangerEffort(level, effort)' "$target" ;;
     29) grep -qF 'MUTATED: retried sideways on the same vendor' "$target" && ! grep -qF "const vendor = 'claude' // every redo runs on Claude" "$target" ;;
-    30) grep -qF "MUTATED: 'both' spawns one" "$target" && ! grep -qF "both: ['agy', 'codex']" "$target" ;;
     31) grep -qF 'MUTATED: graded from the self-report' "$target" && ! grep -qF "pc.applies === true && pc.rc === 0" "$target" ;;
     32) grep -qF 'MUTATED: worktree cleanup skipped' "$target" ;;
     33) grep -qF 'MUTATED: fork skip limited to --files-only' "$target" && ! grep -qxF '  if is_ignored "$rel" && [ -e "$dst" ]; then' "$target" ;;
@@ -810,7 +846,7 @@ verify_mutation() {
     41) grep -qF 'MUTATED: unavailable counted as fail' "$target" && ! grep -qF "pb.other++" "$target" ;;
     42) grep -qF 'MUTATED: streak not reset' "$target" && ! grep -qF 's.streak = 0' "$target" ;;
     43) grep -qF 'MUTATED: cheapness order ignored' "$target" && ! grep -qF 'elif $kc > $ki then "pricier"' "$target" ;;
-    44) grep -qF 'MUTATED: deny markers not propagated' "$target" && ! grep -qF 'propagated by parity-suite.sh materialize' "$target" && grep -qF '  DENIED_AGY=false DENIED_CODEX=false' "$target" ;;
+    44) grep -qF 'MUTATED: deny markers not propagated' "$target" && ! grep -qF 'propagated by parity-suite.sh materialize' "$target" && grep -qF '  DENIED_CODEX=false' "$target" ;;
     45) grep -qF 'MUTATED: source history/refs kept' "$target" && ! grep -qF 'update-ref -d "$r"' "$target" ;;
     46) grep -qF 'MUTATED: MODEL line dropped for external review candidates' "$target" && ! grep -qF '(c.model ? `MODEL=${c.model}' "$target" ;;
     47) grep -qF 'MUTATED: unknown leak state accepted' "$target" && ! grep -qF 'if (leakInfo.leak !== false && gr)' "$target" ;;
@@ -822,6 +858,13 @@ verify_mutation() {
     53) grep -qF 'MUTATED: point rate, not Wilson LB' "$target" && ! grep -qF 'if $ch.wilsonLB >= $inc.rate' "$target" ;;
     54) grep -qF 'MUTATED: non-graded status counted as fail' "$target" && ! grep -qF 'else "unknown" end) end;' "$target" ;;
     55) grep -qF 'MUTATED: conflicting 3-way apply not pre-checked' "$target" && ! grep -qF "! grep -qi 'conflict'" "$target" ;;
+    56) grep -qF 'MUTATED: codex run without sandbox-exec' "$target" && ! grep -qF 'exec "$SANDBOX_EXEC" -f "$PROFILE" "$CODEX_REAL"' "$target" ;;
+    57) grep -qF "printf '(allow file-read* (subpath %s) (subpath %s) (subpath %s) (subpath %s)'" "$target" && ! grep -qF "printf '(allow file-read* (literal %s)" "$target" ;;
+    58) grep -qF 'MUTATED: audit records aggregated_output' "$target" && grep -qF 'output: .aggregated_output}' "$target" ;;
+    59) grep -qF 'MUTATED: agy accepted' "$target" && ! grep -qF 'die "REFUSED: agy retired 2026-09-24' "$target" ;;
+    60) grep -qF 'MUTATED: writes allowed by default' "$target" && ! grep -qF "printf '(deny file-write* (subpath \"/\"))" "$target" ;;
+    61) grep -qF 'MUTATED: temp-dir reads open' "$target" && ! grep -qF '(subpath "/private/tmp") (subpath "/private/var/folders") (subpath "/tmp") (subpath "/var/folders"))' "$target" ;;
+    62) grep -qF "/bin/sh -c 'true > \"\$1\"; exit 0' sh \"\$canary\" \"\$outside\"" "$target" && ! grep -qF 'true > "$2"' "$target" ;;
     *) return 1 ;;
   esac
 }

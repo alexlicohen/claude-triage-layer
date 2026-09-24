@@ -66,8 +66,8 @@ chk "R1b the line has exactly the schema keys, with the passed ts/source/repoNam
    [ "$(printf "%s" "$L1" | jq -r "[.v,.ts,.source,.repoName,.level,.task,.applied] | map(tostring) | join(\" \")")" = "1 2026-09-24T10:00:00Z inline myrepo builder sub-1 claude-builder" ]'
 chk "R1c each candidate has exactly label/vendor/model/effort/status/totalTokens/seconds" \
   '[ "$(printf "%s" "$L1" | jq -c "[.candidates[] | keys] | unique")" = "[[\"effort\",\"label\",\"model\",\"seconds\",\"status\",\"totalTokens\",\"vendor\"]]" ]'
-chk "R1d a null model/effort is filled from the tiers file (claude builder = sonnet/medium; agy = its model, no effort)" \
-  '[ "$(printf "%s" "$L1" | jq -r ".candidates[0] | .model + \"/\" + .effort")" = "sonnet/medium" ] && [ "$(printf "%s" "$L1" | jq -r ".candidates[2].model")" = "gemini-3.1-pro-high" ] && [ "$(printf "%s" "$L1" | jq -r ".candidates[2].effort")" = null ]'
+chk "R1d a null model/effort is filled from the tiers file (claude builder = sonnet/medium); a retired agy row is still ingested, left null (no tiers entry)" \
+  '[ "$(printf "%s" "$L1" | jq -r ".candidates[0] | .model + \"/\" + .effort")" = "sonnet/medium" ] && [ "$(printf "%s" "$L1" | jq -r ".candidates[2].vendor")" = agy ] && [ "$(printf "%s" "$L1" | jq -r ".candidates[2].model")" = null ] && [ "$(printf "%s" "$L1" | jq -r ".candidates[2].effort")" = null ]'
 chk "R1e a non-graded status is kept as itself (unavailable), never recorded as a fail" \
   '[ "$(printf "%s" "$L1" | jq -r "[.candidates[].status] | join(\",\")")" = "pass,fail,unavailable" ]'
 chk "R1f no target-repo content: no patch path, diffstat, tail or brief text reaches the ledger" \
@@ -127,8 +127,8 @@ ML="$T/l-migrate.jsonl"
 run_pr migrate --tiers "$TIERS" --ledger "$ML" --from "$T/legacy.jsonl"
 chk "R4 migrate: 1 compare line + (2+1+1)+(2) per-outcome parity lines = 7, both legacy lines migrated" \
   '[ "$RC" -eq 0 ] && [ "$(nlines "$ML")" = 7 ] && [ "$(j .migrated)" = 2 ] && [ "$(j .skipped)" = 0 ]'
-chk "R4b the parity aggregate becomes pass/fail lines per band with the band's level and a resolved model" \
-  '[ "$(jq -r "select(.band) | [.level, .candidates[0].model, (.candidates[0].effort // \"-\"), .candidates[0].status] | join(\":\")" "$ML" | sort | uniq -c | tr -s " " | paste -sd, -)" = " 2 builder:gemini-3.1-pro-high:-:fail, 1 builder:gpt-6-sol:medium:pass, 1 quick:gpt-6-sol:medium:fail, 2 quick:gpt-6-sol:medium:pass" ]'
+chk "R4b the parity aggregate becomes pass/fail lines per band with the band's level and a resolved model (a retired agy label keeps its own model token: agy has no tiers entry)" \
+  '[ "$(jq -r "select(.band) | [.level, .candidates[0].model, (.candidates[0].effort // \"-\"), .candidates[0].status] | join(\":\")" "$ML" | sort | uniq -c | tr -s " " | paste -sd, -)" = " 1 builder:gpt-6-sol:medium:pass, 2 builder:pro:-:fail, 1 quick:gpt-6-sol:medium:fail, 2 quick:gpt-6-sol:medium:pass" ]'
 chk "R4c every migrated line is marked, carries a legacy run id, and keeps no task text" \
   '[ "$(jq -r ".migrated" "$ML" | sort -u)" = vendor-parity.jsonl ] && [ "$(jq -r ".run" "$ML" | sort -u | paste -sd"|" -)" = "legacy:2026-09-20:toy-repo:builder|legacy:pilot wf_1" ] && ! grep -q "smoke" "$ML"'
 run_pr migrate --tiers "$TIERS" --ledger "$ML" --from "$T/legacy.jsonl"

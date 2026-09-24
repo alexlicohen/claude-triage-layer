@@ -1,7 +1,7 @@
 export const meta = {
   name: 'triage-compare',
-  description: 'Implementation bake-off: run one brief on several candidates (Claude levels, codex, agy), each in its own staged worktree outside the repo, then grade every worktree diff independently with patch-check.sh. Never applies a patch; the real repo is never a candidate workdir.',
-  whenToUse: 'Compare vendors/levels/models on the SAME well-specified task: /triage-compare with args = {repo, base?, brief, files, acceptance, checks:[cmd...], outDir, overlay?, candidates:[{vendor:claude|codex|agy, level:quick|builder|deep|top, model?, effort?, label?}]}. repo is any absolute git repo path (not necessarily the session repo) and may be dirty: base (default HEAD) is resolved to ONE sha up front and each candidate works in its own detached worktree at that sha under <outDir>/stage (scripts/stage-worktree.sh), never in repo. outDir/overlay must be OUTSIDE repo and <outDir>/stage must not already exist. External (non-claude) candidates require args.files. Candidates run one at a time (parallel:true runs them concurrently; Claude outTokens is then null); the grade is scripts/patch-check.sh on each worktree diff at the sha (plus the hidden overlay), never the candidate self-report; a leakcheck then proves repo did not change (only leak:false lets a grade stand: leak true OR unknown => every candidate invalid, graded:false; a patch patch-check could not grade, e.g. overlay-failed, is invalid). Returns sha/leak/baseMoved and per-candidate status/applies/rc/diffstat/patch/tokens; the orchestrator picks and applies.',
+  description: 'Implementation bake-off: run one brief on several candidates (Claude levels, codex), each in its own staged worktree outside the repo, then grade every worktree diff independently with patch-check.sh. Never applies a patch; the real repo is never a candidate workdir.',
+  whenToUse: 'Compare vendors/levels/models on the SAME well-specified task: /triage-compare with args = {repo, base?, brief, files, acceptance, checks:[cmd...], outDir, overlay?, candidates:[{vendor:claude|codex, level:quick|builder|deep|top, model?, effort?, label?}]} (agy was retired 2026-09-24 and is refused). repo is any absolute git repo path (not necessarily the session repo) and may be dirty: base (default HEAD) is resolved to ONE sha up front and each candidate works in its own detached worktree at that sha under <outDir>/stage (scripts/stage-worktree.sh), never in repo. outDir/overlay must be OUTSIDE repo and <outDir>/stage must not already exist. External (non-claude) candidates require args.files. Candidates run one at a time (parallel:true runs them concurrently; Claude outTokens is then null); the grade is scripts/patch-check.sh on each worktree diff at the sha (plus the hidden overlay), never the candidate self-report; a leakcheck then proves repo did not change (only leak:false lets a grade stand: leak true OR unknown => every candidate invalid, graded:false; a patch patch-check could not grade, e.g. overlay-failed, is invalid). Returns sha/leak/baseMoved and per-candidate status/applies/rc/diffstat/patch/tokens; the orchestrator picks and applies.',
   phases: [
     { title: 'Stage' },
     { title: 'Candidates' },
@@ -11,11 +11,14 @@ export const meta = {
 
 // ─── Entry contract ─────────────────────────────────────────────────────────
 // A bake-off is a measurement, so everything that could make it unfair or unsafe is
-// rejected in plain JS BEFORE any spawn: unknown vendor/level/effort, agy off the
-// builder level, duplicate or path-unsafe labels, relative paths, no checks to grade
-// by. A malformed plan is a caller bug and fails loudly and for free.
+// rejected in plain JS BEFORE any spawn: unknown or retired vendor, unknown level/effort,
+// duplicate or path-unsafe labels, relative paths, no checks to grade by. A malformed
+// plan is a caller bug and fails loudly and for free.
 const LEVELS = ['quick', 'builder', 'deep', 'top']
-const VENDORS = ['claude', 'codex', 'agy']
+const VENDORS = ['claude', 'codex']
+// agy was retired 2026-09-24 (its headless mode let the model bypass its sandbox; a
+// read-only run wrote into a real repo): refused by name, never silently unknown.
+const RETIRED_VENDORS = { agy: 'agy was retired 2026-09-24 (it bypassed its own sandbox and wrote into a real repo) — use codex or claude' }
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 // The Claude agent serving each level — the SAME map as triage-exec.js; test/lint.sh
 // checks both against config/tiers.json levels.*.claude.agent.
@@ -83,9 +86,9 @@ const checkCmd = checks.join(' && ')
 const seen = new Set()
 const candidates = args.candidates.map((raw, i) => {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) bad(`candidates[${i}] must be an object (got ${typeName(raw)}).`)
+  if (typeof raw.vendor === 'string' && Object.prototype.hasOwnProperty.call(RETIRED_VENDORS, raw.vendor)) bad(`candidates[${i}].vendor ${JSON.stringify(raw.vendor)}: ${RETIRED_VENDORS[raw.vendor]}.`)
   if (!VENDORS.includes(raw.vendor)) bad(`candidates[${i}].vendor must be one of ${VENDORS.join('|')} (got ${JSON.stringify(raw.vendor)}).`)
   if (!LEVELS.includes(raw.level)) bad(`candidates[${i}].level must be one of ${LEVELS.join('|')} (got ${JSON.stringify(raw.level)}).`)
-  if (raw.vendor === 'agy' && raw.level !== 'builder') bad(`candidates[${i}]: vendor agy serves the builder level only (got level ${raw.level}).`)
   if (raw.effort != null && !EFFORTS.includes(raw.effort)) bad(`candidates[${i}].effort must be one of ${EFFORTS.join('|')} (got ${JSON.stringify(raw.effort)}).`)
   if (raw.model != null && !(isStr(raw.model) && SAFE_TOKEN.test(raw.model))) bad(`candidates[${i}].model must be a model id with no spaces (got ${JSON.stringify(raw.model)}).`)
   if (raw.label != null && !isStr(raw.label)) bad(`candidates[${i}].label must be a non-empty string when given.`)

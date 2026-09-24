@@ -206,33 +206,38 @@ GNU-only flags, or associative arrays.
 
 ---
 
-## `ext-run.sh` — the single owner of every external-CLI invocation (`agy`, `codex`)
+## `ext-run.sh` — the single owner of every external-CLI invocation (`codex`)
 
-Nothing else in this repo, and no agent, may call `agy` (Google Antigravity) or `codex`
-(OpenAI Codex CLI) directly. The vendor adapters, the deny-list, the known-good flag
-combinations, the timeouts, the build staging worktree and the exit-code contract all live
-in this one script. It was `agy-run.sh` until Wave 12; `install.sh` removes a leftover
-installed copy of the old name.
+Nothing else in this repo, and no agent, may call `codex` (OpenAI Codex CLI) directly. The
+adapter, the OS sandbox profile, the deny-list, the known-good flags, the timeouts, the build
+staging worktree, the command audit log and the exit-code contract all live in this one
+script. It was `agy-run.sh` until Wave 12; `install.sh` removes a leftover installed copy of
+the old name.
+
+**agy (Google Antigravity) was retired on 2026-09-24**: its headless mode let the model set a
+per-command `BypassSandbox` flag, and a read-only parity review used it to copy a file into a
+real repo. `--vendor agy` is exit 3 (`agy retired 2026-09-24`); leftover `.agy-deny` markers
+are inert.
 
 ```
 Usage: ext-run.sh <review|read|verify|critique|fuzz|build> --prompt-file FILE
-                  [--vendor agy|codex] [--level quick|builder|deep|top] [options]
+                  [--vendor codex] [--level quick|builder|deep|top] [options]
 ```
 
-`--vendor` defaults to `agy`, so pre-Wave-12 calls behave exactly as before.
+`--vendor` defaults to `codex` (the only vendor).
 
 ### Models come from the tiers file, never from the script
 
-Every model id and codex effort is read from the tiers file: `$TRIAGE_TIERS`, else
+Every model id and effort is read from the tiers file: `$TRIAGE_TIERS`, else
 `triage-tiers.json` next to the script (the installed copy of `config/tiers.json`), else
 `../config/tiers.json` (the repo). A missing or unparseable file is exit 2.
 
-- Read-only modes resolve `modes.<vendor>.<mode>`; build resolves `levels.<level>.<vendor>`
-  with `--level`, else `modes.<vendor>.build` (agy only).
-- **An absent entry is a refusal (exit 3), never a default model.** Deleting a vendor's
-  entry under a level is how that vendor stops being used there.
-- `--model` overrides the resolved model but must belong to the vendor (agy `gemini-*`,
-  codex `gpt-*`/`codex-*`); anything naming `claude` is always refused.
+- Read-only modes resolve `modes.codex.<mode>`; build resolves `levels.<level>.codex` with
+  `--level` (there is no `modes.codex.build`, so build without `--level` is refused).
+- **An absent entry is a refusal (exit 3), never a default model.** Deleting codex's entry
+  under a level is how it stops being used there.
+- `--model` overrides the resolved model but must be a codex model (`gpt-*`/`codex-*`);
+  anything naming `claude` is always refused.
 - `scripts/triage-tiers.sh` prints the level × vendor table and the latest parity note and
   flags `basis: "guess"` entries. `make tiers` (`scripts/tiers-sync.sh`) writes the Claude
   agents' `model:`/`effort:` frontmatter from the same file; `test/lint.sh` fails while the
@@ -240,62 +245,145 @@ Every model id and codex effort is read from the tiers file: `$TRIAGE_TIERS`, el
 
 ### Modes
 
-| Mode | agy flags | codex flags | cwd | Timeout | Writes |
-|---|---|---|---|---|---|
-| `review` | — | `-s read-only` | staging dir | 8m | no |
-| `read` | `--json-schema` with `--schema` | `-s read-only`, `--output-schema` with `--schema` | staging dir | 5m | no |
-| `verify` | — | `-s read-only -c web_search="live"` | staging dir | 5m | no |
-| `critique` | `--mode plan` | `-s read-only` | staging dir | 8m | no |
-| `fuzz` | — | `-s read-only` | staging dir | 8m | no |
-| `build` | `--mode accept-edits` | `-s workspace-write` | **disposable git worktree** | 20m | **yes** |
+| Mode | codex flags (besides the common set) | Workspace | Timeout | Writes |
+|---|---|---|---|---|
+| `review` | — | staging dir | 8m | no |
+| `read` | `--output-schema` with `--schema` | staging dir | 5m | no |
+| `verify` | `-c web_search="live"` | staging dir | 5m | no |
+| `critique` | — | staging dir | 8m | no |
+| `fuzz` | — | staging dir | 8m | no |
+| `build` | — | **disposable git worktree** | 20m | **yes** |
 
-**agy, every mode:** an explicit non-Claude `--model`, `--sandbox`,
-`--dangerously-skip-permissions`, `--output-format json`, `--print-timeout`, a
-script-computed `--add-dir`, and `</dev/null`. Never `--effort` — agy encodes effort in the
-model id and rejects the two together, so `--effort low|medium|high` rewrites the model-id
-**suffix** instead (`gemini-3.1-pro` has no `medium` rung, so medium resolves to high there).
+**Every run:** `cd <workspace> && TMPDIR=<stage>/cx/tmp sandbox-exec -f <profile> <codex>
+exec -C <workspace> --dangerously-bypass-approvals-and-sandbox -m <model> -c
+model_reasoning_effort=<effort> --ephemeral --skip-git-repo-check --ignore-user-config --json
+-o <stage>/cx/last-message.txt - < <prompt>`, with `CODEX_HOME` unset. `<codex>` is the real
+file `CODEX_BIN` names (a PATH lookup that never sees a shell function, symlinks resolved).
+codex has no print-timeout, so a background watchdog enforces the mode timeout (`--timeout
+N|Ns|Nm|Nh`). codex runs as its own process group (`set -m`; bash 3.2 has no `setsid`): the
+watchdog signals the whole tree (frozen with STOP, leaves first) and the group, and after
+every run `reap_tree` TERMs, then KILLs, whatever is left — a grandchild that ignores TERM or
+outlives its exiting parent dies with the run. (A descendant that moves itself into a new
+process group AND is orphaned escapes.) `--effort minimal|low|medium|high|xhigh|max`
+overrides the tiers effort. codex auto-loads `~/.codex/AGENTS.md`, so its prompt gets a
+footer: non-interactive worker, ask nothing, never touch `PROJECT_MEMORY.md`/handoffs/engram/
+memory files, touch only the workspace, and "Your filesystem access is limited to this
+workspace; other paths will fail - do not search the disk." (plus the `--allow-read` paths).
 
-**codex, every mode** (verified live, codex-cli 0.155.1): `codex exec -C <rundir> -s <sandbox>
--m <model> -c model_reasoning_effort=<effort> -c sandbox_workspace_write.exclude_slash_tmp=true
--c sandbox_workspace_write.exclude_tmpdir_env_var=true --ephemeral --skip-git-repo-check
---ignore-user-config --json -o <last-message> - < <prompt>`. Never a `--dangerously-*` flag.
-Without the two `/tmp` exclusions a workspace-write run can write anywhere under `/tmp` and
-`$TMPDIR`. codex has no print-timeout, so a background watchdog enforces the mode timeout
-(`--timeout N|Ns|Nm|Nh`). Both CLIs run as their own process group (`set -m`; bash 3.2 has no
-`setsid`): the watchdog signals the whole tree (frozen with STOP, leaves first) and the group,
-and after every run `reap_tree` TERMs, then KILLs, whatever is left — a grandchild that ignores
-TERM or outlives its exiting parent dies with the run. (A descendant that moves itself into a
-new process group AND is orphaned escapes; a CLI that needs the controlling terminal would be
-stopped, which none of the headless invocations here do.) `--effort minimal|low|medium|high|xhigh` overrides the tiers
-effort. codex auto-loads `~/.codex/AGENTS.md`, so its prompt gets a footer: non-interactive
-worker, ask nothing, never touch `PROJECT_MEMORY.md`/handoffs/engram/memory files, touch only
-the workspace.
+Options: `--prompt-file FILE` (required), `--input FILE` (repeatable), `--allow-read PATH`
+(repeatable), `--schema FILE|JSON` (read only), `--workdir DIR`, `--output FILE`,
+`--patch-out FILE`, `--check CMD` and `--level` (build only), `--vendor`, `--model`,
+`--effort`, `--timeout`, `--raw`.
 
-Options: `--prompt-file FILE` (required), `--input FILE` (repeatable), `--schema FILE|JSON`
-(read only), `--workdir DIR`, `--output FILE`, `--patch-out FILE`, `--check CMD` and `--level`
-(build only), `--vendor`, `--model`, `--effort`, `--timeout`, `--raw`.
+Data — diffs, logs, corpora — goes in with `--input`, never inlined into the brief: the sandbox
+lets codex read only its workspace, so staging is the way in. A prompt file over 256 KB is a
+usage error that names `--input`. Staged inputs are copied into the workspace and named in a
+`--- Workspace ---` prompt footer by **absolute** path. A `--schema` file is copied into
+codex's scratch dir (it reads it inside the sandbox).
 
-Data — diffs, logs, corpora — goes in with `--input`, never inlined into the brief: agy gets the
-prompt as `-p "$(cat FILE)"`, which is `ARG_MAX`-bounded. A prompt file over 256 KB is a usage
-error that names `--input`. Staged inputs are copied into the workspace and named in a
-`--- Workspace ---` prompt footer by **absolute** path.
+### OS confinement (sandbox-exec) — fail closed
+
+Staging controls what codex is *handed*, not what it can *reach*: codex's own seatbelt blocks
+writes outside its workspace but not reads of the whole disk, its `sandbox_permissions` config
+does not restrict reads, and an outer `sandbox-exec` does not nest with codex's own seatbelt
+(every command rc 71 — the 2026-09-24 spike, codex-cli 0.156.1). So codex's sandbox is switched
+off and **replaced** by a profile `write_profile` generates per run (SBPL, last match wins,
+every path physical and escaped):
+
+```
+(version 1)
+(allow default)
+(deny file-read* (subpath "$HOME") (subpath "/private/tmp") (subpath "/private/var/folders")
+                 (subpath "/tmp") (subpath "/var/folders"))
+(deny file-read* file-write* (subpath <real repo>) (subpath <its git dir>) ...)   ; build only
+(allow file-read* (literal "$HOME") (subpath "$HOME/.codex") (subpath <workspace>)
+                  (subpath <stage>/cx) (subpath <each --allow-read>))
+(allow file-read-metadata (literal <each ancestor of those paths>) ...)
+(allow file-read* (literal "<per-user temp dir>/xcrun_db"))                          ; macOS
+(deny file-write* (subpath "/"))
+(allow file-write* (subpath "$HOME/.codex") (subpath <workspace>) (subpath <stage>/cx))
+(allow file-write* (literal "/dev/null") (literal "/dev/tty") (literal "/dev/dtracehelper")
+                   (regex #"^/dev/fd/[0-9]+$") (literal "/dev/ptmx"))
+(allow file-write* (require-all (regex #"^/dev/ttys[0-9]+$")
+                                (extension "com.apple.sandbox.pty")))
+```
+
+**Reads.** Nothing under `$HOME` or the temp dirs — where a parallel compare's sibling
+stages and patches, other concurrent ext-run stages and Claude session scratchpads
+(`/private/tmp/claude-<uid>/…`) live — is readable but `$HOME` itself (the directory entry),
+`~/.codex`, the workspace, `<stage>/cx` and each `--allow-read` path (which may sit in a temp
+dir). The stage root and `<stage>/meta` are not: codex gets the prompt on stdin and writes
+the event stream through inherited fds. The ancestors of the readable paths get
+**metadata only** (stat, never a listing): `realpath()` in git and node `lstat()`s every
+component and fails on a denied `/private/tmp` without it. One temp-dir file is readable,
+never writable: xcrun's tool-path cache, without which every `/usr/bin/git`, `python3`,
+`make`… shim takes ~2 s instead of ~20 ms; writable, it could redirect those shims for later,
+unsandboxed sessions.
+
+**Writes are deny-by-default:** nothing anywhere — a user-owned `/opt/homebrew`,
+`/Users/Shared`, `/private/var/tmp`, mounted volumes — but `~/.codex`, the workspace,
+`<stage>/cx` and these device files. Each was verified 2026-09-24 (macOS 26.6, codex-cli
+0.156.1) with a kill-on-touch rule and the stub; hard links, clones, renames, symlinks,
+fifos and Unix sockets outside the allowed dirs are denied too:
+
+| Device | Why |
+|---|---|
+| `/dev/null` | every shell redirect (`>/dev/null 2>&1`) |
+| `/dev/tty` | bash, sh and zsh open it at every start (also under git's and python3's xcrun shims); a headless run has no controlling terminal, so the open fails ENXIO exactly as unsandboxed |
+| `/dev/dtracehelper` | dyld opens it at every process start (sh, bash, zsh, git, python3, node, codex) to register DTrace probes; no filesystem effect |
+| `/dev/fd/N` | `> /dev/stdout`, `2> /dev/stderr`, `tee /dev/stderr`, `>(…)` process substitution |
+| `/dev/ptmx`, `/dev/ttysN` | codex's `exec_command` allocates a PTY when the model passes `tty: true`; a tty is writable only if it was created inside the sandbox (the `com.apple.sandbox.pty` extension), so the user's own terminals stay unwritable |
+
+`<stage>/cx` is codex's scratch (TMPDIR, the `-o` file, the schema copy). `<stage>/meta` —
+the prompt, the `--json` event stream, stderr, the profile and the build worktree's hidden
+`.git` — is neither readable nor writable by codex, so it cannot rewrite its own audit trail
+or swap in a gitdir for this script's later (unsandboxed) git calls. In build mode the real
+repo, its main worktree and its git dir are denied outright (this matters for repos outside
+`$HOME` and the temp dirs, which no other read rule covers).
+
+**Fail closed, no opt-out:** no `sandbox-exec` (Linux) is exit 4 before anything runs; a
+preflight then runs `/bin/sh` under the profile and requires it to apply (exit 0) **and** to
+enforce: its writes to two paths the profile denies must not land — the stage root (inside
+the temp dirs) and `.ext-run-canary-<run id>` in `/Users/Shared` (else `/private/var/tmp`,
+else `/var/tmp`), outside `$HOME` and the temp dirs, where only deny-by-default stops it. A
+landed canary is removed, then exit 4 and codex never starts; no qualifying canary dir, or a
+canary path that already exists, is exit 4 too. The canaries guard against an accidental
+no-op or a regressed profile (the pre-2026-09-24 one passes the stage canary and is caught by
+the outside one); whoever controls `PATH` controls `CODEX_BIN` as well.
+
+`--allow-read PATH` widens reads only, and is refused (exit 3) when the deny check refuses
+PATH, when PATH is `$HOME` or an ancestor of it (that would re-open every repo), or when a
+deny-listed repo or a `.codex-deny` marker lies anywhere beneath it.
+
+Known limits: `~/.codex` stays writable (auth refresh, logs), so a run could edit
+`~/.codex/config.toml` or `~/.codex/AGENTS.md`, which ext-run ignores (`--ignore-user-config`)
+but an interactive codex session would load. zsh here-documents write to `$TMPPREFIX`
+(default `/tmp/zsh`), which is denied, so a `cat <<EOF` inside a `zsh -lc` command fails.
+
+### Command audit log
+
+codex runs `--ephemeral`, so nothing of what it ran would survive the stage. After every run
+(also a failed or interrupted one) ext-run appends one JSONL line per `command_execution`
+item of the `--json` stream — item.started/item.completed collapse to one — to
+`$EXT_RUN_AUDIT_LOG` (default `~/.claude/logs/ext-run/codex-commands.jsonl`):
+`{ts, runId, mode, model, cwd, command (first 500 chars), exitCode}`. **Never**
+`aggregated_output` or any file content. The log is written by ext-run, outside the sandbox;
+a dir that cannot be created is exit 4 before codex runs. Lines older than 30 days are pruned
+opportunistically, under a `mkdir` lock concurrent runs share.
 
 ### Build mode never touches the caller's working tree
-
-Neither CLI's flags can express "which files it may change" safely (agy needs
-`--dangerously-skip-permissions`, and `--mode plan` is *not* a write guard), so build mode:
 
 1. `git worktree add --detach <stage> HEAD` — a disposable checkout of `--workdir`'s repo;
 2. carries the caller's uncommitted work in (`git diff HEAD --binary` applied with
    `--index`, plus every untracked file from `git ls-files --others --exclude-standard`);
 3. commits that carried state as the stage base, so the result patch is the **pure model
    delta** rather than a re-application of the caller's own changes;
-4. points the CLI (agy `--add-dir` + cwd, codex `-C` + cwd) at the worktree — never at the
-   real repo; staged `--input` files go in `.<vendor>-inputs/`. For the duration of the run
-   the worktree's `.git` file — which names the REAL repo's gitdir — is moved into the
-   script's private meta dir, so the CLI (agy runs with `--dangerously-skip-permissions`)
-   cannot discover or write the real repository through git; it is restored (any `.git` the
-   CLI created is discarded) before the capture, and always in the exit trap;
+4. points codex (`-C` + cwd) at the worktree — never at the real repo; staged `--input`
+   files go in `.codex-inputs/`. For the duration of the run the worktree's `.git` file —
+   which names the REAL repo's gitdir — is moved into the script's private meta dir (not
+   codex-writable), so codex cannot discover or write the real repository through git; it
+   is restored (any `.git` the CLI created is discarded) before the capture, and always in
+   the exit trap;
 5. captures `git add -A && git diff --cached --binary` into `--output` (a `mktemp` file
    when `--output` is omitted; the path is always printed on stderr). `add -A` honours
    `.gitignore`, so a deliverable at an ignored path comes back as "no changes";
@@ -323,84 +411,93 @@ stderr and never changes the exit code.
 
 | Code | Meaning | Caller action |
 |---|---|---|
-| 0 | OK — stdout is the model's answer (the raw envelope / JSONL events with `--raw`) | relay |
+| 0 | OK — stdout is the model's answer (the JSONL events with `--raw`) | relay |
 | 2 | USAGE — bad mode/flags/missing file/bad tiers file; nothing ran | caller bug, fail loud |
-| 3 | REFUSED — deny-list hit, boundary not attested, vendor not listed in the tiers file for this level/mode, or `--patch-out` on a dirty tree; nothing ran | return `REFUSED: …` |
-| 4 | UNAVAILABLE — CLI missing, non-zero exit, timeout, unparseable envelope, denied tools, non-SUCCESS status, a codex failure event, empty response, or the build stage could not be prepared | return `UNAVAILABLE: …`; never substitute your own work, never read as "no findings" |
+| 3 | REFUSED — deny-list hit, boundary not attested, codex not listed in the tiers file for this level/mode, a refused `--allow-read`, the retired agy vendor, or `--patch-out` on a dirty tree; nothing ran | return `REFUSED: …` |
+| 4 | UNAVAILABLE — CLI missing, no `sandbox-exec` or a profile that does not apply/enforce, audit log dir not writable, non-zero exit, timeout, a codex failure event, empty response, or the build stage could not be prepared | return `UNAVAILABLE: …`; never substitute your own work, never read as "no findings" |
 | 5 | SCHEMA — `--schema` given and the response is not valid JSON | retry once or report INCOMPLETE |
 | 6 | APPLY — build only: the patch would not apply cleanly to the real repo, so NOTHING was written (the tree is unchanged). The patch is left at `--output`; the answer still went to stdout | resolve by hand, or re-run |
 
-**Exit 0 alone is never proof of work.** A headless agy run whose tools were auto-denied
-exits 0 and reports `{"status":"SUCCESS","response":"","denied_actions":[…]}`; a
-`--print-timeout` expiry looks the same. The agy gate therefore needs exit 0,
-`.denied_actions` empty and `.response` non-empty. A failed codex turn emits `turn.failed` and
+Every REFUSED/USAGE decision is made before any availability check, so a refusal is the same
+exit 3 on a machine without `sandbox-exec`.
+
+**Exit 0 alone is never proof of work.** A failed codex turn emits `turn.failed` and
 `{"type":"error"}` events, exits 1, and writes no `-o` file; the codex gate needs rc 0, a
 non-empty `-o` file and no failure event. A codex rate limit is therefore UNAVAILABLE too.
 
 ### Deny-list and the data boundary
 
 Applied to the resolved path of `--prompt-file`, `--workdir` (and its repo top level), a
-`--schema` file, and every `--input`. "Resolved" is the whole symlink chain (`resolve_path`,
-bash-3.2 `readlink` loop), not just the parent dir, and the resolved path is also the one that
-is read — a link in an allowed dir pointing into a denied repo is refused, never followed:
+`--schema` file, every `--input` and every `--allow-read`. "Resolved" is the whole symlink
+chain (`resolve_path`, bash-3.2 `readlink` loop), not just the parent dir, and the resolved
+path is also the one that is read — a link in an allowed dir pointing into a denied repo is
+refused, never followed:
 
 1. refuse if any **path component equals** a denied name — component equality, not
    substring, so `…/clip-creator/media` refuses and `…/clip-creators-lab` does not.
-   `clip-creator` is hard-denied for every vendor; `AGY_DENY_REPOS` / `CODEX_DENY_REPOS`
-   add names for one vendor;
-2. refuse if the vendor's marker — `.agy-deny` (agy only) or `.codex-deny` (codex only) —
-   exists anywhere from that path up to **and including** `$HOME` (or `/` for a path outside
-   it): a per-repo, per-vendor opt-out that needs no edit to this script;
-3. refuse unless `AGY_BOUNDARY_CLEARED=1` (both vendors) — clinical/BCH/PHI and COI
-   material is not a path pattern, so it stays an explicit caller attestation.
+   `clip-creator` is hard-denied; `CODEX_DENY_REPOS` adds names;
+2. refuse if a `.codex-deny` marker exists anywhere from that path up to **and including**
+   `$HOME` (or `/` for a path outside it): a per-repo opt-out that needs no edit to this
+   script;
+3. refuse unless `AGY_BOUNDARY_CLEARED=1` — clinical/BCH/PHI and COI material is not a path
+   pattern, so it stays an explicit caller attestation (the name predates agy's retirement).
 
-The workspace flag (`--add-dir` / `-C`) is **not** exposed as a caller option: the script
+The workspace (`-C`, cwd, the profile's workspace rule) is **not** a caller option: the script
 supplies exactly one value, its own run directory, after that path has passed the deny check.
-
-This is a default-ALLOW list. In build mode the CLI may read any file in the repo, and agy
-persists its own plan/walkthrough artifacts under `~/.gemini/antigravity-cli/brain/…`,
-outside anything this script can clean up. Drop the vendor's empty marker into any tree you
-have not consciously cleared for it.
 
 ### Environment
 
 | Var | Effect |
 |---|---|
-| `AGY_BIN` / `CODEX_BIN` | executables (default: `agy` / `codex` on PATH) |
-| `AGY_DENY_REPOS` / `CODEX_DENY_REPOS` | extra space-separated names that vendor must never see (`clip-creator` is always denied) |
-| `AGY_BOUNDARY_CLEARED` | must be `1`, else REFUSED before anything runs (both vendors) |
+| `CODEX_BIN` | the codex executable (default `codex` looked up on PATH); resolved to its real file |
+| `CODEX_DENY_REPOS` | extra space-separated names codex must never see (`clip-creator` is always denied) |
+| `AGY_BOUNDARY_CLEARED` | must be `1`, else REFUSED before anything runs |
 | `AGY_STAGE_KEEP` | `1` keeps the staging dir (its path is printed on stderr). Never keeps the build worktree |
+| `EXT_RUN_AUDIT_LOG` | the command audit log (default `~/.claude/logs/ext-run/codex-commands.jsonl`) |
 | `TRIAGE_TIERS` | the tiers file to read (overrides the installed and repo copies) |
 | `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_COMMON_DIR`, `GIT_NAMESPACE`, `GIT_CEILING_DIRECTORIES` | **cleared** at the top (also by `patch-check.sh`, `stage-worktree.sh`, `parity-suite.sh`): an inherited absolute `GIT_DIR`/`GIT_WORK_TREE` (a git hook's environment) would otherwise redirect `git -C` into another repository |
 
 Vendor-side token spend is invisible to `triage-usage.sh`, so each run echoes
-`ext-run: <N> tokens (<S>s, <vendor>/<model>)[ out=<M>]` to **stderr**. `N` is the total
-(codex: `input_tokens + output_tokens` summed over `turn.completed`; agy:
-`.usage.total_tokens`). `out=` is the output side, reasoning included, which is what a bake-off
-compares: codex `output_tokens` (reasoning tokens are already inside it); agy only when its
-envelope carries a numeric `.usage.output_tokens`, otherwise the field is omitted, never guessed
-(unverified whether agy 1.2.3 emits it).
+`ext-run: <N> tokens (<S>s, codex/<model>) out=<M>` to **stderr**: `N` = `input_tokens +
+output_tokens` summed over `turn.completed`; `out=` = `output_tokens` (reasoning included), the
+part a bake-off compares.
 
 ### Requirements and tests
 
-`bash` (3.2+, macOS default), `jq`, and `git` for build mode.
+`bash` (3.2+, macOS default), `jq`, `sandbox-exec` (macOS) for any codex run, and `git` for
+build mode.
 
-`test/ext-run.sh` (wired into `make test`) is hermetic: stub `agy` and `codex` executables
-first on `PATH` replay canned envelopes / JSONL events and log their cwd, argv and prompt, so
-the flag tables (codex's from a fixture tiers file), the deny-list, the exit-code contract,
-the watchdog, `--patch-out`/`--check` and the whole build-worktree round trip are asserted
-without ever reaching a real CLI or the network — including: the CLI sees no `.git` in its
-cwd, a conflicting 3-way apply leaves the caller's tree byte-identical (exit 6), symlink
-chains into denied repos, a marker at `$HOME`, an inherited `GIT_DIR`, a trailing option with
-no value (exit 2, never a hang) and grandchildren reaped. It also covers `tiers-sync.sh` and
-`triage-tiers.sh`. `qc/mutate.sh` #49–#51 prove the git-env, symlink and apply-back guards
-have teeth.
+`test/ext-run.sh` (wired into `make test`) is hermetic: a stub `codex` (a shell script living
+in the test's `$HOME/.codex`) replays canned JSONL events and logs its cwd, argv, prompt and
+whether it ran confined. On macOS every stub run goes through the REAL generated profile, and
+the P* checks prove enforcement: workspace read/write works; a file under `$HOME/projects`,
+writes to `$HOME` and `/private/tmp`, and writes to the private meta dir are denied; outside
+`$HOME` and the temp dirs (`/private/var/tmp`, `/Users/Shared`) no file, dir, symlink,
+rename-out or write through a hard link lands; with the stage under a real `/private/tmp`
+fixture and `$HOME` elsewhere, a sibling stage, a sibling candidate's patch, a
+Claude-scratchpad-like dir, a file in the per-user temp dir and the stage's own meta are
+unreadable while the workspace and an `--allow-read` dir in the temp dirs stay readable; a
+login zsh, git (init, realpath, commit), python3, a PTY and `/dev/fd` work; an
+`--allow-read` dir is readable and read-only; in build mode the real repo (outside `$HOME`
+and the temp dirs) and its git dir are unreadable and the hidden `.git` cannot be rewritten;
+missing / non-applying / non-enforcing `sandbox-exec` is exit 4 with the stub never run —
+including a double that stops only the stage canary and the real `sandbox-exec` on the old
+allow-by-default write rule, both caught by the outside canary, which is then removed. Where
+`sandbox-exec` does not exist (Linux CI) a NON-confining test double that forges the
+preflight canary stands in, the enforcement checks SKIP, and everything else — the profile
+text included — still runs. Also covered: the flag table, the
+deny-list, `--allow-read` refusals, the audit log (fields, no output, failed runs, prune), the
+exit-code contract, the watchdog, `--patch-out`/`--check`, the build-worktree round trip, symlink
+chains, a marker at `$HOME`, an inherited `GIT_DIR`, a trailing option with no value, and
+`tiers-sync.sh`/`triage-tiers.sh`. `qc/mutate.sh` proves the confinement, audit and agy-refusal
+guards have teeth (#56–#59), deny-by-default writes, the temp-dir read rule and the outside
+canary (#60–#62), as well as the git-env, symlink and apply-back guards (#49–#51).
 
 **Known limitation — `--check` is not sandboxed.** The check command runs in the disposable
-worktree with this user's full rights, OUTSIDE the model sandbox, and it may execute code the
-external CLI wrote (tests, Makefiles, scripts). The worktree is the only confinement. The same
-holds for `patch-check.sh`. A macOS seatbelt profile would close this, but would also block
-checks that need LibreOffice (grant-forge's docx rendering), so it is deliberately not done.
+worktree with this user's full rights, OUTSIDE the model sandbox, and it may execute code
+codex wrote (tests, Makefiles, scripts). The worktree is the only confinement. The same holds
+for `patch-check.sh`. A seatbelt profile would close this, but would also block checks that
+need LibreOffice (grant-forge's docx rendering), so it is deliberately not done.
 
 ## `patch-check.sh` — the independent grader of a bake-off
 
@@ -408,7 +505,7 @@ checks that need LibreOffice (grant-forge's docx rendering), so it is deliberate
 patch-check.sh --repo DIR --base REV --check CMD [--overlay DIR] [--timeout SECS] PATCH...
 ```
 
-`workflows/triage-compare.js` runs one brief on several candidates (Claude levels, codex, agy),
+`workflows/triage-compare.js` runs one brief on several candidates (Claude levels, codex),
 each writing a patch. The candidates' own claims about their checks are never the grade; this
 script is. For each PATCH, in argument order:
 
@@ -531,7 +628,7 @@ ships the machinery and three tiny synthetic fixtures (`test/fixtures/parity/sui
 | `solution` | build, for `verify-task` | the reference fix; never shown to candidates |
 | `grading` | yes | `check` (the checks), `rubric` (checks + two blind judges vs the key), `seeded` (review tasks only) |
 | `key` | rubric/seeded | `key.md`/`key.json` (rubric), `key.json` = `[{file,line,id,desc}]` (seeded) |
-| `vendors` | yes | subset of `claude`, `codex`, `agy` allowed on this task |
+| `vendors` | yes | subset of `claude`, `codex` allowed on this task (`agy`, retired 2026-09-24, is still tolerated in older task files) |
 | `timeoutMin` | no | per-check wall clock for `verify-task` (default 10) |
 
 `list` prints every task (task.json + `taskDir`) sorted by band then id; any invalid task, or a
@@ -544,14 +641,15 @@ gives the same sha. It never writes into the source repo, refuses an `--out` ins
 or the task dir, rebuilds an `--out` it made before and refuses any other non-empty one.
 
 **Deny propagation.** A clone's git-common-dir is the clone itself, so `ext-run.sh` — the owner
-of every deny decision — would no longer see the source's `.agy-deny`/`.codex-deny` markers or
-its `AGY_DENY_REPOS`/`CODEX_DENY_REPOS` names. `materialize` therefore refuses (exit 3) any
-source or task path with a `clip-creator` component (`HARD_DENY_REPOS`, kept equal to
-ext-run's by a test), and writes `<out>/.<vendor>-deny` for any vendor the source is denied to
-(the same walk as ext-run: up to and including `$HOME`; the source paths are kept as an array,
-so a path with spaces keeps its status). ext-run finds that marker walking up from the clone and
-from any worktree of it (triage-compare's staged worktrees). It prints
-`{repo, sha, denied:{agy, codex}}`, `denied` being what ext-run will see.
+of every deny decision — would no longer see the source's `.codex-deny` markers or its
+`CODEX_DENY_REPOS` names. `materialize` therefore refuses (exit 3) any source or task path with
+a `clip-creator` component (`HARD_DENY_REPOS`, kept equal to ext-run's by a test), and writes
+`<out>/.codex-deny` when the source is denied to codex (the same walk as ext-run: up to and
+including `$HOME`; the source paths are kept as an array, so a path with spaces keeps its
+status). ext-run finds that marker walking up from the clone and from any worktree of it
+(triage-compare's staged worktrees). It prints `{repo, sha, denied:{codex}}`, `denied` being
+what ext-run will see. (`.agy-deny` markers are no longer propagated: agy was retired
+2026-09-24.)
 
 `verify-task` materializes, then for a build task runs `patch-check.sh` twice — an empty patch
 (the base) and `solution.patch`, both with the overlay — and prints
@@ -619,7 +717,9 @@ tiers file); idempotent by run id.
 rate, Wilson 95% lower bound, excluded (non-graded) count, mean tokens and seconds. Per level ×
 vendor the incumbent is `levels.<level>.<vendor>`; every other (model, effort) there is a
 challenger. Cheapness: claude haiku < sonnet < opus < fable; codex gpt-6-luna < gpt-6-sol <
-gpt-6-astra; agy flash < pro; then effort low < medium < high < xhigh < max.
+gpt-6-astra; agy flash < pro (agy is retired and has no levels entry: historical ledger rows
+still validate, and it is never an incumbent or proposed); then effort low < medium < high <
+xhigh < max.
 
 | Case | Verdict |
 |---|---|

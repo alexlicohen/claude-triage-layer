@@ -35,7 +35,7 @@ const task = (id, band, over = {}) => Object.assign({
 }, over)
 const LADDER = [task('t1', 1), task('t2', 2), task('t3', 3), task('t4', 4)]
 
-// run(args, opts) — opts.tasks: the loader's list; opts.denied: {taskId: {agy,codex}};
+// run(args, opts) — opts.tasks: the loader's list; opts.denied: {taskId: {codex}};
 // opts.outcome(taskId, runLabel, cmpArgs) -> compare status (default 'pass');
 // opts.script: {labelPrefix: [responses]} for any other agent (longest prefix
 // wins, a queue repeats its last entry, an Error is thrown, a function is called
@@ -53,7 +53,7 @@ async function run(args, opts = {}) {
     'materialize:': [p => {
       const out = (p.match(/--out '([^']+)'/) || [])[1]
       const id = (p.match(/--task '[^']*\/([^/']+)'/) || [])[1]
-      return { repo: `${out}/repo`, sha: SHA, denied: Object.assign({ agy: false, codex: false }, denied[id] || {}), rc: 0 }
+      return { repo: `${out}/repo`, sha: SHA, denied: Object.assign({ codex: false }, denied[id] || {}), rc: 0 }
     }],
     'desk:': ['CROSS-REVIEW (x · verify · exit 0)\nsome published numbers'],
     'judge:copy': [{ ok: true, rc: 0 }],
@@ -126,7 +126,8 @@ const cellOf = (result, id, l) => ((result.tasks.find(t => t.id === id) || { res
     ['outDir inside the suite', A({ outDir: `${SUITE}/runs`, candidates: ok })],
     ['no candidates', A({ candidates: [] })],
     ['unknown vendor', A({ candidates: [C('gemini', 'builder', 'a')] })],
-    ['agy off builder', A({ candidates: [C('agy', 'deep', 'a')] })],
+    ['retired agy candidate', A({ candidates: [C('agy', 'builder', 'a')] })],
+    ['retired agy judge', A({ candidates: ok, judges: [{ vendor: 'agy', level: 'builder' }, { vendor: 'claude', level: 'deep' }] })],
     ['bad effort', A({ candidates: [C('codex', 'deep', 'a', { effort: 'ultra' })] })],
     ['label reserved for reps', A({ candidates: [C('claude', 'deep', 'x-r2')] })],
     ['label with @', A({ candidates: [C('claude', 'deep', 'x@y')] })],
@@ -149,8 +150,8 @@ const cellOf = (result, id, l) => ((result.tasks.find(t => t.id === id) || { res
 
 // ---- P2: loader -> materialize -> compare wiring, vendors per task, skipped ---
 {
-  const tasks = [task('t1', 1), task('t2', 1, { vendors: ['claude', 'codex'] })]
-  const { result, calls, wf } = await run(A({ bands: [1], candidates: [C('claude', 'builder', 'cb'), C('codex', 'builder', 'xb'), C('agy', 'builder', 'ab')] }), { tasks })
+  const tasks = [task('t1', 1), task('t2', 1, { vendors: ['codex'] })]
+  const { result, calls, wf } = await run(A({ bands: [1], candidates: [C('claude', 'builder', 'cb'), C('codex', 'builder', 'xb'), C('claude', 'quick', 'ab')] }), { tasks })
   const load = calls.filter(c => c.label === 'load:suite')
   chk('P2: ONE loader spawn — a triage-quick-task running parity-suite.sh list on the suite, with a schema',
     load.length === 1 && load[0].opts.agentType === 'triage-quick-task' && load[0].prompt.includes(`parity-suite.sh list --suite '${SUITE}'`) && !!load[0].opts.schema)
@@ -165,10 +166,10 @@ const cellOf = (result, id, l) => ((result.tasks.find(t => t.id === id) || { res
     w1.args.files[0] === 'calc.sh' && w1.args.acceptance === 'acc t1')
   chk('P2: the hidden overlay is passed as an absolute path in the task dir (never shown in a brief)', w1 && w1.args.overlay === `${SUITE}/1/t1/hidden`)
   chk('P2: compare candidates carry the stable parity labels, vendor and level',
-    w1 && w1.args.candidates.map(c => `${c.label}:${c.vendor}:${c.level}`).join() === 'cb:claude:builder,xb:codex:builder,ab:agy:builder')
+    w1 && w1.args.candidates.map(c => `${c.label}:${c.vendor}:${c.level}`).join() === 'cb:claude:builder,xb:codex:builder,ab:claude:quick')
   const w2 = wf.find(w => w.args.outDir === `${OUT}/1/t2/cmp`)
-  chk('P2: a vendor the task does not allow is not a candidate there, and is recorded as skipped', w2 && !w2.args.candidates.some(c => c.vendor === 'agy') && cellOf(result, 't2', 'ab').status === 'skipped')
-  chk('P2: skipped is not counted (agy: 1 graded task in band 1, not 2)', rank(result, 'ab').perBand[1].pass === 1 && rank(result, 'ab').perBand[1].other === 0)
+  chk('P2: a vendor the task does not allow is not a candidate there, and is recorded as skipped', w2 && !w2.args.candidates.some(c => c.vendor === 'claude') && cellOf(result, 't2', 'ab').status === 'skipped')
+  chk('P2: skipped is not counted (ab: 1 graded task in band 1, not 2)', rank(result, 'ab').perBand[1].pass === 1 && rank(result, 'ab').perBand[1].other === 0)
   chk('P2: the task matrix is complete: every task x candidate has a cell', result.tasks.length === 2 && result.tasks.every(t => t.results.length === 3))
   chk('P2: external tokens and seconds are summed from the compare results', rank(result, 'xb').externalTokens === 2000 && rank(result, 'xb').seconds === 20 && rank(result, 'cb').externalTokens === null)
 }
@@ -219,7 +220,7 @@ const cellOf = (result, id, l) => ((result.tasks.find(t => t.id === id) || { res
   chk('P5: a triage-compare that throws => unavailable (flagged), not fail', cellOf(crash.result, 't1', 'a').status === 'unavailable' && rank(crash.result, 'a').perBand[1].fail === 0 && crash.result.flags.some(f => /triage-compare failed/.test(f)))
   const mat = await run(A({ bands: [1], candidates: [C('claude', 'builder', 'a')] }), { tasks: [task('t1', 1)], script: { 'materialize:': [new Error('boom')] } })
   chk('P5: a failed materialize => unavailable (flagged), no compare', mat.wf.length === 0 && cellOf(mat.result, 't1', 'a').status === 'unavailable' && mat.result.flags.some(f => /materialize failed/.test(f)))
-  const badMat = await run(A({ bands: [1], candidates: [C('claude', 'builder', 'a')] }), { tasks: [task('t1', 1)], script: { 'materialize:': [{ repo: '/elsewhere/repo', sha: SHA, denied: { agy: false, codex: false } }] } })
+  const badMat = await run(A({ bands: [1], candidates: [C('claude', 'builder', 'a')] }), { tasks: [task('t1', 1)], script: { 'materialize:': [{ repo: '/elsewhere/repo', sha: SHA, denied: { codex: false } }] } })
   chk('P5: a materialize reply naming another repo path is rejected (the computed path is the only one used)', badMat.wf.length === 0 && cellOf(badMat.result, 't1', 'a').status === 'unavailable')
 }
 
@@ -408,9 +409,9 @@ const cellOf = (result, id, l) => ((result.tasks.find(t => t.id === id) || { res
   chk('P12: review tasks are not repeated (and that is logged)', calls.filter(c => c.label.startsWith('candidate:a')).length === 1 && logs.some(l => /reps=2 applies to build tasks only/.test(l)))
   const d = await run(A({ desk: true, bands: [1], candidates: [C('claude', 'builder', 'a', { model: 'sonnet' }), C('codex', 'deep', 'x', { model: 'gpt-6-astra', effort: 'high' })] }), { tasks: [task('t1', 1)] })
   const desk = d.calls.filter(c => c.label.startsWith('desk:'))
-  chk('P12: the desk leg is one codex and one agy cross-reviewer call in verify mode naming the candidate models',
-    desk.length === 2 && desk.every(c => c.opts.agentType === 'triage-cross-reviewer') && desk.some(c => /^VENDOR=codex\nMODE=verify\n/.test(c.prompt)) &&
-    desk.some(c => /^VENDOR=agy\nMODE=verify\n/.test(c.prompt)) && desk.every(c => c.prompt.includes('codex:gpt-6-astra@high') && c.prompt.includes('claude:sonnet')))
+  chk('P12: the desk leg is ONE codex cross-reviewer call in verify mode naming the candidate models (no agy)',
+    desk.length === 1 && desk.every(c => c.opts.agentType === 'triage-cross-reviewer') && /^VENDOR=codex\nMODE=verify\n/.test(desk[0].prompt) &&
+    desk.every(c => c.prompt.includes('codex:gpt-6-astra@high') && c.prompt.includes('claude:sonnet')) && !('agy' in d.result.desk))
   chk('P12: the desk result is returned as signal and never scored', d.result.desk.codex.includes('published numbers') && !d.result.ranking.some(r => r.label.startsWith('desk')))
   chk('P12: desk:false skips it', calls.every(c => !c.label.startsWith('desk:')) && result.desk === null)
   const filt = await run(A({ taskFilter: ['t2', 'nope'], candidates: [C('claude', 'builder', 'a')] }))

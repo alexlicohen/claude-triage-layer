@@ -127,7 +127,7 @@ const repoAsWorkdir = p => /(^|\s)cd\s+'?\/r\/repo'?(\s|$|\/)/.test(p) || /WORKD
     ['no candidates', A({ candidates: [] })],
     ['unknown vendor', A({ candidates: [{ vendor: 'gemini', level: 'builder' }] })],
     ['unknown level', A({ candidates: [{ vendor: 'claude', level: 'fable' }] })],
-    ['agy off builder', A({ candidates: [{ vendor: 'agy', level: 'deep' }] })],
+    ['retired agy vendor', A({ candidates: [{ vendor: 'agy', level: 'builder' }] })],
     ['bad effort', A({ candidates: [{ vendor: 'codex', level: 'deep', effort: 'ultra' }] })],
     ['model with a space', A({ candidates: [{ vendor: 'codex', level: 'deep', model: 'gpt 6' }] })],
     ['duplicate default labels', A({ candidates: [{ vendor: 'claude', level: 'deep' }, { vendor: 'claude', level: 'deep' }] })],
@@ -139,6 +139,9 @@ const repoAsWorkdir = p => /(^|\s)cd\s+'?\/r\/repo'?(\s|$|\/)/.test(p) || /WORKD
     const r = await throws(args)
     chk(`C1: ${name} throws before any spawn`, r.threw && r.calls.length === 0 && /triage-compare:/.test(r.message))
   }
+  const agy = await throws(A({ candidates: [{ vendor: 'codex', level: 'builder' }, { vendor: 'agy', level: 'builder' }] }))
+  chk('C1: an agy candidate is refused by name, naming its retirement, before any spawn',
+    agy.threw && agy.calls.length === 0 && agy.message.includes('candidates[1].vendor "agy"') && agy.message.includes('agy was retired 2026-09-24'))
   const ok = await throws(A({ base: 'main~1', candidates: [{ vendor: 'claude', level: 'builder' }] }), { 'grade:': [FIN({})] })
   chk('C1: a non-HEAD base is fine for Claude candidates', ok.threw === false)
   const okExt = await throws(A({ base: 'main~1', candidates: [{ vendor: 'codex', level: 'builder' }] }), { 'candidate:': [EXT_OK('codex', 'm')], 'grade:': [FIN({})] })
@@ -151,23 +154,23 @@ const repoAsWorkdir = p => /(^|\s)cd\s+'?\/r\/repo'?(\s|$|\/)/.test(p) || /WORKD
     A({ candidates: [
       { vendor: 'claude', level: 'builder' },
       { vendor: 'codex', level: 'deep', model: 'gpt-6-astra', effort: 'high' },
-      { vendor: 'agy', level: 'builder' },
+      { vendor: 'codex', level: 'quick' },
       { vendor: 'claude', level: 'deep', label: 'mine' },
     ] }),
     {
       'candidate:claude-builder': ['done\nCHECK rc=0\nDONE'],
       'candidate:codex-deep': [EXT_OK('codex', 'gpt-6-astra')],
-      'candidate:agy-builder': [EXT_OK('agy', 'gemini-3.1-pro-high', 500, 30, null)],
+      'candidate:codex-quick': [EXT_OK('codex', 'gpt-6-luna', 500, 30, null)],
       'candidate:mine': ['done\nCHECK rc=0\nDONE'],
-      'grade:': [FIN({ 'claude-builder': [true, 0], 'codex-deep-gpt-6-astra-high': [true, 0], 'agy-builder': [true, 1], mine: [false, null] })],
+      'grade:': [FIN({ 'claude-builder': [true, 0], 'codex-deep-gpt-6-astra-high': [true, 0], 'codex-quick': [true, 1], mine: [false, null] })],
     })
   chk('C2: stage spawn first, candidates one at a time in plan order, ONE grade spawn, then cleanup',
-    maxInflight === 1 && calls.map(c => c.label).join() === 'stage:create,candidate:claude-builder,candidate:codex-deep-gpt-6-astra-high,candidate:agy-builder,candidate:mine,grade:finalize,cleanup:stage')
+    maxInflight === 1 && calls.map(c => c.label).join() === 'stage:create,candidate:claude-builder,candidate:codex-deep-gpt-6-astra-high,candidate:codex-quick,candidate:mine,grade:finalize,cleanup:stage')
   chk('C2: the stage spawn is ONE triage-quick-task running stage-worktree.sh create with --count = the number of candidates, the repo, base and <outDir>/stage',
     calls[0].opts.agentType === 'triage-quick-task' && calls[0].opts.schema && calls[0].opts.schema.required.includes('worktrees') &&
     calls[0].prompt.includes(`~/.claude/scripts/stage-worktree.sh create --repo '${REPO}' --base 'HEAD' --count 4 --dir '${STAGE}'`))
   chk('C2: default labels are vendor-level[-model][-effort]; explicit labels are kept',
-    result.candidates.map(c => c.label).join() === 'claude-builder,codex-deep-gpt-6-astra-high,agy-builder,mine')
+    result.candidates.map(c => c.label).join() === 'claude-builder,codex-deep-gpt-6-astra-high,codex-quick,mine')
   chk('C2: patches land at <outDir>/<label>.patch', byLabel(result, 'mine').patch === '/o/out/mine.patch')
   chk('C2: statuses come out pass/pass/fail/fail', result.candidates.map(c => c.status).join() === 'pass,pass,fail,fail')
   chk('C2: returns base (default HEAD), the staged sha, leak:false, baseMoved:false and graded:true',
@@ -220,7 +223,7 @@ const repoAsWorkdir = p => /(^|\s)cd\s+'?\/r\/repo'?(\s|$|\/)/.test(p) || /WORKD
   const { calls } = await run(
     A({ checks: ['make test', 'npm t'], candidates: [
       { vendor: 'codex', level: 'deep', model: 'gpt-6-astra', effort: 'high' },
-      { vendor: 'agy', level: 'builder' },
+      { vendor: 'codex', level: 'builder' },
       { vendor: 'codex', level: 'quick', label: 'luna' },
     ] }),
     { 'candidate:': [EXT_OK('codex', 'm')], 'grade:': [FIN({})] })
@@ -228,7 +231,7 @@ const repoAsWorkdir = p => /(^|\s)cd\s+'?\/r\/repo'?(\s|$|\/)/.test(p) || /WORKD
   const first = c => c.prompt.split('\n')[0]
   chk('C4: codex header is exact (EFFORT, MODEL, then WORKDIR = its own staged worktree, last)',
     first(cand[0]) === `VENDOR=codex LEVEL=deep EFFORT=high MODEL=gpt-6-astra WORKDIR=${STAGE}/wt-1`)
-  chk('C4: agy header omits EFFORT/MODEL when not given', first(cand[1]) === `VENDOR=agy LEVEL=builder WORKDIR=${STAGE}/wt-2`)
+  chk('C4: the header omits EFFORT/MODEL when not given', first(cand[1]) === `VENDOR=codex LEVEL=builder WORKDIR=${STAGE}/wt-2`)
   chk('C4: an explicit label changes nothing about the workdir', first(cand[2]) === `VENDOR=codex LEVEL=quick WORKDIR=${STAGE}/wt-3`)
   chk('C4: no PATCH_OUT/CHECK in the header — the grade never depends on the wrapper carrying a flag',
     cand.every(c => !/PATCH_OUT=|CHECK=/.test(first(c))))
@@ -245,14 +248,14 @@ const repoAsWorkdir = p => /(^|\s)cd\s+'?\/r\/repo'?(\s|$|\/)/.test(p) || /WORKD
   const { result, calls, logs } = await run(
     A({ candidates: [
       { vendor: 'codex', level: 'builder', label: 'u1' },
-      { vendor: 'agy', level: 'builder', label: 'u2' },
+      { vendor: 'codex', level: 'builder', label: 'u2' },
       { vendor: 'claude', level: 'builder', label: 'u3' },
       { vendor: 'codex', level: 'deep', label: 'u4' },
       { vendor: 'claude', level: 'deep', label: 'ok' },
     ] }),
     {
       'candidate:u1': ['UNAVAILABLE: codex exited 1 — rate limited'],
-      'candidate:u2': ['REFUSED: .agy-deny marker'],
+      'candidate:u2': ['REFUSED: .codex-deny marker'],
       'candidate:u3': [null],
       'candidate:u4': [new Error('token ceiling reached')],
       'candidate:ok': ['done\nCHECK rc=0'],
@@ -331,13 +334,13 @@ const repoAsWorkdir = p => /(^|\s)cd\s+'?\/r\/repo'?(\s|$|\/)/.test(p) || /WORKD
     A({ candidates: [
       { vendor: 'claude', level: 'deep', label: 'c1' },
       { vendor: 'codex', level: 'builder', label: 'x1' },
-      { vendor: 'agy', level: 'builder', label: 'g1' },
+      { vendor: 'codex', level: 'quick', label: 'g1' },
       { vendor: 'claude', level: 'builder', label: 'c2' },
     ] }),
     {
       'candidate:c1': ['done'], 'candidate:c2': ['done'],
       'candidate:x1': [EXT_OK('codex', 'gpt-6-sol', 5000, 42, 800)],
-      'candidate:g1': [EXT_OK('agy', 'gemini-3.1-pro-high', 700, 9.5, null)],
+      'candidate:g1': [EXT_OK('codex', 'gpt-6-luna', 700, 9.5, null)],
       'grade:': [FIN({ c1: [true, 0], x1: [true, 0], g1: [true, 0], c2: [true, 0] })],
     },
     { spend: { 'stage:': 55, 'candidate:c1': 1234, 'candidate:x1': 50, 'candidate:g1': 60, 'candidate:c2': 777, 'grade:': 99, 'cleanup:': 11 } })
@@ -441,7 +444,7 @@ const repoAsWorkdir = p => /(^|\s)cd\s+'?\/r\/repo'?(\s|$|\/)/.test(p) || /WORKD
   const noFiles = await throws(A({ files: undefined, candidates: [{ vendor: 'codex', level: 'builder' }] }))
   chk('C13: an external candidate without args.files throws before any spawn',
     noFiles.threw && noFiles.calls.length === 0 && /args\.files must be a non-empty array/.test(noFiles.message))
-  const emptyFiles = await throws(A({ files: [], candidates: [{ vendor: 'agy', level: 'builder' }] }))
+  const emptyFiles = await throws(A({ files: [], candidates: [{ vendor: 'codex', level: 'quick' }] }))
   chk('C13: an empty files array is treated the same as missing', emptyFiles.threw && /args\.files must be a non-empty array/.test(emptyFiles.message))
   const { result } = await run(
     A({ files: undefined, candidates: [{ vendor: 'claude', level: 'builder', label: 'a' }] }),
@@ -477,7 +480,7 @@ const repoAsWorkdir = p => /(^|\s)cd\s+'?\/r\/repo'?(\s|$|\/)/.test(p) || /WORKD
 {
   const { calls } = await run(
     A({ candidates: [
-      { vendor: 'claude', level: 'quick' }, { vendor: 'codex', level: 'builder' }, { vendor: 'agy', level: 'builder' }, { vendor: 'claude', level: 'top' },
+      { vendor: 'claude', level: 'quick' }, { vendor: 'codex', level: 'builder' }, { vendor: 'codex', level: 'quick' }, { vendor: 'claude', level: 'top' },
     ] }),
     { 'candidate:': [EXT_OK('codex', 'm')], 'grade:': [FIN({})] })
   chk('C16: no candidate prompt names the real repo as a cd target or WORKDIR', cands(calls).every(c => !repoAsWorkdir(c.prompt)))

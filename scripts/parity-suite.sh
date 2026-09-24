@@ -37,13 +37,13 @@
 #              the source repo. Refuses (exit 3) a source/task path with a
 #              clip-creator component. DENY PROPAGATION: the materialized repo's
 #              git-common-dir is itself, so ext-run.sh would no longer see the
-#              source's .agy-deny/.codex-deny markers (or its AGY_DENY_REPOS /
-#              CODEX_DENY_REPOS names); any such status found walking up from the
-#              source to $HOME is written as <out>/.<vendor>-deny, which ext-run
-#              finds walking up from the materialized repo (and from worktrees
-#              of it).
-#              Prints {"repo","sha","denied":{"agy":bool,"codex":bool}} — denied
-#              is what ext-run will see from <out>/repo. An <out> this command
+#              source's .codex-deny markers (or its CODEX_DENY_REPOS names); any
+#              such status found walking up from the source to $HOME is written as
+#              <out>/.codex-deny, which ext-run finds walking up from the
+#              materialized repo (and from worktrees of it). (agy was retired
+#              2026-09-24: its .agy-deny markers are no longer propagated.)
+#              Prints {"repo","sha","denied":{"codex":bool}} — denied is what
+#              ext-run will see from <out>/repo. An <out> this command
 #              made before (it holds .parity-materialized) is rebuilt; any other
 #              non-empty <out> is refused.
 # verify-task  materializes into --out, then:
@@ -74,7 +74,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Mirrors HARD_DENY_REPOS in ext-run.sh (the owner of deny decisions);
 # test/parity-suite.sh fails if the two ever differ.
 HARD_DENY_REPOS="clip-creator"
-VENDORS="agy codex"
+VENDORS="codex"
 MATERIALIZED_MARK=".parity-materialized"
 
 die() { echo "parity-suite: $1" >&2; exit "${2:-1}"; }
@@ -149,7 +149,7 @@ if type != "object" then ["task.json is not a JSON object"] else [
   (if .grading == "seeded" and .kind != "review" then "grading seeded is for review tasks" else empty end),
   (if (.grading == "rubric" or .grading == "seeded") and ((.key | rel) | not) then "grading \(.grading) needs a key" else empty end),
   (if .grading == "seeded" and ((.key // "") | endswith(".json") | not) then "a seeded key must be a .json file" else empty end),
-  (if (.vendors | type) == "array" and (.vendors | length) > 0 and all(.vendors[]; . == "claude" or . == "codex" or . == "agy") then empty else "vendors must be a non-empty subset of claude, codex, agy" end),
+  (if (.vendors | type) == "array" and (.vendors | length) > 0 and all(.vendors[]; . == "claude" or . == "codex" or . == "agy") then empty else "vendors must be a non-empty subset of claude, codex (agy: retired 2026-09-24, still tolerated in older task files)" end),
   (if has("timeoutMin") and .timeoutMin != null then (if (.timeoutMin | type) == "number" and .timeoutMin > 0 then empty else "timeoutMin must be a positive number" end) else empty end)
 ] end'
 
@@ -206,7 +206,7 @@ has_hard_deny() {
   return 1
 }
 # deny_names VENDOR — the extra names ext-run denies for VENDOR.
-deny_names() { case "$1" in agy) echo "${AGY_DENY_REPOS:-}" ;; codex) echo "${CODEX_DENY_REPOS:-}" ;; esac; }
+deny_names() { case "$1" in codex) echo "${CODEX_DENY_REPOS:-}" ;; esac; }
 # denied_at VENDOR PATH — prints the reason ext-run would refuse VENDOR on PATH
 # (a .VENDOR-deny marker from PATH up to AND INCLUDING $HOME, or / outside it —
 # the same walk as ext-run.sh — or a deny-listed name component); prints nothing
@@ -237,7 +237,7 @@ main_worktree_of() {
 
 # ---------------------------------------------------------------------------
 # materialize_task TASKDIR OUT — SINGLE OWNER of turning a task into a repo.
-# Sets TASK_JSON, MAT_REPO, MAT_SHA, DENIED_AGY, DENIED_CODEX. Exits on error.
+# Sets TASK_JSON, MAT_REPO, MAT_SHA, DENIED_CODEX. Exits on error.
 materialize_task() {
   local tdir="$1" out="$2" type src base script setup srcTop srcMain p v why made_repo=0 wrote
   case "$out" in /*) ;; *) usage "--out must be an absolute path (got '$out')" ;; esac
@@ -336,8 +336,7 @@ materialize_task() {
       fi
     done
   done
-  DENIED_AGY=false DENIED_CODEX=false
-  [ -n "$(denied_at agy "$MAT_REPO")" ] && DENIED_AGY=true
+  DENIED_CODEX=false
   [ -n "$(denied_at codex "$MAT_REPO")" ] && DENIED_CODEX=true
   printf '%s\n' "$MAT_SHA" > "$out/$MATERIALIZED_MARK"
 }
@@ -345,8 +344,8 @@ materialize_task() {
 do_materialize() {
   [ -n "$TASK" ] && [ -n "$OUT" ] || usage "materialize needs --task --out"
   materialize_task "$TASK" "$OUT"
-  jq -nc --arg repo "$MAT_REPO" --arg sha "$MAT_SHA" --argjson a "$DENIED_AGY" --argjson c "$DENIED_CODEX" \
-    '{repo: $repo, sha: $sha, denied: {agy: $a, codex: $c}}'
+  jq -nc --arg repo "$MAT_REPO" --arg sha "$MAT_SHA" --argjson c "$DENIED_CODEX" \
+    '{repo: $repo, sha: $sha, denied: {codex: $c}}'
 }
 
 # ---------------------------------------------------------------------------

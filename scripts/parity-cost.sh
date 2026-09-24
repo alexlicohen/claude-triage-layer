@@ -2,7 +2,7 @@
 # scripts/parity-cost.sh — attribute the CLAUDE usage of a workflow run (a parity
 # run, a triage-compare bake-off) to agent labels, models and parity candidates,
 # from the on-disk subagent transcripts. Read-only; prints counts only, never
-# message content. External (codex/agy) spend is not here: it is vendor-side and
+# message content. External (codex) spend is not here: it is vendor-side and
 # reaches the run's result via the ext-run accounting line.
 #
 # Usage:

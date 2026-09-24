@@ -41,7 +41,7 @@ jq -e 'type == "object" and (.levels | type == "object") and (.modes | type == "
 
 # TUNING_ERRORS — the ONE schema check of the tuning block (inline bake-offs and
 # the parity-report.sh decision rule). Emits one string per problem; none = valid.
-TUNING_ERRORS='def vendors: ["claude","codex","agy"];
+TUNING_ERRORS='def vendors: ["claude","codex"];
   def levels: ["quick","builder","deep","top"];
   def efforts: ["low","medium","high","xhigh","max"];
   def num: type == "number";
@@ -67,13 +67,12 @@ TUNING_ERRORS='def vendors: ["claude","codex","agy"];
              else
                (.value | to_entries[] | .key as $v
                  | if (vendors | index($v)) == null then "tuning.challengers.\($l): unknown vendor \($v)"
-                   elif $v == "agy" and $l != "builder" then "tuning.challengers.\($l).agy: agy serves the builder level only"
                    elif (.value | type) != "array" then "tuning.challengers.\($l).\($v) must be an array"
                    else
                      (.value | to_entries[] | .key as $i | .value
                        | if type != "object" then "tuning.challengers.\($l).\($v)[\($i)] must be an object {model, effort}"
                          elif ((.model | type) != "string") or ((.model | test("^[A-Za-z0-9._+-]+$")) | not) then "tuning.challengers.\($l).\($v)[\($i)].model must be a model id"
-                         elif $v != "agy" and ((.effort as $e | efforts | index($e)) == null) then "tuning.challengers.\($l).\($v)[\($i)].effort must be one of \(efforts | join("|"))"
+                         elif (.effort as $e | efforts | index($e)) == null then "tuning.challengers.\($l).\($v)[\($i)].effort must be one of \(efforts | join("|"))"
                          else empty end)
                    end)
              end)
@@ -117,14 +116,14 @@ echo "tiers: $TIERS (asOf $(jq -r '.asOf // "?"' "$TIERS"))"
 echo ""
 TAB=$(printf '\t')
 {
-  printf 'LEVEL\tclaude\tcodex\tagy\n'
-  jq -r "$CELL"' .levels | to_entries[] | [.key, (.value.claude | cell), (.value.codex | cell), (.value.agy | cell)] | @tsv' "$TIERS"
-} | while IFS="$TAB" read -r lvl c x a; do
-  printf '%-8s %-42s %-38s %s\n' "$lvl" "$c" "$x" "$a"
+  printf 'LEVEL\tclaude\tcodex\n'
+  jq -r "$CELL"' .levels | to_entries[] | [.key, (.value.claude | cell), (.value.codex | cell)] | @tsv' "$TIERS"
+} | while IFS="$TAB" read -r lvl c x; do
+  printf '%-8s %-42s %s\n' "$lvl" "$c" "$x"
 done
 
 echo ""
-echo "modes (ext-run.sh <mode> --vendor V; build here = build without --level):"
+echo "modes (ext-run.sh <mode>; build here = build without --level):"
 jq -r "$CELL"' .modes | to_entries[] | .key as $v | .value | to_entries[] | [$v, .key, (.value | cell)] | @tsv' "$TIERS" |
   while IFS="$TAB" read -r v m c; do
     printf '  %-6s %-9s %s\n' "$v" "$m" "$c"

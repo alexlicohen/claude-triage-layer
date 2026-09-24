@@ -1,7 +1,7 @@
 export const meta = {
   name: 'triage-parity',
   description: 'Parity research run: every candidate (vendor x model x effort) climbs a private task suite band by band (B1 mechanical to B4 danger/judgment), each build task graded by a nested triage-compare bake-off, rubric tasks by two blind judges, review tasks by seeded-defect recall/precision. Returns a ranking, plateau clusters and flags; never writes tiers.json or anything outside outDir. Tier-change proposals are not made here: the orchestrator saves the result, runs scripts/parity-report.sh ingest-parity, then report (the ONE owner of the ledger and the decision rule).',
-  whenToUse: 'Re-rank models and efforts when a model ships or on request: /triage-parity with args = {suite:"/abs task suite dir", outDir:"/abs fresh dir outside any source repo", candidates:[{vendor:claude|codex|agy, level:quick|builder|deep|top, model?, effort?, label?}], bands?:[1,2,3,4], reps?:1, stopAfterFailedBands?:2, bandPassRate?:0.5, judges?:[{vendor,level,label?}], taskFilter?:[ids], desk?:true}. Adaptive: a candidate stops after stopAfterFailedBands consecutive failed bands. unavailable/denied/invalid/unresolved never count as pass or fail; a compare LEAK aborts the run. Afterwards: parity-report.sh ingest-parity --result <saved result> then parity-report.sh report proposes any tiers.json change (min-n + margin rule; Alex approves); Claude cost per candidate comes from scripts/parity-cost.sh on the run transcript.',
+  whenToUse: 'Re-rank models and efforts when a model ships or on request: /triage-parity with args = {suite:"/abs task suite dir", outDir:"/abs fresh dir outside any source repo", candidates:[{vendor:claude|codex, level:quick|builder|deep|top, model?, effort?, label?}] (agy was retired 2026-09-24 and is refused, as a candidate and as a judge), bands?:[1,2,3,4], reps?:1, stopAfterFailedBands?:2, bandPassRate?:0.5, judges?:[{vendor,level,label?}], taskFilter?:[ids], desk?:true}. Adaptive: a candidate stops after stopAfterFailedBands consecutive failed bands. unavailable/denied/invalid/unresolved never count as pass or fail; a compare LEAK aborts the run. Afterwards: parity-report.sh ingest-parity --result <saved result> then parity-report.sh report proposes any tiers.json change (min-n + margin rule; Alex approves); Claude cost per candidate comes from scripts/parity-cost.sh on the run transcript.',
   phases: [
     { title: 'Load' },
     { title: 'Desk' },
@@ -16,7 +16,10 @@ export const meta = {
 // A parity run is a measurement that can spend a lot, so everything that could
 // make it unfair or unsafe is rejected in plain JS before any spawn.
 const LEVELS = ['quick', 'builder', 'deep', 'top']
-const VENDORS = ['claude', 'codex', 'agy']
+const VENDORS = ['claude', 'codex']
+// agy was retired 2026-09-24 (its headless mode let the model bypass its sandbox; a
+// parity review run wrote into a real repo): refused by name for candidates and judges.
+const RETIRED_VENDORS = { agy: 'agy was retired 2026-09-24 (it bypassed its own sandbox and wrote into a real repo) — use codex or claude' }
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 // The Claude agent serving each level — the SAME map as triage-exec.js and
 // triage-compare.js; test/lint.sh checks it against config/tiers.json.
@@ -75,6 +78,7 @@ const passRate = args.bandPassRate || 0.5
 
 function checkAgentSpec(raw, what, i) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) bad(`${what}[${i}] must be an object (got ${typeName(raw)}).`)
+  if (typeof raw.vendor === 'string' && Object.prototype.hasOwnProperty.call(RETIRED_VENDORS, raw.vendor)) bad(`${what}[${i}].vendor ${JSON.stringify(raw.vendor)}: ${RETIRED_VENDORS[raw.vendor]}.`)
   if (!VENDORS.includes(raw.vendor)) bad(`${what}[${i}].vendor must be one of ${VENDORS.join('|')} (got ${JSON.stringify(raw.vendor)}).`)
   if (!LEVELS.includes(raw.level)) bad(`${what}[${i}].level must be one of ${LEVELS.join('|')} (got ${JSON.stringify(raw.level)}).`)
   if (raw.effort != null && !EFFORTS.includes(raw.effort)) bad(`${what}[${i}].effort must be one of ${EFFORTS.join('|')} (got ${JSON.stringify(raw.effort)}).`)
@@ -89,11 +93,7 @@ function checkAgentSpec(raw, what, i) {
   return { label, vendor: raw.vendor, level: raw.level, model: raw.model || null, effort: raw.effort || null }
 }
 
-const candidates = args.candidates.map((raw, i) => {
-  const c = checkAgentSpec(raw, 'candidates', i)
-  if (c.vendor === 'agy' && c.level !== 'builder') bad(`candidates[${i}]: vendor agy serves the builder level only (got level ${c.level}).`)
-  return c
-})
+const candidates = args.candidates.map((raw, i) => checkAgentSpec(raw, 'candidates', i))
 {
   const seen = new Set()
   for (const c of candidates) {
@@ -190,7 +190,7 @@ const deskModels = [...new Set(candidates.map(c => `${c.vendor}:${c.model || `${
 const deskPrompt = vendor => `VENDOR=${vendor}\nMODE=verify\n` +
   'The data boundary has been checked by the orchestrator: this question contains only public model names, no repository or private material.\n\n' +
   `Question: for each of these models, what are the current published benchmark results (coding / agentic / reasoning), list pricing per million input and output tokens, and the meaning of their reasoning-effort settings? Models: ${deskModels.join(', ')}. Cite each source with its date; say "unknown" rather than guessing.`
-const deskRun = args.desk === false ? Promise.resolve(null) : parallel(['codex', 'agy'].map(v => () =>
+const deskRun = args.desk === false ? Promise.resolve(null) : parallel(['codex'].map(v => () =>
   agent(deskPrompt(v), { phase: 'Desk', agentType: 'triage-cross-reviewer', label: `desk:${v}` })))
 
 // ─── Per-task work ──────────────────────────────────────────────────────────
@@ -198,7 +198,7 @@ const MAT_SCHEMA = {
   type: 'object',
   properties: {
     repo: { type: 'string' }, sha: { type: 'string' },
-    denied: { type: 'object', properties: { agy: { type: 'boolean' }, codex: { type: 'boolean' } }, required: ['agy', 'codex'] },
+    denied: { type: 'object', properties: { codex: { type: 'boolean' } }, required: ['codex'] },
     rc: { type: ['integer', 'null'] },
   },
   required: ['repo', 'sha', 'denied'],
@@ -234,7 +234,7 @@ async function materialize(t, b) {
   }
   // The path used is always the computed one; the reply only proves it was made.
   if (!r || stripSlash(String(r.repo || '')) !== `${out}/repo` || !SHA_RE.test(String(r.sha || '').trim()) || !r.denied ||
-      typeof r.denied.agy !== 'boolean' || typeof r.denied.codex !== 'boolean') {
+      typeof r.denied.codex !== 'boolean') {
     return { error: `materialize returned ${JSON.stringify(r).slice(0, 200)}` }
   }
   return { repo: `${out}/repo`, sha: r.sha.trim(), denied: r.denied }
@@ -528,7 +528,7 @@ for (const s of states) (plateaus[s.highest] = plateaus[s.highest] || []).push(s
 let desk = null
 if (args.desk !== false) {
   const d = await deskRun
-  desk = { note: 'signal only, never scored', codex: d && d[0] != null ? String(d[0]) : null, agy: d && d[1] != null ? String(d[1]) : null }
+  desk = { note: 'signal only, never scored', codex: d && d[0] != null ? String(d[0]) : null }
 }
 
 const cell = pb => (pb ? `${pb.pass}/${pb.fail}/${pb.other}` : '—')

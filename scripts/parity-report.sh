@@ -44,7 +44,9 @@
 # the incumbent is levels.<level>.<vendor> {model, effort}; every other (model,
 # effort) of that vendor at that level is a challenger. Cheapness: claude haiku <
 # sonnet < opus < fable; codex gpt-6-luna < gpt-6-sol < gpt-6-astra; agy flash <
-# pro; then effort low < medium < high < xhigh < max.
+# pro; then effort low < medium < high < xhigh < max. (agy was retired 2026-09-24:
+# it stays a known vendor here only so historical ledger rows keep validating; it
+# has no levels entry, so it is never an incumbent and never proposed.)
 #   both n >= minN, else  insufficient-data (with the graded runs still needed)
 #   CHEAPER challenger:   propose iff its Wilson 95% lower bound >= incumbent rate - cheaperTolerance
 #   PRICIER challenger:   propose iff its rate - incumbent rate >= pricierMargin
