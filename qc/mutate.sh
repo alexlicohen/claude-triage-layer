@@ -72,7 +72,10 @@ done
 # pause, the sample threshold, the challenger fallback, the LEAK abort, the
 # dirty-files guard, the codex danger floor on challengers, and no bake-off fields
 # when args.bakeoff is absent.
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81"
+# 82-85 cover the adaptive sampling rate (Wave 14A): parity-report.sh rates' n >=
+# minN condition, its CI-width condition, a pending proposal forcing explore, and
+# triage-exec sampling at args.bakeoff.rates[level].
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -123,7 +126,8 @@ mut_file() {
     26) echo "scripts/ext-run.sh" ;;
     28) echo "workflows/triage-exec.js" ;;
     29) echo "workflows/triage-exec.js" ;;
-    75|76|77|78|79|80|81) echo "workflows/triage-exec.js" ;;
+    75|76|77|78|79|80|81|85) echo "workflows/triage-exec.js" ;;
+    82|83|84) echo "scripts/parity-report.sh" ;;
     31) echo "workflows/triage-compare.js" ;;
     32) echo "scripts/patch-check.sh" ;;
     33) echo "install.sh" ;;
@@ -235,6 +239,10 @@ mut_desc() {
     79) echo "triage-exec.js (bake-off): the dirty-files guard only checks that git status ran (a bake-off runs on files modified in the tree)" ;;
     80) echo "triage-exec.js (bake-off): the codex danger floor is not applied to challengers (danger work graded against codex below effort high)" ;;
     81) echo "triage-exec.js (bake-off): the return carries bake-off fields even when args.bakeoff is absent" ;;
+    82) echo "parity-report.sh (rates): the n >= minN condition is weakened to n >= 1 (a level with a challenger a few runs in drops to the maintenance rate)" ;;
+    83) echo "parity-report.sh (rates): the Wilson CI-width condition is dropped (a level at n = minN with a coin-flip pass rate drops to maintain)" ;;
+    84) echo "parity-report.sh (rates): a pending tier proposal no longer forces explore (a level whose incumbent is about to be replaced drops to maintain)" ;;
+    85) echo "triage-exec.js (bake-off): args.bakeoff.rates is ignored (every level samples at tuning.sampleRate)" ;;
     74) echo "triage-compare.js (review): a codex reviewer/adjudicator is spawned without TIMEOUT (ext-run's 5m read default kills a large review)" ;;
     *) echo "" ;;
   esac
@@ -249,14 +257,14 @@ mut_desc() {
 mut_suite() {
   case "$1" in
     1|2|3|4|5|6|10|12|18|19|20|21|33) echo "roundtrip" ;;
-    7|8|9|11|16|17|22|23|28|29|75|76|77|78|79|80|81) echo "scenarios" ;;
+    7|8|9|11|16|17|22|23|28|29|75|76|77|78|79|80|81|85) echo "scenarios" ;;
     15|24|25|26|40|49|50|51|56|57|58|59|60|61|62|70|71) echo "extrun" ;;
     31|34|36|37|38|47|68|69|72|73|74) echo "compare" ;;
     32|48|63|66) echo "patchcheck" ;;
     39|55) echo "stagewt" ;;
     41|42|46|64|65) echo "parity" ;;
     44|45) echo "paritysuite" ;;
-    43|52|53|54) echo "parityreport" ;;
+    43|52|53|54|82|83|84) echo "parityreport" ;;
     67) echo "reviewstage" ;;
     *) echo "" ;;
   esac
@@ -932,7 +940,7 @@ MUT75
       cat > "$rep" <<'MUT76'
   // MUTATED: sample threshold dropped
 MUT76
-      mut_replace_block "$target" "  if (!(draw(key) < bo.tuning.sampleRate)) return { skip: 'not-sampled' }" 1 "$rep"
+      mut_replace_block "$target" "  if (!(draw(key) < rate)) return Object.assign({ skip: 'not-sampled' }, rateRec)" 1 "$rep"
       ;;
     77)
       # triage-exec.js: bakeoffChoice() never falls back to a passing challenger.
@@ -968,6 +976,34 @@ MUT80
     ...bakeoffReport(), // MUTATED: bake-off fields without args.bakeoff
 MUT81
       mut_replace_block "$target" '    ...(bakeoffOn ? bakeoffReport() : {}),' 1 "$rep"
+      ;;
+    82)
+      # parity-report.sh rates: "enough data" becomes "any data".
+      cat > "$rep" <<'MUT82'
+                 | if $g.n < 1 then "\($who) n=\($g.n) < \($minN)" # MUTATED: rates n check weakened
+MUT82
+      mut_replace_block "$target" '                 | if $g.n < $minN then "\($who) n=\($g.n) < \($minN)"' 1 "$rep"
+      ;;
+    83)
+      # parity-report.sh rates: the CI-width gap is never raised.
+      cat > "$rep" <<'MUT83'
+                   elif false then "" # MUTATED: rates CI width ignored
+MUT83
+      mut_replace_block "$target" '                   elif ($g.wilsonUB - $g.wilsonLB) > $maxWidth + 1e-12 then' 1 "$rep"
+      ;;
+    84)
+      # parity-report.sh rates: pending proposals are not gaps.
+      cat > "$rep" <<'MUT84'
+               ($proposals[] | select(false) # MUTATED: proposal does not force explore
+MUT84
+      mut_replace_block "$target" '               ($proposals[] | select(.level == $L and .vendor == $V)' 1 "$rep"
+      ;;
+    85)
+      # triage-exec.js: bakeoffPick() samples at sampleRate whatever rates says.
+      cat > "$rep" <<'MUT85'
+  const rate = bo.tuning.sampleRate // MUTATED: rates ignored
+MUT85
+      mut_replace_block "$target" '  const rate = fromRates ? bo.rates[st.level] : bo.tuning.sampleRate' 1 "$rep"
       ;;
     *)
       return 1
@@ -1055,12 +1091,16 @@ verify_mutation() {
     73) grep -qF 'MUTATED: superseded reviewer still scored' "$target" && ! grep -qF "status: supersededSet.has(p.label)" "$target" ;;
     74) grep -qF 'MUTATED: codex spawned without TIMEOUT' "$target" && ! grep -qF 'TIMEOUT=${timeout}' "$target" ;;
     75) grep -qF 'MUTATED: weekly pause ignored' "$target" && ! grep -qF 'bo.weeklyPct >= bo.tuning.pauseAtWeeklyPct' "$target" ;;
-    76) grep -qF 'MUTATED: sample threshold dropped' "$target" && ! grep -qF "return { skip: 'not-sampled' }" "$target" ;;
+    76) grep -qF 'MUTATED: sample threshold dropped' "$target" && ! grep -qF "skip: 'not-sampled'" "$target" ;;
     77) grep -qF 'MUTATED: challenger fallback dropped' "$target" && ! grep -qF "return { apply: 'challenger'" "$target" ;;
     78) grep -qF 'MUTATED: LEAK abort dropped' "$target" && ! grep -qF 'if (res && res.leak === true) {' "$target" ;;
     79) grep -qF 'MUTATED: dirty files not checked' "$target" && ! grep -qF "dirty.porcelain.trim() !== ''" "$target" ;;
     80) grep -qF 'MUTATED: danger floor on challengers dropped' "$target" && ! grep -qF '!meetsCodexDangerFloor(st.level, c.effort)' "$target" ;;
     81) grep -qF 'MUTATED: bake-off fields without args.bakeoff' "$target" && ! grep -qF '...(bakeoffOn ? bakeoffReport() : {}),' "$target" ;;
+    82) grep -qF 'MUTATED: rates n check weakened' "$target" && ! grep -qF '| if $g.n < $minN then' "$target" ;;
+    83) grep -qF 'MUTATED: rates CI width ignored' "$target" && ! grep -qF 'elif ($g.wilsonUB - $g.wilsonLB) > $maxWidth' "$target" ;;
+    84) grep -qF 'MUTATED: proposal does not force explore' "$target" && ! grep -qF '($proposals[] | select(.level == $L and .vendor == $V)' "$target" ;;
+    85) grep -qF 'MUTATED: rates ignored' "$target" && ! grep -qF 'bo.rates[st.level] : bo.tuning.sampleRate' "$target" ;;
     *) return 1 ;;
   esac
 }

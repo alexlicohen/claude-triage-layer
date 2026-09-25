@@ -461,8 +461,9 @@ refused, never followed:
 2. refuse if a `.codex-deny` marker exists anywhere from that path up to **and including**
    `$HOME` (or `/` for a path outside it): a per-repo opt-out that needs no edit to this
    script;
-3. refuse unless `AGY_BOUNDARY_CLEARED=1` — clinical/BCH/PHI and COI material is not a path
-   pattern, so it stays an explicit caller attestation (the name predates agy's retirement).
+3. refuse unless `AGY_BOUNDARY_CLEARED=1` — clinical/BCH/PHI (no BAA) is not a path pattern,
+   so it stays an explicit caller attestation (the name predates agy's retirement). COI
+   material may go to codex (training opt-out confirmed, 2026-09-25).
 
 The workspace (`-C`, cwd, the profile's workspace rule) is **not** a caller option: the script
 supplies exactly one value, its own run directory, after that path has passed the deny check.
@@ -909,6 +910,7 @@ parity-report.sh ingest-parity  --result FILE [--ts ISO]
 parity-report.sh ingest-review  --result FILE --repo-name NAME [--resolved FILE] [--run ID] [--ts ISO]
 parity-report.sh migrate        [--from ~/.agents/evidence/vendor-parity.jsonl]
 parity-report.sh report         [--json]
+parity-report.sh rates          [--json]
       every subcommand also takes [--ledger F] [--tiers F]
 ```
 
@@ -919,7 +921,8 @@ tiers.json (a `--ledger` that is the tiers file is refused) — Alex approves ev
 
 **Config.** `tuning` in the tiers file, read through `triage-tiers.sh --bakeoff-json` (the one
 validator; also what the orchestrator passes to triage-exec as `args.bakeoff.config`):
-`sampleRate`, `challengerMix` (vendor shares, sum 1), `challengers` (`level → vendor → [{model,
+`sampleRate` (the explore rate), `maintain {rate, maxWidth}` (the plateau rate, > 0 and ≤
+sampleRate, and the Wilson-CI width that earns it), `challengerMix` (vendor shares, sum 1), `challengers` (`level → vendor → [{model,
 effort}]`), `rule {minN, cheaperTolerance, pricierMargin, confidence: "wilson95"}`, `ledger`
 (default path, `~` expanded) and `pauseAtWeeklyPct`. An invalid or missing block is exit 2 for
 every subcommand and a `make lint` failure.
@@ -965,7 +968,7 @@ null scores and n 0. No file path, claim, evidence, flag or markdown reaches the
 disputes first, then ingest once.
 
 **Rule** (`report`). Groups graded outcomes per level × vendor × (model, effort): n, passes,
-rate, Wilson 95% lower bound, excluded (non-graded) count, mean tokens and seconds. Per level ×
+rate, Wilson 95% lower and upper bounds, excluded (non-graded) count, mean tokens and seconds. Per level ×
 vendor the incumbent is `levels.<level>.<vendor>`; every other (model, effort) there is a
 challenger. Cheapness: claude haiku < sonnet < opus < fable; codex gpt-6-luna < gpt-6-sol <
 gpt-6-astra; agy flash < pro (agy is retired and has no levels entry: historical ledger rows
@@ -985,8 +988,23 @@ level, the decisions with their reasons, the proposals, then a separate **Review
 (inline-review)** section: per vendor × model × effort, reviews, mean precision and mean recall
 (each with its n) and unavailable count — never mixed into the build pass rates, and "Review
 metrics do not drive tier proposals yet"); `--json` gives `{ledger, tiers, lines, malformed, rule,
-groups, decisions, proposals, reviews: {lines, groups, note}, note}`. Malformed ledger lines are
-counted, not fatal.
+groups, decisions, proposals, sampling, reviews: {lines, groups, note}, note}`. Malformed ledger
+lines are counted, not fatal.
+
+**Rates** (`rates`; also `report --json` `.sampling` and a markdown table). The inline bake-off
+sampling rate per **level**, from the same groups and proposals:
+
+| State | When | Rate |
+|---|---|---|
+| `none` | no challenger configured at the level (`tuning.challengers`; quick today) | 0 |
+| `maintain` | for every vendor with a `levels` entry or configured challengers there: the incumbent and every configured challenger have n ≥ minN, each Wilson 95% interval is ≤ `maintain.maxWidth` wide, and no proposal is pending for that level × vendor | `maintain.rate` |
+| `explore` | otherwise; `reason` names every gap (`codex gpt-6-sol@medium n=3 < 8`, a CI width, a pending proposal) | `sampleRate` |
+
+`--json`: `{asOf (the tiers file's), params, levels: {<level>: {state, rate, reason}}, rates:
+{<level>: rate}}`; the orchestrator passes `.rates` verbatim as triage-exec `args.bakeoff.rates`.
+Counts are keyed by the tiers file's current (vendor, model, effort), so a model or effort change
+there restarts at n = 0 → explore; there is no other reset. A model swapped under an unchanged
+alias (claude `opus`) is not a change: bump the entry. Only build lines count.
 
 Exit codes: 0 ok; 1 ledger write failed; 2 usage / invalid input / invalid tiers file (nothing
 written). `test/parity-report.sh` (in `make test`) covers both ingest shapes, the refusals,
@@ -995,7 +1013,9 @@ tiers.json is never written, and (RV*) ingest-review: the line schema, recompute
 and without resolutions, unavailable never zero, no review content, idempotence, and a report
 whose build groups/decisions/proposals are byte-identical with or without review lines; `qc/mutate.sh`
 #43 (cheapness order), #52 (minN), #53 (Wilson LB vs point rate) and #54 (non-graded status as
-fail) prove the rule has teeth.
+fail) prove the rule has teeth; RA*/RT* cover `rates` (each explore cause, maintain, a model or
+effort change restarting at n = 0, review lines ignored, none) and the `maintain` schema, with
+#82 (n ≥ minN), #83 (CI width) and #84 (a pending proposal forces explore).
 
 ## `parity-cost.sh` — Claude cost per parity candidate
 

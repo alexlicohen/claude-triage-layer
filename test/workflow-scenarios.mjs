@@ -1466,6 +1466,43 @@ const BST = (id, level, extra = {}) => LV(id, level, [`src/${id}.js`], Object.as
   chk('S53: the bakeoffs record says budget', result.bakeoffs[0].outcome === 'skipped' && result.bakeoffs[0].reason === 'budget')
 }
 
+// ════ Wave 14A: adaptive per-level sampling rate (args.bakeoff.rates) ═════════
+// rates = parity-report.sh rates --json .rates; the level's rate replaces sampleRate.
+{
+  const brief = 'do t1'
+  const mid = seedWhere(u => u >= 0.2 && u < 0.9, 't1', brief)
+  const tiny = seedWhere(u => u < 0.001, 't1', brief)
+  const plan = (seed, rates, tuning = { sampleRate: 0.2 }) =>
+    ({ subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO(tuning, { seed, rates }) })
+  const up = await run(plan(mid, { builder: 0.9 }), { ...CLEAN, ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
+  chk('S54: rates[level] above sampleRate is used — a draw in [0.2, 0.9) samples', up.workflows.length === 1 && up.result.bakeoffs.length === 1)
+  chk('S54: the sampled record carries the rate used and where it came from',
+    up.result.bakeoffs[0]?.rate === 0.9 && up.result.bakeoffs[0]?.rateFrom === 'rates')
+  const down = await run(plan(mid, { builder: 0.1 }, { sampleRate: 1 }), { ...CLEAN, 'builder:': ['did t1'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
+  chk('S54: rates[level] below sampleRate is used — the same draw is not sampled at 0.1, rate recorded on the skip',
+    down.workflows.length === 0 && JSON.stringify(down.result.bakeoffSkipped) === JSON.stringify([{ id: 't1', reason: 'not-sampled', rate: 0.1, rateFrom: 'rates' }]))
+  const zero = await run(plan(tiny, { builder: 0 }, { sampleRate: 1 }), { ...CLEAN, 'builder:': ['did t1'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
+  chk('S54: rates[level] = 0 → never sampled, even for a draw under 0.001 at sampleRate 1',
+    zero.workflows.length === 0 && zero.result.bakeoffSkipped[0]?.reason === 'not-sampled' && zero.result.bakeoffSkipped[0]?.rate === 0 &&
+    countCalls(zero.calls, 'builder:t1') === 1)
+  const other = await run(plan(mid, { deep: 0, quick: 0 }, { sampleRate: 1 }), { ...CLEAN, ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
+  chk('S54: rates without this level → tuning.sampleRate, recorded as rateFrom sampleRate',
+    other.workflows.length === 1 && other.result.bakeoffs[0]?.rate === 1 && other.result.bakeoffs[0]?.rateFrom === 'sampleRate')
+  const ineligible = await run(
+    { subtasks: [LV('a', 'builder', [], { checks: ['t'] })], checks: ['make test'], review: 'never', bakeoff: BO({}, { rates: { builder: 1 } }) },
+    { 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
+  chk('S54: a skip before the draw (no-files) carries no rate', JSON.stringify(ineligible.result.bakeoffSkipped) === JSON.stringify([{ id: 'a', reason: 'no-files' }]))
+  const absent = await run(plan(mid, undefined, { sampleRate: 1 }), { ...CLEAN, ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
+  chk('S54: rates absent → 13B behavior: sampleRate decides, no rate fields on the record',
+    absent.workflows.length === 1 && absent.result.bakeoffs.length === 1 && !('rate' in absent.result.bakeoffs[0]) && !('rateFrom' in absent.result.bakeoffs[0]))
+  const base = { subtasks: [BST('t1', 'builder')], checks: ['make test'] }
+  for (const [name, rates] of [['a number', 0.2], ['an array', [0.2]], ['an unknown level', { expert: 0.1 }], ['a rate above 1', { builder: 1.5 }],
+    ['a negative rate', { deep: -0.1 }], ['a string rate', { builder: '0.2' }], ['a NaN rate', { builder: NaN }], ['a null rate', { builder: null }]]) {
+    const r = await runExpectingThrow(Object.assign({}, base, { bakeoff: BO({}, { rates }) }))
+    chk(`S54: rates ${name} → throws before any spawn`, r.threw && r.message.includes('args.bakeoff.rates') && r.calls.length === 0)
+  }
+}
+
 console.log('')
 console.log(`RESULT: ${pass} passed, ${fail} failed`)
 process.exit(fail > 0 ? 1 : 0)

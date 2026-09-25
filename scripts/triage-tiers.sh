@@ -41,6 +41,9 @@ jq -e 'type == "object" and (.levels | type == "object") and (.modes | type == "
 
 # TUNING_ERRORS — the ONE schema check of the tuning block (inline bake-offs and
 # the parity-report.sh decision rule). Emits one string per problem; none = valid.
+# sampleRate is the EXPLORE rate (and triage-exec's fallback); maintain {rate,
+# maxWidth} is the plateau rate and the Wilson-CI width that earns it (parity-report.sh
+# rates); maintain.rate is > 0 and <= sampleRate: sampling never stops.
 TUNING_ERRORS='def vendors: ["claude","codex"];
   def levels: ["quick","builder","deep","top"];
   def efforts: ["low","medium","high","xhigh","max"];
@@ -50,6 +53,15 @@ TUNING_ERRORS='def vendors: ["claude","codex"];
     else
       (if ($t.sampleRate | num) and $t.sampleRate > 0 and $t.sampleRate <= 1 then empty
        else "tuning.sampleRate must be a number in (0, 1]" end),
+      (if ($t.maintain | type) != "object" then "tuning.maintain must be an object {rate, maxWidth}"
+       else
+         (if ($t.maintain.rate | num) and $t.maintain.rate > 0 and $t.maintain.rate <= 1 then
+            (if ($t.sampleRate | num) and $t.maintain.rate > $t.sampleRate
+             then "tuning.maintain.rate must not exceed tuning.sampleRate (the explore rate)" else empty end)
+          else "tuning.maintain.rate must be a number in (0, 1] (sampling never stops at a plateau)" end),
+         (if ($t.maintain.maxWidth | num) and $t.maintain.maxWidth > 0 and $t.maintain.maxWidth <= 1 then empty
+          else "tuning.maintain.maxWidth must be a number in (0, 1]" end)
+       end),
       (if ($t.challengerMix | type) != "object" or ($t.challengerMix | length) == 0 then "tuning.challengerMix must be a non-empty object {vendor: share}"
        else
          ($t.challengerMix | to_entries[]

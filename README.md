@@ -115,7 +115,7 @@ Two flags, composable: `./install.sh --dry-run` prints the full mutation plan (e
 - **Routing behavior**: edit `~/.claude/triage.md`. The installer already adds an `ask`-gate before Fable; change it to `deny` in `settings.json` → `permissions` to hard-block, or remove the rule to go back to notify-only.
 - **Per project**: a project's own `CLAUDE.md` (or `AGENTS.md` via an `@AGENTS.md` wrapper — the pattern this repo itself uses) can override or opt out.
 - **Context-warning threshold**: edit the `60` in `~/.claude/statusline.sh`.
-- **Deny-list**: `clip-creator` is hard-denied for the external vendor. `CODEX_DENY_REPOS` (or an empty `.codex-deny` marker anywhere from a repo up to `$HOME`) opts a tree out of `codex`. `AGY_BOUNDARY_CLEARED=1` must also be set by the calling agent — the runner's boundary attestation (the name predates agy's retirement) — attesting the data boundary (no clinical/BCH/PHI, no COI material) was checked; its absence refuses the run before anything is sent externally.
+- **Deny-list**: `clip-creator` is hard-denied for the external vendor. `CODEX_DENY_REPOS` (or an empty `.codex-deny` marker anywhere from a repo up to `$HOME`) opts a tree out of `codex`. `AGY_BOUNDARY_CLEARED=1` must also be set by the calling agent — the runner's boundary attestation (the name predates agy's retirement) — attesting the data boundary (no clinical/BCH/PHI: no BAA; COI material is allowed since the codex account's training opt-out was confirmed, 2026-09-25) was checked; its absence refuses the run before anything is sent externally.
 
 ## External CLI tiers
 
