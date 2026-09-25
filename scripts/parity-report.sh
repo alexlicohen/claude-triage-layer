@@ -15,6 +15,7 @@
 #                    [--run ID] [--ts ISO] [--ledger F] [--tiers F]
 #   parity-report.sh migrate        [--from F] [--ledger F] [--tiers F]
 #   parity-report.sh report         [--ledger F] [--tiers F] [--json]
+#   parity-report.sh rates          [--ledger F] [--tiers F] [--json]
 #
 # ingest-compare  FILE = a triage-compare return value (JSON). Appends ONE ledger
 #                 line for the compare. --level is the level the work was planned
@@ -42,6 +43,11 @@
 #                 (source inline-review) get their OWN section — mean precision /
 #                 recall per vendor x model x effort — never mixed into the build
 #                 pass rates, and they do not drive tier proposals (yet).
+# rates           the inline bake-off SAMPLING RATE per level (Rates, below): one
+#                 line per level, or with --json {asOf, params, levels: {<level>:
+#                 {state, rate, reason}}, rates: {<level>: rate}}. The orchestrator
+#                 passes `.rates` verbatim as triage-exec args.bakeoff.rates. Also the
+#                 `sampling` field of report --json.
 #
 # Ledger: JSON lines, default tuning.ledger of the tiers file (~ expanded). Schema
 # (v 1), scores and metadata ONLY — never patch contents, briefs, checks or paths
@@ -74,6 +80,19 @@
 # One proposal per level x vendor: a qualifying pricier challenger first (highest
 # rate, then cheapest), else the cheapest qualifying cheaper one.
 #
+# Rates (tuning.sampleRate = explore, tuning.maintain {rate, maxWidth}), per LEVEL
+# (sampling is decided per subtask at its level), from the same groups/proposals:
+#   none      no challenger configured at the level (tuning.challengers) -> rate 0
+#   maintain  iff for EVERY vendor with a levels.<level> entry or configured
+#             challengers there: the incumbent and every configured challenger have
+#             n >= minN, each Wilson 95% interval (UB - LB) is <= maxWidth, and there
+#             is no proposal for that level x vendor -> maintain.rate
+#   explore   otherwise, the reason naming every gap -> sampleRate
+# Counts are keyed by the CURRENT (vendor, model, effort) of the tiers file, so a
+# model or effort change there starts at n=0 -> explore again (no separate reset).
+# Only build lines count (review lines never do). A model swapped under an unchanged
+# alias (claude "opus") is NOT a change here: bump the tiers entry to reset.
+#
 # Exit codes: 0 ok; 1 ledger write failed; 2 usage / invalid input / invalid
 # tiers file (nothing written). bash-3.2-safe.
 set -uo pipefail
@@ -89,7 +108,7 @@ RESULT="" REPO_NAME="" LEVEL="" SOURCE="" TASK="" APPLIED="" RUN="" TS="" LEDGER
 while [ $# -gt 0 ]; do
   case "$1" in
     --json) JSON=1; shift; continue ;;
-    -h|--help) sed -n '2,78p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,97p' "$0"; exit 0 ;;
   esac
   [ $# -ge 2 ] || usage "$1 needs a value"
   case "$1" in
@@ -350,10 +369,13 @@ do_migrate() {
 # ---------------------------------------------------------------------------
 # report — aggregation + THE decision rule.
 REPORT='
-def wilson($s; $n): if $n == 0 then null else
+# wilsonBound — the Wilson 95% score interval: $sgn -1 = lower, +1 = upper bound.
+def wilsonBound($s; $n; $sgn): if $n == 0 then null else
   (1.959963984540054) as $z | ($s / $n) as $p
-  | (($p + $z * $z / (2 * $n) - $z * (($p * (1 - $p) / $n + $z * $z / (4 * $n * $n)) | sqrt)) / (1 + $z * $z / $n))
-  | if . < 0 then 0 else . end end;
+  | (($p + $z * $z / (2 * $n) + $sgn * $z * (($p * (1 - $p) / $n + $z * $z / (4 * $n * $n)) | sqrt)) / (1 + $z * $z / $n))
+  | if . < 0 then 0 elif . > 1 then 1 else . end end;
+def wilson($s; $n): wilsonBound($s; $n; -1);
+def wilsonUB($s; $n): wilsonBound($s; $n; 1);
 def mean: if length == 0 then null else add / length end;
 def cheap_key($v; $m; $e):
   ((MODEL_ORDER[$v] // []) as $o | [range(0; $o | length) as $k | select(($m // "") | contains($o[$k])) | $k] | first // -1) as $mi
@@ -376,7 +398,7 @@ def need($n): if $n >= $minN then 0 else $minN - $n end;
    | . as $g | ([$g[] | select(.status as $x | GRADED | index($x) != null)]) as $gr
    | ($gr | length) as $n | ([$gr[] | select(.status == "pass")] | length) as $s
    | {level: $g[0].level, vendor: $g[0].vendor, model: $g[0].model, effort: $g[0].effort,
-      n: $n, passes: $s, rate: (if $n == 0 then null else $s / $n end), wilsonLB: wilson($s; $n),
+      n: $n, passes: $s, rate: (if $n == 0 then null else $s / $n end), wilsonLB: wilson($s; $n), wilsonUB: wilsonUB($s; $n),
       excluded: (($g | length) - $n),
       meanTokens: ([$g[] | .totalTokens | numbers] | mean), meanSeconds: ([$g[] | .seconds | numbers] | mean)}] as $groups
 | [ $levels | to_entries[] | .key as $L | .value | to_entries[] | select(.value | type == "object")
@@ -404,6 +426,30 @@ def need($n): if $n >= $minN then 0 else $minN - $n end;
     | ($up // $down)
     | {level, vendor, direction, from: {model: .incumbent.model, effort: .incumbent.effort}, to: {model: .challenger.model, effort: .challenger.effort},
        incumbent: {n: .incumbent.n, rate: .incumbent.rate}, challenger: {n: .challenger.n, rate: .challenger.rate, wilsonLB: .challenger.wilsonLB}, why} ] as $proposals
+# Sampling rate per level (header: Rates) — from the same groups and proposals.
+| [ LEVELS[] as $L
+    | ($challengers[$L] // {}) as $chL
+    | if ([$chL[]? | arrays | length] | add // 0) == 0
+      then {key: $L, value: {state: "none", rate: 0, reason: "no challenger configured at \($L)"}}
+      else
+        ([(($levels[$L] // {}) | to_entries[] | select(.value | type == "object") | .key), ($chL | keys[])] | unique) as $vs
+        | [ $vs[] as $V
+            | ([(($levels[$L] // {})[$V] | objects | {model: (.model // null), effort: (.effort // null)}),
+                (($chL[$V] // [])[] | {model, effort})] | unique) as $cfgs
+            | (($cfgs[] | . as $c
+                 | ([$groups[] | select(.level == $L and .vendor == $V and .model == $c.model and .effort == $c.effort)] | first
+                    // {n: 0, wilsonLB: null, wilsonUB: null}) as $g
+                 | "\($V) \($c.model)@\($c.effort)" as $who
+                 | if $g.n < $minN then "\($who) n=\($g.n) < \($minN)"
+                   elif ($g.wilsonUB - $g.wilsonLB) > $maxWidth + 1e-12 then "\($who) CI width \(($g.wilsonUB - $g.wilsonLB) * 1000 | round / 1000) > \($maxWidth)"
+                   else empty end),
+               ($proposals[] | select(.level == $L and .vendor == $V)
+                 | "proposal pending for \($L)/\($V): \(.from.model)@\(.from.effort) -> \(.to.model)@\(.to.effort)")) ] as $gaps
+        | if ($gaps | length) == 0
+          then {key: $L, value: {state: "maintain", rate: $maintainRate,
+                reason: "settled: every incumbent and challenger at n >= \($minN), Wilson 95% CI width <= \($maxWidth), no proposal"}}
+          else {key: $L, value: {state: "explore", rate: $exploreRate, reason: ($gaps | join("; "))}} end
+      end ] | from_entries as $rateLevels
 | [ $rv[] | .reviewers[] | select(type == "object")
     | {vendor, model, effort, status, precision: (.precision | num_or_null), recall: (.recall | num_or_null)} ]
   | group_by([.vendor, .model, .effort])
@@ -414,6 +460,8 @@ def need($n): if $n >= $minN then 0 else $minN - $n end;
 | {ledger: $ledger, tiers: $tiersPath, lines: $total, malformed: ($total - ($ok | length) - ($rv | length)),
    rule: {minN: $minN, cheaperTolerance: $tol, pricierMargin: $margin, confidence: "wilson95"},
    groups: $groups, decisions: $decisions, proposals: $proposals,
+   sampling: {asOf: $asOf, params: {explore: $exploreRate, maintain: $maintainRate, maxWidth: $maxWidth, minN: $minN},
+              levels: $rateLevels, rates: ($rateLevels | map_values(.rate))},
    reviews: {lines: ($rv | length), groups: $rgroups,
              note: "review bake-offs (source inline-review) are reported separately from build pass rates and do not drive tier proposals yet"},
    note: "proposal only: parity-report.sh never writes tiers.json; Alex approves every change"}
@@ -442,6 +490,10 @@ def isinc($r; $lv): ($lv[$r.level][$r.vendor] // null) as $i | $i != null and $i
   + ["", "## Proposals", ""]
   + (if (.proposals | length) == 0 then ["None: no challenger clears the rule."] else
       (.proposals | map("- \(.level)/\(.vendor): \(.from | me) -> \(.to | me) (\(.direction); \(.why))")) end)
+  + ["", "## Sampling rates (inline bake-offs)", "",
+     "explore \(.sampling.params.explore) · maintain \(.sampling.params.maintain) (all n >= \(.sampling.params.minN), CI width <= \(.sampling.params.maxWidth), no proposal)", "",
+     "| Level | State | Rate | Reason |", "|---|---|---|---|"]
+  + (.sampling.levels | to_entries | map("| \(.key) | \(.value.state) | \(.value.rate) | \(.value.reason) |"))
   + ["", "## Reviews (inline-review) — separate from build pass rates", ""]
   + (if (.reviews.groups | length) == 0 then ["No review bake-offs ingested yet."] else
       ["| Vendor | Model | Effort | Reviews | Mean precision (n) | Mean recall (n) | Unavailable |", "|---|---|---|---|---|---|---|"]
@@ -451,14 +503,29 @@ def isinc($r; $lv): ($lv[$r.level][$r.vendor] // null) as $i | $i != null and $i
 | .[]
 '
 
-do_report() {
+compute_report() { # -> $TMP/report.json
   local lines="$TMP/ledger"
   if [ -f "$LEDGER" ]; then cp "$LEDGER" "$lines"; else : > "$lines"; fi
   jq -R -s -c 'split("\n") | map(select(test("\\S")))' "$lines" > "$TMP/lines.json"
   jq -n -c --argjson cfg "$CFG" --slurpfile lines "$TMP/lines.json" --arg ledger "$LEDGER" --arg tiersPath "$TIERS" "$DEFS"'
     $cfg.levels as $levels | $cfg.tuning.rule.minN as $minN | $cfg.tuning.rule.cheaperTolerance as $tol
     | $cfg.tuning.rule.pricierMargin as $margin | $lines[0] as $lines
+    | $cfg.tuning.challengers as $challengers | $cfg.tuning.sampleRate as $exploreRate
+    | $cfg.tuning.maintain.rate as $maintainRate | $cfg.tuning.maintain.maxWidth as $maxWidth | ($cfg.asOf // null) as $asOf
     | '"$REPORT" > "$TMP/report.json" 2>"$TMP/err" || { echo "parity-report: report failed: $(head -c 400 "$TMP/err")" >&2; exit 2; }
+}
+
+do_rates() {
+  compute_report
+  if [ "$JSON" -eq 1 ]; then
+    jq -c .sampling "$TMP/report.json"
+  else
+    jq -r '.sampling.levels | to_entries[] | "\(.key)\t\(.value.state)\t\(.value.rate)\t\(.value.reason)"' "$TMP/report.json"
+  fi
+}
+
+do_report() {
+  compute_report
   if [ "$JSON" -eq 1 ]; then
     cat "$TMP/report.json"
   else
@@ -472,5 +539,6 @@ case "$SUB" in
   ingest-review)  do_ingest_review ;;
   migrate)        do_migrate ;;
   report)         do_report ;;
-  *)              usage "parity-report.sh ingest-compare|ingest-parity|ingest-review|migrate|report [options] (see the header)" ;;
+  rates)          do_rates ;;
+  *)              usage "parity-report.sh ingest-compare|ingest-parity|ingest-review|migrate|report|rates [options] (see the header)" ;;
 esac

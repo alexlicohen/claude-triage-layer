@@ -88,8 +88,9 @@
 #                         decision 2026-07-10; engram left the list 2026-09-15 —
 #                         see CHANGELOG.md, Wave 10).
 #   AGY_BOUNDARY_CLEARED  must be 1. The caller attests the data boundary was
-#                         checked (no clinical/BCH/PHI, no COI material, not a
-#                         deny-listed repo). Absent => REFUSED. The name predates
+#                         checked (no clinical/BCH/PHI — no BAA; not a deny-listed
+#                         repo). COI material may go (codex training opt-out
+#                         confirmed, Alex 2026-09-25). Absent => REFUSED. The name predates
 #                         agy's retirement; it is the vendor-neutral attestation.
 #   AGY_STAGE_KEEP        1 = keep the staging dir (debugging). It NEVER keeps
 #                         the build worktree — that is always removed.
@@ -656,7 +657,7 @@ if mode_writes "$MODE"; then
 fi
 
 # Boundary attestation — mirrors the cross-reviewer tier's rule 1. The caller,
-# not this script, knows whether the material is clinical/COI/restricted.
+# not this script, knows whether the material is clinical/PHI or restricted.
 [ "${AGY_BOUNDARY_CLEARED:-}" = "1" ] || \
   die "REFUSED: AGY_BOUNDARY_CLEARED is not set — the caller must attest the data boundary was checked before anything leaves the machine." "$E_REFUSED"
 

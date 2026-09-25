@@ -159,7 +159,7 @@ else
 fi
 
 # --- 5b. tuning block: the inline bake-off / parity-report config is valid --------
-# triage-tiers.sh --bakeoff-json owns the tuning schema (sampleRate, challengerMix,
+# triage-tiers.sh --bakeoff-json owns the tuning schema (sampleRate, maintain, challengerMix,
 # challengers per level/vendor, the decision rule, ledger, pause threshold).
 if TUNING_OUT=$(TRIAGE_TIERS="$REPO_DIR/config/tiers.json" ./scripts/triage-tiers.sh --bakeoff-json 2>&1 >/dev/null); then
   ok "tuning: config/tiers.json tuning block is valid (triage-tiers.sh --bakeoff-json)"

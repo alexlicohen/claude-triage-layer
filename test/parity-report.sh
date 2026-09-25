@@ -333,6 +333,116 @@ chk "RV6 markdown: its own Reviews section with the table, the not-a-proposal-in
 run_pr report --tiers "$TIERS" --ledger "$RL"
 chk "RV6b with no review lines the section says so" 'printf "%s" "$OUT" | grep -q "No review bake-offs ingested yet."'
 
+# --- RA: rates — the per-level inline bake-off sampling rate --------------------
+TT="$REPO_DIR/scripts/triage-tiers.sh"
+# RT: the tuning.maintain schema, owned by triage-tiers.sh's TUNING_ERRORS.
+NEEDLE=""
+tt_bad() { # NAME JQ-EDIT NEEDLE
+  jq "$2" "$TIERS" > "$T/rt.json"
+  OUT=$(TRIAGE_TIERS="$T/rt.json" "$TT" --bakeoff-json 2>&1); RC=$?; ERR="$OUT"; NEEDLE="$3"
+  chk "RT $1 -> invalid tuning (exit 2) naming it" '[ "$RC" -eq 2 ] && printf "%s" "$OUT" | grep -qF "$NEEDLE"'
+}
+OUT=$(TRIAGE_TIERS="$TIERS" "$TT" --bakeoff-json 2>&1); RC=$?; ERR=""
+chk "RT the shipped tuning.maintain is valid and passed through (rate 0.05 <= sampleRate 0.2, maxWidth 0.35)" \
+  '[ "$RC" -eq 0 ] && [ "$(printf "%s" "$OUT" | jq -c .tuning.maintain)" = "{\"rate\":0.05,\"maxWidth\":0.35}" ]'
+tt_bad "maintain missing" 'del(.tuning.maintain)' "tuning.maintain must be an object"
+tt_bad "maintain.rate 0 (sampling would stop at a plateau)" '.tuning.maintain.rate = 0' "tuning.maintain.rate must be a number in (0, 1]"
+tt_bad "maintain.rate a string" '.tuning.maintain.rate = "0.05"' "tuning.maintain.rate must be a number in (0, 1]"
+tt_bad "maintain.rate above sampleRate" '.tuning.maintain.rate = 0.3' "must not exceed tuning.sampleRate"
+tt_bad "maintain.maxWidth 0" '.tuning.maintain.maxWidth = 0' "tuning.maintain.maxWidth must be a number in (0, 1]"
+tt_bad "maintain.maxWidth above 1" '.tuning.maintain.maxWidth = 1.5' "tuning.maintain.maxWidth must be a number in (0, 1]"
+jq '.tuning.maintain.maxWidth = 0' "$TIERS" > "$T/rt-pr.json"
+run_pr rates --tiers "$T/rt-pr.json" --ledger "$T/none.jsonl"
+chk "RT parity-report rates refuses an invalid maintain block via the one validator (exit 2)" '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q "no valid tuning block"'
+
+rstate() { printf '%s' "$OUT" | jq -r --arg l "$1" '.levels[$l] | .state + ":" + (.rate | tostring)'; }
+rwhy() { printf '%s' "$OUT" | jq -r --arg l "$1" '.levels[$l].reason'; }
+run_pr rates --json --tiers "$TIERS" --ledger "$T/none.jsonl"
+chk "RA1 no data: quick none (no challenger configured) at 0; builder/deep/top explore at sampleRate 0.2" \
+  '[ "$RC" -eq 0 ] && [ "$(rstate quick)" = "none:0" ] && [ "$(rstate builder)" = "explore:0.2" ] && [ "$(rstate deep)" = "explore:0.2" ] && [ "$(rstate top)" = "explore:0.2" ]'
+chk "RA1b the reason names what is missing, per incumbent AND configured challenger (builder: claude sonnet@medium, sonnet@high, codex gpt-6-sol@medium)" \
+  '[ "$(rwhy builder)" = "claude sonnet@high n=0 < 8; claude sonnet@medium n=0 < 8; codex gpt-6-sol@medium n=0 < 8" ]'
+chk "RA1c .rates is the {level: rate} map triage-exec takes; asOf is the tiers file's; params echo the tuning" \
+  '[ "$(printf "%s" "$OUT" | jq -c .rates)" = "{\"quick\":0,\"builder\":0.2,\"deep\":0.2,\"top\":0.2}" ] && [ "$(printf "%s" "$OUT" | jq -r .asOf)" = "$(jq -r .asOf "$TIERS")" ] &&
+   [ "$(printf "%s" "$OUT" | jq -c .params)" = "{\"explore\":0.2,\"maintain\":0.05,\"maxWidth\":0.35,\"minN\":8}" ]'
+
+# Settled builder level: every incumbent + configured challenger at 40/40 (CI width .088), no proposal.
+RL="$T/l-settled.jsonl"; : > "$RL"
+gen builder claude sonnet medium pass 40; gen builder claude sonnet high pass 40; gen builder codex gpt-6-sol medium pass 40
+SETTLED="$RL"
+run_pr rates --json --tiers "$TIERS" --ledger "$SETTLED"
+chk "RA2 builder settled (all n >= minN, narrow CIs, no proposal) -> maintain at maintain.rate 0.05; other levels unaffected" \
+  '[ "$RC" -eq 0 ] && [ "$(rstate builder)" = "maintain:0.05" ] && rwhy builder | grep -q "^settled" && [ "$(rstate deep)" = "explore:0.2" ] && [ "$(rstate quick)" = "none:0" ]'
+run_pr report --json --tiers "$TIERS" --ledger "$SETTLED"
+REPJ="$OUT"
+run_pr rates --json --tiers "$TIERS" --ledger "$SETTLED"
+chk "RA2b report --json carries the same object as .sampling; groups carry a Wilson upper bound next to the lower one" \
+  '[ "$(printf "%s" "$REPJ" | jq -c .sampling)" = "$OUT" ] && [ "$(printf "%s" "$REPJ" | jq -r ".groups[] | select(.model == \"sonnet\" and .effort == \"medium\") | .wilsonUB * 10000 | round")" = 10000 ]'
+run_pr rates --tiers "$TIERS" --ledger "$SETTLED"
+chk "RA2c plain output: one tab-separated line per level" \
+  '[ "$(printf "%s\n" "$OUT" | wc -l | tr -d " ")" = 4 ] && printf "%s\n" "$OUT" | grep -q "^builder	maintain	0.05	settled"'
+run_pr report --tiers "$TIERS" --ledger "$SETTLED"
+chk "RA2d markdown report has the sampling-rate table" \
+  'printf "%s" "$OUT" | grep -q "^## Sampling rates (inline bake-offs)" && printf "%s" "$OUT" | grep -q "^| builder | maintain | 0.05 | settled"'
+
+# A proposal alone forces explore: incumbent sonnet·medium 30/40 (.75, CI width .26),
+# configured pricier challenger sonnet·high 40/40 (+.25 >= .15 -> propose); all n >= 8.
+RL="$T/l-proposal.jsonl"; : > "$RL"
+gen builder claude sonnet medium pass 30; gen builder claude sonnet medium fail 10; gen builder claude sonnet high pass 40; gen builder codex gpt-6-sol medium pass 40
+run_pr rates --json --tiers "$TIERS" --ledger "$RL"
+chk "RA3 a proposal for a level x vendor -> explore, the reason names the pending proposal (and no count or width gap)" \
+  '[ "$(rstate builder)" = "explore:0.2" ] && [ "$(rwhy builder)" = "proposal pending for builder/claude: sonnet@medium -> sonnet@high" ]'
+
+# Wide intervals: everything at n = 8 but 4/8 (CI width .59), no proposal (equal rates).
+RL="$T/l-wide.jsonl"; : > "$RL"
+for m in "claude sonnet medium" "claude sonnet high" "codex gpt-6-sol medium"; do
+  # shellcheck disable=SC2086  # $m is vendor model effort
+  gen builder $m pass 4; gen builder $m fail 4
+done
+run_pr rates --json --tiers "$TIERS" --ledger "$RL"
+chk "RA4 n >= minN but a Wilson 95% CI wider than maxWidth -> explore, the reason gives the width" \
+  '[ "$(rstate builder)" = "explore:0.2" ] && rwhy builder | grep -q "codex gpt-6-sol@medium CI width 0.[0-9]* > 0.35" && ! rwhy builder | grep -q "n=" && ! rwhy builder | grep -q proposal'
+jq '.tuning.maintain.maxWidth = 1' "$TIERS" > "$T/tiers-w1.json"
+run_pr rates --json --tiers "$T/tiers-w1.json" --ledger "$RL"
+chk "RA4b ...and the same ledger with maxWidth 1 -> maintain (the width is what held it)" '[ "$(rstate builder)" = "maintain:0.05" ]'
+
+# The n check on its own (maxWidth 1, so no width can hold a level): a challenger one run short.
+RL="$T/l-short.jsonl"; : > "$RL"
+gen builder claude sonnet medium pass 40; gen builder claude sonnet high pass 40; gen builder codex gpt-6-sol medium pass 7
+run_pr rates --json --tiers "$T/tiers-w1.json" --ledger "$RL"
+chk "RA5 one configured config under minN (codex gpt-6-sol@medium 7/7) -> explore, naming it" \
+  '[ "$(rstate builder)" = "explore:0.2" ] && [ "$(rwhy builder)" = "codex gpt-6-sol@medium n=7 < 8" ]'
+# Only build lines count: a review line, and a crafted inline-review line that even
+# carries a candidates array with the missing pass, change nothing.
+jq -nc '{v:1, ts:"2026-09-24T00:00:00Z", source:"inline-review", run:"rv-x", repoName:"r",
+  reviewers:[{label:"a", vendor:"codex", level:"builder", model:"gpt-6-sol", effort:"medium", status:"ok", precision:1, recall:1, n:5}],
+  candidates:[{label:"c", vendor:"codex", model:"gpt-6-sol", effort:"medium", status:"pass"}], level:"builder", items:1, real:1, disputed:0, resolved:0}' >> "$RL"
+run_pr rates --json --tiers "$T/tiers-w1.json" --ledger "$RL"
+chk "RA6 review lines never count toward the rate (still n=7 after an inline-review line carrying a pass)" \
+  '[ "$(rstate builder)" = "explore:0.2" ] && [ "$(rwhy builder)" = "codex gpt-6-sol@medium n=7 < 8" ]'
+gen builder codex gpt-6-sol medium pass 1
+run_pr rates --json --tiers "$T/tiers-w1.json" --ledger "$RL"
+chk "RA6b one more BUILD pass -> maintain" '[ "$(rstate builder)" = "maintain:0.05" ]'
+
+# A model change in the tiers file resets automatically: the new incumbent has n=0.
+jq '.levels.builder.codex.model = "gpt-6-sol-2"' "$TIERS" > "$T/tiers-newmodel.json"
+run_pr rates --json --tiers "$T/tiers-newmodel.json" --ledger "$SETTLED"
+chk "RA7 a new incumbent model in tiers.json (same ledger that was settled) -> its n=0 -> explore" \
+  '[ "$(rstate builder)" = "explore:0.2" ] && [ "$(rwhy builder)" = "codex gpt-6-sol-2@medium n=0 < 8" ]'
+jq '.levels.builder.claude.effort = "low"' "$TIERS" > "$T/tiers-neweffort.json"
+run_pr rates --json --tiers "$T/tiers-neweffort.json" --ledger "$SETTLED"
+chk "RA7b ...and so does a new incumbent effort" '[ "$(rstate builder)" = "explore:0.2" ] && rwhy builder | grep -q "claude sonnet@low n=0 < 8"'
+jq '.tuning.challengers.builder.codex += [{"model": "gpt-6-astra", "effort": "high"}]' "$TIERS" > "$T/tiers-newch.json"
+run_pr rates --json --tiers "$T/tiers-newch.json" --ledger "$SETTLED"
+chk "RA7c a newly configured challenger (n=0) -> explore" '[ "$(rstate builder)" = "explore:0.2" ] && [ "$(rwhy builder)" = "codex gpt-6-astra@high n=0 < 8" ]'
+
+jq '.tuning.challengers.top = {"claude": [], "codex": []}' "$TIERS" > "$T/tiers-notop.json"
+run_pr rates --json --tiers "$T/tiers-notop.json" --ledger "$SETTLED"
+chk "RA8 a level whose challenger lists are all empty -> none at rate 0 (like quick)" '[ "$(rstate top)" = "none:0" ] && [ "$(rstate quick)" = "none:0" ]'
+chk "RA9 Wilson 95% upper bounds reuse the one formula: 5/10 = 0.7634, 0/10 = 0.2775, 10/10 = 1" \
+  '[ "$(g deep codex gpt-6-sol medium ".wilsonUB * 10000 | round")" = 7634 ] && [ "$(g deep codex gpt-6-luna low ".wilsonUB * 10000 | round")" = 2775 ] &&
+   [ "$(g deep claude sonnet high ".wilsonUB * 10000 | round")" = 10000 ]'
+
 echo ""
 echo "RESULT: $PASS_COUNT passed, $FAIL_COUNT failed"
 [ "$FAIL_COUNT" -eq 0 ]

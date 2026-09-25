@@ -4,6 +4,64 @@ Reverse-chronological. Each entry cites the commit(s) it corresponds to and,
 where known, the test-count delta. See `test/roundtrip.sh` and `test/lint.sh`
 for the current check catalog.
 
+## Wave 14 — adaptive bake-off sampling rate; codex data boundary relaxed (branch wave14-optout)
+
+- **14A — per-level sampling rate that never stops.** `config/tiers.json`
+  `tuning.maintain = {rate: 0.05, maxWidth: 0.35}`; `tuning.sampleRate` stays
+  the one explore rate (and triage-exec's fallback) — no `rates.explore`
+  duplicate. `triage-tiers.sh` TUNING_ERRORS validates it: `maintain.rate` in
+  (0, 1] and ≤ `sampleRate` (sampling never stops at a plateau), `maxWidth` in
+  (0, 1]. `parity-report.sh` (the one owner of the rule) gains `rates [--json]`
+  and `report --json .sampling` + a markdown table: per level, `none` (no
+  configured challenger: rate 0), `maintain` iff for every vendor with a
+  `levels` entry or configured challengers there the incumbent and every
+  configured challenger have n ≥ minN, every Wilson 95% interval is ≤ maxWidth
+  wide and no proposal is pending for that level × vendor (rate
+  `maintain.rate`), else `explore` at `sampleRate` with a reason naming every
+  gap. `--json` = `{asOf, params, levels: {<level>: {state, rate, reason}},
+  rates: {<level>: rate}}`. Groups gain `wilsonUB` (one `wilsonBound()` formula,
+  sign ±1). Reset on a model change is the existing grouping: counts are keyed
+  by the tiers file's current (vendor, model, effort), so a new model/effort
+  starts at n = 0 → explore; no separate mechanism. Only build lines count.
+  `triage-exec.js`: optional `args.bakeoff.rates` (`{level: number in [0,1]}`,
+  validated before any spawn — unknown level, out of range, non-number → throw);
+  `bakeoffPick()` samples at `rates[level]`, else `sampleRate`; with `rates`
+  given, sampled records and `not-sampled` skips carry `{rate, rateFrom:
+  'rates'|'sampleRate'}`. Absent → byte-identical 13B behavior (S40–S53
+  unchanged).
+- **14B — codex data boundary.** Alex confirmed the codex account's training
+  opt-out and ruled that COI material may go to codex. Removed
+  "COI" from the refusal classes in `scripts/ext-run.sh` (header + attestation
+  comment), `agents/triage-external.md` rule 2, `agents/triage-cross-reviewer.md`
+  rule 1, `README.md` and `scripts/README.md`. Still excluded: clinical/BCH/PHI
+  (no BAA), `clip-creator`, `.codex-deny` / `CODEX_DENY_REPOS`. The
+  `AGY_BOUNDARY_CLEARED` attestation is unchanged; the Fable retention rule in
+  `triage.md` is untouched.
+- **Checks**: workflow-scenarios 310 → 325 (S54), parity-report 68 → 94 (RT*
+  tuning.maintain schema, RA* rates: no data, settled, pending proposal, wide
+  CI, n < minN alone, review lines ignored, model/effort/challenger change →
+  n = 0, empty challenger lists → none, Wilson UB); other suites unchanged.
+  Mutations 82–85 (rates n ≥ minN, CI width, proposal forces explore,
+  triage-exec using `rates[level]`), each KILLED (`qc/mutate.sh --only`);
+  #76's anchor refreshed for the new draw line; catalog 76 → 80.
+- **14C — bake-offs on by default + first live run.** `triage.md` rule 10
+  (and Alex's live fork, rule 9; approved 2026-09-25): every `triage-exec`
+  plan carries `args.bakeoff` (config from `triage-tiers.sh --bakeoff-json`,
+  rates from `parity-report.sh rates --json`) unless Alex opts out or the work
+  is PHI/BCH or classifier-sensitive; review bake-offs stay opt-in. AGENTS.md
+  gate counts updated (approved). First live inline bake-off (run
+  `bakeoff-1`, deep rate forced to 1 for the test): a danger deep subtask —
+  `externalReport()` gains `bakeoffApplied` and `report.external` appears when
+  a bake-off applied an external challenger's patch. Planned claude opus@high
+  and challenger codex gpt-6-astra@high both passed, leak false, planned patch
+  applied, checks green; ingested as one ledger line. This exercised the nested
+  `workflow('triage-compare')` live for the first time. workflow-scenarios
+  325 → 334; mutation 86 (the bake-off arm of `externalInPlay`), catalog 80 → 81.
+- **Deferred**: a model swapped under an unchanged claude alias (`opus`,
+  `sonnet`) does not reset counts — bump the tiers entry. The planned Claude
+  candidate's tokens are null in the ledger (parallel compare: Claude
+  outTokens unavailable), so cost comparisons stay one-sided for inline runs.
+
 ## Wave 13 — agy retired; every codex run OS-confined and audited (uncommitted)
 
 - **13B — inline build bake-offs in `triage-exec` (opt-in `args.bakeoff`).**

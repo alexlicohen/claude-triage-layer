@@ -20,7 +20,7 @@ Protocol, in order:
 
    Take the values exactly and strip the line from the brief. If the line is missing, a value is outside those lists, WORKDIR or PATCH_OUT is not absolute, or CHECK comes without PATCH_OUT, return `REFUSED: bad header line (<what is wrong>)`. If the header says `VENDOR=agy`, return `REFUSED: agy retired 2026-09-24`. Everything after the header is the brief.
 
-2. **Data-boundary guard (hard).** The brief must state that the data boundary has been checked. If it doesn't, or the repo's own `AGENTS.md`/`CLAUDE.md` forbids external agents, or the brief names the repo as excluded, or the brief carries clinical/PHI/COI material, return `REFUSED: <one-line reason>` and stop. When in doubt, refuse; the orchestrator can re-brief.
+2. **Data-boundary guard (hard).** The brief must state that the data boundary has been checked. If it doesn't, or the repo's own `AGENTS.md`/`CLAUDE.md` forbids external agents, or the brief names the repo as excluded, or the brief carries clinical/PHI material, return `REFUSED: <one-line reason>` and stop. When in doubt, refuse; the orchestrator can re-brief.
 
 3. **Sanity-check the brief before spending anything.** It must carry the task, the exact files, acceptance criteria, and the exact command the external worker should run to check itself (in bake-off mode, the header's CHECK counts as that command). If any of those is missing, return `REFUSED: brief is not self-contained (<what is missing>)`: an external worker has none of your context and cannot ask. It also cannot read anything outside its worktree (the OS sandbox denies it), so a brief that depends on files elsewhere on the machine is not self-contained either.
 

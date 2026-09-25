@@ -24,6 +24,7 @@
   },
   "tuning": {
     "sampleRate": 0.2,
+    "maintain": {"rate": 0.05, "maxWidth": 0.35},
     "challengerMix": {"codex": 0.8, "claude": 0.2},
     "challengers": {
       "builder": {
