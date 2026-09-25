@@ -41,6 +41,8 @@
 #   T*      tiers.json: ids come from the file, lookup order, missing or
 #           unparseable file, absent entry = refusal, vendor/model mismatch
 #   C*      codex: the flag table per mode, every result gate, the watchdog,
+#           the --schema normalized to OpenAI-strict (and the reply's nulls
+#           mapped back), the API error surfaced, skills-loader stderr dropped,
 #           deny-list/markers, linked worktrees, --patch-out and --check
 #   Y*      tiers-sync.sh (frontmatter <-> tiers.json) and triage-tiers.sh
 set -u
@@ -170,7 +172,8 @@ for a in "$@"; do
     -m) log "MODEL=$a" ;;
     -c) log "CFG=$a" ;;
     -o) last="$a" ;;
-    --output-schema) log "OSCHEMA=$(cat "$a" 2>/dev/null)" ;;
+    --output-schema) log "OSCHEMA=$(cat "$a" 2>/dev/null)"
+                     cp "$a" "${CODEX_STUB_SCHEMA:-$HOME/.codex/stub-schema.json}" 2>/dev/null ;;
   esac
   prev="$a"
 done
@@ -207,6 +210,24 @@ case "${CODEX_STUB_MODE:-ok}" in
   exit7)     ok_events; printf 'x\n' > "$last"; exit 7 ;;
   schemaok)  ok_events; printf '{"verdict":"clean"}\n' > "$last" ;;
   schemabad) ok_events; printf 'not json at all\n' > "$last" ;;
+  schemanull)
+    # What a strict schema makes the model send: every key present, null where
+    # the caller's schema had the property as optional.
+    ok_events
+    printf '{"findings":[{"file":"a.py","line":null,"severity":null,"loc":{"start":1,"end":null}}],"summary":null,"mode":null}\n' > "$last" ;;
+  apierr)
+    # The API rejecting the request (e.g. a non-strict --output-schema): the
+    # error JSON arrives pretty-printed inside .message; stderr carries the
+    # skills-loader noise every confined run logs.
+    echo '2026-01-01T00:00:00.000000Z ERROR codex_skills_extension::loader::host: failed to walk skills root file:///x/.agents/skills: Operation not permitted (os error 1)' >&2
+    echo '2026-01-01T00:00:00.000001Z ERROR codex_skills_extension::loader::host: failed to walk skills root file:///x/.claude/skills: Operation not permitted (os error 1)' >&2
+    echo 'stub: other stderr line' >&2
+    apimsg='{\n  \"type\": \"error\",\n  \"status\": 400,\n  \"error\": {\n    \"type\": \"invalid_request_error\",\n    \"code\": \"invalid_json_schema\",\n    \"message\": \"Invalid schema for response_format codex_output_schema: In context=(), additionalProperties is required to be supplied and to be false.\"\n  }\n}'
+    echo '{"type":"thread.started","thread_id":"t-1"}'
+    echo '{"type":"turn.started"}'
+    printf '{"type":"error","message":"%s"}\n' "$apimsg"
+    printf '{"type":"turn.failed","error":{"message":"%s"}}\n' "$apimsg"
+    exit 1 ;;
   write)
     printf 'sneaky\n' > "$PWD/sneaky.txt"
     ok_events; printf 'wrote a file\n' > "$last" ;;
@@ -894,6 +915,52 @@ chk "C5e2 a --schema FILE under \$HOME is copied where the sandboxed codex can r
 
 AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=schemabad run_ext read --prompt-file "$BRIEF" --schema '{"type":"object"}'
 chk "C5f --schema with a non-JSON final message is exit 5 (SCHEMA)" '[ "$RC" -eq 5 ]'
+
+# codex --output-schema is OpenAI STRICT: a caller's ordinary schema (optional
+# properties, no additionalProperties) is normalized in the copy codex gets.
+STUB_SCHEMA="$ROOT/.codex/stub-schema.json"
+NS="$ROOT/schemas/nonstrict.json"
+cat > "$NS" <<'NSJ'
+{"type":"object","properties":{
+  "findings":{"type":"array","items":{"type":"object","properties":{
+    "file":{"type":"string"},
+    "line":{"type":"integer"},
+    "severity":{"type":"string","enum":["high","low"]},
+    "loc":{"type":"object","properties":{"start":{"type":"integer"},"end":{"type":"integer"}},"required":["start"]},
+    "alt":{"anyOf":[{"type":"string"},{"type":"number"}]}},
+    "required":["file"]}},
+  "summary":{"type":"string"},
+  "mode":{"enum":["a","b"]}},
+ "required":["findings"]}
+NSJ
+cp "$NS" "$NS.orig"
+rm -f "$STUB_SCHEMA"
+AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=schemanull run_ext read --prompt-file "$BRIEF" --schema "$NS"
+# shellcheck disable=SC2016,SC2034  # jq programs, read inside chk's eval'd conditions
+STRICT_ALL='[.. | objects | select((.properties | type) == "object") | (.additionalProperties == false and ((.required | sort) == (.properties | keys)))] | (length == 3 and all)'
+# shellcheck disable=SC2016,SC2034
+STRICT_NULLABLE='.properties.findings.type == "array" and (.properties.findings.items.properties
+  | .file.type == "string" and .line.type == ["integer","null"] and .severity.type == ["string","null"]
+    and .severity.enum == ["high","low",null] and .loc.type == ["object","null"]
+    and .loc.properties.start.type == "integer" and .loc.properties.end.type == ["integer","null"]
+    and .alt.anyOf == [{"type":"string"},{"type":"number"},{"type":"null"}])
+  and .properties.summary.type == ["string","null"] and .properties.mode.enum == ["a","b",null]'
+chk "C5k a non-strict --schema reaches codex OpenAI-strict: additionalProperties:false and required = every property on each nested object" \
+  '[ "$RC" -eq 0 ] && [ -s "$STUB_SCHEMA" ] && jq -e "$STRICT_ALL" "$STUB_SCHEMA" >/dev/null'
+chk "C5k2 ...and every originally-optional property is nullable (type, enum, anyOf), required ones untouched" \
+  'jq -e "$STRICT_NULLABLE" "$STUB_SCHEMA" >/dev/null'
+chk "C5k3 ...while the caller's schema file is left as it was" 'cmp -s "$NS" "$NS.orig"'
+chk "C5l the reply's nulls for originally-optional properties are dropped (the caller gets its own shape)" \
+  '[ "$(printf "%s" "$OUT" | jq -c .)" = "{\"findings\":[{\"file\":\"a.py\",\"loc\":{\"start\":1}}]}" ]'
+
+AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=apierr run_ext read --prompt-file "$BRIEF" --schema "$NS"
+chk "C5m an API error (pretty-printed JSON in the error event) is surfaced whole in the UNAVAILABLE reason" \
+  '[ "$RC" -eq 4 ] && printf "%s" "$ERR" | grep -q "exited 1" && printf "%s" "$ERR" | grep -q "invalid_json_schema" && printf "%s" "$ERR" | grep -q "additionalProperties is required to be supplied"'
+chk "C5m2 the skills-loader noise is not relayed; other stderr still is" \
+  '! printf "%s" "$ERR" | grep -q "failed to walk skills root" && printf "%s" "$ERR" | grep -q "stub: other stderr line"'
+
+AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=schemaok run_ext read --prompt-file "$BRIEF" --schema '{"type":'
+chk "C5n a --schema that is not JSON is a usage error (exit 2) before codex runs" '[ "$RC" -eq 2 ] && [ ! -s "$STUB_LOG" ]'
 
 T_START=$SECONDS
 AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=hang run_ext read --prompt-file "$BRIEF" --timeout 1s

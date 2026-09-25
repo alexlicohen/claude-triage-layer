@@ -279,8 +279,17 @@ Options: `--prompt-file FILE` (required), `--input FILE` (repeatable), `--input-
 Data — diffs, logs, corpora — goes in with `--input`, never inlined into the brief: the sandbox
 lets codex read only its workspace, so staging is the way in. A prompt file over 256 KB is a
 usage error that names `--input`. Staged inputs are copied into the workspace and named in a
-`--- Workspace ---` prompt footer by **absolute** path. A `--schema` file is copied into
-codex's scratch dir (it reads it inside the sandbox).
+`--- Workspace ---` prompt footer by **absolute** path. A `--schema` (file or inline JSON; not
+JSON = usage error) is copied into codex's scratch dir (it reads it inside the sandbox) in
+**OpenAI-strict** form, because codex's `--output-schema` is strict structured output and the API
+rejects anything else (codex exits 1: UNAVAILABLE). Every object with `properties` gets
+`additionalProperties: false` and `required` = all its properties; a property the caller left
+optional becomes nullable (`type` gains `"null"`, an `enum` gains `null`, `anyOf`/`oneOf` gain
+`{"type":"null"}`). The reply is mapped back: a `null` under an originally-optional property is
+dropped, so stdout has the shape the caller's schema describes. The caller's file is never
+modified. When codex exits non-zero, the reason carries the API error (re-serialized onto one
+line) and its stderr minus the `codex_skills_extension … failed to walk skills root` lines every
+confined run logs.
 
 `--input-dir DIR` stages a **copy of a whole tree** (a review snapshot: many files plus page
 images) at `inputs/<basename>` and names it, with its file count, in the same footer. It is

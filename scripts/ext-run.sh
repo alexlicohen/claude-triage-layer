@@ -663,6 +663,11 @@ fi
 deny_check "$PROMPT_FILE"
 if [ -n "$WORKDIR" ]; then deny_check "$WORKDIR"; fi
 if [ -n "$SCHEMA" ] && [ -f "$SCHEMA" ]; then SCHEMA=$(resolve_path "$SCHEMA"); deny_check "$SCHEMA"; fi
+if [ -n "$SCHEMA" ]; then
+  if [ -f "$SCHEMA" ]; then jq -e . "$SCHEMA" >/dev/null 2>&1
+  else printf '%s' "$SCHEMA" | jq -e . >/dev/null 2>&1
+  fi || die "USAGE: --schema is neither a readable JSON file nor inline JSON" "$E_USAGE"
+fi
 ALLOW_READ_ABS=()
 for ar in ${ALLOW_READS+"${ALLOW_READS[@]}"}; do
   ar_real=$(allow_read_check "$ar") || exit $?
@@ -824,15 +829,90 @@ RUNDIR="$STAGE/ws"
 mode_writes "$MODE" && RUNDIR="$BUILD_WT"
 RUNDIR_ABS=$(resolve_path "$RUNDIR")
 
+# --schema, codex side. codex's --output-schema is OpenAI STRICT structured
+# output: an object schema without additionalProperties:false, or with a
+# property missing from `required`, is rejected by the API (codex exits 1, the
+# run is UNAVAILABLE). Callers write ordinary JSON Schema, so the copy codex
+# gets is normalized (STRICT_SCHEMA_JQ): every object with `properties` gets
+# additionalProperties:false and required = all its properties, and a property
+# that was optional becomes nullable instead (type T -> [T,"null"], null added to
+# an enum, {"type":"null"} added to anyOf/oneOf, a $ref/const wrapped in anyOf).
+# Recurses into properties, items, anyOf/oneOf/allOf, $defs/definitions;
+# anything else is left as-is. The reply is mapped back to the caller's schema
+# (DENULL_JQ, below): a null for an originally-optional property is dropped.
+# Codex adapter only: the caller's file is never modified.
+STRICT_SCHEMA_JQ='
+def nullable:
+  def addnull: if any(.[]; . == {"type": "null"}) then . else . + [{"type": "null"}] end;
+  if (.anyOf | type) == "array" then .anyOf |= addnull
+  elif (.oneOf | type) == "array" then .oneOf |= addnull
+  elif has("type") or has("enum") then
+    (if (.enum | type) == "array" and (any(.enum[]; . == null) | not) then .enum += [null] else . end)
+    | (if has("type") then .type = ((if (.type | type) == "array" then .type else [.type] end)
+                                   | if any(.[]; . == "null") then . else . + ["null"] end)
+       else . end)
+  elif has("$ref") or has("const") then {"anyOf": [., {"type": "null"}]}
+  else . end;
+def strict:
+  if type != "object" then .
+  else
+    (if (.properties | type) == "object" then
+       ((.required // []) | if type == "array" then . else [] end) as $req
+       | .properties |= with_entries(.key as $k
+           | .value |= (strict | if any($req[]; . == $k) then . else nullable end))
+       | .additionalProperties = false
+       | .required = (.properties | keys_unsorted)
+     else . end)
+    | (if (.items | type) == "object" then .items |= strict
+       elif (.items | type) == "array" then .items |= map(strict) else . end)
+    | reduce ("anyOf", "oneOf", "allOf") as $kw (.;
+        if (.[$kw] | type) == "array" then .[$kw] |= map(strict) else . end)
+    | reduce ("$defs", "definitions") as $kw (.;
+        if (.[$kw] | type) == "object" then .[$kw] |= map_values(strict) else . end)
+  end;
+strict'
+# DENULL_JQ — the reply, walked against the ORIGINAL schema ($s[0]): a null value
+# under a property that schema did not require is removed, so the caller sees the
+# shape it asked for. Local $refs ("#/...") are followed; for anyOf/oneOf the
+# first branch that fits the value (an object's keys all declared, or an array
+# schema for an array) is used.
+DENULL_JQ='
+def resolve($root):
+  if type == "object" and (.["$ref"] | type) == "string" and (.["$ref"] | startswith("#/"))
+  then (.["$ref"][2:] | split("/")) as $p | ($root | getpath($p)) // {} else . end;
+def denull($root; $schema):
+  ($schema | resolve($root)) as $s
+  | if ($s | type) != "object" then .
+    elif type == "object" and ($s.properties | type) == "object" then
+      ((($s.required // []) | if type == "array" then . else [] end)) as $req
+      | reduce ($s.properties | keys_unsorted[]) as $k (.;
+          if has($k) | not then .
+          elif .[$k] == null and (any($req[]; . == $k) | not) then del(.[$k])
+          else .[$k] |= denull($root; $s.properties[$k]) end)
+    elif type == "array" and ($s.items | type) == "object" then map(denull($root; $s.items))
+    elif ($s.allOf | type) == "array" then reduce $s.allOf[] as $b (.; denull($root; $b))
+    elif (($s.anyOf // $s.oneOf) | type) == "array" and (type == "object" or type == "array") then
+      . as $v
+      | ([($s.anyOf // $s.oneOf)[] | resolve($root) | select(type == "object")
+          | select(if ($v | type) == "object"
+                   then (.properties | type) == "object" and ((($v | keys) - (.properties | keys)) == [])
+                   else (.items | type) == "object" end)] | first) as $b
+      | if $b == null then . else denull($root; $b) end
+    else . end;
+denull($s[0]; $s[0])'
+
 # The --output-schema file is read by codex itself, inside the sandbox, so it is
 # always a copy in codex's scratch dir (a caller's schema under $HOME would be
-# unreadable there).
+# unreadable there). The original goes to the private meta dir for DENULL_JQ.
 SCHEMA_FILE=""
+SCHEMA_ORIG=""
 if [ -n "$SCHEMA" ]; then
   SCHEMA_FILE="$CX/schema.json"
-  if [ -f "$SCHEMA" ]; then cp "$SCHEMA" "$SCHEMA_FILE" || die "UNAVAILABLE: could not stage --schema $SCHEMA" "$E_UNAVAIL"
-  else printf '%s' "$SCHEMA" > "$SCHEMA_FILE"
-  fi
+  SCHEMA_ORIG="$STAGE/meta/schema.orig.json"
+  if [ -f "$SCHEMA" ]; then jq -c . "$SCHEMA" > "$SCHEMA_ORIG"
+  else printf '%s' "$SCHEMA" | jq -c . > "$SCHEMA_ORIG"
+  fi || die "UNAVAILABLE: could not stage --schema $SCHEMA" "$E_UNAVAIL"
+  jq -c "$STRICT_SCHEMA_JQ" "$SCHEMA_ORIG" > "$SCHEMA_FILE" || die "UNAVAILABLE: could not normalize --schema to OpenAI-strict form" "$E_UNAVAIL"
 fi
 
 # The prompt codex actually sees: the brief, plus a footer naming the workspace
@@ -1212,10 +1292,24 @@ gate_fail() { # $1 = message, $2 = exit code
 }
 
 RESPONSE=""
+# codex_stderr — the CLI's stderr minus the skills-loader lines it logs on every
+# confined run (it walks ~/.agents/skills, which the profile denies: expected,
+# harmless, and long enough to push the real error out of the reason).
+codex_stderr() {
+  grep -v 'codex_skills_extension.*failed to walk skills root' "$ERRLOG" 2>/dev/null
+}
 codex_detail() { # the most useful one-line reason codex gave, plus stderr
   local msg
-  msg=$(jq -rR 'fromjson? | select(type == "object") | select(.type == "error" or .type == "turn.failed") | (.message // .error.message // empty)' "$EVENTS" 2>/dev/null | head -1)
-  printf '%s %s' "$msg" "$(head -c 400 "$ERRLOG")"
+  # The first failure message, on ONE line: an API error arrives as a
+  # (pretty-printed) JSON document inside .message, so it is re-serialized
+  # compactly rather than cut at its first line (which was just "{").
+  msg=$(jq -rR 'fromjson? | select(type == "object") | select(.type == "error" or .type == "turn.failed")
+    | (.message // .error.message // empty)
+    | if type == "string" then ((try fromjson catch null) as $j
+        | if ($j | type) == "object" or ($j | type) == "array" then ($j | tojson) else . end)
+      else tojson end
+    | gsub("\\s+"; " ")' "$EVENTS" 2>/dev/null | head -1 | head -c 1500)
+  printf '%s %s' "$msg" "$(codex_stderr | tr '\n' ' ' | head -c 600)"
 }
 
 codex_gate() {
@@ -1237,8 +1331,15 @@ codex_gate() {
 }
 
 codex_gate
-if [ -n "$SCHEMA" ] && ! printf '%s' "$RESPONSE" | jq -e . >/dev/null 2>&1; then
-  gate_fail "SCHEMA: --schema was requested but the response is not valid JSON." "$E_SCHEMA"
+if [ -n "$SCHEMA" ]; then
+  if ! printf '%s' "$RESPONSE" | jq -e . >/dev/null 2>&1; then
+    gate_fail "SCHEMA: --schema was requested but the response is not valid JSON." "$E_SCHEMA"
+  fi
+  # Back to the caller's schema: drop the nulls the strict form forced onto
+  # originally-optional properties. Rewritten (compact) only when that changed it.
+  DENULLED=$(printf '%s' "$RESPONSE" | jq -c --slurpfile s "$SCHEMA_ORIG" "$DENULL_JQ" 2>/dev/null) || \
+    gate_fail "SCHEMA: the response could not be mapped back to the caller's --schema." "$E_SCHEMA"
+  [ "$DENULLED" != "$(printf '%s' "$RESPONSE" | jq -c .)" ] && RESPONSE="$DENULLED"
 fi
 
 if ! mode_writes "$MODE"; then

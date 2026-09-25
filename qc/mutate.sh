@@ -64,7 +64,8 @@ done
 # 67-70 cover the review bake-off (Wave 13D): hard excludes applied to tracked
 # paths too, adjudicators blind to provenance, disputed items never scored, and
 # --input-dir refusing a symlink out of the staged tree.
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70"
+# 71 covers the codex --output-schema normalization to OpenAI-strict form.
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -144,7 +145,7 @@ mut_file() {
     64|65) echo "workflows/triage-parity.js" ;;
     67) echo "scripts/review-stage.sh" ;;
     68|69) echo "workflows/triage-compare.js" ;;
-    70) echo "scripts/ext-run.sh" ;;
+    70|71) echo "scripts/ext-run.sh" ;;
     *) echo "" ;;
   esac
 }
@@ -216,6 +217,7 @@ mut_desc() {
     68) echo "triage-compare.js (review): the adjudicator prompt leaks provenance (each item says which anonymized reviewers reported it)" ;;
     69) echo "triage-compare.js (review): a disputed item is counted as real in the reviewer scores" ;;
     70) echo "ext-run.sh: --input-dir follows a symlink out of the staged tree (whatever it names is copied to codex)" ;;
+    71) echo "ext-run.sh: the --schema is passed to codex un-normalized (a non-strict schema is rejected by the API: every schema'd codex run is UNAVAILABLE)" ;;
     *) echo "" ;;
   esac
 }
@@ -230,7 +232,7 @@ mut_suite() {
   case "$1" in
     1|2|3|4|5|6|10|12|18|19|20|21|33) echo "roundtrip" ;;
     7|8|9|11|16|17|22|23|28|29) echo "scenarios" ;;
-    15|24|25|26|40|49|50|51|56|57|58|59|60|61|62|70) echo "extrun" ;;
+    15|24|25|26|40|49|50|51|56|57|58|59|60|61|62|70|71) echo "extrun" ;;
     31|34|36|37|38|47|68|69) echo "compare" ;;
     32|48|63|66) echo "patchcheck" ;;
     39|55) echo "stagewt" ;;
@@ -872,6 +874,13 @@ MUT69
 MUT70
       mut_replace_block "$target" '      *) die "REFUSED: --input-dir $real holds a symlink that leaves it' 1 "$rep"
       ;;
+    71)
+      # ext-run.sh: codex gets the caller's schema verbatim, not the strict form.
+      cat > "$rep" <<'MUT71'
+  cp "$SCHEMA_ORIG" "$SCHEMA_FILE" # MUTATED: schema passed to codex un-normalized
+MUT71
+      mut_replace_block "$target" '  jq -c "$STRICT_SCHEMA_JQ" "$SCHEMA_ORIG" > "$SCHEMA_FILE"' 1 "$rep"
+      ;;
     *)
       return 1
       ;;
@@ -953,6 +962,7 @@ verify_mutation() {
     68) grep -qF 'MUTATED: adjudicator sees provenance' "$target" && grep -qF 'reportedBy: it.prov' "$target" ;;
     69) grep -qF 'MUTATED: disputed counted as real' "$target" && ! grep -qxF "  const isReal = it => it.verdict === 'real'" "$target" ;;
     70) grep -qF 'MUTATED: input-dir follows an outside symlink' "$target" && ! grep -qF 'holds a symlink that leaves it' "$target" ;;
+    71) grep -qF 'MUTATED: schema passed to codex un-normalized' "$target" && ! grep -qF 'jq -c "$STRICT_SCHEMA_JQ"' "$target" ;;
     *) return 1 ;;
   esac
 }
