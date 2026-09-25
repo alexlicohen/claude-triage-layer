@@ -14,9 +14,10 @@
 // the verdict combination rule, scores over non-disputed items only, unavailable
 // never zero, the ⚠ Fable line, SOURCE_CHANGED, codex deny carried over; codex
 // TIMEOUT/PROMPT_BYTES headers and the image-link note (RV21-23); extend mode (EX*):
-// refusals before any reviewer, attach-without-re-adjudication, blind adjudication of
-// new items only, superseded runs kept but unscored, recall recomputed — and the
-// loader's real jq command run against a synthetic prior result.
+// the prior result taken INLINE (extendResult; the path form refused), shape/caller
+// refusals before any spawn, one tiny snapshot check (never a relay of the prior),
+// attach-without-re-adjudication, blind adjudication of new items only, superseded
+// runs kept but unscored, recall recomputed — and the check's real jq command.
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -981,41 +982,21 @@ const RV = await run(RA({}), RV_SCRIPT())
 }
 
 // ═══ extend: add reviewers to a prior review result ════════════════════════════════
-// The prior is RV.result itself (this workflow's own output shape). LOAD builds what
-// the loader's jq command prints — projection + digest — independently of the workflow.
-const PRIOR_PATH = '/p/prior-result.json'
-const digestOf = (...vals) => {
-  let bytes = 0
-  let nums = 0
-  const walk = v => {
-    if (typeof v === 'string') bytes += Buffer.byteLength(v, 'utf8')
-    else if (typeof v === 'number') nums += v
-    else if (Array.isArray(v)) v.forEach(walk)
-    else if (v && typeof v === 'object') Object.values(v).forEach(walk)
-  }
-  vals.forEach(walk)
-  return { bytes, nums }
-}
-const projPrior = prior => ({
-  reviewers: prior.reviewers.map(r => ({ label: r.label, vendor: r.vendor, level: r.level, model: r.model ?? null, effort: r.effort ?? null, status: r.status,
-    findings: r.findings ?? null, tokens: r.tokens ?? null, seconds: r.seconds ?? null, reason: r.reason ?? null })),
-  items: prior.items.map(it => ({ id: it.id, file: it.file, line: it.line, severity: it.severity, category: it.category, claim: it.claim, evidence: it.evidence,
-    suggestedFix: it.suggestedFix, verdict: it.verdict, adjudication: it.adjudication.map(x => ({ adjudicator: x.adjudicator, vendor: x.vendor, verdict: x.verdict, evidence: x.evidence })), foundBy: it.foundBy })),
-})
-const LOAD = (prior, over = {}) => {
-  const { reviewers, items } = projPrior(prior)
-  return Object.assign({
-    ok: true, kind: 'review', repoName: prior.repoName, base: prior.base, head: prior.head, outDir: prior.outDir,
-    resolvedBase: prior.base, resolvedHead: prior.head, manifestBase: prior.base, manifestHead: prior.head,
-    snapshotExists: true, snapshotOk: true, fingerprintExists: true, codexDenied: false, files: 3, extras: 0, diffBytes: 50, snapKB: 4,
-    mergeFallback: prior.mergeFallback === true, sourceChanged: prior.sourceChanged, flags: prior.flags || [], reviewers, items, digest: digestOf(items, reviewers),
-  }, over)
-}
+// The prior is RV.result itself (this workflow's own output shape), passed INLINE as
+// args.extendResult. CHECK builds what the one tiny snapshot-check command prints.
+const PRIOR = RV.result
+const CHECK = (prior, over = {}) => Object.assign({
+  ok: true, resolvedBase: prior.base, resolvedHead: prior.head, manifestBase: prior.base, manifestHead: prior.head,
+  snapshotExists: true, snapshotOk: true, fingerprintExists: true, codexDenied: false, files: 3, extras: 0, diffBytes: 50, snapKB: 4,
+}, over)
+const clone = v => JSON.parse(JSON.stringify(v))
 const EXT_REVIEWERS = [
   { vendor: 'codex', level: 'deep', model: 'gpt-6-astra', effort: 'high', label: 'rv-astra2' },
   { vendor: 'claude', level: 'deep', model: 'opus', effort: 'high', label: 'rv-new' },
 ]
-const XA = extra => RA(Object.assign({ extend: PRIOR_PATH, supersedes: ['rv-sol', 'rv-astra'], reviewers: EXT_REVIEWERS }, extra))
+const XA = extra => RA(Object.assign({ extendResult: PRIOR, supersedes: ['rv-sol', 'rv-astra'], reviewers: EXT_REVIEWERS }, extra))
+// A prior with one edit (a deep copy — RV.result itself is never touched).
+const priorWith = edit => { const p = clone(PRIOR); edit(p); return p }
 // The extend merge mock: a new finding whose claim equals an EXISTING item's attaches
 // to it; the rest cluster by claim into new items.
 const EXT_MERGE = prompt => {
@@ -1034,7 +1015,7 @@ const EXT_MERGE = prompt => {
   return { items: out }
 }
 const XS = (extra = {}) => Object.assign({
-  'review:extend-load': [LOAD(RV.result)],
+  'review:extend-check': [CHECK(PRIOR)],
   'reviewer:rv-astra2': [CX({ findings: [RF('docs/a.md', 3, 'REAL typo in step 1'), RF('docs/d.md', 4, 'REAL new defect')] }, 900, 30, 'gpt-6-astra')],
   'reviewer:rv-new': [{ findings: [RF('docs/d.md', 4, 'REAL new defect'), RF('docs/b.md', 5, 'SPLIT wrong torque', 'blocker'), RF('docs/e.md', 2, 'FAKE made up')] }],
   'review:merge': [EXT_MERGE],
@@ -1042,69 +1023,97 @@ const XS = (extra = {}) => Object.assign({
   'adjudicate:codex': [ADJ('codex')],
   'review:fingerprint': [{ rc: 0, same: true, changed: [], headMoved: false, detail: 'SAME: nothing under the paths changed' }],
 }, extra)
-const priorItem = id => RV.result.items.find(it => it.id === id)
-const idOf = (file, line) => rvItem(RV.result, file, line).id
+const priorItem = id => PRIOR.items.find(it => it.id === id)
+const idOf = (file, line) => rvItem(PRIOR, file, line).id
 const noReviewer = calls => !calls.some(c => /^(reviewer:|review:merge|adjudicate:)/.test(c.label))
 
-// ---- EX1: argument checks before any spawn ------------------------------------------
+// ---- EX1: argument + shape checks before any spawn ------------------------------------
 {
   const cases = [
-    ['a relative extend path', XA({ extend: 'prior.json' })],
-    ['an extend path inside the repo', XA({ extend: `${LIVE}/prior.json` })],
-    ['supersedes without extend', RA({ supersedes: ['rv-sol'] })],
-    ['supersedes that is not a label list', XA({ supersedes: 'rv-sol' })],
-    ['a path-unsafe supersedes label', XA({ supersedes: ['../x'] })],
+    ['extendResult that is not an object (a string)', XA({ extendResult: '/p/prior-result.json' }), /extendResult must be the prior kind:"review" result OBJECT/],
+    ['extendResult that is an array', XA({ extendResult: [PRIOR] }), /OBJECT/],
+    ['supersedes without extendResult', RA({ supersedes: ['rv-sol'] }), /needs args\.extendResult/],
+    ['supersedes that is not a label list', XA({ supersedes: 'rv-sol' }), /supersedes/],
+    ['a path-unsafe supersedes label', XA({ supersedes: ['../x'] }), /supersedes/],
+    ['a prior that is not kind:"review"', XA({ extendResult: priorWith(p => { p.kind = 'build' }) }), /not a kind:"review" result/],
+    ['a prior without base/head shas', XA({ extendResult: priorWith(p => { p.head = 'HEAD' }) }), /no base\/head shas/],
+    ['a prior for another repoName', XA({ extendResult: priorWith(p => { p.repoName = 'other' }) }), /repoName/],
+    ['a prior from another outDir', XA({ extendResult: priorWith(p => { p.outDir = '/o/elsewhere' }) }), /outDir/],
+    ['a prior with no items[]', XA({ extendResult: priorWith(p => { delete p.items }) }), /no items\[\]/],
+    ['a prior with no reviewers', XA({ extendResult: priorWith(p => { p.reviewers = [] }) }), /no reviewers\[\]/],
+    ['a malformed prior item (no adjudication list)', XA({ extendResult: priorWith(p => { p.items[2].adjudication = 'n/a' }) }), /prior item is malformed/],
+    ['a malformed prior item (a non-integer line)', XA({ extendResult: priorWith(p => { p.items[0].line = '3' }) }), /prior item is malformed/],
+    ['a malformed prior item (an unknown verdict)', XA({ extendResult: priorWith(p => { p.items[0].verdict = 'maybe' }) }), /prior item is malformed/],
+    ['a malformed prior item (foundBy not a list)', XA({ extendResult: priorWith(p => { p.items[0].foundBy = 'rv-opus' }) }), /prior item is malformed/],
+    ['duplicate prior item ids', XA({ extendResult: priorWith(p => { p.items[1].id = p.items[0].id }) }), /unique M<n> ids/],
+    ['a prior reviewer without a label', XA({ extendResult: priorWith(p => { delete p.reviewers[0].label }) }), /prior reviewer is malformed/],
+    ['duplicate prior reviewer labels', XA({ extendResult: priorWith(p => { p.reviewers[1].label = p.reviewers[0].label }) }), /labels are not unique/],
+    ['a prior reviewer with an unknown status', XA({ extendResult: priorWith(p => { p.reviewers[0].status = 'weird' }) }), /unknown status/],
+    ['a prior item found by a reviewer the prior result does not list', XA({ extendResult: priorWith(p => { p.items[0].foundBy = ['rv-opus', 'rv-nobody'] }) }), /rv-nobody/],
+    ['prior flags that are not strings', XA({ extendResult: priorWith(p => { p.flags = [1] }) }), /flags/],
+    ['a sha args.head that is not the prior head', XA({ head: 'd'.repeat(40) }), /base\/head mismatch/],
+    ['a sha args.base that is not the prior base', XA({ base: 'd'.repeat(40) }), /base\/head mismatch/],
+    ['a new reviewer label that collides with a prior one', XA({ reviewers: [{ vendor: 'claude', level: 'deep', label: 'rv-opus' }] }), /collide/],
+    ['supersedes naming a label the prior result lacks', XA({ supersedes: ['rv-ghost'] }), /rv-ghost/],
+    ['another adjudicator panel than the prior items were judged by', XA({ adjudicators: [{ vendor: 'claude', level: 'deep', label: 'j1' }, { vendor: 'claude', level: 'builder', label: 'j2' }] }), /same panel/],
   ]
-  for (const [name, args] of cases) {
+  for (const [name, args, re] of cases) {
     const r = await throws(args, XS())
-    chk(`EX1: ${name} throws before any spawn`, r.threw && r.calls.length === 0 && /triage-compare/.test(r.message))
+    chk(`EX1: ${name} throws before any spawn`, r.threw && r.calls.length === 0 && /triage-compare/.test(r.message) && re.test(r.message))
+    if (!(r.threw && re.test(r.message))) console.log(`  (EX1 ${name}: ${r.threw ? r.message.split('\n')[0] : 'did not throw'})`)
   }
+  // The path form is refused, with the single safe way named.
+  for (const extend of ['/p/prior-result.json', 'prior.json', `${LIVE}/prior.json`]) {
+    const r = await throws(XA({ extend, extendResult: undefined }), XS())
+    chk(`EX1: the path form extend:${JSON.stringify(extend)} is refused before any spawn, telling the caller to pass extendResult inline`,
+      r.threw && r.calls.length === 0 && /args\.extend \(a path to a prior result\) is refused/.test(r.message) && /never relayed through an LLM/.test(r.message) &&
+      /inline, as args\.extendResult/.test(r.message))
+  }
+  const both = await throws(XA({ extend: '/p/prior-result.json' }), XS())
+  chk('EX1: …also when extendResult is passed alongside it', both.threw && both.calls.length === 0 && /args\.extend \(a path/.test(both.message))
+  const sha = await run(XA({ base: RB, head: RH }), XS())
+  chk('EX1: sha base/head equal to the prior shas pass the up-front check', sha.result.extendedFrom.base === RB && sha.result.extendedFrom.head === RH)
 }
 
-// ---- EX2: refusals after the load, before any reviewer ------------------------------
+// ---- EX2: the snapshot check — refusals after it, before any reviewer ------------------
 {
   const refuse = async (name, re, script, args = XA({})) => {
     const r = await throws(args, XS(script))
     chk(`EX2: ${name} is refused before any reviewer runs`, r.threw && re.test(r.message) && /No reviewer ran/.test(r.message) && noReviewer(r.calls))
     return r
   }
-  const hm = await refuse('a head that does not resolve to the prior head (base/head mismatch)', /base\/head mismatch/, { 'review:extend-load': [LOAD(RV.result, { resolvedHead: 'd'.repeat(40) })] })
-  chk('EX2: …after one retry of the loader (2 load spawns, on triage-quick-task, no snapshot spawn)',
-    hm.calls.map(c => c.label).join() === 'review:extend-load,review:extend-load#retry' && hm.calls.every(c => c.opts.agentType === 'triage-quick-task'))
-  await refuse('a base that does not resolve to the prior base', /base\/head mismatch/, { 'review:extend-load': [LOAD(RV.result, { resolvedBase: 'd'.repeat(40) })] })
-  await refuse('a missing snapshot (snap/ or range.diff gone)', /snapshot is gone/, { 'review:extend-load': [LOAD(RV.result, { snapshotExists: false, snapshotOk: false })] })
-  await refuse('a manifest whose head is not the prior head', /snapshot is gone/, { 'review:extend-load': [LOAD(RV.result, { manifestHead: 'e'.repeat(40), snapshotOk: false })] })
-  await refuse('another outDir than the prior one', /outDir/, { 'review:extend-load': [LOAD(RV.result, { outDir: '/o/elsewhere' })] })
-  await refuse('an unreadable prior result', /could not be read/, { 'review:extend-load': [{ ok: false, error: 'jq: error: Could not open /p/prior-result.json' }] })
-  const noAdj = LOAD(RV.result)
-  noAdj.items[2] = Object.assign({}, noAdj.items[2], { adjudication: 'n/a' })
-  noAdj.digest = digestOf(noAdj.items, noAdj.reviewers)
-  await refuse('a malformed prior item (no adjudication list)', /malformed/, { 'review:extend-load': [noAdj] })
-  const stray = LOAD(RV.result)
-  stray.items[0] = Object.assign({}, stray.items[0], { foundBy: ['rv-opus', 'rv-nobody'] })
-  stray.digest = digestOf(stray.items, stray.reviewers)
-  await refuse('a prior item found by a reviewer the prior result does not list', /rv-nobody/, { 'review:extend-load': [stray] })
-  const clash = await refuse('a new reviewer label that collides with a prior one', /collide/, {},
-    XA({ reviewers: [{ vendor: 'claude', level: 'deep', label: 'rv-opus' }] }))
-  chk('EX2: …a caller error is not retried (one load spawn)', clash.calls.length === 1)
-  await refuse('supersedes naming a label the prior result lacks', /rv-ghost/, {}, XA({ supersedes: ['rv-ghost'] }))
-  await refuse('another adjudicator panel than the prior items were judged by', /same panel/, {},
-    XA({ adjudicators: [{ vendor: 'claude', level: 'deep', label: 'j1' }, { vendor: 'claude', level: 'builder', label: 'j2' }] }))
+  const hm = await refuse('a head that does not resolve to the prior head (base/head mismatch)', /base\/head mismatch/, { 'review:extend-check': [CHECK(PRIOR, { resolvedHead: 'd'.repeat(40) })] })
+  chk('EX2: …after one retry of the check (2 check spawns, on triage-quick-task, no snapshot spawn)',
+    hm.calls.map(c => c.label).join() === 'review:extend-check,review:extend-check#retry' && hm.calls.every(c => c.opts.agentType === 'triage-quick-task'))
+  await refuse('a base that does not resolve to the prior base', /base\/head mismatch/, { 'review:extend-check': [CHECK(PRIOR, { resolvedBase: 'd'.repeat(40) })] })
+  await refuse('a missing snapshot (snap/ or range.diff gone)', /snapshot is gone/, { 'review:extend-check': [CHECK(PRIOR, { snapshotExists: false, snapshotOk: false })] })
+  await refuse('a manifest whose head is not the prior head', /snapshot is gone/, { 'review:extend-check': [CHECK(PRIOR, { manifestHead: 'e'.repeat(40), snapshotOk: false })] })
+  await refuse('a manifest head mismatch even when the relay says snapshotOk', /snapshot is gone/, { 'review:extend-check': [CHECK(PRIOR, { manifestBase: 'e'.repeat(40) })] })
+  await refuse('a missing manifest.json (the command printed no JSON)', /snapshot is gone or unreadable/, { 'review:extend-check': [{ ok: false, error: `jq: error: Could not open ${ROUT}/manifest.json` }] })
+  await refuse('a dead check spawn (twice)', /snapshot check spawn failed/, { 'review:extend-check': [new Error('spawn died')] })
+  const { result } = await run(XA({}), XS({ 'review:extend-check': [CHECK(PRIOR, { snapshotOk: false }), CHECK(PRIOR)] }))
+  chk('EX2: a failed check that passes on the retry proceeds', result.extendedFrom.items === 7 && result.newItems.join() === 'M8,M9')
 }
 
-// ---- EX3: the relay is digest-checked -----------------------------------------------
+// ---- EX3: the prior result never passes through an LLM -----------------------------------
 {
-  const tampered = LOAD(RV.result)
-  tampered.items[0] = Object.assign({}, tampered.items[0], { claim: 'a paraphrase' })
-  const twice = await throws(XA({}), XS({ 'review:extend-load': [tampered] }))
-  chk('EX3: a relay whose text does not match the command\'s digest is retried once, then refused', twice.threw && /not relayed verbatim/.test(twice.message) &&
-    twice.calls.filter(c => c.label.startsWith('review:extend-load')).length === 2 && noReviewer(twice.calls))
-  const flipped = LOAD(RV.result)
-  flipped.items[1] = Object.assign({}, flipped.items[1], { line: flipped.items[1].line + 1 })
-  const f = await throws(XA({}), XS({ 'review:extend-load': [flipped] }))
-  chk('EX3: …so is a changed number (a line)', f.threw && /not relayed verbatim/.test(f.message))
-  const { result } = await run(XA({}), XS({ 'review:extend-load': [tampered, LOAD(RV.result)] }))
-  chk('EX3: a verbatim relay on the retry proceeds', result.extendedFrom === PRIOR_PATH && result.items.find(it => it.id === 'M1').claim === priorItem('M1').claim)
+  const before = JSON.stringify(PRIOR)
+  const r = await run(XA({}), XS())
+  const ext = r.calls.filter(c => c.label.startsWith('review:extend'))
+  const ck = ext[0]
+  const props = Object.keys(ck.opts.schema.properties)
+  chk('EX3: exactly ONE extend spawn, and its schema holds only small snapshot scalars (no items, reviewers or digest)',
+    ext.length === 1 && props.every(k => ['ok', 'error', 'resolvedBase', 'resolvedHead', 'manifestBase', 'manifestHead', 'snapshotExists', 'snapshotOk',
+      'fingerprintExists', 'codexDenied', 'files', 'extras', 'diffBytes', 'snapKB'].includes(k)) && !props.includes('items') && !props.includes('reviewers'))
+  chk('EX3: …its prompt carries no prior item text or reviewer label, and stays small',
+    PRIOR.items.every(it => !ck.prompt.includes(it.claim)) && PRIOR.reviewers.every(x => !ck.prompt.includes(x.label)) && ck.prompt.length < 2000)
+  chk('EX3: the prior items reach the result verbatim from the inline object (text, verdict, adjudication)',
+    PRIOR.items.every(p => { const it = r.result.items.find(x => x.id === p.id); return it && it.claim === p.claim && it.verdict === p.verdict && JSON.stringify(it.adjudication) === JSON.stringify(p.adjudication) }))
+  chk('EX3: args.extendResult is not mutated by the extension', JSON.stringify(PRIOR) === before)
+  const big = priorWith(p => { p.items[0].claim += ' ' + 'x'.repeat(60000) + ' — café → 🔩' })
+  const rb = await run(XA({ extendResult: big }), XS())
+  chk('EX3: a 60 KB prior result is taken inline (its long non-ASCII claim intact; the check prompt does not grow)',
+    rb.result.items.find(it => it.id === 'M1').claim === big.items[0].claim && rb.calls.find(c => c.label === 'review:extend-check').prompt.length < 2000)
 }
 
 // ---- EX4: the extension flow ----------------------------------------------------------
@@ -1112,15 +1121,16 @@ const EX = await run(XA({}), XS())
 {
   const { calls, result } = EX
   const L = calls.map(c => c.label)
-  chk('EX4: the loader first; no snapshot; ONLY the new reviewers run; one merge; adjudication; the fingerprint last',
-    L[0] === 'review:extend-load' && !L.includes('review:snapshot') && L.filter(l => l.startsWith('reviewer:')).sort().join() === 'reviewer:rv-astra2,reviewer:rv-new' &&
+  chk('EX4: the snapshot check first; no snapshot; ONLY the new reviewers run; one merge; adjudication; the fingerprint last',
+    L[0] === 'review:extend-check' && !L.includes('review:snapshot') && L.filter(l => l.startsWith('reviewer:')).sort().join() === 'reviewer:rv-astra2,reviewer:rv-new' &&
     L.filter(l => l === 'review:merge').length === 1 && L[L.length - 1] === 'review:fingerprint')
   const ld = calls[0]
-  chk('EX4: the loader runs one jq command over the prior file, the outDir manifest, snap/, range.diff and the rev-parse of base/head, with a digest in its schema',
-    ld.prompt.includes(`'${PRIOR_PATH}'`) && ld.prompt.includes(`--slurpfile man '${ROUT}/manifest.json'`) && ld.prompt.includes(`[ -d '${SNAPDIR}' ] && [ -f '${ROUT}/range.diff' ]`) &&
-    ld.prompt.includes(`git -C '${LIVE}' rev-parse --verify --quiet 'abc123^{commit}'`) && ld.prompt.includes(`'HEAD^{commit}'`) && ld.opts.schema.properties.digest && /utf8bytelength/.test(ld.prompt))
+  chk('EX4: the check runs one jq -n command over the outDir manifest, snap/, range.diff and the rev-parse of base/head, with the prior shas as args (no input file)',
+    ld.prompt.includes(`jq -n -c --arg pb '${RB}' --arg ph '${RH}'`) && ld.prompt.includes(`--slurpfile man '${ROUT}/manifest.json'`) && ld.prompt.includes(`[ -d '${SNAPDIR}' ] && [ -f '${ROUT}/range.diff' ]`) &&
+    ld.prompt.includes(`git -C '${LIVE}' rev-parse --verify --quiet 'abc123^{commit}'`) && ld.prompt.includes(`'HEAD^{commit}'`) && !ld.opts.schema.properties.digest && !/prior-result|utf8bytelength/.test(ld.prompt))
   chk('EX4: returns the prior base/head/outDir, extendedFrom, the new item ids and the superseded labels',
-    result.kind === 'review' && result.base === RB && result.head === RH && result.outDir === ROUT && result.extendedFrom === PRIOR_PATH &&
+    result.kind === 'review' && result.base === RB && result.head === RH && result.outDir === ROUT &&
+    JSON.stringify(result.extendedFrom) === JSON.stringify({ base: RB, head: RH, outDir: ROUT, reviewers: PRIOR.reviewers.map(x => x.label), items: 7 }) &&
     result.newItems.join() === 'M8,M9' && result.superseded.join() === 'rv-sol,rv-astra')
   const fp = calls.find(c => c.label === 'review:fingerprint')
   chk('EX4: the re-fingerprint writes fingerprint-extend.json (the prior after-file is kept) and compares with the prior before-file',
@@ -1187,7 +1197,7 @@ const EX = await run(XA({}), XS())
 {
   const md = EX.result.markdown
   chk('EX8: the markdown says what extended it (reviewers, source, attached vs new, superseded)',
-    md.includes(`Extended with rv-astra2, rv-new (from ${PRIOR_PATH}): 5 new finding(s) — 2 attached to prior items (not re-adjudicated), 2 new item(s) (M8, M9). Superseded: rv-sol, rv-astra.`))
+    md.includes(`Extended with rv-astra2, rv-new (prior result: 7 item(s) by rv-sonnet, rv-opus, rv-sol, rv-astra, rv-bad): 5 new finding(s) — 2 attached to prior items (not re-adjudicated), 2 new item(s) (M8, M9). Superseded: rv-sol, rv-astra.`))
   chk('EX8: …and lists the combined items and a score row per reviewer, superseded included',
     md.includes('## Real findings (3)') && md.includes('### docs/d.md') && /\| rv-sol \| codex \| gpt-6-sol \| medium \| superseded \| 4 \|/.test(md) && /\| rv-astra2 \| codex \|/.test(md) &&
     md.includes('Reviewers: 7 (1 unavailable, 2 superseded)'))
@@ -1209,10 +1219,10 @@ const EX = await run(XA({}), XS())
   chk('EX9: attaching to an id that is no prior item makes a new item instead (flagged)', r3.newItems.length === 1 && r3.flags.some(f => /no prior item/.test(f)))
 }
 
-// ---- EX10: the loader's REAL command, on a synthetic prior result ----------------------------
-// Runs the jq/git command the loader spawn is told to run, with bash, against a temp git
-// repo + outDir + prior file — proving the filter's projection and digest agree with the
-// workflow's own (non-ASCII text included), and that the snapshot/base-head refusals fire.
+// ---- EX10: the snapshot check's REAL command, with an inline synthetic prior ----------------------------
+// Runs the jq/git command the snapshot-check spawn is told to run, with bash, against a
+// temp git repo + outDir, with the prior result inline — proving the check's JSON satisfies
+// the workflow on an intact snapshot and that the snapshot/base-head refusals fire.
 {
   const tmp = mkdtempSync(join(tmpdir(), 'tc-extend-'))
   try {
@@ -1236,25 +1246,31 @@ const EX = await run(XA({}), XS())
     Object.assign(prior, { base: baseSha, head: headSha, outDir: out })
     prior.items[0].claim += ' — café → 🔩'
     prior.items[0].adjudication[1].evidence = null
-    const priorFile = join(tmp, 'prior.json')
-    writeFileSync(priorFile, JSON.stringify(prior))
-    const REAL_LOAD = p => {
+    const REAL_CHECK = p => {
       try { return JSON.parse(execFileSync('bash', ['-c', p.split('\n').pop()], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })) } catch (e) { return { ok: false, error: String(e.stderr || e.message).trim().split('\n').pop() } }
     }
-    const args = extra => RA(Object.assign({ repo, base: baseSha, head: headSha, outDir: out, extend: priorFile, supersedes: [], reviewers: [{ vendor: 'claude', level: 'deep', label: 'rv-real' }] }, extra))
-    const script = { 'review:extend-load': [REAL_LOAD], 'reviewer:rv-real': [{ findings: [] }], 'review:fingerprint': [{ rc: 0, same: true, changed: [], headMoved: false, detail: 'SAME' }] }
+    // base/head as revision NAMES, so the real rev-parse is what resolves them.
+    const args = extra => RA(Object.assign({ repo, base: 'HEAD~1', head: 'HEAD', outDir: out, extendResult: prior, supersedes: [], reviewers: [{ vendor: 'claude', level: 'deep', label: 'rv-real' }] }, extra))
+    const script = { 'review:extend-check': [REAL_CHECK], 'reviewer:rv-real': [{ findings: [] }], 'review:fingerprint': [{ rc: 0, same: true, changed: [], headMoved: false, detail: 'SAME' }] }
     const ok = await throws(args({}), script)
     let res = null
     if (!ok.threw) res = (await run(args({}), script)).result
-    chk('EX10: the real jq command relays a prior result (non-ASCII text, a null evidence) that passes the digest and every check',
+    chk('EX10: the real check command passes an inline prior (non-ASCII text, a null evidence kept) on an intact snapshot; its manifest scalars reach the markdown',
       !ok.threw && res && res.items.length === 7 && res.items[0].claim === prior.items[0].claim && res.items[0].adjudication[1].evidence === null &&
-      res.extendedFrom === priorFile && rvRev(res, 'rv-opus').precision === 1)
+      res.extendedFrom.head === headSha && rvRev(res, 'rv-opus').precision === 1 && res.markdown.includes('Snapshot: 2 file(s), range diff 5 bytes'))
     if (ok.threw) console.log(`  (EX10 threw: ${ok.message.split('\n')[0]})`)
-    const hm = await throws(args({ head: baseSha }), script)
-    chk('EX10: …a head that resolves elsewhere is refused (real rev-parse)', hm.threw && /base\/head mismatch/.test(hm.message))
+    const hm = await throws(args({ head: 'HEAD~1' }), script)
+    chk('EX10: …a head that resolves elsewhere is refused (real rev-parse)', hm.threw && /base\/head mismatch/.test(hm.message) && noReviewer(hm.calls))
+    writeFileSync(join(out, 'manifest.json'), JSON.stringify({ base: baseSha, head: baseSha, files: [], extras: [] }))
+    const wrongMan = await throws(args({}), script)
+    chk('EX10: …a manifest of another head is refused (real jq)', wrongMan.threw && /snapshot is gone or is not the prior/.test(wrongMan.message) && noReviewer(wrongMan.calls))
+    rmSync(join(out, 'manifest.json'))
+    const noMan = await throws(args({}), script)
+    chk('EX10: …a missing manifest.json is refused (real jq --slurpfile)', noMan.threw && /snapshot is gone or unreadable/.test(noMan.message) && noReviewer(noMan.calls))
+    writeFileSync(join(out, 'manifest.json'), JSON.stringify({ base: baseSha, head: headSha, files: [], extras: [] }))
     rmSync(join(out, 'range.diff'))
     const gone = await throws(args({}), script)
-    chk('EX10: …and a snapshot missing its range.diff is refused (real test -f)', gone.threw && /snapshot is gone/.test(gone.message))
+    chk('EX10: …and a snapshot missing its range.diff is refused (real test -f)', gone.threw && /snapshot is gone/.test(gone.message) && noReviewer(gone.calls))
   } finally {
     rmSync(tmp, { recursive: true, force: true })
   }

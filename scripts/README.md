@@ -716,7 +716,7 @@ ext-run.sh's. `qc/mutate.sh` #67 proves the hard exclude holds for tracked paths
 `Workflow({name:'triage-compare', args:{kind:'review', repo, repoName, base, head?, include,
 exclude?, context?, extras?:[{src,dest}], hardExclude?, groundTruth, accepted?, conventions?,
 outDir, reviewers:[{vendor, level, model?, effort?, label?}], adjudicators?, batchSize?:10,
-reviewerTimeout?:'30m', adjudicatorTimeout?:'15m', extend?, supersedes?}}`:
+reviewerTimeout?:'30m', adjudicatorTimeout?:'15m', extendResult?, supersedes?}}`:
 
 1. one quick task runs `review-stage.sh snapshot` and `fingerprint` (to
    `<outDir>/fingerprint-before.json`); a failed snapshot throws before any reviewer;
@@ -766,16 +766,23 @@ Known limit: an adjudicator of the same model as a reviewer judges its own kind 
 not independently. `test/compare-scenarios.mjs` RV* covers it; `qc/mutate.sh` #68 (provenance
 reaching an adjudicator) and #69 (a disputed item scored as real) prove the blind + scoring rules.
 
-**Extending a review** (`extend: '/abs/prior-result.json'`, outside repo; `supersedes?:
-[labels]`): re-pass the prior run's args (same groundTruth/conventions/accepted, `outDir` = the
-prior outDir, `base`/`head` resolving to the prior shas — pass the shas) with **only the new
-reviewers**. Instead of a snapshot, one quick task runs one `jq` command over the prior result,
-`<outDir>/manifest.json`, `snap/`, `range.diff` and `git rev-parse` of base/head, and relays its
-JSON; the workflow recomputes the command's digest (UTF-8 bytes of every string + sum of every
-number in items and reviewers) and refuses — after one retry, before any reviewer — a relay that
-is not verbatim, a base/head or outDir/repoName that is not the prior's, or a snapshot that is
-gone or not the prior's. Also refused: a new label colliding with a prior one, `supersedes`
-naming no prior reviewer, and adjudicators other than the prior panel. The merge agent sees the
+**Extending a review** (`extendResult: <the prior result object>`, passed **inline**;
+`supersedes?: [labels]`): re-pass the prior run's args (same groundTruth/conventions/accepted,
+`outDir` = the prior outDir, `base`/`head` resolving to the prior shas — pass the shas) with
+**only the new reviewers**, plus the result object the prior run returned (e.g. `JSON.parse` of its
+saved result file). The path form `extend: '/file.json'` is refused with that guidance: the DSL
+cannot read files, and a prior result (tens of KB) relayed through a quick
+task is never verbatim — a large payload never passes through an LLM. The workflow validates the
+object in code before any spawn — `kind:'review'`, base/head shas, `repoName` and `outDir` equal to
+the args, well-formed items (`M<n>` ids, file, line, severity, text fields, verdict,
+adjudication, foundBy naming only listed reviewers) and reviewers (unique file-safe labels, known
+status), a sha `base`/`head` equal to the prior's — and the caller errors: a new label colliding
+with a prior one, `supersedes` naming no prior reviewer, adjudicators other than the prior panel.
+Then, instead of a snapshot, ONE quick task runs one tiny `jq -n` command (`git rev-parse` of
+base/head, `snap/` + `range.diff` present, `<outDir>/manifest.json` base/head, file/extra counts,
+diff/snapshot size, codexDenied, fingerprint-before present) and relays its few scalars; a
+base/head that does not resolve to the prior shas, or a snapshot that is gone or whose manifest is
+not the prior's, is retried once and then refused before any reviewer. The merge agent sees the
 prior items (ids + text, never verdicts or provenance) and the new findings: each new finding
 **attaches** to a prior item (its reviewer joins `foundBy`; text, verdict and adjudication stay —
 never re-adjudicated) or joins a **new item** numbered after the prior ids (`M31…`). Only new
@@ -783,9 +790,9 @@ items are adjudicated (same blind panel). Every reviewer not superseded — prio
 rescored over the combined items (a new real item lowers everyone's recall who missed it);
 superseded runs stay in `reviewers` with `status: 'superseded'`, `priorStatus`, no scores, and
 their findings stay in the items. The re-fingerprint goes to `fingerprint-extend.json`. Returns the
-normal shape plus `extendedFrom`, `newItems`, `superseded`; prior flags are carried as `prior
+normal shape plus `extendedFrom: {base, head, outDir, reviewers, items}`, `newItems`, `superseded`; prior flags are carried as `prior
 run: …`; the markdown is regenerated for the combined set with an "Extended with" line. EX* covers
-it (EX10 runs the loader's real `jq`/`git` command on a synthetic prior); #72 (attached items
+it (EX10 runs the check's real `jq`/`git` command against a temp repo + outDir); #72 (attached items
 re-adjudicated), #73 (a superseded reviewer scored) and #74 (a codex spawn without TIMEOUT) prove
 it. `ingest-review` counts a superseded row as unavailable, and derives the run id from the
 outDir basename — pass `--run` when ingesting an extension of an already-ingested review.
