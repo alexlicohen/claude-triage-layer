@@ -4,6 +4,64 @@ Reverse-chronological. Each entry cites the commit(s) it corresponds to and,
 where known, the test-count delta. See `test/roundtrip.sh` and `test/lint.sh`
 for the current check catalog.
 
+## Wave 15 — model-version tracking: pinned Claude ids, modelId in the ledger, history (branch wave15-modelids)
+
+- **Pinned ids.** Verified first (CC 2.1.282): code.claude.com/docs/en/sub-agents
+  — frontmatter `model` takes "a full model ID such as `claude-opus-5-5`" (the
+  binary's agent loader keeps any non-empty string), and a workflow `agent()`
+  `model` is the per-invocation model of the same resolver (docs/en/workflows;
+  the runtime passes `opts.model` verbatim to it). `config/tiers.json` Claude
+  entries (levels, agents, tuning.challengers) are now `claude-haiku-4-5-20251001`,
+  `claude-sonnet-5`, `claude-opus-5-5`, `claude-fable-5-1`; `make tiers`
+  rewrote the seven agents' frontmatter; `DEFAULT_ADJUDICATORS` pins
+  `claude-opus-5-5` (so the default adjudicator label is now
+  `claude-deep-claude-opus-5-5-high`: extending a pre-Wave-15 review needs the
+  prior panel passed explicitly — the existing refusal says so). Context: a
+  pinned id no longer inherits the main loop's exact model (the family-alias
+  rule); Opus 5.5, Sonnet 5 and Fable 5.1 are native 1M, so nothing is lost.
+  New lint check `pinned-ids`: no bare alias where a Claude model is configured.
+- **aliasHistory** in `config/tiers.json` (`{vendor: {alias: [{id, from}]}}`,
+  validated by `triage-tiers.sh` ALIAS_ERRORS in the same `--bakeoff-json` pass;
+  not printed): opus → claude-opus-5 from 2026-08-29 (Wave 9 made it the
+  subagent default) → claude-opus-5-5 from 2026-09-22 (Wave 11 / CC 2.1.280);
+  sonnet, haiku, fable → today's ids from 2026-09-23 (the ledger's first line).
+- **Ledger `modelId` + `modelIdSource`** (`parity-report.sh`, `model_id` the one
+  resolver): `pinned` | `observed` | `inferred-by-date`; `model` keeps what was
+  configured; `[1m]` suffixes stripped. Every ingest path (compare, parity,
+  review, migrate) fills them; schema stays v 1 (optional keys).
+  `triage-compare.js` build candidates gain `modelFrom: candidate|runner|null`
+  so a codex model read off ext-run's line is ledgered as `observed`.
+  **`backfill-modelid [--dry-run]`** writes them into old lines (by line date;
+  idempotent; untouched and malformed lines byte-identical; same dir + mode,
+  one rename, refused if the ledger changed meanwhile). Dry run on a copy of the
+  real ledger: 144 lines, 85 pinned + 69 inferred-by-date, report groups
+  byte-identical before/after and n/passes identical to Wave 14's report.
+- **Rule keyed by concrete id.** Groups by (level, vendor, modelId, effort)
+  (old lines resolved at read time); incumbents/challengers resolved to ids (a
+  tiers alias as of today), so a pinned edit OR a moved alias starts at n = 0 →
+  explore. Cheapness by family token (haiku < sonnet < opus < fable; luna < sol
+  < astra), so new versions rank; same family + effort = unranked. Groups gain
+  `models`, `firstTs`/`lastTs`, `role`. New **`history [--json]`** view and
+  `--model <id|family>` / `--since <date>` on report/history (refused on
+  `rates`). The Wave 14 "alias swap doesn't reset counts" caveat is gone;
+  scripts/README documents pin + upgrade (edit id → `make tiers` → verify → sync).
+- **Checks**: parity-report 94 → 123 (MV0–MV9b), compare-scenarios 303 → 304
+  (C8 modelFrom; RV8/RV19/C3 expectations moved to pinned ids),
+  usage-tally 24 → 25 (4.3: pinned/dated/[1m] ids tally by family),
+  workflow-scenarios 334 (S43 expectation → `claude-sonnet-5`), lint +1
+  (pinned-ids). Mutations 87 (group by modelId), 88 (from ≤ date boundary),
+  89 (family cheapness order), 90 (backfill idempotence), each KILLED;
+  catalog 81 → 85.
+- **Deferred**: `observed` only reaches the ledger from a direct triage-compare
+  result — triage-exec's ingest mapping and triage-parity rows drop
+  `modelFrom` (their codex candidates are pinned anyway); Claude runs are never
+  observed (the Workflow `agent()` result carries no resolved model — would need
+  transcript mining via parity-cost.sh). Two versions of one family are
+  unranked, so the rule never proposes a version upgrade (a tiers edit by
+  design). `install.sh` still hard-codes the `CLAUDE_CODE_SUBAGENT_MODEL`
+  default (`claude-opus-5-5`) outside tiers.json. The real ledger is not
+  backfilled yet (orchestrator, after review).
+
 ## Wave 14 — adaptive bake-off sampling rate; codex data boundary relaxed (branch wave14-optout)
 
 - **14A — per-level sampling rate that never stops.** `config/tiers.json`

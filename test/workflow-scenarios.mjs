@@ -1216,7 +1216,7 @@ const BST = (id, level, extra = {}) => LV(id, level, [`src/${id}.js`], Object.as
     { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO({ challengerMix: { codex: 0, claude: 1 } }) },
     { ...CLEAN, ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
   chk('S43: challengerMix claude:1 → a claude challenger (from tuning, not the incumbent)',
-    JSON.stringify(toClaude.workflows[0].args.candidates[1]) === JSON.stringify({ vendor: 'claude', level: 'builder', label: 'challenger', model: 'sonnet', effort: 'high' }))
+    JSON.stringify(toClaude.workflows[0].args.candidates[1]) === JSON.stringify({ vendor: 'claude', level: 'builder', label: 'challenger', model: 'claude-sonnet-5', effort: 'high' }))
   const fallsOver = await run(
     { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never',
       bakeoff: BO({ challengerMix: { codex: 1, claude: 0 }, challengers: { builder: { codex: [], claude: [{ model: 'sonnet', effort: 'high' }] } } }) },

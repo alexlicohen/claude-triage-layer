@@ -195,7 +195,7 @@ const repoAsWorkdir = p => /(^|\s)cd\s+'?\/r\/repo'?(\s|$|\/)/.test(p) || /WORKD
   const { calls, events } = await run(
     A({ candidates: [
       { vendor: 'claude', level: 'quick' },
-      { vendor: 'claude', level: 'builder', model: 'sonnet' },
+      { vendor: 'claude', level: 'builder', model: 'claude-sonnet-5' },
       { vendor: 'claude', level: 'deep', effort: 'max' },
       { vendor: 'claude', level: 'top', model: 'fable', effort: 'xhigh' },
     ] }),
@@ -204,8 +204,8 @@ const repoAsWorkdir = p => /(^|\s)cd\s+'?\/r\/repo'?(\s|$|\/)/.test(p) || /WORKD
   chk('C3: no spawn uses isolation:worktree (it bases on the default branch, not the staged sha)', calls.every(c => !('isolation' in c.opts)))
   chk('C3: agentType follows the level map (quick/builder/deep/top)',
     cand.map(c => c.opts.agentType).join() === 'triage-quick-task,triage-builder,triage-deep-reasoner,triage-fable-architect')
-  chk('C3: model/effort pass through only when given',
-    !('model' in cand[0].opts) && !('effort' in cand[0].opts) && cand[1].opts.model === 'sonnet' && !('effort' in cand[1].opts) &&
+  chk('C3: model/effort pass through only when given (a pinned id like claude-sonnet-5 verbatim, an alias like fable verbatim)',
+    !('model' in cand[0].opts) && !('effort' in cand[0].opts) && cand[1].opts.model === 'claude-sonnet-5' && !('effort' in cand[1].opts) &&
     cand[2].opts.effort === 'max' && !('model' in cand[2].opts) && cand[3].opts.model === 'fable' && cand[3].opts.effort === 'xhigh')
   chk('C3: candidate i must prefix EVERY shell command with `cd <its own worktree> && ` (cwd resets between Bash calls), with the first check as the example',
     cand.every((c, i) => c.prompt.includes(`EVERY shell command you run MUST start with \`cd ${STAGE}/wt-${i + 1} && \``) &&
@@ -361,6 +361,8 @@ const repoAsWorkdir = p => /(^|\s)cd\s+'?\/r\/repo'?(\s|$|\/)/.test(p) || /WORKD
   chk('C8: Claude candidates have no vendor total/seconds', byLabel(result, 'c1').totalTokens === null && byLabel(result, 'c1').seconds === null)
   chk('C8: an external candidate parses tokens/seconds/out/model from the ext-run line',
     byLabel(result, 'x1').totalTokens === 5000 && byLabel(result, 'x1').seconds === 42 && byLabel(result, 'x1').outTokens === 800 && byLabel(result, 'x1').model === 'gpt-6-sol')
+  chk('C8: modelFrom says where model came from: runner (the ext-run line) for an external candidate with no model, null for a Claude candidate with none',
+    byLabel(result, 'x1').modelFrom === 'runner' && byLabel(result, 'g1').modelFrom === 'runner' && byLabel(result, 'c1').modelFrom === null && byLabel(result, 'c1').model === null)
   chk('C8: no out= on the line → outTokens null (never the wrapper spend)', byLabel(result, 'g1').outTokens === null && byLabel(result, 'g1').seconds === 9.5 && byLabel(result, 'g1').totalTokens === 700)
 }
 
@@ -763,8 +765,8 @@ const RV = await run(RA({}), RV_SCRIPT())
     adj.every(c => blindItems(c.prompt).length === RV.result.items.length && blindItems(c.prompt).every(it => /^M\d+$/.test(it.id) && Object.keys(it).join() === 'id,file,line,severity,category,claim,evidence,suggestedFix')))
   const cj = adj.find(c => c.label.startsWith('adjudicate:claude'))
   const xj = adj.find(c => c.label.startsWith('adjudicate:codex'))
-  chk('RV8: default adjudicators = claude deep (opus·high, triage-deep-reasoner, schema) + codex deep (gpt-6-astra·high, MODE=read, INPUT_DIR = snapshot only)',
-    cj.opts.agentType === 'triage-deep-reasoner' && cj.opts.model === 'opus' && cj.opts.effort === 'high' && cj.opts.schema.required.includes('verdicts') &&
+  chk('RV8: default adjudicators = claude deep (claude-opus-5-5·high, a pinned id, triage-deep-reasoner, schema) + codex deep (gpt-6-astra·high, MODE=read, INPUT_DIR = snapshot only)',
+    cj.opts.agentType === 'triage-deep-reasoner' && cj.opts.model === 'claude-opus-5-5' && cj.opts.effort === 'high' && cj.opts.schema.required.includes('verdicts') &&
     cj.prompt.includes(`Your ONLY input is the snapshot directory ${SNAPDIR}`) && !cj.prompt.includes('range.diff') &&
     xj.opts.agentType === 'triage-cross-reviewer' && xj.prompt.startsWith(`VENDOR=codex\nMODE=read\nMODEL=gpt-6-astra\nEFFORT=high\nINPUT_DIR=${SNAPDIR}\n`) && !xj.prompt.includes('--input '))
 }
@@ -780,7 +782,7 @@ const RV = await run(RA({}), RV_SCRIPT())
   chk('RV9: real vs not-real => disputed; real vs unsure => disputed', rvItem(r, 'docs/b.md', 5).verdict === 'disputed' && rvItem(r, 'docs/c.md', 2).verdict === 'disputed')
   chk('RV9: disputed ids are listed, and each item keeps both adjudicators\' verdict + evidence',
     r.disputed.slice().sort().join() === [rvItem(r, 'docs/b.md', 5).id, rvItem(r, 'docs/c.md', 2).id].sort().join() &&
-    rvItem(r, 'docs/b.md', 5).adjudication.map(x => `${x.adjudicator}:${x.verdict}`).join() === 'claude-deep-opus-high:real,codex-deep-gpt-6-astra-high:not-real' &&
+    rvItem(r, 'docs/b.md', 5).adjudication.map(x => `${x.adjudicator}:${x.verdict}`).join() === 'claude-deep-claude-opus-5-5-high:real,codex-deep-gpt-6-astra-high:not-real' &&
     rvItem(r, 'docs/b.md', 5).adjudication.every(x => /checked docs\/b\.md:5/.test(x.evidence)))
   chk('RV9: item ids are M1..Mn in file/line order', r.items.map(it => it.id).join() === r.items.map((_, i) => `M${i + 1}`).join() &&
     r.items.map(it => `${it.file}:${it.line}`).join() === 'docs/a.md:3,docs/a.md:10,docs/b.md:5,docs/b.md:8,docs/c.md:1,docs/c.md:2,docs/c.md:9')
@@ -912,7 +914,7 @@ const RV = await run(RA({}), RV_SCRIPT())
   const iDisp = md.indexOf('## Disputed — for Alex (2)')
   chk('RV19: markdown lists real items first, grouped by file, then the disputed ones', iReal >= 0 && iDisp > iReal && md.indexOf('### docs/a.md') > iReal && md.indexOf('### docs/b.md') < iDisp)
   const dsec = md.slice(iDisp)
-  chk('RV19: each disputed item shows BOTH adjudicators\' verdict and evidence', dsec.includes('- claude-deep-opus-high: **real** — claude checked docs/b.md:5') && dsec.includes('- codex-deep-gpt-6-astra-high: **not-real** — codex checked docs/b.md:5'))
+  chk('RV19: each disputed item shows BOTH adjudicators\' verdict and evidence', dsec.includes('- claude-deep-claude-opus-5-5-high: **real** — claude checked docs/b.md:5') && dsec.includes('- codex-deep-gpt-6-astra-high: **not-real** — codex checked docs/b.md:5'))
   chk('RV19: the markdown ends with the score table and says nothing was applied', /\| rv-opus \| claude \| opus \| high \| ok \| 2 \| 2 \| 0 \| 0 \| 1 \| 1 \|/.test(md) && md.includes('Nothing was applied'))
 }
 

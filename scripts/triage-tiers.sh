@@ -11,7 +11,9 @@
 #                                          (a workflow has no fs). The tuning block is
 #                                          validated first (TUNING_ERRORS below — the
 #                                          single validator; test/lint.sh and
-#                                          parity-report.sh both go through it); an
+#                                          parity-report.sh both go through it), and so
+#                                          is aliasHistory (ALIAS_ERRORS, not printed:
+#                                          parity-report.sh reads it from the file); an
 #                                          invalid or missing block is exit 2.
 # Tiers file lookup (same order as ext-run.sh): $TRIAGE_TIERS, else
 # <script dir>/triage-tiers.json (installed copy), else
@@ -31,7 +33,7 @@ BAKEOFF=0
 case "${1:-}" in
   "") ;;
   --bakeoff-json) BAKEOFF=1 ;;
-  -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+  -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
   *) echo "USAGE: unknown argument '$1' (none, or --bakeoff-json)" >&2; exit 2 ;;
 esac
 command -v jq >/dev/null 2>&1 || { echo "USAGE: jq is required" >&2; exit 2; }
@@ -105,8 +107,39 @@ TUNING_ERRORS='def vendors: ["claude","codex"];
        else "tuning.pauseAtWeeklyPct must be a number in (0, 100]" end)
     end'
 
+# ALIAS_ERRORS — the ONE schema check of aliasHistory (optional; parity-report.sh
+# resolves a bare model alias to a concrete id with it): {vendor: {alias: [{id,
+# from: "YYYY-MM-DD"}, ...]}}, each list non-empty with strictly increasing `from`
+# dates, every id a model-id token that is not itself an alias of that vendor.
+ALIAS_ERRORS='def vendors: ["claude","codex"];
+  def tok: type == "string" and test("^[A-Za-z0-9._+-]+$");
+  .aliasHistory as $h
+  | if $h == null then empty
+    elif ($h | type) != "object" then "aliasHistory must be an object {vendor: {alias: [{id, from}]}}"
+    else
+      $h | to_entries[] | .key as $v
+      | if (vendors | index($v)) == null then "aliasHistory: unknown vendor \($v)"
+        elif (.value | type) != "object" then "aliasHistory.\($v) must be an object {alias: [{id, from}]}"
+        else
+          (.value | keys) as $aliases
+          | .value | to_entries[] | .key as $a
+          | if ($a | tok) | not then "aliasHistory.\($v): alias \($a | tojson) must be a model-id token"
+            elif (.value | type) != "array" or (.value | length) == 0 then "aliasHistory.\($v).\($a) must be a non-empty array of {id, from}"
+            else
+              (.value | to_entries[] | .key as $i | .value
+                | if type != "object" then "aliasHistory.\($v).\($a)[\($i)] must be an object {id, from}"
+                  elif (.id | tok) | not then "aliasHistory.\($v).\($a)[\($i)].id must be a model-id token"
+                  elif (.id as $id | $aliases | index($id)) != null then "aliasHistory.\($v).\($a)[\($i)].id \(.id) is itself an alias, not a concrete id"
+                  elif ((.from | type) != "string") or ((.from | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")) | not) then "aliasHistory.\($v).\($a)[\($i)].from must be a YYYY-MM-DD date"
+                  else empty end),
+              (if ([.value[] | objects | .from | strings] | . as $f | [range(1; length) | select($f[.] <= $f[. - 1])] | length) > 0
+               then "aliasHistory.\($v).\($a): from dates must be strictly increasing" else empty end)
+            end
+        end
+    end'
+
 if [ "$BAKEOFF" -eq 1 ]; then
-  ERRS=$(jq -r "$TUNING_ERRORS" "$TIERS") || { echo "USAGE: could not validate the tuning block of $TIERS" >&2; exit 2; }
+  ERRS=$(jq -r "$TUNING_ERRORS, ($ALIAS_ERRORS)" "$TIERS") || { echo "USAGE: could not validate the tuning block of $TIERS" >&2; exit 2; }
   if [ -n "$ERRS" ]; then
     echo "USAGE: invalid tuning block in $TIERS:" >&2
     printf '%s\n' "$ERRS" | sed 's/^/  /' >&2

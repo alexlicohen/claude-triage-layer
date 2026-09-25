@@ -1,7 +1,7 @@
 ---
 name: triage-builder
 description: Standard implementation tier (Sonnet @ medium effort). Use for well-specified development work — features with a clear spec, bugfixes with a known cause, writing tests, routine refactors, documentation. The task brief must include acceptance criteria. Do NOT send open-ended design problems or debugging of unknown cause.
-model: sonnet
+model: claude-sonnet-5
 effort: medium
 memory: project
 ---

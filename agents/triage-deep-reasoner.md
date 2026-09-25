@@ -1,7 +1,7 @@
 ---
 name: triage-deep-reasoner
 description: Hard-problem tier (Opus @ high effort; a triage-exec subtask may set xhigh/max). Use for unfamiliar debugging, root-cause analysis, design exploration, multi-file/multi-system analysis, and as a parallel fan-out worker for independent hard subtasks (each invocation gets a fresh context — spawn several at once for independent workstreams). Escalation target when triage-builder fails.
-model: opus
+model: claude-opus-5-5
 effort: high
 memory: project
 ---
