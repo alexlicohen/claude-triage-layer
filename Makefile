@@ -32,7 +32,7 @@ tiers:
 	./scripts/tiers-sync.sh
 
 # Mutation gate: prove the test suite has teeth (killed/survivor/error per
-# mutation). Strict since all 69 mutations have covering tests: any survivor
+# mutation). Strict since all 76 mutations have covering tests: any survivor
 # fails the gate.
 mutate:
 	./qc/mutate.sh --strict
