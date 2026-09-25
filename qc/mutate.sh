@@ -76,7 +76,10 @@ done
 # minN condition, its CI-width condition, a pending proposal forcing explore, and
 # triage-exec sampling at args.bakeoff.rates[level]. 86: report.external appears
 # when a bake-off applied an external challenger's patch to an all-Claude plan.
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86"
+# 87-90 cover model-version tracking (Wave 15) in parity-report.sh: grouping by
+# the concrete modelId, the inferred-by-date boundary (from <= date), family-based
+# cheapness (a new codex version still ranks) and backfill-modelid's idempotence.
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -128,7 +131,7 @@ mut_file() {
     28) echo "workflows/triage-exec.js" ;;
     29) echo "workflows/triage-exec.js" ;;
     75|76|77|78|79|80|81|85|86) echo "workflows/triage-exec.js" ;;
-    82|83|84) echo "scripts/parity-report.sh" ;;
+    82|83|84|87|88|89|90) echo "scripts/parity-report.sh" ;;
     31) echo "workflows/triage-compare.js" ;;
     32) echo "scripts/patch-check.sh" ;;
     33) echo "install.sh" ;;
@@ -245,6 +248,10 @@ mut_desc() {
     84) echo "parity-report.sh (rates): a pending tier proposal no longer forces explore (a level whose incumbent is about to be replaced drops to maintain)" ;;
     85) echo "triage-exec.js (bake-off): args.bakeoff.rates is ignored (every level samples at tuning.sampleRate)" ;;
     86) echo "triage-exec.js (bake-off): an applied codex challenger patch on an all-Claude plan leaves report.external absent" ;;
+    87) echo "parity-report.sh: rows are grouped by the configured model, not the concrete modelId (two Opus versions under the alias opus pool into one group)" ;;
+    88) echo "parity-report.sh: the alias-history boundary is exclusive (from < date), so a line on an entry's own from date resolves to the previous version" ;;
+    89) echo "parity-report.sh: the codex cheapness order is back to version-bound ids (gpt-6-*), so any other codex version is unranked" ;;
+    90) echo "parity-report.sh: backfill-modelid refills rows that already have a modelId (an observed id is overwritten; a second run rewrites the ledger)" ;;
     74) echo "triage-compare.js (review): a codex reviewer/adjudicator is spawned without TIMEOUT (ext-run's 5m read default kills a large review)" ;;
     *) echo "" ;;
   esac
@@ -266,7 +273,7 @@ mut_suite() {
     39|55) echo "stagewt" ;;
     41|42|46|64|65) echo "parity" ;;
     44|45) echo "paritysuite" ;;
-    43|52|53|54|82|83|84) echo "parityreport" ;;
+    43|52|53|54|82|83|84|87|88|89|90) echo "parityreport" ;;
     67) echo "reviewstage" ;;
     *) echo "" ;;
   esac
@@ -1014,6 +1021,34 @@ MUT85
 MUT86
       mut_replace_block "$target" '    bakeoffs.some(b => { const v = appliedVendor(b); return v !== null && isExternal(v) })' 1 "$rep"
       ;;
+    87)
+      # parity-report.sh report: the group key collapses modelId back to model.
+      cat > "$rep" <<'MUT87'
+  [$rows | group_by([.level, .vendor, .model, .effort])[] # MUTATED: grouped by model, not modelId
+MUT87
+      mut_replace_block "$target" '  [$rows | group_by([.level, .vendor, .modelId, .effort])[]' 1 "$rep"
+      ;;
+    88)
+      # parity-report.sh alias_at: an entry counts only AFTER its from date.
+      cat > "$rep" <<'MUT88'
+def alias_at($ah; $v; $m; $date): [(($ah[$v] // {})[$m | id_base] // [])[] | select(.from < $date)] | last | if . == null then null else .id end; # MUTATED: alias boundary exclusive
+MUT88
+      mut_replace_block "$target" 'def alias_at($ah; $v; $m; $date): [(($ah[$v] // {})[$m | id_base] // [])[] | select(.from <= $date)]' 1 "$rep"
+      ;;
+    89)
+      # parity-report.sh FAMILY_ORDER: codex families pinned to one version's ids.
+      cat > "$rep" <<'MUT89'
+def FAMILY_ORDER: {"claude":["haiku","sonnet","opus","fable"],"codex":["gpt-6-luna","gpt-6-sol","gpt-6-astra"],"agy":["flash","pro"]}; # MUTATED: version-bound cheapness order
+MUT89
+      mut_replace_block "$target" 'def FAMILY_ORDER: {"claude":["haiku","sonnet","opus","fable"],"codex":["luna","sol","astra"],"agy":["flash","pro"]};' 1 "$rep"
+      ;;
+    90)
+      # parity-report.sh backfill: every object row counts as unfilled.
+      cat > "$rep" <<'MUT90'
+    | def unfilled: type == "object"; # MUTATED: backfill refills filled rows
+MUT90
+      mut_replace_block "$target" '    | def unfilled: type == "object" and (has("modelId") | not);' 1 "$rep"
+      ;;
     *)
       return 1
       ;;
@@ -1111,6 +1146,10 @@ verify_mutation() {
     84) grep -qF 'MUTATED: proposal does not force explore' "$target" && ! grep -qF '($proposals[] | select(.level == $L and .vendor == $V)' "$target" ;;
     85) grep -qF 'MUTATED: rates ignored' "$target" && ! grep -qF 'bo.rates[st.level] : bo.tuning.sampleRate' "$target" ;;
     86) grep -qF 'MUTATED: applied external bake-off patch not in play' "$target" && ! grep -qF 'return v !== null && isExternal(v) })' "$target" ;;
+    87) grep -qF 'MUTATED: grouped by model, not modelId' "$target" && ! grep -qF 'group_by([.level, .vendor, .modelId, .effort])' "$target" ;;
+    88) grep -qF 'MUTATED: alias boundary exclusive' "$target" && ! grep -qF 'select(.from <= $date)' "$target" ;;
+    89) grep -qF 'MUTATED: version-bound cheapness order' "$target" && ! grep -qF '"codex":["luna","sol","astra"]' "$target" ;;
+    90) grep -qF 'MUTATED: backfill refills filled rows' "$target" && ! grep -qF 'def unfilled: type == "object" and (has("modelId") | not);' "$target" ;;
     *) return 1 ;;
   esac
 }

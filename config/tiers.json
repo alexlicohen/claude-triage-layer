@@ -1,24 +1,32 @@
 {
-  "asOf": "2026-09-24",
+  "asOf": "2026-09-25",
   "parity": [
     {"date": "2026-09-23", "by": "alex", "note": "gpt-6-astra ~ Fable 5.1; Opus 5.5 top tier"},
     {"date": "2026-09-24", "by": "parity-run", "note": "17-task suite, bands 1-4, n=1: luna-low > haiku-low; sol-medium 14/14 graded. Suite saturates above quick tier: no deep/top conclusions (ledger ~/.agents/evidence/vendor-parity.jsonl)"}
   ],
+  "aliasHistory": {
+    "claude": {
+      "haiku": [{"id": "claude-haiku-4-5-20251001", "from": "2026-09-23"}],
+      "sonnet": [{"id": "claude-sonnet-5", "from": "2026-09-23"}],
+      "opus": [{"id": "claude-opus-5", "from": "2026-08-29"}, {"id": "claude-opus-5-5", "from": "2026-09-22"}],
+      "fable": [{"id": "claude-fable-5-1", "from": "2026-09-23"}]
+    }
+  },
   "levels": {
     "quick": {
-      "claude": {"agent": "triage-quick-task", "model": "haiku", "effort": "low"},
+      "claude": {"agent": "triage-quick-task", "model": "claude-haiku-4-5-20251001", "effort": "low"},
       "codex": {"model": "gpt-6-luna", "effort": "low", "basis": "parity-run 2026-09-24"}
     },
     "builder": {
-      "claude": {"agent": "triage-builder", "model": "sonnet", "effort": "medium"},
+      "claude": {"agent": "triage-builder", "model": "claude-sonnet-5", "effort": "medium"},
       "codex": {"model": "gpt-6-sol", "effort": "medium", "basis": "parity-run 2026-09-24"}
     },
     "deep": {
-      "claude": {"agent": "triage-deep-reasoner", "model": "opus", "effort": "high"},
+      "claude": {"agent": "triage-deep-reasoner", "model": "claude-opus-5-5", "effort": "high"},
       "codex": {"model": "gpt-6-astra", "effort": "high", "basis": "alex 2026-09-23"}
     },
     "top": {
-      "claude": {"agent": "triage-fable-architect", "model": "fable", "effort": "xhigh"},
+      "claude": {"agent": "triage-fable-architect", "model": "claude-fable-5-1", "effort": "xhigh"},
       "codex": {"model": "gpt-6-astra", "effort": "xhigh", "basis": "alex 2026-09-23"}
     }
   },
@@ -29,11 +37,11 @@
     "challengers": {
       "builder": {
         "codex": [{"model": "gpt-6-sol", "effort": "medium"}],
-        "claude": [{"model": "sonnet", "effort": "high"}]
+        "claude": [{"model": "claude-sonnet-5", "effort": "high"}]
       },
       "deep": {
         "codex": [{"model": "gpt-6-sol", "effort": "medium"}, {"model": "gpt-6-astra", "effort": "high"}],
-        "claude": [{"model": "opus", "effort": "medium"}, {"model": "sonnet", "effort": "high"}]
+        "claude": [{"model": "claude-opus-5-5", "effort": "medium"}, {"model": "claude-sonnet-5", "effort": "high"}]
       },
       "top": {
         "codex": [{"model": "gpt-6-astra", "effort": "xhigh"}],
@@ -45,9 +53,9 @@
     "pauseAtWeeklyPct": 80
   },
   "agents": {
-    "triage-reviewer": {"model": "opus", "effort": "medium"},
-    "triage-cross-reviewer": {"model": "haiku", "effort": "low"},
-    "triage-external": {"model": "haiku", "effort": "low"}
+    "triage-reviewer": {"model": "claude-opus-5-5", "effort": "medium"},
+    "triage-cross-reviewer": {"model": "claude-haiku-4-5-20251001", "effort": "low"},
+    "triage-external": {"model": "claude-haiku-4-5-20251001", "effort": "low"}
   },
   "modes": {
     "codex": {

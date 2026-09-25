@@ -149,6 +149,26 @@ chk "4.2: unknown model id (claude-unicorn-9) is grouped under other, headline s
   '[ "$OM_LINE" = "Usage: haiku 0 · sonnet 0 · opus 0 · fable 0 · other 1k (orchestrator excluded; /usage for quota)" ]'
 
 # =============================================================================
+# Fixture 4b — pinned concrete ids (Wave 15: config/tiers.json pins Claude ids):
+#   dated, versioned and [1m]-suffixed ids still tally by family substring.
+# =============================================================================
+PIN_DIR=$(new_sandbox)
+mkdir -p "$PIN_DIR/subagents"
+pin_agent() { # ID MODEL INPUT_TOKENS
+  printf '{"type":"assistant","message":{"model":"%s","usage":{"input_tokens":%s,"output_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}\n' "$2" "$3" > "$PIN_DIR/subagents/agent-$1.jsonl"
+  printf '{"agentType":"triage-builder","description":"synthetic fixture: pinned id"}\n' > "$PIN_DIR/subagents/agent-$1.meta.json"
+}
+pin_agent p1 "claude-opus-5-5[1m]" 3000
+pin_agent p2 "claude-haiku-4-5-20251001" 1000
+pin_agent p3 "claude-fable-5-1" 2000
+pin_agent p4 "claude-sonnet-5" 4000
+pin_agent p5 "claude-opus-5-5" 5000
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+PIN_LINE=$("$SCRIPT" "$PIN_DIR" 2>&1 | head -n 1)
+chk "4.3: pinned ids (claude-opus-5-5[1m], claude-haiku-4-5-20251001, claude-fable-5-1, claude-sonnet-5) tally by family, nothing under other" \
+  '[ "$PIN_LINE" = "Usage: haiku 1k · sonnet 4k · opus 8k · fable 2k (orchestrator excluded; /usage for quota)" ]'
+
+# =============================================================================
 # Exit-code / fail-loud coverage — every distinct exit code the script defines
 # =============================================================================
 

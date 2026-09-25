@@ -1,7 +1,7 @@
 ---
 name: triage-cross-reviewer
 description: Cross-vendor read-only tier — a thin wrapper that runs an EXTERNAL CLI (OpenAI's Codex, OS-confined to the staged inputs) on a non-Claude model and relays its output. The brief may name the vendor on a `VENDOR=codex` line (codex is the only vendor; Google's Antigravity `agy` was retired 2026-09-24 and `VENDOR=agy` is refused). Five jobs, named in the brief as MODE=<mode>. review — second opinion on a diff, a PR before merge, or a prompt/rubric/CLAUDE.md file. read — distil a long corpus (log, transcript, changelog) with a 1M-context model, optionally as typed JSON. verify — answer a fast-moving factual question from a live web fetch. critique — attack a decomposition before an expensive fan-out. fuzz — hunt edge cases and mutations against a guard. Its output is SIGNAL for the orchestrator, never a merge verdict. Do NOT send work from repos the user has excluded from cross-vendor agents; the workspace contents leave the machine for the external vendor's harness.
-model: haiku
+model: claude-haiku-4-5-20251001
 effort: low
 tools: Bash, Read, Write, Grep
 ---

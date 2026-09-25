@@ -13,6 +13,9 @@
 #   5. Tiers sync: every agent's model:/effort: frontmatter equals
 #      config/tiers.json (scripts/tiers-sync.sh --check).
 #   5b. Tuning: config/tiers.json's tuning block passes triage-tiers.sh --bakeoff-json.
+#   5c. Pinned ids: every Claude model in config/tiers.json (levels, agents,
+#      tuning.challengers) is a concrete id, never an aliasHistory alias, so a
+#      model upgrade is an explicit tiers edit (and a fresh ledger history).
 #   6. Level map: triage-exec.js's CLAUDE_AGENT (level -> Claude agent) equals
 #      config/tiers.json levels.*.claude.agent, key for key.
 #   6b. triage-compare.js's DEFAULT_ADJUDICATORS (review bake-off) equal
@@ -166,6 +169,20 @@ if TUNING_OUT=$(TRIAGE_TIERS="$REPO_DIR/config/tiers.json" ./scripts/triage-tier
 else
   fail "tuning: config/tiers.json tuning block is invalid"
   printf '%s\n' "$TUNING_OUT" >&2
+fi
+
+# --- 5c. pinned Claude ids: no bare alias anywhere a Claude model is configured ----
+# An alias (opus, sonnet, ...) can move to a new version silently; a concrete id
+# cannot. aliasHistory stays the only place aliases appear (to read old ledger lines).
+PIN_OUT=$(jq -r '(.aliasHistory.claude // {} | keys) as $al
+  | [ (.levels[]?.claude? | objects | .model), (.agents[]? | objects | .model),
+      (.tuning.challengers[]?.claude?[]? | objects | .model) ]
+  | map(select((type != "string") or (. as $m | $al | index($m)) != null or (test("^claude-[a-z]+-") | not)))
+  | unique | join(", ")' config/tiers.json 2>&1)
+if [ -z "$PIN_OUT" ] && [ "$(jq -r '.aliasHistory.claude | type' config/tiers.json 2>/dev/null)" = object ]; then
+  ok "pinned-ids: every Claude model in config/tiers.json is a concrete id (aliases only in aliasHistory)"
+else
+  fail "pinned-ids: config/tiers.json configures a Claude model that is not a concrete id (or has no aliasHistory.claude): ${PIN_OUT:-aliasHistory.claude missing}"
 fi
 
 # --- 6. level map: each workflow's CLAUDE_AGENT == tiers.json levels.*.claude.agent --

@@ -909,7 +909,9 @@ parity-report.sh ingest-compare --result FILE --repo-name NAME --level L --sourc
 parity-report.sh ingest-parity  --result FILE [--ts ISO]
 parity-report.sh ingest-review  --result FILE --repo-name NAME [--resolved FILE] [--run ID] [--ts ISO]
 parity-report.sh migrate        [--from ~/.agents/evidence/vendor-parity.jsonl]
-parity-report.sh report         [--json]
+parity-report.sh backfill-modelid [--dry-run]
+parity-report.sh report         [--json] [--model ID|FAMILY] [--since DATE]
+parity-report.sh history        [--json] [--model ID|FAMILY] [--since DATE]
 parity-report.sh rates          [--json]
       every subcommand also takes [--ledger F] [--tiers F]
 ```
@@ -934,9 +936,22 @@ and labels are id tokens; anything else is refused with exit 2 and nothing writt
 ```
 {"v":1, "ts":"<ISO>", "source":"inline|suite", "run":<id|null>, "repoName":"<name>",
  "level":"quick|builder|deep|top", "band":<1-4, suite lines only>, "task":<id|null>,
- "candidates":[{"label","vendor","model","effort","status","totalTokens","seconds"}],
+ "candidates":[{"label","vendor","model","effort","status","totalTokens","seconds","modelId","modelIdSource"}],
  "applied":<label|null>, "migrated":"vendor-parity.jsonl" (migrated lines only)}
 ```
+
+**Model versions** (Wave 15). `model` keeps what was configured; `modelId` is the concrete
+version it ran on and `modelIdSource` says how that is known: `pinned` (a concrete id was
+configured — the tiers entry or the candidate), `observed` (the runner reported it: a
+triage-compare candidate with `modelFrom: "runner"`, from ext-run's `vendor/model` line) or
+`inferred-by-date` (a bare alias resolved through the tiers file's `aliasHistory`
+`{vendor: {alias: [{id, from: "YYYY-MM-DD"}]}}`: the last entry with `from` ≤ the line's UTC
+date); both null for no model or an alias before its first entry. A `[1m]`-style suffix is a
+context window, not a version, and is stripped. Schema stays v 1: lines written before Wave 15
+have no `modelId` and are resolved the same way at read time; `backfill-modelid` writes it into
+them (in place: same dir and mode, one rename, refused if the ledger changed meanwhile;
+idempotent — a row that has the key, even null, and malformed lines stay byte-identical;
+`--dry-run` only reports). `triage-tiers.sh --bakeoff-json` validates `aliasHistory`.
 
 `status` is `pass`/`fail` (graded) or the candidate's own non-graded status (`unavailable`,
 `invalid`, `denied`, `unresolved`, `ungraded`, `skipped`, else `unknown`) — never turned into a
@@ -965,31 +980,42 @@ item, or any other value, is exit 2): precision = real / (real + rejected) with 
 denominator, recall = real / all real, null for a zero denominator; an unavailable reviewer keeps
 null scores and n 0. No file path, claim, evidence, flag or markdown reaches the ledger. Run id =
 `--run`, else the result's outDir basename; a run already in the ledger is skipped — resolve the
-disputes first, then ingest once.
+disputes first, then ingest once. Reviewers carry `modelId`/`modelIdSource` too.
 
-**Rule** (`report`). Groups graded outcomes per level × vendor × (model, effort): n, passes,
-rate, Wilson 95% lower and upper bounds, excluded (non-graded) count, mean tokens and seconds. Per level ×
-vendor the incumbent is `levels.<level>.<vendor>`; every other (model, effort) there is a
-challenger. Cheapness: claude haiku < sonnet < opus < fable; codex gpt-6-luna < gpt-6-sol <
-gpt-6-astra; agy flash < pro (agy is retired and has no levels entry: historical ledger rows
-still validate, and it is never an incumbent or proposed); then effort low < medium < high <
-xhigh < max.
+**Rule** (`report`). Groups graded outcomes per level × vendor × (**modelId**, effort) — two
+versions under one alias never pool — with n, passes, rate, Wilson 95% lower and upper bounds,
+excluded (non-graded) count, mean tokens and seconds, first/last ts, the configured `models`
+pooled and a `role` (incumbent | challenger | null). Per level × vendor the incumbent is
+`levels.<level>.<vendor>` as a concrete id (a tiers alias resolves as of today); every other
+(modelId, effort) there is a challenger. Cheapness by **family**, a whole token of the id, so
+every version ranks: claude haiku < sonnet < opus < fable; codex luna < sol < astra; agy flash <
+pro (agy is retired and has no levels entry: historical ledger rows still validate, and it is
+never an incumbent or proposed); then effort low < medium < high < xhigh < max. Two versions of
+one family at one effort are unranked: a version upgrade is a tiers edit, not a rule outcome.
 
 | Case | Verdict |
 |---|---|
 | either side has n < minN | `insufficient-data`, naming the graded runs still needed on each side |
 | cheaper challenger | `propose` iff its Wilson LB ≥ incumbent rate − cheaperTolerance, else `keep` |
 | pricier challenger | `propose` iff its rate − incumbent rate ≥ pricierMargin, else `keep` |
-| unknown model / same cost | `unranked`, never proposed |
+| no family token / same cost | `unranked`, never proposed |
 
 One proposal per level × vendor: a qualifying pricier challenger first (quality; highest rate,
 then cheapest), else the cheapest qualifying cheaper one. Markdown by default (a table per
 level, the decisions with their reasons, the proposals, then a separate **Reviews
 (inline-review)** section: per vendor × model × effort, reviews, mean precision and mean recall
 (each with its n) and unavailable count — never mixed into the build pass rates, and "Review
-metrics do not drive tier proposals yet"); `--json` gives `{ledger, tiers, lines, malformed, rule,
-groups, decisions, proposals, sampling, reviews: {lines, groups, note}, note}`. Malformed ledger
-lines are counted, not fatal.
+metrics do not drive tier proposals yet"); `--json` gives `{ledger, tiers, lines, malformed, filters,
+rule, groups, decisions, proposals, sampling, history, reviews: {lines, groups, note}, note}`.
+Malformed ledger lines are counted, not fatal. `--model` keeps rows whose modelId is the id or has
+it as a whole token (`--model opus` = every Opus version); `--since` keeps lines with ts ≥ the
+date; both narrow what the rule sees, so `rates` refuses them.
+
+**History** (`history`; also `report --json` `.history`). Per level × vendor, every modelId ×
+effort ever graded there, oldest first — old versions stay visible after an upgrade: n, passes,
+rate, Wilson LB/UB, first/last ts, role; plus `current` (the incumbent's id and effort, and
+whether it has data yet). `--json`: `{ledger, tiers, lines, filters, history: [{level, vendor,
+current: {modelId, effort, seen}, entries: [...]}]}`.
 
 **Rates** (`rates`; also `report --json` `.sampling` and a markdown table). The inline bake-off
 sampling rate per **level**, from the same groups and proposals:
@@ -1002,12 +1028,21 @@ sampling rate per **level**, from the same groups and proposals:
 
 `--json`: `{asOf (the tiers file's), params, levels: {<level>: {state, rate, reason}}, rates:
 {<level>: rate}}`; the orchestrator passes `.rates` verbatim as triage-exec `args.bakeoff.rates`.
-Counts are keyed by the tiers file's current (vendor, model, effort), so a model or effort change
-there restarts at n = 0 → explore; there is no other reset. A model swapped under an unchanged
-alias (claude `opus`) is not a change: bump the entry. Only build lines count.
+Counts are keyed by the tiers file's current (vendor, modelId, effort), so a model or effort
+change there — or an alias that moves (a new `aliasHistory` entry) — restarts at n = 0 → explore;
+there is no other reset, and the old version keeps its counts in `history`. Only build lines count.
 
-Exit codes: 0 ok; 1 ledger write failed; 2 usage / invalid input / invalid tiers file (nothing
-written). `test/parity-report.sh` (in `make test`) covers both ingest shapes, the refusals,
+**Pinning and upgrading a model.** Claude entries in `config/tiers.json` (levels, agents,
+tuning.challengers, and so `DEFAULT_ADJUDICATORS`) are concrete ids — `make lint` refuses a bare
+alias there — so a new release never arrives silently. To adopt one: edit the id in
+`config/tiers.json` (and the `DEFAULT_ADJUDICATORS` line if it is `levels.deep`) → `make tiers`
+(agent frontmatter) → `make verify` → `make sync`. The new id starts at n = 0 (explore); the old
+one stays in `history`, so it can be compared or reinstated by editing the id back. When a Claude
+Code alias moves, append `{id, from}` to its `aliasHistory` list (never edit a past entry) so
+old alias-only lines keep resolving to the version they ran on.
+
+Exit codes: 0 ok; 1 ledger write failed (or it changed during a backfill); 2 usage / invalid
+input / invalid tiers file (nothing written). `test/parity-report.sh` (in `make test`) covers both ingest shapes, the refusals,
 no-repo-content, migrate + idempotence, Wilson bounds, every rule branch, exclusions and that
 tiers.json is never written, and (RV*) ingest-review: the line schema, recomputed scores with
 and without resolutions, unavailable never zero, no review content, idempotence, and a report
@@ -1015,7 +1050,12 @@ whose build groups/decisions/proposals are byte-identical with or without review
 #43 (cheapness order), #52 (minN), #53 (Wilson LB vs point rate) and #54 (non-graded status as
 fail) prove the rule has teeth; RA*/RT* cover `rates` (each explore cause, maintain, a model or
 effort change restarting at n = 0, review lines ignored, none) and the `maintain` schema, with
-#82 (n ≥ minN), #83 (CI width) and #84 (a pending proposal forces explore).
+#82 (n ≥ minN), #83 (CI width) and #84 (a pending proposal forces explore). MV* cover model
+versions: modelId/modelIdSource per ingest case, the alias-date boundary, backfill (dry run,
+by-date resolution, untouched rows, idempotence), two Opus versions kept apart, a pinned edit and
+a moved alias both restarting at n = 0, history and its filters, and family cheapness with
+versioned ids — #87 (group by modelId), #88 (from ≤ date), #89 (family order) and #90 (backfill
+idempotence).
 
 ## `parity-cost.sh` — Claude cost per parity candidate
 

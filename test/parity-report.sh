@@ -15,6 +15,10 @@
 # items (disputed excluded, --resolved applied), unavailable never zero, no review
 # content in the ledger, idempotence, and a report section kept apart from the
 # build rule (which review lines never change).
+# Model versions (MV*): modelId/modelIdSource per ingest case, the alias-date
+# boundary, backfill-modelid (dry run, by-date, untouched rows, idempotence), two
+# versions under one alias kept apart, pinned edit / moved alias -> n=0, the
+# history view + --model/--since, and family cheapness with versioned ids.
 # shellcheck disable=SC2034  # *_SUM, L1 etc. are read inside chk's eval'd conditions
 set -u
 
@@ -68,10 +72,10 @@ chk "R1 ingest-compare appends ONE line to the tiers file's tuning.ledger (~ = H
 chk "R1b the line has exactly the schema keys, with the passed ts/source/repoName/level/task/applied" \
   '[ "$(printf "%s" "$L1" | jq -c "keys")" = "[\"applied\",\"candidates\",\"level\",\"repoName\",\"run\",\"source\",\"task\",\"ts\",\"v\"]" ] &&
    [ "$(printf "%s" "$L1" | jq -r "[.v,.ts,.source,.repoName,.level,.task,.applied] | map(tostring) | join(\" \")")" = "1 2026-09-24T10:00:00Z inline myrepo builder sub-1 claude-builder" ]'
-chk "R1c each candidate has exactly label/vendor/model/effort/status/totalTokens/seconds" \
-  '[ "$(printf "%s" "$L1" | jq -c "[.candidates[] | keys] | unique")" = "[[\"effort\",\"label\",\"model\",\"seconds\",\"status\",\"totalTokens\",\"vendor\"]]" ]'
-chk "R1d a null model/effort is filled from the tiers file (claude builder = sonnet/medium); a retired agy row is still ingested, left null (no tiers entry)" \
-  '[ "$(printf "%s" "$L1" | jq -r ".candidates[0] | .model + \"/\" + .effort")" = "sonnet/medium" ] && [ "$(printf "%s" "$L1" | jq -r ".candidates[2].vendor")" = agy ] && [ "$(printf "%s" "$L1" | jq -r ".candidates[2].model")" = null ] && [ "$(printf "%s" "$L1" | jq -r ".candidates[2].effort")" = null ]'
+chk "R1c each candidate has exactly label/vendor/model/effort/status/totalTokens/seconds + modelId/modelIdSource" \
+  '[ "$(printf "%s" "$L1" | jq -c "[.candidates[] | keys] | unique")" = "[[\"effort\",\"label\",\"model\",\"modelId\",\"modelIdSource\",\"seconds\",\"status\",\"totalTokens\",\"vendor\"]]" ]'
+chk "R1d a null model/effort is filled from the tiers file (claude builder = claude-sonnet-5/medium); a retired agy row is still ingested, left null (no tiers entry)" \
+  '[ "$(printf "%s" "$L1" | jq -r ".candidates[0] | .model + \"/\" + .effort")" = "claude-sonnet-5/medium" ] && [ "$(printf "%s" "$L1" | jq -r ".candidates[2].vendor")" = agy ] && [ "$(printf "%s" "$L1" | jq -r ".candidates[2].model")" = null ] && [ "$(printf "%s" "$L1" | jq -r ".candidates[2].effort")" = null ]'
 chk "R1e a non-graded status is kept as itself (unavailable), never recorded as a fail" \
   '[ "$(printf "%s" "$L1" | jq -r "[.candidates[].status] | join(\",\")")" = "pass,fail,unavailable" ]'
 chk "R1f no target-repo content: no patch path, diffstat, tail or brief text reaches the ledger" \
@@ -116,8 +120,8 @@ chk "R3 ingest-parity writes one line per GRADED (task, candidate run) only: 3 o
   '[ "$RC" -eq 0 ] && [ "$(nlines "$PL")" = 3 ] && [ "$(j .lines)" = 3 ] && [ "$(j .run)" = par-1 ]'
 chk "R3b suite lines: source suite, run = outDir basename, level = the band's level, band + task id kept" \
   '[ "$(jq -r "[.source,.run,.level,(.band|tostring),.task,.repoName] | join(\" \")" "$PL" | sort -u | paste -sd"|" -)" = "suite par-1 deep 3 t3 parity-suite|suite par-1 quick 1 t1 parity-suite" ]'
-chk "R3c rep labels are kept (a, a-r2), models/efforts resolved from the candidate's own level (a = builder sonnet/medium)" \
-  '[ "$(jq -r ".candidates[0] | .label + \":\" + .model + \":\" + .effort + \":\" + .status" "$PL" | paste -sd, -)" = "a:sonnet:medium:pass,a-r2:sonnet:medium:fail,x:gpt-6-astra:high:pass" ]'
+chk "R3c rep labels are kept (a, a-r2), models/efforts resolved from the candidate's own level (a = builder claude-sonnet-5/medium)" \
+  '[ "$(jq -r ".candidates[0] | .label + \":\" + .model + \":\" + .effort + \":\" + .status" "$PL" | paste -sd, -)" = "a:claude-sonnet-5:medium:pass,a-r2:claude-sonnet-5:medium:fail,x:gpt-6-astra:high:pass" ]'
 chk "R3d no patch path, reason or markdown from the run reaches the ledger" '! grep -qi "secret\|patch\|/o/runs" "$PL"'
 run_pr ingest-parity --tiers "$TIERS" --ledger "$PL" --result "$T/parity.json"
 chk "R3e ingesting the same run again is a no-op (idempotent by run id)" '[ "$RC" -eq 0 ] && [ "$(j .lines)" = 0 ] && [ "$(nlines "$PL")" = 3 ]'
@@ -139,7 +143,7 @@ run_pr migrate --tiers "$TIERS" --ledger "$ML" --from "$T/legacy.jsonl"
 chk "R4d migrate again: nothing appended (idempotent by run id)" '[ "$RC" -eq 0 ] && [ "$(nlines "$ML")" = 7 ] && [ "$(j .migrated)" = 0 ] && [ "$(j .skipped)" = 2 ]'
 printf '%s\n' '{"date":"2026-09-22","run":"pilot2","bands":[4],"candidates":[{"label":"claude-fable-xhigh","b4":{"pass":1,"fail":0}}]}' >> "$T/legacy.jsonl"
 run_pr migrate --tiers "$TIERS" --ledger "$ML" --from "$T/legacy.jsonl"
-chk "R4e a legacy line added later is the only one migrated next time" '[ "$(nlines "$ML")" = 8 ] && [ "$(j .migrated)" = 1 ] && [ "$(tail -n 1 "$ML" | jq -r ".level + \":\" + .candidates[0].model")" = top:fable ]'
+chk "R4e a legacy line added later is the only one migrated next time" '[ "$(nlines "$ML")" = 8 ] && [ "$(j .migrated)" = 1 ] && [ "$(tail -n 1 "$ML" | jq -r ".level + \":\" + .candidates[0].model")" = top:claude-fable-5-1 ]'
 
 # --- R5..R8: the report + decision rule on a synthetic ledger -------------------
 RL="$T/l-rule.jsonl"
@@ -180,23 +184,23 @@ RL_SUM=$(cksum < "$RL")
 run_pr report --tiers "$TIERS" --ledger "$RL" --json
 REP="$OUT"
 g() { printf '%s' "$REP" | jq -r --arg l "$1" --arg v "$2" --arg m "$3" --arg e "$4" \
-  ".groups[] | select(.level == \$l and .vendor == \$v and .model == \$m and .effort == \$e) | $5"; }
+  ".groups[] | select(.level == \$l and .vendor == \$v and .modelId == \$m and .effort == \$e) | $5"; }
 d() { printf '%s' "$REP" | jq -r --arg l "$1" --arg v "$2" --arg m "$3" --arg e "$4" \
-  ".decisions[] | select(.level == \$l and .vendor == \$v and .challenger.model == \$m and .challenger.effort == \$e) | $5"; }
+  ".decisions[] | select(.level == \$l and .vendor == \$v and .challenger.modelId == \$m and .challenger.effort == \$e) | $5"; }
 chk "R5 report --json exits 0; the malformed ledger line is counted, not fatal" '[ "$RC" -eq 0 ] && [ "$(printf "%s" "$REP" | jq .malformed)" = 1 ]'
 chk "R5b Wilson 95% lower bounds: 10/10 = 0.7225, 40/40 = 0.9124, 5/10 = 0.2366, 0/10 = 0, 9/10 = 0.5958" \
-  '[ "$(g deep claude sonnet high ".wilsonLB * 10000 | round")" = 7225 ] && [ "$(g builder claude haiku low ".wilsonLB * 10000 | round")" = 9124 ] &&
+  '[ "$(g deep claude claude-sonnet-5 high ".wilsonLB * 10000 | round")" = 7225 ] && [ "$(g builder claude claude-haiku-4-5-20251001 low ".wilsonLB * 10000 | round")" = 9124 ] &&
    [ "$(g deep codex gpt-6-sol medium ".wilsonLB * 10000 | round")" = 2366 ] && [ "$(g deep codex gpt-6-luna low ".wilsonLB")" = 0 ] &&
-   [ "$(g deep claude opus high ".wilsonLB * 10000 | round")" = 5958 ]'
+   [ "$(g deep claude claude-opus-5-5 high ".wilsonLB * 10000 | round")" = 5958 ]'
 chk "R5c non-graded statuses are excluded: the sonnet·medium incumbent stays n=40 (36 pass) with 9 excluded" \
-  '[ "$(g builder claude sonnet medium "[.n, .passes, .excluded] | join(\",\")")" = "40,36,9" ] && [ "$(g builder claude sonnet medium .rate)" = 0.9 ]'
-chk "R5d tokens and seconds are averaged per group" '[ "$(g builder claude haiku low "[.meanTokens, .meanSeconds] | join(\",\")")" = "100,2" ]'
+  '[ "$(g builder claude claude-sonnet-5 medium "[.n, .passes, .excluded] | join(\",\")")" = "40,36,9" ] && [ "$(g builder claude claude-sonnet-5 medium .rate)" = 0.9 ]'
+chk "R5d tokens and seconds are averaged per group" '[ "$(g builder claude claude-haiku-4-5-20251001 low "[.meanTokens, .meanSeconds] | join(\",\")")" = "100,2" ]'
 chk "R6 cheaper + Wilson LB >= incumbent rate - tolerance -> propose (builder/claude haiku·low)" \
-  '[ "$(d builder claude haiku low ".direction + \":\" + .verdict")" = "cheaper:propose" ]'
+  '[ "$(d builder claude claude-haiku-4-5-20251001 low ".direction + \":\" + .verdict")" = "cheaper:propose" ]'
 chk "R6b cheaper with a perfect POINT rate but a low Wilson LB -> keep (deep/claude sonnet·high 10/10 vs opus 0.9)" \
-  '[ "$(d deep claude sonnet high ".direction + \":\" + .verdict")" = "cheaper:keep" ]'
+  '[ "$(d deep claude claude-sonnet-5 high ".direction + \":\" + .verdict")" = "cheaper:keep" ]'
 chk "R6c pricier past the margin -> propose (quick/claude sonnet·medium, +0.4)" \
-  '[ "$(d quick claude sonnet medium ".direction + \":\" + .verdict")" = "pricier:propose" ]'
+  '[ "$(d quick claude claude-sonnet-5 medium ".direction + \":\" + .verdict")" = "pricier:propose" ]'
 chk "R6d pricier below the margin -> keep, even with a high Wilson LB (top/codex astra·max, +0.1)" \
   '[ "$(d top codex gpt-6-astra max ".direction + \":\" + .verdict")" = "pricier:keep" ]'
 chk "R6e fewer than minN graded runs on either side -> insufficient-data, naming the runs still needed (5 and 1)" \
@@ -204,7 +208,7 @@ chk "R6e fewer than minN graded runs on either side -> insufficient-data, naming
    d builder codex gpt-6-luna low .why | grep -q "needs 5 more graded run(s) of the incumbent and 1 of the challenger"'
 chk "R6f a model outside the cheapness order is unranked, never proposed" '[ "$(d deep codex gpt-7-x high .verdict)" = unranked ]'
 chk "R6g exactly two proposals: builder/claude -> haiku·low (cheaper), quick/claude -> sonnet·medium (pricier)" \
-  '[ "$(printf "%s" "$REP" | jq -r "[.proposals[] | .level + \"/\" + .vendor + \"->\" + .to.model + \"·\" + .to.effort + \":\" + .direction] | join(\",\")")" = "builder/claude->haiku·low:cheaper,quick/claude->sonnet·medium:pricier" ]'
+  '[ "$(printf "%s" "$REP" | jq -r "[.proposals[] | .level + \"/\" + .vendor + \"->\" + .to.model + \"·\" + .to.effort + \":\" + .direction] | join(\",\")")" = "builder/claude->claude-haiku-4-5-20251001·low:cheaper,quick/claude->claude-sonnet-5·medium:pricier" ]'
 chk "R6h the JSON carries the rule it applied and says it never writes tiers.json" \
   '[ "$(printf "%s" "$REP" | jq -c ".rule")" = "{\"minN\":8,\"cheaperTolerance\":0.05,\"pricierMargin\":0.15,\"confidence\":\"wilson95\"}" ] && printf "%s" "$REP" | jq -r .note | grep -q "never writes tiers.json"'
 
@@ -225,8 +229,8 @@ chk "R6i with a qualifying cheaper AND pricier challenger at one level x vendor,
 
 run_pr report --tiers "$TIERS" --ledger "$RL"
 chk "R7 markdown: a table per level, the incumbent marked, decisions with reasons, the proposals, and the never-writes line" \
-  '[ "$RC" -eq 0 ] && printf "%s" "$OUT" | grep -q "^## builder" && printf "%s" "$OUT" | grep -q "| claude | sonnet | medium | 40 | 36 | 0.9 | .* | 9 | .* | incumbent |" &&
-   printf "%s" "$OUT" | grep -q "insufficient data: needs 5 more" && printf "%s" "$OUT" | grep -q "^- builder/claude: sonnet · medium -> haiku · low (cheaper" &&
+  '[ "$RC" -eq 0 ] && printf "%s" "$OUT" | grep -q "^## builder" && printf "%s" "$OUT" | grep -q "| claude | claude-sonnet-5 | medium | 40 | 36 | 0.9 | .* | 9 | .* | incumbent |" &&
+   printf "%s" "$OUT" | grep -q "insufficient data: needs 5 more" && printf "%s" "$OUT" | grep -q "^- builder/claude: claude-sonnet-5 · medium -> claude-haiku-4-5-20251001 · low (cheaper" &&
    printf "%s" "$OUT" | grep -q "never writes tiers.json"'
 run_pr report --tiers "$TIERS" --ledger "$T/none.jsonl"
 chk "R7b an absent ledger reports no data (exit 0, no proposals)" '[ "$RC" -eq 0 ] && printf "%s" "$OUT" | grep -q "None: no challenger clears the rule"'
@@ -273,14 +277,14 @@ chk "RV1 ingest-review appends ONE inline-review line with exactly the review sc
   '[ "$RC" -eq 0 ] && [ "$(nlines "$VL")" = 1 ] && [ "$(printf "%s" "$V1" | jq -c "keys")" = "[\"disputed\",\"items\",\"real\",\"repoName\",\"resolved\",\"reviewers\",\"run\",\"source\",\"ts\",\"v\"]" ] &&
    [ "$(printf "%s" "$V1" | jq -r "[.source,.repoName,.run,.items,.real,.disputed,.resolved] | map(tostring) | join(\" \")")" = "inline-review voron rv-run-1 7 2 2 0" ]'
 chk "RV1b each reviewer has exactly label/vendor/level/model/effort/status/precision/recall/n/real/rejected/disputed/findings/totalTokens/seconds" \
-  '[ "$(printf "%s" "$V1" | jq -c "[.reviewers[] | keys] | unique")" = "[[\"disputed\",\"effort\",\"findings\",\"label\",\"level\",\"model\",\"n\",\"precision\",\"real\",\"recall\",\"rejected\",\"seconds\",\"status\",\"totalTokens\",\"vendor\"]]" ]'
+  '[ "$(printf "%s" "$V1" | jq -c "[.reviewers[] | keys] | unique")" = "[[\"disputed\",\"effort\",\"findings\",\"label\",\"level\",\"model\",\"modelId\",\"modelIdSource\",\"n\",\"precision\",\"real\",\"recall\",\"rejected\",\"seconds\",\"status\",\"totalTokens\",\"vendor\"]]" ]'
 chk "RV1c precision/recall/n recomputed from the items over non-disputed ones: sonnet 1/2 (n 2), opus 2/2, sol 1/3 (n 3); recall over 2 real" \
   '[ "$(rv rv-sonnet "[.precision,.recall,.n] | map(tostring) | join(\",\")")" = "0.5,0.5,2" ] && [ "$(rv rv-opus "[.precision,.recall,.n] | map(tostring) | join(\",\")")" = "1,1,2" ] &&
    [ "$(rv rv-sol "(.precision * 1000 | round | tostring) + \",\" + (.recall | tostring) + \",\" + (.n | tostring)")" = "333,0.5,3" ]'
 chk "RV1d an unavailable reviewer keeps status unavailable with NULL scores and n 0 — never a zero precision" \
   '[ "$(rv rv-astra "[.status, (.precision|tostring), (.recall|tostring), (.n|tostring)] | join(\",\")")" = "unavailable,null,null,0" ]'
-chk "RV1e a null model/effort is filled from the tiers file at its level (claude builder = sonnet/medium); vendor tokens kept" \
-  '[ "$(rv rv-sonnet ".model + \"/\" + .effort")" = "sonnet/medium" ] && [ "$(rv rv-sol ".totalTokens")" = 500 ]'
+chk "RV1e a null model/effort is filled from the tiers file at its level (claude builder = claude-sonnet-5/medium); vendor tokens kept" \
+  '[ "$(rv rv-sonnet ".model + \"/\" + .effort")" = "claude-sonnet-5/medium" ] && [ "$(rv rv-sol ".totalTokens")" = 500 ]'
 chk "RV1f no review content reaches the ledger: no file path, claim, evidence, reason, flag or markdown" \
   '! grep -qi "secret" "$VL" && ! grep -q "docs/" "$VL" && ! grep -q "claim\|evidence\|markdown\|/o/reviews" "$VL"'
 run_pr ingest-review --tiers "$TIERS" --ledger "$VL" --result "$T/review.json" --repo-name voron
@@ -320,14 +324,14 @@ chk "RV5 review lines leave the build groups, decisions and proposals byte-ident
    ! printf "%s" "$MIX" | jq -e ".groups[] | select(.model == \"gpt-6-sol\" and .effort == \"medium\" and .level == null)" >/dev/null'
 chk "RV5b a separate reviews section per vendor x model x effort: sonnet·medium over 2 reviews = mean precision (0.5+0.667)/2, mean recall (0.5+0.667)/2" \
   '[ "$(printf "%s" "$MIX" | jq -r ".reviews.lines")" = 2 ] &&
-   [ "$(printf "%s" "$MIX" | jq -r ".reviews.groups[] | select(.vendor == \"claude\" and .model == \"sonnet\") | [.reviews, (.meanPrecision*1000|round), (.meanRecall*1000|round), .nPrecision] | map(tostring) | join(\",\")")" = "2,583,583,2" ]'
+   [ "$(printf "%s" "$MIX" | jq -r ".reviews.groups[] | select(.vendor == \"claude\" and .modelId == \"claude-sonnet-5\") | [.reviews, (.meanPrecision*1000|round), (.meanRecall*1000|round), .nPrecision] | map(tostring) | join(\",\")")" = "2,583,583,2" ]'
 chk "RV5c an unavailable reviewer counts as unavailable in its group, never as a zero in the means" \
-  '[ "$(printf "%s" "$MIX" | jq -r ".reviews.groups[] | select(.model == \"gpt-6-astra\") | [.reviews, .unavailable, (.meanPrecision|tostring)] | map(tostring) | join(\",\")")" = "0,2,null" ]'
+  '[ "$(printf "%s" "$MIX" | jq -r ".reviews.groups[] | select(.modelId == \"gpt-6-astra\") | [.reviews, .unavailable, (.meanPrecision|tostring)] | map(tostring) | join(\",\")")" = "0,2,null" ]'
 chk "RV5d the JSON says review metrics do not drive tier proposals yet" 'printf "%s" "$MIX" | jq -r .reviews.note | grep -q "do not drive tier proposals yet"'
 run_pr report --tiers "$TIERS" --ledger "$T/l-mixed.jsonl"
 chk "RV6 markdown: its own Reviews section with the table, the not-a-proposal-input line, after the build proposals" \
   '[ "$RC" -eq 0 ] && printf "%s" "$OUT" | grep -q "^## Reviews (inline-review) — separate from build pass rates" &&
-   printf "%s" "$OUT" | grep -q "^| claude | opus | high | 2 | 1 (2) | 0.833 (2) | 0 |$" &&
+   printf "%s" "$OUT" | grep -q "^| claude | claude-opus-5-5 | high | 2 | 1 (2) | 0.833 (2) | 0 |$" &&
    printf "%s" "$OUT" | grep -q "Review metrics do not drive tier proposals yet" &&
    [ "$(printf "%s" "$OUT" | grep -n "^## Proposals" | cut -d: -f1)" -lt "$(printf "%s" "$OUT" | grep -n "^## Reviews" | cut -d: -f1)" ]'
 run_pr report --tiers "$TIERS" --ledger "$RL"
@@ -361,7 +365,7 @@ run_pr rates --json --tiers "$TIERS" --ledger "$T/none.jsonl"
 chk "RA1 no data: quick none (no challenger configured) at 0; builder/deep/top explore at sampleRate 0.2" \
   '[ "$RC" -eq 0 ] && [ "$(rstate quick)" = "none:0" ] && [ "$(rstate builder)" = "explore:0.2" ] && [ "$(rstate deep)" = "explore:0.2" ] && [ "$(rstate top)" = "explore:0.2" ]'
 chk "RA1b the reason names what is missing, per incumbent AND configured challenger (builder: claude sonnet@medium, sonnet@high, codex gpt-6-sol@medium)" \
-  '[ "$(rwhy builder)" = "claude sonnet@high n=0 < 8; claude sonnet@medium n=0 < 8; codex gpt-6-sol@medium n=0 < 8" ]'
+  '[ "$(rwhy builder)" = "claude claude-sonnet-5@high n=0 < 8; claude claude-sonnet-5@medium n=0 < 8; codex gpt-6-sol@medium n=0 < 8" ]'
 chk "RA1c .rates is the {level: rate} map triage-exec takes; asOf is the tiers file's; params echo the tuning" \
   '[ "$(printf "%s" "$OUT" | jq -c .rates)" = "{\"quick\":0,\"builder\":0.2,\"deep\":0.2,\"top\":0.2}" ] && [ "$(printf "%s" "$OUT" | jq -r .asOf)" = "$(jq -r .asOf "$TIERS")" ] &&
    [ "$(printf "%s" "$OUT" | jq -c .params)" = "{\"explore\":0.2,\"maintain\":0.05,\"maxWidth\":0.35,\"minN\":8}" ]'
@@ -377,7 +381,7 @@ run_pr report --json --tiers "$TIERS" --ledger "$SETTLED"
 REPJ="$OUT"
 run_pr rates --json --tiers "$TIERS" --ledger "$SETTLED"
 chk "RA2b report --json carries the same object as .sampling; groups carry a Wilson upper bound next to the lower one" \
-  '[ "$(printf "%s" "$REPJ" | jq -c .sampling)" = "$OUT" ] && [ "$(printf "%s" "$REPJ" | jq -r ".groups[] | select(.model == \"sonnet\" and .effort == \"medium\") | .wilsonUB * 10000 | round")" = 10000 ]'
+  '[ "$(printf "%s" "$REPJ" | jq -c .sampling)" = "$OUT" ] && [ "$(printf "%s" "$REPJ" | jq -r ".groups[] | select(.modelId == \"claude-sonnet-5\" and .effort == \"medium\") | .wilsonUB * 10000 | round")" = 10000 ]'
 run_pr rates --tiers "$TIERS" --ledger "$SETTLED"
 chk "RA2c plain output: one tab-separated line per level" \
   '[ "$(printf "%s\n" "$OUT" | wc -l | tr -d " ")" = 4 ] && printf "%s\n" "$OUT" | grep -q "^builder	maintain	0.05	settled"'
@@ -391,7 +395,7 @@ RL="$T/l-proposal.jsonl"; : > "$RL"
 gen builder claude sonnet medium pass 30; gen builder claude sonnet medium fail 10; gen builder claude sonnet high pass 40; gen builder codex gpt-6-sol medium pass 40
 run_pr rates --json --tiers "$TIERS" --ledger "$RL"
 chk "RA3 a proposal for a level x vendor -> explore, the reason names the pending proposal (and no count or width gap)" \
-  '[ "$(rstate builder)" = "explore:0.2" ] && [ "$(rwhy builder)" = "proposal pending for builder/claude: sonnet@medium -> sonnet@high" ]'
+  '[ "$(rstate builder)" = "explore:0.2" ] && [ "$(rwhy builder)" = "proposal pending for builder/claude: claude-sonnet-5@medium -> claude-sonnet-5@high" ]'
 
 # Wide intervals: everything at n = 8 but 4/8 (CI width .59), no proposal (equal rates).
 RL="$T/l-wide.jsonl"; : > "$RL"
@@ -431,7 +435,7 @@ chk "RA7 a new incumbent model in tiers.json (same ledger that was settled) -> i
   '[ "$(rstate builder)" = "explore:0.2" ] && [ "$(rwhy builder)" = "codex gpt-6-sol-2@medium n=0 < 8" ]'
 jq '.levels.builder.claude.effort = "low"' "$TIERS" > "$T/tiers-neweffort.json"
 run_pr rates --json --tiers "$T/tiers-neweffort.json" --ledger "$SETTLED"
-chk "RA7b ...and so does a new incumbent effort" '[ "$(rstate builder)" = "explore:0.2" ] && rwhy builder | grep -q "claude sonnet@low n=0 < 8"'
+chk "RA7b ...and so does a new incumbent effort" '[ "$(rstate builder)" = "explore:0.2" ] && rwhy builder | grep -q "claude claude-sonnet-5@low n=0 < 8"'
 jq '.tuning.challengers.builder.codex += [{"model": "gpt-6-astra", "effort": "high"}]' "$TIERS" > "$T/tiers-newch.json"
 run_pr rates --json --tiers "$T/tiers-newch.json" --ledger "$SETTLED"
 chk "RA7c a newly configured challenger (n=0) -> explore" '[ "$(rstate builder)" = "explore:0.2" ] && [ "$(rwhy builder)" = "codex gpt-6-astra@high n=0 < 8" ]'
@@ -441,7 +445,153 @@ run_pr rates --json --tiers "$T/tiers-notop.json" --ledger "$SETTLED"
 chk "RA8 a level whose challenger lists are all empty -> none at rate 0 (like quick)" '[ "$(rstate top)" = "none:0" ] && [ "$(rstate quick)" = "none:0" ]'
 chk "RA9 Wilson 95% upper bounds reuse the one formula: 5/10 = 0.7634, 0/10 = 0.2775, 10/10 = 1" \
   '[ "$(g deep codex gpt-6-sol medium ".wilsonUB * 10000 | round")" = 7634 ] && [ "$(g deep codex gpt-6-luna low ".wilsonUB * 10000 | round")" = 2775 ] &&
-   [ "$(g deep claude sonnet high ".wilsonUB * 10000 | round")" = 10000 ]'
+   [ "$(g deep claude claude-sonnet-5 high ".wilsonUB * 10000 | round")" = 10000 ]'
+
+# --- MV: model-version tracking — modelId per candidate, alias history, backfill,
+# grouping by concrete id, family cheapness, the history view -------------------
+chk "MV0 the shipped tiers pin concrete Claude ids (no alias left at levels.*.claude)" \
+  '[ "$(jq -r "[.levels[].claude.model] | join(\",\")" "$TIERS")" = "claude-haiku-4-5-20251001,claude-sonnet-5,claude-opus-5-5,claude-fable-5-1" ]'
+cat > "$T/mv-compare.json" <<'EOF'
+{"candidates":[
+ {"label":"c-null","vendor":"claude","level":"builder","model":null,"effort":null,"status":"pass"},
+ {"label":"c-alias","vendor":"claude","level":"deep","model":"opus","effort":"high","modelFrom":"candidate","status":"pass"},
+ {"label":"x-cand","vendor":"codex","level":"builder","model":"gpt-6-sol","effort":"medium","modelFrom":"candidate","status":"fail"},
+ {"label":"x-run","vendor":"codex","level":"deep","model":"gpt-6-astra","effort":"high","modelFrom":"runner","status":"pass"}]}
+EOF
+mvc() { run_pr ingest-compare --tiers "$TIERS" --ledger "$1" --result "$T/mv-compare.json" --repo-name r --level deep --source inline --ts "$2"; }
+mc() { jq -r --arg l "$2" '.candidates[] | select(.label == $l) | "\(.modelId)/\(.modelIdSource)"' "$1"; }
+mvc "$T/mv-a.jsonl" 2026-09-24T09:00:00Z
+chk "MV1 ingest fills modelId + modelIdSource per case: tiers default -> pinned, alias -> inferred-by-date, candidate id -> pinned, runner-reported -> observed" \
+  '[ "$RC" -eq 0 ] && [ "$(mc "$T/mv-a.jsonl" c-null)" = "claude-sonnet-5/pinned" ] && [ "$(mc "$T/mv-a.jsonl" c-alias)" = "claude-opus-5-5/inferred-by-date" ] &&
+   [ "$(mc "$T/mv-a.jsonl" x-cand)" = "gpt-6-sol/pinned" ] && [ "$(mc "$T/mv-a.jsonl" x-run)" = "gpt-6-astra/observed" ]'
+chk "MV1b model keeps what was configured (the alias); only modelId is resolved" \
+  '[ "$(jq -r ".candidates[] | select(.label == \"c-alias\") | .model" "$T/mv-a.jsonl")" = opus ]'
+mvc "$T/mv-b.jsonl" 2026-09-22T00:00:00Z
+mvc "$T/mv-c.jsonl" 2026-09-21T23:59:59Z
+mvc "$T/mv-d.jsonl" 2026-08-01T00:00:00Z
+chk "MV2 inferred-by-date boundary: opus on 2026-09-22 (its from date) = claude-opus-5-5, one second earlier = claude-opus-5" \
+  '[ "$(mc "$T/mv-b.jsonl" c-alias)" = "claude-opus-5-5/inferred-by-date" ] && [ "$(mc "$T/mv-c.jsonl" c-alias)" = "claude-opus-5/inferred-by-date" ]'
+chk "MV2b an alias before its first history entry stays unresolved (null/null), never guessed" \
+  '[ "$(mc "$T/mv-d.jsonl" c-alias)" = "null/null" ] && [ "$(mc "$T/mv-d.jsonl" c-null)" = "claude-sonnet-5/pinned" ]'
+run_pr ingest-review --tiers "$TIERS" --ledger "$T/mv-rv.jsonl" --result "$T/review.json" --repo-name voron --ts 2026-09-24T12:00:00Z
+chk "MV3 ingest-review gives every reviewer a modelId too (opus alias inferred, tiers default pinned, codex pinned)" \
+  '[ "$(jq -r "[.reviewers[] | \"\(.label)=\(.modelId)/\(.modelIdSource)\"] | join(\",\")" "$T/mv-rv.jsonl")" = "rv-sonnet=claude-sonnet-5/pinned,rv-opus=claude-opus-5-5/inferred-by-date,rv-sol=gpt-6-sol/pinned,rv-astra=gpt-6-astra/pinned" ]'
+chk "MV3b ingest-parity lines carry modelId (a = tiers default claude-sonnet-5 pinned, x = gpt-6-astra pinned)" \
+  '[ "$(jq -r ".candidates[0] | .label + \"=\" + .modelId + \"/\" + .modelIdSource" "$PL" | paste -sd, -)" = "a=claude-sonnet-5/pinned,a-r2=claude-sonnet-5/pinned,x=gpt-6-astra/pinned" ]'
+
+# backfill-modelid: old lines get modelId; filled rows, malformed lines and order stay.
+BL="$T/mv-backfill.jsonl"
+{
+  jq -nc '{v:1, ts:"2026-09-21T10:00:00Z", source:"suite", run:"b1", repoName:"r", level:"deep", task:null, candidates:[{label:"a", vendor:"claude", model:"opus", effort:"high", status:"pass"}], applied:null}'
+  jq -nc '{v:1, ts:"2026-09-24T10:00:00Z", source:"suite", run:"b2", repoName:"r", level:"deep", task:null, candidates:[{label:"a", vendor:"claude", model:"opus", effort:"high", status:"fail"}], applied:null}'
+  jq -nc '{v:1, ts:"2026-09-24T10:00:00Z", source:"inline", run:"b3", repoName:"r", level:"builder", task:null, candidates:[{label:"x", vendor:"codex", model:"gpt-6-sol", effort:"medium", status:"pass"}], applied:null}'
+  jq -nc '{v:1, ts:"2026-09-24T10:00:00Z", source:"inline", run:"b4", repoName:"r", level:"deep", task:null, candidates:[{label:"x", vendor:"codex", model:"gpt-6-astra", effort:"high", status:"pass", modelId:"gpt-6-astra", modelIdSource:"observed"}], applied:null}'
+  printf 'not json {\n'
+  jq -nc '{v:1, ts:"2026-09-24T12:00:00Z", source:"inline-review", run:"b6", repoName:"r", reviewers:[{label:"s", vendor:"claude", level:"builder", model:"sonnet", effort:"high", status:"ok", precision:1, recall:1, n:1}], items:1, real:1, disputed:0, resolved:0}'
+  jq -nc '{v:1, ts:"2026-09-01T10:00:00Z", source:"suite", run:"b7", repoName:"r", level:"quick", task:null, candidates:[{label:"h", vendor:"claude", model:"haiku", effort:"low", status:"pass"}], applied:null}'
+} > "$BL"
+BL_SUM=$(cksum < "$BL")
+BL_L4=$(sed -n 4p "$BL"); BL_L5=$(sed -n 5p "$BL")
+run_pr backfill-modelid --tiers "$TIERS" --ledger "$BL" --dry-run
+chk "MV4 backfill --dry-run reports what it would fill and writes nothing" \
+  '[ "$RC" -eq 0 ] && [ "$(j .dryRun)" = true ] && [ "$(j .updatedLines)" = 5 ] && [ "$(cksum < "$BL")" = "$BL_SUM" ]'
+run_pr backfill-modelid --tiers "$TIERS" --ledger "$BL"
+chk "MV4b backfill fills 5 of 7 lines: 3 inferred-by-date, 1 pinned, 1 unresolved (alias before its history)" \
+  '[ "$RC" -eq 0 ] && [ "$(j .updatedLines)" = 5 ] && [ "$(printf "%s" "$OUT" | jq -c .filled)" = "{\"inferred-by-date\":3,\"pinned\":1,\"unresolved\":1}" ] && [ "$(nlines "$BL")" = 7 ]'
+chk "MV4c backfill resolves by each line date (opus 2026-09-21 -> claude-opus-5, 2026-09-24 -> claude-opus-5-5); reviewers too; line order kept" \
+  '[ "$(sed -n 1p "$BL" | jq -r ".run + \"=\" + .candidates[0].modelId + \"/\" + .candidates[0].modelIdSource")" = "b1=claude-opus-5/inferred-by-date" ] &&
+   [ "$(sed -n 2p "$BL" | jq -r ".candidates[0].modelId")" = claude-opus-5-5 ] && [ "$(sed -n 3p "$BL" | jq -r ".candidates[0].modelIdSource")" = pinned ] &&
+   [ "$(sed -n 6p "$BL" | jq -r ".reviewers[0].modelId")" = claude-sonnet-5 ] && [ "$(sed -n 7p "$BL" | jq -c ".candidates[0] | [.modelId, .modelIdSource]")" = "[null,null]" ]'
+chk "MV4d a row that already has modelId (observed) and a malformed line are byte-identical; no other key is added" \
+  '[ "$(sed -n 4p "$BL")" = "$BL_L4" ] && [ "$(sed -n 5p "$BL")" = "$BL_L5" ] && [ "$(sed -n 1p "$BL" | jq -c keys)" = "[\"applied\",\"candidates\",\"level\",\"repoName\",\"run\",\"source\",\"task\",\"ts\",\"v\"]" ]'
+BL_SUM2=$(cksum < "$BL")
+run_pr backfill-modelid --tiers "$TIERS" --ledger "$BL"
+chk "MV4e backfill is idempotent: a second run fills nothing and leaves the file byte-identical" \
+  '[ "$RC" -eq 0 ] && [ "$(j .updatedLines)" = 0 ] && [ "$(cksum < "$BL")" = "$BL_SUM2" ]'
+run_pr backfill-modelid --tiers "$TIERS" --ledger "$T/none.jsonl"
+chk "MV4f backfill of a missing ledger is a usage error (exit 2), nothing created" '[ "$RC" -eq 2 ] && [ ! -e "$T/none.jsonl" ]'
+run_pr report --tiers "$TIERS" --ledger "$BL" --dry-run
+chk "MV4g --dry-run belongs to backfill-modelid only (exit 2 elsewhere)" '[ "$RC" -eq 2 ]'
+
+# Two Opus versions under ONE alias: rows split by concrete id, never pooled.
+GL="$T/mv-group.jsonl"; : > "$GL"
+gl() { # TS MODEL STATUS COUNT [MODELID]
+  local i=0
+  while [ "$i" -lt "$4" ]; do
+    jq -nc --arg ts "$1" --arg m "$2" --arg s "$3" --arg id "${5:-}" \
+      '{v:1, ts:$ts, source:"inline", run:null, repoName:"r", level:"deep", task:null,
+        candidates:[{label:"c", vendor:"claude", model:$m, effort:"high", status:$s} + (if $id == "" then {} else {modelId:$id, modelIdSource:"pinned"} end)], applied:null}' >> "$GL"
+    i=$((i + 1))
+  done
+}
+gl 2026-09-21T10:00:00Z opus pass 3; gl 2026-09-21T11:00:00Z opus fail 2
+gl 2026-09-24T10:00:00Z opus pass 6
+gl 2026-09-24T11:00:00Z opus pass 2 claude-opus-5
+run_pr report --tiers "$TIERS" --ledger "$GL" --json
+chk "MV5 grouping is by concrete id: claude-opus-5 7 runs (5 pass; 2 by their own modelId, 5 by date) and claude-opus-5-5 6 runs — never one opus group of 13" \
+  '[ "$RC" -eq 0 ] && [ "$(printf "%s" "$OUT" | jq -r "[.groups[] | select(.level == \"deep\" and .vendor == \"claude\") | \"\(.modelId):\(.n):\(.passes)\"] | sort | join(\",\")")" = "claude-opus-5-5:6:6,claude-opus-5:7:5" ]'
+chk "MV5b each group lists the configured model names it pooled and is marked incumbent only for the current id" \
+  '[ "$(printf "%s" "$OUT" | jq -c "[.groups[] | select(.level == \"deep\") | [.modelId, .models, .role]] | sort")" = "[[\"claude-opus-5\",[\"opus\"],null],[\"claude-opus-5-5\",[\"opus\"],\"incumbent\"]]" ]'
+jq '.levels.deep.claude.model = "claude-opus-6"' "$TIERS" > "$T/tiers-opus6.json"
+run_pr rates --json --tiers "$T/tiers-opus6.json" --ledger "$GL"
+chk "MV6 a pinned id edited in tiers (claude-opus-6) starts at n=0 -> explore, naming it" \
+  '[ "$(rstate deep)" = "explore:0.2" ] && rwhy deep | grep -q "claude claude-opus-6@high n=0 < 8" && ! rwhy deep | grep -q "claude-opus-5-5@high"'
+jq '.levels.deep.claude.model = "opus" | .aliasHistory.claude.opus += [{"id": "claude-opus-6", "from": "2026-09-25"}]' "$TIERS" > "$T/tiers-moved.json"
+run_pr rates --json --tiers "$T/tiers-moved.json" --ledger "$GL"
+chk "MV6b an alias that moves (opus -> claude-opus-6 in aliasHistory) resets too: the incumbent resolves today to the new id, n=0 -> explore" \
+  '[ "$(rstate deep)" = "explore:0.2" ] && rwhy deep | grep -q "claude claude-opus-6@high n=0 < 8"'
+run_pr history --json --tiers "$T/tiers-moved.json" --ledger "$GL"
+chk "MV6c ...and the old versions keep their history under the moved alias (5 + 6 runs by date, unchanged)" \
+  '[ "$(printf "%s" "$OUT" | jq -r ".history[] | select(.level == \"deep\" and .vendor == \"claude\") | [.current.modelId, (.current.seen|tostring), ([.entries[] | \"\(.modelId):\(.n)\"] | join(\"+\"))] | join(\" \")")" = "claude-opus-6 false claude-opus-5:7+claude-opus-5-5:6" ]'
+jq '.levels.deep.claude.model = "claude-opus-5-5[1m]"' "$TIERS" > "$T/tiers-1m.json"
+run_pr history --json --tiers "$T/tiers-1m.json" --ledger "$GL"
+chk "MV6d a context suffix in tiers ([1m]) is the same version: the incumbent is still claude-opus-5-5 with its data" \
+  '[ "$(printf "%s" "$OUT" | jq -r ".history[] | select(.level == \"deep\" and .vendor == \"claude\") | .current | \"\(.modelId) \(.seen)\"")" = "claude-opus-5-5 true" ]'
+
+run_pr history --json --tiers "$TIERS" --ledger "$GL"
+hd() { printf '%s' "$OUT" | jq -r '.history[] | select(.level == "deep" and .vendor == "claude") | '"$1"; }
+chk "MV7 history: per level x vendor, every id x effort seen, oldest first, with first/last ts and the current one flagged" \
+  '[ "$RC" -eq 0 ] && [ "$(hd "[.entries[] | \"\(.modelId)|\(.n)|\(.firstTs)|\(.lastTs)|\(.role)\"] | join(\",\")")" = "claude-opus-5|7|2026-09-21T10:00:00Z|2026-09-24T11:00:00Z|null,claude-opus-5-5|6|2026-09-24T10:00:00Z|2026-09-24T10:00:00Z|incumbent" ] &&
+   [ "$(hd ".current | \"\(.modelId) \(.effort) \(.seen)\"")" = "claude-opus-5-5 high true" ] && [ "$(hd ".entries[0].wilsonUB * 10000 | round")" -gt 0 ]'
+chk "MV7b history lists a level x vendor with a tiers entry but no data (current named, no entries)" \
+  '[ "$(printf "%s" "$OUT" | jq -r ".history[] | select(.level == \"quick\" and .vendor == \"codex\") | \"\(.current.modelId) \(.current.seen) \(.entries | length)\"")" = "gpt-6-luna false 0" ]'
+run_pr history --tiers "$TIERS" --ledger "$GL"
+chk "MV7c history markdown: a section per level x vendor naming the current id, a row per version with its dates" \
+  'printf "%s" "$OUT" | grep -q "^## deep / claude — current: claude-opus-5-5 · high$" && printf "%s" "$OUT" | grep -q "^| claude-opus-5 | high | 7 | 5 | 0.714 | .* | 2026-09-21 | 2026-09-24 |  |$" &&
+   printf "%s" "$OUT" | grep -q "^| claude-opus-5-5 | high | 6 | 6 | 1 | .* | current |$"'
+run_pr history --json --tiers "$TIERS" --ledger "$GL" --model claude-opus-5
+chk "MV8 --model <id> is exact (claude-opus-5 does not match claude-opus-5-5); only matching level x vendors are listed" \
+  '[ "$(hd "[.entries[].modelId] | join(\",\")")" = "claude-opus-5" ] && [ "$(printf "%s" "$OUT" | jq ".history | length")" = 1 ] && [ "$(printf "%s" "$OUT" | jq -r .filters.model)" = claude-opus-5 ]'
+run_pr history --json --tiers "$TIERS" --ledger "$GL" --model opus --since 2026-09-24
+chk "MV8b --model <family> matches every version; --since drops older lines (claude-opus-5 keeps its 2 later runs, now listed second by first ts)" \
+  '[ "$(hd "[.entries[] | \"\(.modelId):\(.n)\"] | join(\",\")")" = "claude-opus-5-5:6,claude-opus-5:2" ]'
+run_pr report --json --tiers "$TIERS" --ledger "$GL" --model claude-opus-5-5
+chk "MV8c report takes the same filters (groups narrowed, filters echoed)" \
+  '[ "$(printf "%s" "$OUT" | jq -r "[.groups[].modelId] | unique | join(\",\")")" = claude-opus-5-5 ] && [ "$(printf "%s" "$OUT" | jq -r .filters.model)" = claude-opus-5-5 ]'
+run_pr rates --tiers "$TIERS" --ledger "$GL" --model opus
+chk "MV8d filters are refused where they would skew a decision input (rates, exit 2); a bad --since too" \
+  '[ "$RC" -eq 2 ] && { run_pr history --tiers "$TIERS" --ledger "$GL" --since yesterday; [ "$RC" -eq 2 ]; }'
+
+# Cheapness by FAMILY, so versioned ids rank: opus 5.5 incumbent at deep.
+FL="$T/mv-family.jsonl"; : > "$FL"
+fl() { # VENDOR MODEL EFFORT PASSES FAILS
+  local i=0
+  while [ "$i" -lt $(($4 + $5)) ]; do
+    jq -nc --arg v "$1" --arg m "$2" --arg e "$3" --arg s "$(if [ "$i" -lt "$4" ]; then echo pass; else echo fail; fi)" \
+      '{v:1, ts:"2026-09-24T00:00:00Z", source:"inline", run:null, repoName:"r", level:"deep", task:null,
+        candidates:[{label:"c", vendor:$v, model:$m, effort:$e, status:$s, modelId:$m, modelIdSource:"pinned"}], applied:null}' >> "$FL"
+    i=$((i + 1))
+  done
+}
+fl claude claude-opus-5-5 high 10 0; fl claude claude-sonnet-5 high 10 0; fl claude claude-fable-5-1 high 10 0
+fl claude claude-opus-5 high 10 0; fl claude claude-opus-5 medium 10 0
+fl codex gpt-6-astra high 10 0; fl codex gpt-7-sol medium 10 0; fl codex gpt-7-x high 10 0
+run_pr report --json --tiers "$TIERS" --ledger "$FL"
+dir() { printf '%s' "$OUT" | jq -r --arg v "$1" --arg m "$2" --arg e "$3" '.decisions[] | select(.level == "deep" and .vendor == $v and .challenger.modelId == $m and .challenger.effort == $e) | .direction'; }
+chk "MV9 family cheapness with versioned ids: sonnet-5 cheaper, fable-5-1 pricier, opus-5@medium cheaper than opus-5-5@high; same family + effort (opus-5@high) unranked" \
+  '[ "$(dir claude claude-sonnet-5 high)" = cheaper ] && [ "$(dir claude claude-fable-5-1 high)" = pricier ] && [ "$(dir claude claude-opus-5 medium)" = cheaper ] && [ "$(dir claude claude-opus-5 high)" = unranked ]'
+chk "MV9b a NEW codex version still ranks by family (gpt-7-sol cheaper than gpt-6-astra); an id with no family token is unranked" \
+  '[ "$(dir codex gpt-7-sol medium)" = cheaper ] && [ "$(dir codex gpt-7-x high)" = unranked ]'
 
 echo ""
 echo "RESULT: $PASS_COUNT passed, $FAIL_COUNT failed"

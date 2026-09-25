@@ -1,7 +1,7 @@
 ---
 name: triage-fable-architect
 description: The Claude slot of the `top` level — Fable today (which models serve `top`, for Claude and for other vendors, is data in config/tiers.json). The most expensive model; Opus 5.5 is at its level on most work. Reserve for a second opinion on architecture decisions, problems the deep level escalated or failed at max effort, and tasks where correctness matters far more than cost. The orchestrator MUST print "⚠ Escalating to Fable: <reason>" in user-visible text whenever invoking this agent.
-model: fable
+model: claude-fable-5-1
 effort: xhigh
 memory: project
 ---

@@ -1,7 +1,7 @@
 ---
 name: triage-quick-task
 description: Cheapest, fastest tier (Haiku @ low effort). Use for mechanical, low-ambiguity work — renames, simple find/replace edits, file lookups, boilerplate generation, formatting fixes, simple shell commands, straightforward data munging. Do NOT send anything requiring design judgment, multi-file reasoning, or debugging of unknown cause.
-model: haiku
+model: claude-haiku-4-5-20251001
 effort: low
 tools: Read, Write, Edit, Bash, Glob, Grep
 memory: project

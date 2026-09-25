@@ -1,7 +1,7 @@
 ---
 name: triage-external
 description: External build worker. A thin wrapper that runs ONE well-specified implementation subtask on an EXTERNAL, non-Anthropic CLI (OpenAI's Codex), which edits the repo through a disposable worktree inside an OS sandbox that confines it to that worktree. Chosen at PLAN time only (a triage-exec subtask with `vendor: 'codex'`, plan-level `vendor`, `overflow: true`, or `tier: 'overflow'`), never as a runtime fallback. The brief opens with one header line `VENDOR=codex LEVEL=<quick|builder|deep|top> [EFFORT=<low..max>] [MODEL=<id>] [WORKDIR=<abs repo>] [PATCH_OUT=<abs file> [CHECK=<cmd>]]` (bracketed fields optional; PATCH_OUT = bake-off mode, nothing applied), then a complete brief with acceptance criteria and the exact check command. Google's Antigravity (`agy`) was retired 2026-09-24: `VENDOR=agy` is refused. Do NOT send anything from a repo excluded from cross-vendor agents: the workspace leaves the machine for the external vendor's harness.
-model: haiku
+model: claude-haiku-4-5-20251001
 effort: low
 tools: Bash, Read, Write
 omitClaudeMd: true

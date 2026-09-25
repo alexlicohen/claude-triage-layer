@@ -14,7 +14,9 @@
 #   parity-report.sh ingest-review  --result FILE --repo-name NAME [--resolved FILE]
 #                    [--run ID] [--ts ISO] [--ledger F] [--tiers F]
 #   parity-report.sh migrate        [--from F] [--ledger F] [--tiers F]
-#   parity-report.sh report         [--ledger F] [--tiers F] [--json]
+#   parity-report.sh backfill-modelid [--dry-run] [--ledger F] [--tiers F]
+#   parity-report.sh report         [--ledger F] [--tiers F] [--json] [--model M] [--since DATE]
+#   parity-report.sh history        [--ledger F] [--tiers F] [--json] [--model M] [--since DATE]
 #   parity-report.sh rates          [--ledger F] [--tiers F] [--json]
 #
 # ingest-compare  FILE = a triage-compare return value (JSON). Appends ONE ledger
@@ -43,6 +45,20 @@
 #                 (source inline-review) get their OWN section — mean precision /
 #                 recall per vendor x model x effort — never mixed into the build
 #                 pass rates, and they do not drive tier proposals (yet).
+# backfill-modelid gives every ledger candidate/reviewer WITHOUT a modelId key one
+#                 (Model ids, below; never "observed": nothing reported it then).
+#                 Rewrites --ledger in place (same dir + mode, one rename; refused
+#                 if the ledger changed meanwhile). Idempotent: a row that has the
+#                 key (even null) is left alone; lines with nothing to fill and
+#                 malformed lines stay byte-identical. --dry-run writes nothing.
+# history         per level x vendor, EVERY modelId x effort ever graded there (old
+#                 versions stay listed): n, passes, rate, Wilson LB/UB, first/last
+#                 ts, role (incumbent = current | challenger | null), and the current
+#                 incumbent even before it has data. Markdown, or JSON with --json.
+# --model M       report/history only: keep rows whose modelId is M, or has M as a
+#                 whole token (a family: --model opus = every Opus version).
+# --since DATE    report/history only: keep ledger lines with ts >= DATE. Filters
+#                 narrow what the rule sees; `rates` never takes them.
 # rates           the inline bake-off SAMPLING RATE per level (Rates, below): one
 #                 line per level, or with --json {asOf, params, levels: {<level>:
 #                 {state, rate, reason}}, rates: {<level>: rate}}. The orchestrator
@@ -54,29 +70,45 @@
 # from the target repo (repoName is a bare name; task/run/labels are id tokens):
 #   {"v":1, "ts":"<ISO>", "source":"inline|suite", "run":<id|null>, "repoName":"<name>",
 #    "level":"quick|builder|deep|top", "band":<1-4, suite only>, "task":<id|null>,
-#    "candidates":[{"label","vendor","model","effort","status","totalTokens","seconds"}],
+#    "candidates":[{"label","vendor","model","effort","status","totalTokens","seconds",
+#                   "modelId","modelIdSource"}],
 #    "applied":<label|null>, "migrated":<"vendor-parity.jsonl", migrated lines only>}
 #   Review line (ingest-review; no candidates, so it never enters the build rule):
 #   {"v":1, "ts", "source":"inline-review", "run":<id|null>, "repoName",
 #    "reviewers":[{"label","vendor","level","model","effort","status":"ok|unavailable",
-#      "precision","recall","n","real","rejected","disputed","findings","totalTokens","seconds"}],
+#      "precision","recall","n","real","rejected","disputed","findings","totalTokens","seconds",
+#      "modelId","modelIdSource"}],
 #    "items":<merged items>, "real":<real items>, "disputed":<still disputed>, "resolved":<by Alex>}
 #   status: pass | fail (GRADED) | unavailable | invalid | denied | unresolved |
 #   ungraded | skipped | unknown — only pass/fail ever count. A candidate's null
 #   model/effort is filled at ingest from the tiers file's levels.<its level>.<vendor>
 #   (exactly what ran: agents and ext-run.sh default to that entry).
 #
+# Model ids (Wave 15; model_id in DEFS is the one resolver): `model` keeps what was
+# configured; `modelId` is the concrete version and `modelIdSource` says how it is
+# known: pinned (a concrete id was configured: tiers entry or candidate), observed
+# (the runner reported it: a triage-compare candidate with modelFrom "runner", i.e.
+# ext-run's vendor/model line), inferred-by-date (a bare alias resolved through the
+# tiers file's aliasHistory at the line's UTC date: the last entry with from <=
+# date), or both null (no model, or an alias before its first entry). A context
+# suffix like [1m] is not a version and is stripped. Lines written before Wave 15
+# have no modelId: `report` resolves them the same way at read time, and
+# backfill-modelid writes it into them. Schema stays v 1 (both keys optional).
+#
 # Rule (tuning.rule, validated by triage-tiers.sh --bakeoff-json): per level x vendor,
 # the incumbent is levels.<level>.<vendor> {model, effort}; every other (model,
-# effort) of that vendor at that level is a challenger. Cheapness: claude haiku <
-# sonnet < opus < fable; codex gpt-6-luna < gpt-6-sol < gpt-6-astra; agy flash <
-# pro; then effort low < medium < high < xhigh < max. (agy was retired 2026-09-24:
+# effort) of that vendor at that level is a challenger — all keyed by CONCRETE id
+# (modelId; a tiers alias resolves as of today). Cheapness by FAMILY, a whole token
+# of the id, so every version ranks: claude haiku < sonnet < opus < fable; codex
+# luna < sol < astra; agy flash < pro; then effort low < medium < high < xhigh <
+# max. Two versions of one family at one effort are unranked (never proposed): a
+# version upgrade is Alex's tiers edit, not a rule outcome. (agy was retired 2026-09-24:
 # it stays a known vendor here only so historical ledger rows keep validating; it
 # has no levels entry, so it is never an incumbent and never proposed.)
 #   both n >= minN, else  insufficient-data (with the graded runs still needed)
 #   CHEAPER challenger:   propose iff its Wilson 95% lower bound >= incumbent rate - cheaperTolerance
 #   PRICIER challenger:   propose iff its rate - incumbent rate >= pricierMargin
-#   same cost / unknown model: unranked, never proposed
+#   same cost / no family token: unranked, never proposed
 # One proposal per level x vendor: a qualifying pricier challenger first (highest
 # rate, then cheapest), else the cheapest qualifying cheaper one.
 #
@@ -88,27 +120,31 @@
 #             n >= minN, each Wilson 95% interval (UB - LB) is <= maxWidth, and there
 #             is no proposal for that level x vendor -> maintain.rate
 #   explore   otherwise, the reason naming every gap -> sampleRate
-# Counts are keyed by the CURRENT (vendor, model, effort) of the tiers file, so a
-# model or effort change there starts at n=0 -> explore again (no separate reset).
-# Only build lines count (review lines never do). A model swapped under an unchanged
-# alias (claude "opus") is NOT a change here: bump the tiers entry to reset.
+# Counts are keyed by the CURRENT (vendor, modelId, effort) of the tiers file, so a
+# model or effort change there starts at n=0 -> explore again (no separate reset),
+# and so does an alias that moves (a new aliasHistory entry): old versions keep
+# their counts and stay visible in `history`. Only build lines count (review lines
+# never do).
 #
-# Exit codes: 0 ok; 1 ledger write failed; 2 usage / invalid input / invalid
+# Exit codes: 0 ok; 1 ledger write failed (or it changed during a backfill); 2 usage / invalid input / invalid
 # tiers file (nothing written). bash-3.2-safe.
 set -uo pipefail
 export LC_ALL=C
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 usage() { echo "parity-report: USAGE: $1" >&2; exit 2; }
+check_since() { printf '%s' "$1" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}' || usage "--since must be an ISO date (YYYY-MM-DD...) (got '$1')"; }
 command -v jq >/dev/null 2>&1 || usage "jq is required"
 
 SUB="${1:-}"
 [ $# -gt 0 ] && shift
 RESULT="" REPO_NAME="" LEVEL="" SOURCE="" TASK="" APPLIED="" RUN="" TS="" LEDGER="" TIERS="" FROM="" RESOLVED="" JSON=0
+FMODEL="" FSINCE="" DRY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --json) JSON=1; shift; continue ;;
-    -h|--help) sed -n '2,97p' "$0"; exit 0 ;;
+    --dry-run) DRY=1; shift; continue ;;
+    -h|--help) sed -n "2,$(grep -n '^set -uo pipefail' "$0" | cut -d: -f1)p" "$0" | sed '$d'; exit 0 ;;
   esac
   [ $# -ge 2 ] || usage "$1 needs a value"
   case "$1" in
@@ -124,6 +160,8 @@ while [ $# -gt 0 ]; do
     --tiers)     TIERS="$2" ;;
     --from)      FROM="$2" ;;
     --resolved)  RESOLVED="$2" ;;
+    --model)     FMODEL="$2" ;;
+    --since)     FSINCE="$2" ;;
     *)           usage "unknown argument $1" ;;
   esac
   shift 2
@@ -149,6 +187,17 @@ case "$LEDGER" in /*) ;; *) usage "--ledger must be an absolute path (got '$LEDG
 if [ -e "$LEDGER" ] && [ "$(cd "$(dirname "$LEDGER")" && pwd -P)/$(basename "$LEDGER")" = "$(cd "$(dirname "$TIERS")" && pwd -P)/$(basename "$TIERS")" ]; then
   usage "refusing: --ledger is the tiers file"
 fi
+# aliasHistory (validated above by the same triage-tiers.sh call): resolves a bare
+# alias to the concrete id it pointed at on a date. TODAY = the date a tiers entry
+# that is still an alias is resolved at (UTC, like every ledger ts).
+AH=$(jq -c '.aliasHistory // {}' "$TIERS") || usage "could not read aliasHistory from $TIERS"
+TODAY=$(date -u +%Y-%m-%d)
+if [ -n "$FMODEL$FSINCE" ]; then
+  case "$SUB" in report|history) ;; *) usage "--model/--since filter report and history only" ;; esac
+  [ -z "$FMODEL" ] || printf '%s' "$FMODEL" | grep -Eq '^[A-Za-z0-9._+-]{1,80}$' || usage "--model must be a model id or family token (got '$FMODEL')"
+  [ -z "$FSINCE" ] || check_since "$FSINCE"
+fi
+[ "$DRY" -eq 0 ] || [ "$SUB" = backfill-modelid ] || usage "--dry-run is a backfill-modelid option"
 
 # --- shared jq definitions (the ONE copy of statuses, orders and defaults) -----
 DEFS='
@@ -156,7 +205,32 @@ def LEVELS: ["quick","builder","deep","top"];
 def VENDORS: ["claude","codex","agy"];
 def EFFORTS: ["low","medium","high","xhigh","max"];
 def BAND_LEVEL: {"1":"quick","2":"builder","3":"deep","4":"top"};
-def MODEL_ORDER: {"claude":["haiku","sonnet","opus","fable"],"codex":["gpt-6-luna","gpt-6-sol","gpt-6-astra"],"agy":["flash","pro"]};
+# FAMILY_ORDER — cheapness by model FAMILY, matched as a whole token of the id
+# (split on - . _ : + @), so every version of a family ranks: claude-opus-5 and
+# claude-opus-5-5 are both "opus". An id with no known family token is unranked.
+def FAMILY_ORDER: {"claude":["haiku","sonnet","opus","fable"],"codex":["luna","sol","astra"],"agy":["flash","pro"]};
+def id_base: sub("\\[[^\\]]*\\]$"; "");
+def id_tokens: ascii_downcase | [splits("[-._:+@]")];
+def family_rank($v): (FAMILY_ORDER[$v] // []) as $o | (if type == "string" then id_tokens else [] end) as $t
+  | [range(0; $o | length) as $k | select(($t | index($o[$k])) != null) | $k] | first // -1;
+# Model-id resolution — THE one place a configured model becomes a concrete id.
+# $ah = the tiers file aliasHistory {vendor: {alias: [{id, from}]}}. A model is an
+# alias iff it (minus a context suffix like [1m]) is a key there; it resolves to
+# the last entry whose from <= $date (null before the first one). Anything else is
+# already a concrete id (suffix stripped: [1m] is a context window, not a version).
+def is_alias($ah; $v; $m): ($m | type) == "string" and ((($ah[$v] // {})[$m | id_base]) | type) == "array";
+def alias_at($ah; $v; $m; $date): [(($ah[$v] // {})[$m | id_base] // [])[] | select(.from <= $date)] | last | if . == null then null else .id end;
+# model_id -> {modelId, modelIdSource}: pinned (a concrete id was configured),
+# observed ($obs: the runner reported it), inferred-by-date (an alias resolved by
+# $date), or both null (no model, or an alias with no entry yet on $date).
+def model_id($ah; $v; $m; $date; $obs):
+  if ($m | type) != "string" then {modelId: null, modelIdSource: null}
+  elif is_alias($ah; $v; $m) then alias_at($ah; $v; $m; $date) as $id
+    | if $id == null then {modelId: null, modelIdSource: null} else {modelId: $id, modelIdSource: "inferred-by-date"} end
+  else {modelId: ($m | id_base), modelIdSource: (if $obs then "observed" else "pinned" end)} end;
+# current_id — a TIERS entry (incumbent or challenger) as a concrete id today.
+def current_id($ah; $v; $m; $today): if is_alias($ah; $v; $m) then (alias_at($ah; $v; $m; $today) // $m) elif ($m | type) == "string" then ($m | id_base) else $m end;
+def date_of: (if type == "string" then .[0:10] else "" end);
 def safe: type == "string" and test("^[A-Za-z0-9._:+-]{1,80}$");
 def GRADED: ["pass","fail"];
 def KNOWN: ["unavailable","invalid","denied","unresolved","ungraded","skipped"];
@@ -168,16 +242,20 @@ def norm: (if type == "string" then ascii_downcase else "unknown" end) as $s
     else (if (KNOWN | index($s)) != null then $s else "unknown" end) end;
 def num_or_null: if type == "number" then . else null end;
 # cand($lvl) — one ledger candidate from a result candidate; null model/effort
-# default to the tiers entry of the level it ran at.
-def cand($levels; $lvl):
+# default to the tiers entry of the level it ran at; modelId/modelIdSource via
+# model_id at the line date $date (observed iff the result says modelFrom "runner").
+def cand($levels; $ah; $date; $lvl):
   (if (.level | type) == "string" and (.level as $x | LEVELS | index($x)) != null then .level else $lvl end) as $cl
   | ($levels[$cl][.vendor] // {}) as $def
+  | (.modelFrom == "runner" and .model != null) as $obs
   | {label, vendor,
      model: (if .model == null then ($def.model // null) else .model end),
      effort: (if .effort == null then ($def.effort // null) else .effort end),
-     status: (.status | norm), totalTokens: (.totalTokens | num_or_null), seconds: (.seconds | num_or_null)};
+     status: (.status | norm), totalTokens: (.totalTokens | num_or_null), seconds: (.seconds | num_or_null)}
+  | . + model_id($ah; .vendor; .model; $date; $obs);
 def cand_ok: (.label | safe) and ((.vendor as $x | VENDORS | index($x)) != null)
-  and (.model == null or (.model | safe)) and (.effort == null or ((.effort as $x | EFFORTS | index($x)) != null));
+  and (.model == null or (.model | safe)) and (.effort == null or ((.effort as $x | EFFORTS | index($x)) != null))
+  and (.modelId == null or (.modelId | safe));
 '
 
 now_ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
@@ -212,9 +290,9 @@ do_ingest_compare() {
   if [ -n "$TS" ]; then check_ts "$TS"; else TS=$(now_ts); fi
   jq -e 'type == "object" and (.candidates | type == "array" and length > 0)' "$RESULT" >/dev/null 2>&1 ||
     usage "--result is not a triage-compare result (no candidates array): $RESULT"
-  jq -c --argjson cfg "$CFG" --arg ts "$TS" --arg src "$SOURCE" --arg repo "$REPO_NAME" --arg lvl "$LEVEL" \
+  jq -c --argjson cfg "$CFG" --argjson ah "$AH" --arg ts "$TS" --arg src "$SOURCE" --arg repo "$REPO_NAME" --arg lvl "$LEVEL" \
      --arg task "$TASK" --arg applied "$APPLIED" --arg run "$RUN" "$DEFS"'
-    [.candidates[] | cand($cfg.levels; $lvl)] as $c
+    [.candidates[] | cand($cfg.levels; $ah; ($ts | date_of); $lvl)] as $c
     | if ($c | all(cand_ok)) | not then error("a candidate has an invalid label/vendor/model/effort")
       elif $applied != "" and ([$c[].label] | index($applied)) == null then error("--applied \($applied) is not a candidate label")
       else {v: 1, ts: $ts, source: $src, run: (if $run == "" then null else $run end), repoName: $repo, level: $lvl,
@@ -239,7 +317,7 @@ do_ingest_parity() {
     jq -nc --arg l "$LEDGER" --arg r "$run" '{step:"ingest-parity", ledger:$l, run:$r, lines:0, skipped:"run already in the ledger"}'
     return 0
   fi
-  jq -c --argjson cfg "$CFG" --arg ts "$TS" --arg run "$run" "$DEFS"'
+  jq -c --argjson cfg "$CFG" --argjson ah "$AH" --arg ts "$TS" --arg run "$run" "$DEFS"'
     (reduce .ranking[] as $r ({}; .[$r.label] = $r)) as $rank
     | .tasks[] as $t
     | (BAND_LEVEL[($t.band | tostring)]) as $lvl
@@ -249,7 +327,7 @@ do_ingest_parity() {
     | . as $row | $rank[.label] as $rk
     | ({label: ($row.runLabel // $row.label), vendor: ($row.vendor // $rk.vendor), level: $rk.level,
         model: ($row.model // $rk.model), effort: $rk.effort, status: $row.status,
-        totalTokens: $row.totalTokens, seconds: $row.seconds} | cand($cfg.levels; $rk.level)) as $c
+        totalTokens: $row.totalTokens, seconds: $row.seconds} | cand($cfg.levels; $ah; ($ts | date_of); $rk.level)) as $c
     | select(GRADED | index($c.status) != null)
     | if ($c | cand_ok) | not then error("candidate \($row.label) has an invalid label/vendor/model/effort")
       else {v: 1, ts: $ts, source: "suite", run: $run, repoName: "parity-suite", level: $lvl, band: $t.band,
@@ -287,7 +365,7 @@ do_ingest_review() {
     jq -nc --arg l "$LEDGER" --arg r "$run" '{step:"ingest-review", ledger:$l, run:$r, lines:0, skipped:"run already in the ledger"}'
     return 0
   fi
-  jq -c --argjson cfg "$CFG" --argjson res "$res" --arg ts "$TS" --arg run "$run" --arg repo "$REPO_NAME" "$DEFS"'
+  jq -c --argjson cfg "$CFG" --argjson ah "$AH" --argjson res "$res" --arg ts "$TS" --arg run "$run" --arg repo "$REPO_NAME" "$DEFS"'
     ([.items[] | if .verdict == "disputed" and $res[.id] != null
                  then .verdict = (if $res[.id] == "real" then "real" else "rejected" end) | .resolved = true else . end]) as $items
     | ([$items[] | select(.verdict == "real")] | length) as $allReal
@@ -298,6 +376,7 @@ do_ingest_review() {
            effort: (if $r.effort == null then ($def.effort // null) else $r.effort end),
            status: (if $r.status == "ok" then "ok" else "unavailable" end),
            totalTokens: ($r.tokens | num_or_null), seconds: ($r.seconds | num_or_null)}
+        | . + model_id($ah; .vendor; .model; ($ts | date_of); false)
         | if .status != "ok" then . + {precision: null, recall: null, n: 0, real: null, rejected: null, disputed: null, findings: null}
           else ([$items[] | select((.foundBy // []) | index($r.label))]) as $mine
             | ([$mine[] | select(.verdict == "real")] | length) as $real
@@ -324,7 +403,7 @@ do_migrate() {
   ledger_runs > "$TMP/runs"
   # Each legacy line -> its run id, then its ledger lines. Legacy labels are
   # <vendor>-<model token>-<effort> (parity) or <vendor>-<level> (compare).
-  jq -R -c --argjson cfg "$CFG" --slurpfile have <(jq -R -s 'split("\n") | map(select(length > 0))' "$TMP/runs") "$DEFS"'
+  jq -R -c --argjson cfg "$CFG" --argjson ah "$AH" --slurpfile have <(jq -R -s 'split("\n") | map(select(length > 0))' "$TMP/runs") "$DEFS"'
     def vendor_of: split("-")[0];
     def resolve_model($v; $tok): [$cfg.levels[][$v]? | objects | .model | strings | select(contains($tok))] | first // $tok;
     def ts_of: (.date // "1970-01-01") + "T00:00:00Z";
@@ -344,14 +423,14 @@ do_migrate() {
         | ({label: $c.label, vendor: $v, level: $lvl, model: $m, effort: $e, status: null, totalTokens: null, seconds: null}) as $base
         | ([range(0; ($b.value.pass // 0)) | "pass"] + [range(0; ($b.value.fail // 0)) | "fail"])[] as $st
         | {v: 1, ts: ($l | ts_of), source: "suite", run: $run, repoName: "parity-suite", level: $lvl, band: ($b.key[1:] | tonumber),
-           task: null, candidates: [($base | .status = $st | cand($cfg.levels; $lvl))], applied: null, migrated: "vendor-parity.jsonl"}
+           task: null, candidates: [($base | .status = $st | cand($cfg.levels; $ah; ($l | ts_of | date_of); $lvl))], applied: null, migrated: "vendor-parity.jsonl"}
       else
         {v: 1, ts: ($l | ts_of), source: "inline", run: $run,
          repoName: ((.repo // "unknown") | tostring | gsub("[^A-Za-z0-9._-]"; "_")),
          level: .level, task: null,
          candidates: [.candidates[] | (.label | tostring | split("-")) as $p
            | {label, vendor: $p[0], level: (if ($p | length) > 1 and (LEVELS | index($p[1])) != null then $p[1] else $l.level end),
-              model, effort, status, totalTokens, seconds} | cand($cfg.levels; $l.level)],
+              model, effort, status, totalTokens, seconds} | cand($cfg.levels; $ah; ($l | ts_of | date_of); $l.level)],
          applied: null, migrated: "vendor-parity.jsonl"}
       end' "$FROM" > "$TMP/lines" 2>"$TMP/err" || usage "could not migrate $FROM: $(head -c 300 "$TMP/err")"
   if jq -e -s 'any(.[]; (.candidates | all(.label != null and (.vendor as $v | ["claude","codex","agy"] | index($v)) != null)) | not)' "$TMP/lines" >/dev/null 2>&1; then
@@ -367,7 +446,44 @@ do_migrate() {
 }
 
 # ---------------------------------------------------------------------------
-# report — aggregation + THE decision rule.
+# backfill-modelid — give every ledger candidate/reviewer that has no modelId key
+# one, via model_id at its line date (never observed: nothing reported it then).
+# Idempotent (a row with the key, even null, is left alone); lines with nothing
+# to fill, and malformed lines, are kept byte-identical; line order is kept.
+do_backfill() {
+  [ -f "$LEDGER" ] || usage "the ledger does not exist: $LEDGER"
+  local before
+  before=$(cksum < "$LEDGER")
+  jq -R -c --argjson ah "$AH" "$DEFS"'
+    . as $raw
+    | (try fromjson catch null) as $o
+    | def unfilled: type == "object" and (has("modelId") | not);
+      if ($o | type) != "object" then {line: $raw, filled: []}
+      else ($o.ts | date_of) as $d
+        | [($o.candidates, $o.reviewers) | arrays | .[] | select(unfilled)
+           | model_id($ah; .vendor; .model; $d; false) | .modelIdSource // "unresolved"] as $filled
+        | if ($filled | length) == 0 then {line: $raw, filled: []}
+          else {line: ($o | with_entries(if (.key == "candidates" or .key == "reviewers") and (.value | type) == "array"
+                  then .value |= map(if unfilled then . + model_id($ah; .vendor; .model; $d; false) else . end)
+                  else . end) | tojson), filled: $filled} end
+      end' "$LEDGER" > "$TMP/bf" 2>"$TMP/err" || usage "could not read the ledger $LEDGER: $(head -c 300 "$TMP/err")"
+  jq -r '.line' "$TMP/bf" > "$TMP/new"
+  local summary
+  summary=$(jq -s -c --arg l "$LEDGER" --argjson dry "$DRY" '
+    {step: "backfill-modelid", ledger: $l, dryRun: ($dry == 1), lines: length,
+     updatedLines: ([.[] | select(.filled | length > 0)] | length),
+     filled: ([.[].filled[]] | group_by(.) | map({key: .[0], value: length}) | from_entries)}' "$TMP/bf")
+  if [ "$DRY" -eq 0 ] && [ "$(printf '%s' "$summary" | jq .updatedLines)" -gt 0 ]; then
+    [ "$(cksum < "$LEDGER")" = "$before" ] || { echo "parity-report: $LEDGER changed during the backfill — nothing written, run it again" >&2; exit 1; }
+    # Same directory, same mode (cp -p), then one rename: a reader never sees half a ledger.
+    cp -p "$LEDGER" "$LEDGER.backfill.$$" && cat "$TMP/new" > "$LEDGER.backfill.$$" && mv "$LEDGER.backfill.$$" "$LEDGER" ||
+      { rm -f "$LEDGER.backfill.$$"; echo "parity-report: could not rewrite $LEDGER" >&2; exit 1; }
+  fi
+  printf '%s\n' "$summary"
+}
+
+# ---------------------------------------------------------------------------
+# report — aggregation + THE decision rule (+ the history view).
 REPORT='
 # wilsonBound — the Wilson 95% score interval: $sgn -1 = lower, +1 = upper bound.
 def wilsonBound($s; $n; $sgn): if $n == 0 then null else
@@ -378,39 +494,55 @@ def wilson($s; $n): wilsonBound($s; $n; -1);
 def wilsonUB($s; $n): wilsonBound($s; $n; 1);
 def mean: if length == 0 then null else add / length end;
 def cheap_key($v; $m; $e):
-  ((MODEL_ORDER[$v] // []) as $o | [range(0; $o | length) as $k | select(($m // "") | contains($o[$k])) | $k] | first // -1) as $mi
-  | [$mi, (if $e == null then -1 else (EFFORTS | index($e) // -1) end)];
+  [($m | family_rank($v)), (if $e == null then -1 else (EFFORTS | index($e) // -1) end)];
 # direction — cheapness of challenger $c against incumbent $i (same vendor).
 def direction($c; $i):
-  cheap_key($c.vendor; $c.model; $c.effort) as $kc | cheap_key($i.vendor; $i.model; $i.effort) as $ki
+  cheap_key($c.vendor; $c.modelId; $c.effort) as $kc | cheap_key($i.vendor; $i.modelId; $i.effort) as $ki
   | if $kc[0] < 0 or $ki[0] < 0 then "unranked"
     elif $kc < $ki then "cheaper" elif $kc > $ki then "pricier" else "unranked" end;
 def need($n): if $n >= $minN then 0 else $minN - $n end;
+# rid — a ledger row'"'"'s concrete id: its own modelId, else resolved now from its
+# model at the line date (old lines), else the configured model itself.
+def rid($d): if (.modelId | type) == "string" then .modelId
+  else (model_id($ah; .vendor; .model; $d; false).modelId // .model) end;
+def keep_model: $fModel == "" or . == $fModel or ((. // "") | id_tokens | index($fModel | ascii_downcase)) != null;
+def keep_ts: $fSince == "" or ((. // "") | tostring) >= $fSince;
 
 ($lines | map(fromjson? | select(type == "object"))) as $objs
 | ($objs | map(select((.candidates | type) == "array" and .source != "inline-review"))) as $ok
 # Review lines are their own section: never a build row, never a proposal input.
 | ($objs | map(select(.source == "inline-review" and (.reviewers | type) == "array"))) as $rv
 | ($lines | length) as $total
-| [$ok[] | . as $l | .candidates[] | select(type == "object")
-   | {level: $l.level, vendor, model, effort, status: (.status | norm), totalTokens: (.totalTokens | num_or_null), seconds: (.seconds | num_or_null)}] as $rows
-| [$rows | group_by([.level, .vendor, .model, .effort])[]
+| [$ok[] | . as $l | select($l.ts | keep_ts) | .candidates[] | select(type == "object")
+   | {level: $l.level, vendor, model, modelId: rid($l.ts | date_of), effort, status: (.status | norm),
+      totalTokens: (.totalTokens | num_or_null), seconds: (.seconds | num_or_null), ts: $l.ts}
+   | select(.modelId | keep_model)] as $rows
+# Incumbents and configured challengers, as concrete ids (a tiers alias resolves as of today).
+| [ $levels | to_entries[] | .key as $L | .value | to_entries[] | select(.value | type == "object")
+    | {level: $L, vendor: .key, modelId: current_id($ah; .key; (.value.model // null); $today), effort: (.value.effort // null)} ] as $incs
+| [ ($challengers // {}) | to_entries[] | .key as $L | .value | to_entries[] | .key as $V | .value[]?
+    | {level: $L, vendor: $V, modelId: current_id($ah; $V; .model; $today), effort} ] as $chcfg
+| def role($g): if any($incs[]; .level == $g.level and .vendor == $g.vendor and .modelId == $g.modelId and .effort == $g.effort) then "incumbent"
+    elif any($chcfg[]; .level == $g.level and .vendor == $g.vendor and .modelId == $g.modelId and .effort == $g.effort) then "challenger"
+    else null end;
+  [$rows | group_by([.level, .vendor, .modelId, .effort])[]
    | . as $g | ([$g[] | select(.status as $x | GRADED | index($x) != null)]) as $gr
    | ($gr | length) as $n | ([$gr[] | select(.status == "pass")] | length) as $s
-   | {level: $g[0].level, vendor: $g[0].vendor, model: $g[0].model, effort: $g[0].effort,
+   | {level: $g[0].level, vendor: $g[0].vendor, modelId: $g[0].modelId, effort: $g[0].effort,
+      models: ([$g[] | .model] | unique),
       n: $n, passes: $s, rate: (if $n == 0 then null else $s / $n end), wilsonLB: wilson($s; $n), wilsonUB: wilsonUB($s; $n),
       excluded: (($g | length) - $n),
-      meanTokens: ([$g[] | .totalTokens | numbers] | mean), meanSeconds: ([$g[] | .seconds | numbers] | mean)}] as $groups
-| [ $levels | to_entries[] | .key as $L | .value | to_entries[] | select(.value | type == "object")
-    | {level: $L, vendor: .key, model: (.value.model // null), effort: (.value.effort // null)} ] as $incs
+      meanTokens: ([$g[] | .totalTokens | numbers] | mean), meanSeconds: ([$g[] | .seconds | numbers] | mean),
+      firstTs: ([$g[] | .ts | strings] | min), lastTs: ([$g[] | .ts | strings] | max)}
+   | .role = role(.)] as $groups
 | [ $incs[] as $i
-    | ([$groups[] | select(.level == $i.level and .vendor == $i.vendor and .model == $i.model and .effort == $i.effort)] | first
-       // {level: $i.level, vendor: $i.vendor, model: $i.model, effort: $i.effort, n: 0, passes: 0, rate: null, wilsonLB: null}) as $inc
-    | $groups[] | select(.level == $i.level and .vendor == $i.vendor and ((.model == $i.model and .effort == $i.effort) | not))
+    | ([$groups[] | select(.level == $i.level and .vendor == $i.vendor and .modelId == $i.modelId and .effort == $i.effort)] | first
+       // {level: $i.level, vendor: $i.vendor, modelId: $i.modelId, effort: $i.effort, n: 0, passes: 0, rate: null, wilsonLB: null}) as $inc
+    | $groups[] | select(.level == $i.level and .vendor == $i.vendor and ((.modelId == $i.modelId and .effort == $i.effort) | not))
     | . as $ch | direction($ch; $inc) as $dir
     | need($inc.n) as $ni | need($ch.n) as $nc
     | {level: $i.level, vendor: $i.vendor, incumbent: $inc, challenger: $ch, direction: $dir, needIncumbent: $ni, needChallenger: $nc}
-    | if $dir == "unranked" then .verdict = "unranked" | .why = "cheapness unknown or equal — never proposed"
+    | if $dir == "unranked" then .verdict = "unranked" | .why = "cheapness unknown or equal (no family token, or same family and effort) — never proposed"
       elif $ni > 0 or $nc > 0 then .verdict = "insufficient-data"
         | .why = "insufficient data: needs \($ni) more graded run(s) of the incumbent and \($nc) of the challenger (minN \($minN))"
       elif $dir == "cheaper" then
@@ -421,10 +553,10 @@ def need($n): if $n >= $minN then 0 else $minN - $n end;
         | .why = "pricier: rate \($ch.rate * 1000 | round / 1000) - incumbent \($inc.rate * 1000 | round / 1000) vs margin \($margin)"
       end ] as $decisions
 | [ $decisions | map(select(.verdict == "propose")) | group_by([.level, .vendor])[]
-    | (map(select(.direction == "pricier")) | sort_by([-(.challenger.rate), cheap_key(.challenger.vendor; .challenger.model; .challenger.effort)]) | first) as $up
-    | (map(select(.direction == "cheaper")) | sort_by([cheap_key(.challenger.vendor; .challenger.model; .challenger.effort), -(.challenger.wilsonLB)]) | first) as $down
+    | (map(select(.direction == "pricier")) | sort_by([-(.challenger.rate), cheap_key(.challenger.vendor; .challenger.modelId; .challenger.effort)]) | first) as $up
+    | (map(select(.direction == "cheaper")) | sort_by([cheap_key(.challenger.vendor; .challenger.modelId; .challenger.effort), -(.challenger.wilsonLB)]) | first) as $down
     | ($up // $down)
-    | {level, vendor, direction, from: {model: .incumbent.model, effort: .incumbent.effort}, to: {model: .challenger.model, effort: .challenger.effort},
+    | {level, vendor, direction, from: {model: .incumbent.modelId, effort: .incumbent.effort}, to: {model: .challenger.modelId, effort: .challenger.effort},
        incumbent: {n: .incumbent.n, rate: .incumbent.rate}, challenger: {n: .challenger.n, rate: .challenger.rate, wilsonLB: .challenger.wilsonLB}, why} ] as $proposals
 # Sampling rate per level (header: Rates) — from the same groups and proposals.
 | [ LEVELS[] as $L
@@ -434,12 +566,12 @@ def need($n): if $n >= $minN then 0 else $minN - $n end;
       else
         ([(($levels[$L] // {}) | to_entries[] | select(.value | type == "object") | .key), ($chL | keys[])] | unique) as $vs
         | [ $vs[] as $V
-            | ([(($levels[$L] // {})[$V] | objects | {model: (.model // null), effort: (.effort // null)}),
-                (($chL[$V] // [])[] | {model, effort})] | unique) as $cfgs
+            | ([($incs[] | select(.level == $L and .vendor == $V) | {modelId, effort}),
+                ($chcfg[] | select(.level == $L and .vendor == $V) | {modelId, effort})] | unique) as $cfgs
             | (($cfgs[] | . as $c
-                 | ([$groups[] | select(.level == $L and .vendor == $V and .model == $c.model and .effort == $c.effort)] | first
+                 | ([$groups[] | select(.level == $L and .vendor == $V and .modelId == $c.modelId and .effort == $c.effort)] | first
                     // {n: 0, wilsonLB: null, wilsonUB: null}) as $g
-                 | "\($V) \($c.model)@\($c.effort)" as $who
+                 | "\($V) \($c.modelId)@\($c.effort)" as $who
                  | if $g.n < $minN then "\($who) n=\($g.n) < \($minN)"
                    elif ($g.wilsonUB - $g.wilsonLB) > $maxWidth + 1e-12 then "\($who) CI width \(($g.wilsonUB - $g.wilsonLB) * 1000 | round / 1000) > \($maxWidth)"
                    else empty end),
@@ -450,18 +582,33 @@ def need($n): if $n >= $minN then 0 else $minN - $n end;
                 reason: "settled: every incumbent and challenger at n >= \($minN), Wilson 95% CI width <= \($maxWidth), no proposal"}}
           else {key: $L, value: {state: "explore", rate: $exploreRate, reason: ($gaps | join("; "))}} end
       end ] | from_entries as $rateLevels
-| [ $rv[] | .reviewers[] | select(type == "object")
-    | {vendor, model, effort, status, precision: (.precision | num_or_null), recall: (.recall | num_or_null)} ]
-  | group_by([.vendor, .model, .effort])
-  | map(. as $g | {vendor: $g[0].vendor, model: $g[0].model, effort: $g[0].effort,
+# History — per level x vendor, every modelId x effort ever graded there (old
+# versions included), with the current incumbent named even before it has data.
+| [ ([$groups[] | {level, vendor}] + [$incs[] | {level, vendor}]) | unique[] as $lv
+    | ([$incs[] | select(.level == $lv.level and .vendor == $lv.vendor)] | first) as $cur
+    | ([$groups[] | select(.level == $lv.level and .vendor == $lv.vendor)]) as $ents
+    | select(($ents | length) > 0 or ($fModel == "" and $fSince == ""))
+    | {level: $lv.level, vendor: $lv.vendor,
+       current: (if $cur == null then null else {modelId: $cur.modelId, effort: $cur.effort,
+                 seen: any($ents[]; .modelId == $cur.modelId and .effort == $cur.effort)} end),
+       entries: [$ents | sort_by([.firstTs, .modelId, .effort])[]
+         | {modelId, effort, models, n, passes, rate, wilsonLB, wilsonUB, excluded, firstTs, lastTs, role}]} ]
+  | sort_by([(.level as $x | LEVELS | index($x) // 9), .vendor]) as $history
+| [ $rv[] | . as $l | select($l.ts | keep_ts) | .reviewers[] | select(type == "object")
+    | {vendor, model, modelId: rid($l.ts | date_of), effort, status, precision: (.precision | num_or_null), recall: (.recall | num_or_null)}
+    | select(.modelId | keep_model) ]
+  | group_by([.vendor, .modelId, .effort])
+  | map(. as $g | {vendor: $g[0].vendor, modelId: $g[0].modelId, effort: $g[0].effort, models: ([$g[] | .model] | unique),
         reviews: ([$g[] | select(.status == "ok")] | length), unavailable: ([$g[] | select(.status != "ok")] | length),
         meanPrecision: ([$g[] | .precision | numbers] | mean), nPrecision: ([$g[] | .precision | numbers] | length),
         meanRecall: ([$g[] | .recall | numbers] | mean), nRecall: ([$g[] | .recall | numbers] | length)}) as $rgroups
 | {ledger: $ledger, tiers: $tiersPath, lines: $total, malformed: ($total - ($ok | length) - ($rv | length)),
+   filters: {model: (if $fModel == "" then null else $fModel end), since: (if $fSince == "" then null else $fSince end)},
    rule: {minN: $minN, cheaperTolerance: $tol, pricierMargin: $margin, confidence: "wilson95"},
    groups: $groups, decisions: $decisions, proposals: $proposals,
    sampling: {asOf: $asOf, params: {explore: $exploreRate, maintain: $maintainRate, maxWidth: $maxWidth, minN: $minN},
               levels: $rateLevels, rates: ($rateLevels | map_values(.rate))},
+   history: $history,
    reviews: {lines: ($rv | length), groups: $rgroups,
              note: "review bake-offs (source inline-review) are reported separately from build pass rates and do not drive tier proposals yet"},
    note: "proposal only: parity-report.sh never writes tiers.json; Alex approves every change"}
@@ -470,18 +617,18 @@ def need($n): if $n >= $minN then 0 else $minN - $n end;
 MARKDOWN='
 def f3: if . == null then "—" else (. * 1000 | round / 1000 | tostring) end;
 def fi: if . == null then "—" else (. | round | tostring) end;
-def me: (.model // "default") + (if .effort then " · " + .effort else "" end);
-def isinc($r; $lv): ($lv[$r.level][$r.vendor] // null) as $i | $i != null and $i.model == $r.model and ($i.effort // null) == $r.effort;
+def me: (.modelId // .model // "default") + (if .effort then " · " + .effort else "" end);
 . as $R
 | ["# Parity report", "",
    "ledger: \(.ledger) (\(.lines) line(s)\(if .malformed > 0 then ", \(.malformed) malformed skipped" else "" end)) · tiers: \(.tiers)",
    "rule: minN \(.rule.minN) · cheaper: Wilson 95% LB >= incumbent rate - \(.rule.cheaperTolerance) · pricier: rate - incumbent rate >= \(.rule.pricierMargin)",
-   "Only pass/fail count; unavailable/invalid/denied/unresolved/ungraded/skipped are excluded (Excl.)."]
+   "Only pass/fail count; unavailable/invalid/denied/unresolved/ungraded/skipped are excluded (Excl.). Rows are keyed by the concrete model id."]
+  + (if .filters.model != null or .filters.since != null then ["filters: model \(.filters.model // "any") · since \(.filters.since // "any")"] else [] end)
   + ([ "quick","builder","deep","top" ] | map(. as $L | ($R.groups | map(select(.level == $L))) as $g
       | if ($g | length) == 0 then empty else
-        ["", "## \($L)", "", "| Vendor | Model | Effort | n | Pass | Rate | Wilson LB | Excl. | Mean tokens | Mean s | |",
+        ["", "## \($L)", "", "| Vendor | Model id | Effort | n | Pass | Rate | Wilson LB | Excl. | Mean tokens | Mean s | |",
          "|---|---|---|---|---|---|---|---|---|---|---|"]
-        + ($g | sort_by([.vendor, .model, .effort]) | map("| \(.vendor) | \(.model // "—") | \(.effort // "—") | \(.n) | \(.passes) | \(.rate | f3) | \(.wilsonLB | f3) | \(.excluded) | \(.meanTokens | fi) | \(.meanSeconds | fi) | \(if isinc(.; $lv) then "incumbent" else "" end) |"))
+        + ($g | sort_by([.vendor, .modelId, .effort]) | map("| \(.vendor) | \(.modelId // "—") | \(.effort // "—") | \(.n) | \(.passes) | \(.rate | f3) | \(.wilsonLB | f3) | \(.excluded) | \(.meanTokens | fi) | \(.meanSeconds | fi) | \(if .role == "incumbent" then "incumbent" else "" end) |"))
       end) | add // [])
   + ["", "## Decisions", ""]
   + (if (.decisions | length) == 0 then ["No challenger measured against an incumbent yet."] else
@@ -496,10 +643,27 @@ def isinc($r; $lv): ($lv[$r.level][$r.vendor] // null) as $i | $i != null and $i
   + (.sampling.levels | to_entries | map("| \(.key) | \(.value.state) | \(.value.rate) | \(.value.reason) |"))
   + ["", "## Reviews (inline-review) — separate from build pass rates", ""]
   + (if (.reviews.groups | length) == 0 then ["No review bake-offs ingested yet."] else
-      ["| Vendor | Model | Effort | Reviews | Mean precision (n) | Mean recall (n) | Unavailable |", "|---|---|---|---|---|---|---|"]
-      + (.reviews.groups | sort_by([.vendor, .model, .effort]) | map("| \(.vendor) | \(.model // "—") | \(.effort // "—") | \(.reviews) | \(.meanPrecision | f3) (\(.nPrecision)) | \(.meanRecall | f3) (\(.nRecall)) | \(.unavailable) |")) end)
+      ["| Vendor | Model id | Effort | Reviews | Mean precision (n) | Mean recall (n) | Unavailable |", "|---|---|---|---|---|---|---|"]
+      + (.reviews.groups | sort_by([.vendor, .modelId, .effort]) | map("| \(.vendor) | \(.modelId // "—") | \(.effort // "—") | \(.reviews) | \(.meanPrecision | f3) (\(.nPrecision)) | \(.meanRecall | f3) (\(.nRecall)) | \(.unavailable) |")) end)
   + ["Review metrics do not drive tier proposals yet: the proposals above come from build pass rates only."]
   + ["", "Proposal only: parity-report.sh never writes tiers.json. Alex approves every change (edit config/tiers.json, make tiers, make verify)."]
+| .[]
+'
+
+HISTORY_MD='
+def f3: if . == null then "—" else (. * 1000 | round / 1000 | tostring) end;
+def d: if . == null then "—" else .[0:10] end;
+["# Parity history", "",
+ "ledger: \(.ledger) · tiers: \(.tiers)\(if .filters.model != null or .filters.since != null then " · filters: model \(.filters.model // "any"), since \(.filters.since // "any")" else "" end)",
+ "Every model id x effort ever graded at each level x vendor; old versions stay listed. Only pass/fail count."]
++ (if (.history | length) == 0 then ["", "No graded build runs match."] else
+   (.history | map(
+     ["", "## \(.level) / \(.vendor) — current: \(if .current == null then "none (no tiers entry)" else "\(.current.modelId) · \(.current.effort)\(if .current.seen then "" else " (no data yet)" end)" end)", ""]
+     + (if (.entries | length) == 0 then ["No graded runs yet."] else
+        ["| Model id | Effort | n | Pass | Rate | Wilson LB | Wilson UB | First | Last | |", "|---|---|---|---|---|---|---|---|---|---|"]
+        + (.entries | map("| \(.modelId // "—") | \(.effort // "—") | \(.n) | \(.passes) | \(.rate | f3) | \(.wilsonLB | f3) | \(.wilsonUB | f3) | \(.firstTs | d) | \(.lastTs | d) | \(if .role == "incumbent" then "current" elif .role == "challenger" then "challenger" else "" end) |"))
+       end)) | add)
+   end)
 | .[]
 '
 
@@ -507,7 +671,8 @@ compute_report() { # -> $TMP/report.json
   local lines="$TMP/ledger"
   if [ -f "$LEDGER" ]; then cp "$LEDGER" "$lines"; else : > "$lines"; fi
   jq -R -s -c 'split("\n") | map(select(test("\\S")))' "$lines" > "$TMP/lines.json"
-  jq -n -c --argjson cfg "$CFG" --slurpfile lines "$TMP/lines.json" --arg ledger "$LEDGER" --arg tiersPath "$TIERS" "$DEFS"'
+  jq -n -c --argjson cfg "$CFG" --argjson ah "$AH" --arg today "$TODAY" --arg fModel "$FMODEL" --arg fSince "$FSINCE" \
+     --slurpfile lines "$TMP/lines.json" --arg ledger "$LEDGER" --arg tiersPath "$TIERS" "$DEFS"'
     $cfg.levels as $levels | $cfg.tuning.rule.minN as $minN | $cfg.tuning.rule.cheaperTolerance as $tol
     | $cfg.tuning.rule.pricierMargin as $margin | $lines[0] as $lines
     | $cfg.tuning.challengers as $challengers | $cfg.tuning.sampleRate as $exploreRate
@@ -529,16 +694,27 @@ do_report() {
   if [ "$JSON" -eq 1 ]; then
     cat "$TMP/report.json"
   else
-    jq -r --argjson lv "$(printf '%s' "$CFG" | jq -c .levels)" "$MARKDOWN" "$TMP/report.json"
+    jq -r "$MARKDOWN" "$TMP/report.json"
+  fi
+}
+
+do_history() {
+  compute_report
+  if [ "$JSON" -eq 1 ]; then
+    jq -c '{ledger, tiers, lines, filters, history}' "$TMP/report.json"
+  else
+    jq -r "$HISTORY_MD" "$TMP/report.json"
   fi
 }
 
 case "$SUB" in
-  ingest-compare) do_ingest_compare ;;
-  ingest-parity)  do_ingest_parity ;;
-  ingest-review)  do_ingest_review ;;
-  migrate)        do_migrate ;;
-  report)         do_report ;;
-  rates)          do_rates ;;
-  *)              usage "parity-report.sh ingest-compare|ingest-parity|ingest-review|migrate|report|rates [options] (see the header)" ;;
+  ingest-compare)   do_ingest_compare ;;
+  ingest-parity)    do_ingest_parity ;;
+  ingest-review)    do_ingest_review ;;
+  migrate)          do_migrate ;;
+  backfill-modelid) do_backfill ;;
+  report)           do_report ;;
+  history)          do_history ;;
+  rates)            do_rates ;;
+  *)                usage "parity-report.sh ingest-compare|ingest-parity|ingest-review|migrate|backfill-modelid|report|history|rates [options] (see the header)" ;;
 esac
