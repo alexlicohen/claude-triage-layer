@@ -1,7 +1,7 @@
 export const meta = {
   name: 'triage-compare',
   description: 'Bake-off. kind build (default): run one brief on several candidates (Claude levels, codex), each in its own staged worktree outside the repo, then grade every worktree diff independently with patch-check.sh. kind review: the same pinned snapshot + range diff to N reviewers in parallel, merge duplicate findings, blind cross-vendor adjudication, per-reviewer precision/recall. Never applies anything; the real repo is never a candidate or reviewer workdir.',
-  whenToUse: 'Compare vendors/levels/models on the SAME well-specified task: /triage-compare with args = {repo, base?, brief, files, acceptance, checks:[cmd...], outDir, overlay?, selfCheckEnv?, candidates:[{vendor:claude|codex, level:quick|builder|deep|top, model?, effort?, label?}]} (agy was retired 2026-09-24 and is refused). repo is any absolute git repo path (not necessarily the session repo) and may be dirty: base (default HEAD) is resolved to ONE sha up front and each candidate works in its own detached worktree at that sha under <outDir>/stage (scripts/stage-worktree.sh), never in repo. outDir/overlay must be OUTSIDE repo and <outDir>/stage must not already exist. External (non-claude) candidates require args.files. Checks may name tools only as $PARITY_<NAME> variables (exported at grading by patch-check.sh from the parity env map; candidates see them unexpanded); selfCheckEnv:true copies <repo>/.parity-env into each worktree and tells candidates to source it. Candidates run one at a time (parallel:true runs them concurrently; Claude outTokens is then null); the grade is scripts/patch-check.sh on each worktree diff at the sha (plus the hidden overlay), never the candidate self-report; a leakcheck then proves repo did not change (only leak:false lets a grade stand: leak true OR unknown => every candidate invalid, graded:false; a patch patch-check could not grade, e.g. overlay-failed, is invalid). Returns sha/leak/baseMoved and per-candidate status/applies/rc/diffstat/patch/tokens/model/modelFrom (candidate|runner|null); the orchestrator picks and applies. REVIEW bake-off: args = {kind:"review", repo, repoName, base, head?, include:[globs], exclude?, context?, extras?:[{src,dest}], hardExclude?, groundTruth, accepted?, conventions?, outDir (fresh, outside repo), reviewers:[{vendor:claude|codex, level, model?, effort?, label?}] (codex needs model+effort), adjudicators? (default claude deep claude-opus-5-5·high + codex deep gpt-6-astra·high), batchSize?:10, reviewerTimeout?:"30m", adjudicatorTimeout?:"15m" (codex spawns only: passed as TIMEOUT= to the ext-run.sh watchdog), extendResult?:{the prior result OBJECT, inline}, supersedes?:[labels]}. scripts/review-stage.sh snapshots commit head (never the live tree; context/ and PROJECT_MEMORY*.md always hard-excluded) + the base..head range diff under outDir; reviewers read ONLY those (Claude: cd <snap> on every command; codex: INPUT_DIR, OS-confined); one deep agent merges duplicates (provenance kept here, anonymized); every merged item is judged by each adjudicator BLIND to reviewers and provenance: all real = real, all not-real/accepted-deviation = rejected, else disputed (for Alex). precision/recall per reviewer over non-disputed items; a failed or invalid reviewer is unavailable, never zero. Every codex prompt carries PROMPT_BYTES (the UTF-8 byte length of its prompt-file body) and the wrapper refuses a prompt file that is not verbatim. EXTEND (extendResult = the result OBJECT a prior run of this workflow returned, passed inline — the path form extend:"/file" is refused, a prior result never passes through an LLM; re-pass the args of the prior run with ONLY the new reviewers, base/head resolving to the prior shas, the prior outDir): the prior result is validated in code, then one quick task only checks that its snapshot still exists (manifest base/head = the prior shas); only the new reviewers run (labels must not collide with prior ones); the merge attaches each new finding to an existing item (provenance only, never re-adjudicated) or makes a new item (next id); only new items are adjudicated, blind, by the same panel; every non-superseded reviewer is rescored over the combined set (supersedes:[labels] keeps those prior runs as status superseded, unscored, their findings intact). Returns {kind, base, head, reviewers, items, disputed, sourceChanged, flags, markdown} (+ extendedFrom {base, head, outDir, reviewers, items}, newItems, superseded when extending); ingest with scripts/parity-report.sh ingest-review.',
+  whenToUse: 'Compare vendors/levels/models on the SAME well-specified task: /triage-compare with args = {repo, base?, brief, files, acceptance, checks:[cmd...], outDir, overlay?, selfCheckEnv?, candidates:[{vendor:claude|codex, level:quick|builder|deep|top, model?, effort?, label?}]} (agy was retired 2026-09-24 and is refused). repo is any absolute git repo path (not necessarily the session repo) and may be dirty: base (default HEAD) is resolved to ONE sha up front and each candidate works in its own detached worktree at that sha under <outDir>/stage (scripts/stage-worktree.sh), never in repo. outDir/overlay must be OUTSIDE repo and <outDir>/stage must not already exist. External (non-claude) candidates require args.files. Checks may name tools only as $PARITY_<NAME> variables (exported at grading by patch-check.sh from the parity env map; candidates see them unexpanded); selfCheckEnv:true copies <repo>/.parity-env into each CLAUDE candidate\'s worktree and tells it to source it (external candidates cannot self-check; recorded per candidate as selfCheckEnv). Several checks are graded each in its own bash -c (one check\'s || never masks another\'s failure). Candidates run one at a time (parallel:true runs them concurrently; Claude outTokens is then null); the grade is scripts/patch-check.sh on each worktree diff at the sha (plus the hidden overlay), never the candidate self-report; a leakcheck then proves repo did not change (only leak:false lets a grade stand: leak true OR unknown => every candidate invalid, graded:false; a patch patch-check could not grade, e.g. overlay-failed or a harness fault, is invalid; so is every graded candidate when the relayed PATCHCHECK line is missing, garbled or not for this sha and patch set, and a candidate whose ext-run line shows another model/effort than it asked for). Returns sha/leak/baseMoved and per-candidate status/applies/rc/diffstat/patch/tokens/model/effort/modelFrom (candidate|runner|null)/changedFiles/outOfScope (a changed path outside args.files; null without files)/captureWarnings/selfCheckEnv; check output stays in <outDir>/tails (tail names the file); the orchestrator picks and applies. REVIEW bake-off: args = {kind:"review", repo, repoName, base, head?, include:[globs], exclude?, context?, extras?:[{src,dest}], hardExclude?, groundTruth, accepted?, conventions?, outDir (fresh, outside repo), reviewers:[{vendor:claude|codex, level, model?, effort?, label?}] (codex needs model+effort), adjudicators? (default claude deep claude-opus-5-5·high + codex deep gpt-6-astra·high), batchSize?:10, reviewerTimeout?:"30m", adjudicatorTimeout?:"15m" (codex spawns only: passed as TIMEOUT= to the ext-run.sh watchdog), extendResult?:{the prior result OBJECT, inline}, supersedes?:[labels]}. scripts/review-stage.sh snapshots commit head (never the live tree; context/ and PROJECT_MEMORY*.md always hard-excluded) + the base..head range diff under outDir; reviewers read ONLY those (Claude: cd <snap> on every command; codex: INPUT_DIR, OS-confined); one deep agent merges duplicates (provenance kept here, anonymized); every merged item is judged by each adjudicator BLIND to reviewers and provenance: all real = real, all not-real/accepted-deviation = rejected, else disputed (for Alex). precision/recall per reviewer over non-disputed items; a failed or invalid reviewer is unavailable, never zero. Every codex prompt carries PROMPT_BYTES (the UTF-8 byte length of its prompt-file body) and the wrapper refuses a prompt file that is not verbatim. EXTEND (extendResult = the result OBJECT a prior run of this workflow returned, passed inline — the path form extend:"/file" is refused, a prior result never passes through an LLM; re-pass the args of the prior run with ONLY the new reviewers, base/head resolving to the prior shas, the prior outDir): the prior result is validated in code, then one quick task only checks that its snapshot still exists (manifest base/head = the prior shas); only the new reviewers run (labels must not collide with prior ones); the merge attaches each new finding to an existing item (provenance only, never re-adjudicated) or makes a new item (next id); only new items are adjudicated, blind, by the same panel; every non-superseded reviewer is rescored over the combined set (supersedes:[labels] keeps those prior runs as status superseded, unscored, their findings intact). Returns {kind, base, head, reviewers, items, disputed, sourceChanged, flags, markdown} (+ extendedFrom {base, head, outDir, reviewers, items}, newItems, superseded when extending); ingest with scripts/parity-report.sh ingest-review.',
   phases: [
     { title: 'Stage' },
     { title: 'Candidates' },
@@ -59,8 +59,18 @@ const errText = e => String((e && e.message) || e).slice(0, 200)
 // mapping), or no reply at all: the candidate produced nothing to grade.
 const producedNothing = out => out == null || /^\s*(UNAVAILABLE|REFUSED)\b/i.test(String(out).trimStart())
 // The accounting line ext-run.sh prints and triage-external relays:
-//   ext-run: <N> tokens (<S>s, <vendor>/<model>)[ out=<M>]
-const EXT_LINE = /ext-run:\s*(\d+)\s+tokens\s*\(([\d.]+)s,\s*([a-z]+)\/([^)\s]+)\)(?:\s+out=(\d+))?/
+//   ext-run: <N> tokens (<S>s, <vendor>/<model>)[ out=<M>][ effort=<E>]
+const EXT_LINE = /ext-run:\s*(\d+)\s+tokens\s*\(([\d.]+)s,\s*([a-z]+)\/([^)\s]+)\)(?:\s+out=(\d+))?(?:\s+effort=([a-z]+))?/
+const isObjV = v => !!v && typeof v === 'object' && !Array.isArray(v)
+// parseTagged(tag, s) — the ONE deterministic machine line a grading script prints
+// (`PATCHCHECK {json}` / `LEAKCHECK {json}`), relayed verbatim: the object, or null
+// when the relay returned nothing usable (missing, another line, garbled JSON).
+function parseTagged(tag, s) {
+  if (typeof s !== 'string') return null
+  const t = s.trim()
+  if (!t.startsWith(`${tag} {`)) return null
+  try { const v = JSON.parse(t.slice(tag.length + 1)); return isObjV(v) ? v : null } catch (e) { return null }
+}
 const SHA_RE = /^[0-9a-f]{40}([0-9a-f]{24})?$/
 
 if (!args || typeof args !== 'object' || Array.isArray(args)) bad(`args must be an object (got ${typeName(args)}).`)
@@ -124,7 +134,10 @@ const overlay = args.overlay ? args.overlay.trim() : null
 const stageDir = `${outDir}/stage`
 const files = (args.files || []).map(f => f.trim())
 const checks = args.checks.map(c => c.trim())
-const checkCmd = checks.join(' && ')
+// The grade command: one check as written; several each in its OWN `bash -c`, so
+// `a || b` in one check can never mask an earlier check's failure (a plain
+// ' && ' join would parse ['false', 'true || true'] as (false && true) || true).
+const checkCmd = checks.length === 1 ? checks[0] : checks.map(c => `bash -c ${shq(c)}`).join(' && ')
 // NO REAL PATHS TO CANDIDATES: a check names a tool only as $PARITY_<NAME>; the
 // prompts show it UNEXPANDED. patch-check.sh exports the mapped paths at grading.
 // A candidate can run such checks itself only when the task opted in
@@ -169,8 +182,16 @@ const selfRcOf = out => {
 }
 
 const task = `${args.brief.trim()}\n\nRelevant files: ${files.join(', ') || '(discover)'}\nAcceptance criteria: ${args.acceptance.trim()}`
+// selfCheckEnv reaches CLAUDE candidates only: ext-run.sh stages its own worktree
+// for codex and .parity-env (git-excluded) is never carried into it, so an
+// external candidate always gets the "checks run only at grading" brief. The
+// asymmetry is recorded per candidate (result.selfCheckEnv) and logged.
+const selfCheckFor = c => selfCheckEnv && c.vendor === 'claude'
 const stageCmd = `${STAGE_WT} create --repo ${shq(repo)} --base ${shq(base)} --count ${candidates.length} --dir ${shq(stageDir)}` +
-  (selfCheckEnv ? candidates.map(c => ` && cp ${shq(`${repo}/.parity-env`)} ${shq(`${c.worktree}/.parity-env`)}`).join('') : '')
+  candidates.filter(selfCheckFor).map(c => ` && cp ${shq(`${repo}/.parity-env`)} ${shq(`${c.worktree}/.parity-env`)}`).join('')
+if (selfCheckEnv && candidates.some(c => c.vendor !== 'claude')) {
+  log('⚠ selfCheckEnv applies to Claude candidates only: external candidates cannot run the $PARITY_ checks themselves (recorded per candidate as selfCheckEnv).')
+}
 const cleanupCmd = `${STAGE_WT} cleanup --repo ${shq(repo)} --dir ${shq(stageDir)}`
 
 // The real repo is never a candidate's working directory: each one is pointed at
@@ -182,7 +203,7 @@ const cleanupCmd = `${STAGE_WT} cleanup --repo ${shq(repo)} --dir ${shq(stageDir
 function claudePrompt(c, sha) {
   const cdPrefix = `cd ${c.worktree} && `
   // With a self-check env, the env is sourced in the SAME command (nothing persists).
-  const runPrefix = usesParityEnv && selfCheckEnv ? `${cdPrefix}. .parity-env && ` : cdPrefix
+  const runPrefix = usesParityEnv && selfCheckFor(c) ? `${cdPrefix}. .parity-env && ` : cdPrefix
   return `${task}\n\n` +
     `--- Bake-off protocol (you are one candidate; others get the same brief) ---\n` +
     `Your workspace is the staged git worktree ${c.worktree} (detached at ${sha}).\n` +
@@ -190,7 +211,7 @@ function claudePrompt(c, sha) {
     `Your shell's working directory is reset between commands, so a cd on its own does not stick: EVERY shell command you run MUST start with \`${cdPrefix}\` — for example \`${runPrefix}${checks[0]}\`.\n` +
     `Every file edit uses an absolute path under ${c.worktree}/.\n` +
     `The repository at ${repo} is NOT your workspace: never use a path under it, and never read from, modify, or run anything in it.\n` +
-    (usesParityEnv && !selfCheckEnv
+    (usesParityEnv && !selfCheckFor(c)
       ? 'The checks name their tools as $PARITY_ variables that are set only when your work is graded: you cannot run them here, so do not look for those tools, and end with CHECK rc=none. They are:\n'
       : (usesParityEnv ? `The checks name their tools as $PARITY_ variables. ${ENV_LINE} — in the same command, after the cd: \`${runPrefix}<check>\`.\n` : '') +
         `Run these checks, each prefixed with \`${runPrefix}\`:\n`) +
@@ -209,8 +230,7 @@ function externalPrompt(c, sha) {
     ` WORKDIR=${c.worktree}`
   return `${header}\n\n${task}\n\n` +
     `Check command (run from the workdir root): ${checkCmd}\n` +
-    (usesParityEnv ? (selfCheckEnv ? `The check names its tools as $PARITY_ variables. ${ENV_LINE}\n`
-      : 'The check names its tools as $PARITY_ variables that are set only at grading: it cannot be run in the workdir.\n') : '') +
+    (usesParityEnv ? 'The check names its tools as $PARITY_ variables that are set only at grading: it cannot be run in the workdir.\n' : '') +
     `The data boundary has been cleared by the orchestrator for this repository.\n` +
     `This is a bake-off candidate: the workdir is a throwaway checkout at ${sha}; the change is collected from it afterwards.`
 }
@@ -291,12 +311,21 @@ try {
     const claudeOut = before != null && after != null ? after - before : null
     const nothing = err != null || producedNothing(out)
     const ext = external && out ? String(out).match(EXT_LINE) : null
+    // What ext-run.sh says it RAN, against what the candidate asked for: a wrapper
+    // that dropped --model or --effort ran something else, so its grade would be
+    // credited to the wrong model/effort — invalid, never a pass or a fail.
+    const ranModel = ext ? ext[4] : null
+    const ranEffort = ext && ext[6] ? ext[6] : null
+    const mismatch = !nothing && ((c.model && ranModel && ranModel !== c.model) || (c.effort && ranEffort && ranEffort !== c.effort))
+      ? `asked ${c.model || 'default'}@${c.effort || 'default'}, ext-run ran ${ranModel || '?'}@${ranEffort || '?'}` : null
     const run = {
       c,
       available: !nothing,
       reason: err ? `spawn failed: ${err}` : out == null ? 'spawn returned nothing' : nothing ? firstLine(out).slice(0, 200) : null,
       selfRc: nothing ? null : selfRcOf(out),
-      model: c.model || (ext ? ext[4] : null),
+      mismatch,
+      model: c.model || ranModel,
+      effort: c.effort || ranEffort,
       // Claude: the output tokens this candidate cost (budget delta; null in
       // parallel mode). External: the vendor's own output count from the ext-run
       // line (null when it gave none).
@@ -311,7 +340,7 @@ try {
     // parallel() maps a thrown thunk to null; runCandidate never throws, but a
     // null is still reported as unavailable, never dropped.
     const got = await parallel(candidates.map(c => () => runCandidate(c)))
-    candidates.forEach((c, i) => runs.push(got[i] || { c, available: false, reason: 'candidate run failed', selfRc: null, model: c.model, outTokens: null, totalTokens: null, seconds: null }))
+    candidates.forEach((c, i) => runs.push(got[i] || { c, available: false, reason: 'candidate run failed', selfRc: null, mismatch: null, model: c.model, effort: c.effort, outTokens: null, totalTokens: null, seconds: null }))
   } else {
     for (const c of candidates) runs.push(await runCandidate(c))
   }
@@ -326,11 +355,21 @@ try {
   phase('Grade')
   const graded = runs.filter(r => r.available)
   const lines = graded.map(r => `${STAGE_WT} diff --worktree ${shq(r.c.worktree)} --base ${shq(sha)} --out ${shq(r.c.patch)}`)
+  // patch-check runs every check of every patch — it can outlast one Bash call's
+  // 600000 ms — so its ONE summary line goes to a file with its exit status after
+  // it, and a wait command reads it back (the relay repeats it until done).
+  // Candidate-written check output (the tails) goes to <outDir>/tails, never into
+  // the relay's reply: only the PATCHCHECK / LEAKCHECK lines are copied, verbatim.
+  const pcOut = `${outDir}/patchcheck.out`
+  const pcRc = `${outDir}/patchcheck.rc`
   if (graded.length) {
-    lines.push(`${PATCH_CHECK} --repo ${shq(repo)} --base ${shq(sha)} --check ${shq(checkCmd)}` +
-      (overlay ? ` --overlay ${shq(overlay)}` : '') + ' ' + graded.map(r => shq(r.c.patch)).join(' '))
+    lines.push(`rm -f ${shq(pcRc)}; ${PATCH_CHECK} --repo ${shq(repo)} --base ${shq(sha)} --check ${shq(checkCmd)}` +
+      (overlay ? ` --overlay ${shq(overlay)}` : '') + ` --summary --tail-dir ${shq(`${outDir}/tails`)} ` + graded.map(r => shq(r.c.patch)).join(' ') +
+      ` > ${shq(pcOut)} 2> ${shq(`${outDir}/patchcheck.err`)}; echo $? > ${shq(pcRc)}`)
+    lines.push(`for i in $(seq 1 100); do [ -s ${shq(pcRc)} ] && break; sleep 5; done; cat ${shq(pcRc)} 2>/dev/null || echo RUNNING`)
+    lines.push(`grep '^PATCHCHECK ' ${shq(pcOut)}`)
   }
-  lines.push(`${STAGE_WT} leakcheck --repo ${shq(repo)} --dir ${shq(stageDir)}`)
+  lines.push(`${STAGE_WT} leakcheck --repo ${shq(repo)} --dir ${shq(stageDir)} --line`)
   const GRADE_SCHEMA = {
     type: 'object',
     properties: {
@@ -338,45 +377,24 @@ try {
         type: 'array',
         items: {
           type: 'object',
-          properties: { worktree: { type: 'string' }, patch: { type: 'string' }, ok: { type: 'boolean' }, shortstat: { type: 'string' }, error: { type: 'string' } },
+          properties: { worktree: { type: 'string' }, patch: { type: 'string' }, ok: { type: 'boolean' }, shortstat: { type: 'string' }, error: { type: 'string' },
+            ignoredNew: { type: 'integer' }, gitlinks: { type: 'array', items: { type: 'string' } } },
           required: ['worktree', 'patch', 'ok'],
         },
       },
-      results: {
-        type: 'array',
-        items: {
-          type: 'object',
-          properties: {
-            patch: { type: 'string' },
-            applies: { type: 'boolean' },
-            rc: { type: ['integer', 'null'] },
-            diffstat: { type: 'string' },
-            tail: { type: 'string' },
-            error: { type: ['string', 'null'] },
-          },
-          required: ['patch', 'applies', 'rc', 'diffstat', 'tail'],
-        },
-      },
-      leakcheck: {
-        type: 'object',
-        properties: {
-          status: { type: 'string', enum: ['CLEAN', 'LEAK', 'BASE_MOVED', 'ERROR'] },
-          leak: { type: 'boolean' },
-          baseMoved: { type: 'boolean' },
-          rc: { type: ['integer', 'null'] },
-          detail: { type: 'string' },
-        },
-        required: ['status', 'rc'],
-      },
+      patchcheckLine: { type: 'string' },
+      leakcheckLine: { type: 'string' },
     },
-    required: ['diffs', 'results', 'leakcheck'],
+    required: ['diffs', 'patchcheckLine', 'leakcheckLine'],
   }
-  const gradePrompt = `Run these commands in order, each exactly as written, and each even if an earlier one fails. Do not run anything else, and do not interpret or fix anything.\n` +
+  const gradePrompt = `Run these commands in order, each exactly as written, each as its OWN Bash call with timeout 600000, and each even if an earlier one fails. ` +
+    'If Bash moves a command to the background, wait for it to finish before the next one (the command that prints a number or RUNNING is the wait: repeat it until it prints a number). ' +
+    `Do not run anything else, and do not interpret or fix anything.\n` +
     `${lines.join('\n')}\n\n` +
-    `Each prints JSON lines on stdout. Return them field for field: diffs = the stage-worktree diff lines, in order (${graded.length}); ` +
-    `results = patch-check's lines, one per patch, in order, including an error field whenever a line has one${graded.length ? '' : ' (none ran: [])'}; ` +
-    `leakcheck = the leakcheck line's status, leak, baseMoved and detail, plus rc = the leakcheck command's exit status (status ERROR if it printed no JSON line).`
-  const gradeOk = x => !!(x && Array.isArray(x.diffs) && Array.isArray(x.results) && x.leakcheck && typeof x.leakcheck === 'object')
+    `Return: diffs = the stage-worktree diff JSON lines, field for field, in order (${graded.length}); ` +
+    `patchcheckLine = the ONE line starting "PATCHCHECK " that the grep printed, copied verbatim (${graded.length ? '"" if none' : 'none ran: ""'}); ` +
+    'leakcheckLine = the ONE line starting "LEAKCHECK " that the leakcheck printed, copied verbatim ("" if none). Copy nothing else from any output.'
+  const gradeOk = x => !!(x && Array.isArray(x.diffs) && typeof x.patchcheckLine === 'string' && typeof x.leakcheckLine === 'string')
   for (let attempt = 1; attempt <= 2 && !gradeOk(gr); attempt++) {
     try {
       gr = await agent(gradePrompt, { phase: 'Grade', agentType: 'triage-quick-task', label: attempt === 1 ? 'grade:finalize' : 'grade:finalize#retry', schema: GRADE_SCHEMA })
@@ -393,11 +411,21 @@ try {
   await cleanupStage('Grade')
 }
 
+// leakLine() — the LEAKCHECK line, cross-checked: it must be leakcheck's, for THIS
+// run's sha, with a status its rc agrees with (LEAK ⇔ rc 7, CLEAN/BASE_MOVED ⇔ rc
+// 0). Anything else is no report (null) — leakState() then says unknown.
+function leakLine(s) {
+  const lc = parseTagged('LEAKCHECK', s)
+  if (!lc || lc.step !== 'leakcheck' || lc.sha !== sha) return null
+  const agrees = (lc.status === 'LEAK' && lc.rc === 7 && lc.leak === true) ||
+    ((lc.status === 'CLEAN' || lc.status === 'BASE_MOVED') && lc.rc === 0 && lc.leak === false)
+  return agrees ? lc : null
+}
 // leakState() — SINGLE OWNER of the leak verdict. Any sign of a leak is a leak;
 // only an explicit CLEAN/BASE_MOVED with exit 0 is clean; anything else is
 // unknown (null), never assumed clean.
 function leakState(lc) {
-  if (!lc) return { leak: null, baseMoved: null, detail: 'leakcheck did not report' }
+  if (!lc) return { leak: null, baseMoved: null, detail: 'leakcheck did not report (no well-formed LEAKCHECK line for this sha)' }
   const detail = isStr(lc.detail) ? lc.detail : null
   if (lc.leak === true || lc.rc === 7 || lc.status === 'LEAK') return { leak: true, baseMoved: lc.baseMoved === true, detail }
   if ((lc.status === 'CLEAN' || lc.status === 'BASE_MOVED') && lc.rc === 0) {
@@ -405,7 +433,7 @@ function leakState(lc) {
   }
   return { leak: null, baseMoved: lc.baseMoved === true ? true : null, detail: detail || `leakcheck status ${lc.status}, rc ${lc.rc}` }
 }
-const leakInfo = leakState(gr && gr.leakcheck)
+const leakInfo = leakState(gr && leakLine(gr.leakcheckLine))
 if (leakInfo.leak === true) log(`⚠ LEAK: the real repo changed during triage-compare — inspect before anything else${leakInfo.detail ? ` (${leakInfo.detail})` : ''}`)
 else if (leakInfo.leak == null) {
   log(`⚠ LEAK CHECK INCOMPLETE — could not confirm ${repo} is unchanged; inspect it before anything else (${leakInfo.detail}).` +
@@ -414,7 +442,21 @@ else if (leakInfo.leak == null) {
 if (leakInfo.baseMoved) log(`⚠ BASE_MOVED: HEAD of ${repo} moved during the run; every candidate was graded at ${sha}.`)
 
 const byDiff = gr ? new Map(gr.diffs.map(x => [stripSlash(String(x.worktree || '')), x])) : null
-const byPatch = gr ? new Map(gr.results.map(x => [x.patch, x])) : null
+// The PATCHCHECK line, cross-checked: graded at THIS sha, one result per graded
+// patch, in the order they were passed. Missing or garbled → pcBad: every graded
+// candidate is invalid (ungradable), never a pass or a fail.
+const gradedPatches = runs.filter(r => r.available).map(r => r.c.patch)
+const pcLine = gr && gradedPatches.length ? parseTagged('PATCHCHECK', gr.patchcheckLine) : null
+const pcBad = !gr || !gradedPatches.length ? null
+  : !pcLine ? 'no well-formed PATCHCHECK line'
+  : pcLine.base !== sha ? `PATCHCHECK graded at ${String(pcLine.base).slice(0, 12)}, not ${sha.slice(0, 12)}`
+  : !(Array.isArray(pcLine.results) && pcLine.results.length === gradedPatches.length && pcLine.results.every((x, i) => isObjV(x) && x.patch === gradedPatches[i]))
+    ? 'PATCHCHECK results do not match the graded patches' : null
+if (pcBad) log(`⚠ GRADING UNUSABLE — ${pcBad}: every graded candidate is INVALID (ungradable), not a pass or a fail.`)
+const byPatch = gr && !pcBad && pcLine ? new Map(pcLine.results.map(x => [x.patch, x])) : new Map()
+// inScope(path) — a changed path the brief's files cover (a listed file, or a
+// path under a listed directory).
+const inScope = p => files.some(f => { const s = stripSlash(f); return p === s || p.startsWith(`${s}/`) })
 
 // grade() — SINGLE OWNER of a candidate's status. pass = its worktree diff applied
 // at the sha AND the checks exited 0 in patch-check's own worktree. Nothing the
@@ -429,36 +471,57 @@ function grade(r) {
   return g
 }
 function gradeOf(r) {
-  const none = (status, tail) => ({ status, applies: null, rc: null, diffstat: null, patch: null, tail })
+  const none = (status, tail) => ({ status, applies: null, rc: null, diffstat: null, patch: null, tail, changedFiles: null, outOfScope: null, captureWarnings: null })
   if (!r.available) return none('unavailable', r.reason)
   if (!gr) return none('ungraded', 'the grader returned nothing')
   const d = byDiff.get(r.c.worktree)
   if (!d || d.ok !== true) return none('ungraded', `worktree diff failed: ${(d && d.error) || 'no diff result'}`)
+  if (pcBad) return none('invalid', `UNGRADABLE — ${pcBad}`)
   const pc = byPatch.get(r.c.patch)
   if (!pc) return none('ungraded', 'patch-check produced no result for this patch')
-  // patch-check could not grade it (error, e.g. overlay-failed: the hidden tests
-  // never ran), or relayed an applied patch with no rc: never a pass or a fail.
-  if (pc.error != null || (pc.applies === true && pc.rc == null)) {
-    return { status: 'invalid', applies: pc.applies, rc: null, diffstat: pc.diffstat, patch: r.c.patch, tail: `UNGRADABLE (${pc.error || 'applied, but no check rc'}) — ${pc.tail}` }
+  const tail = isStr(pc.tailFile) ? `(check output: ${pc.tailFile})` : null
+  // What the patch could not carry (stage-worktree.sh diff): new ignored files and
+  // nested repos recorded only as gitlinks — reported, the grade still stands.
+  const warn = [].concat(Number.isInteger(d.ignoredNew) && d.ignoredNew > 0 ? [`${d.ignoredNew} new ignored file(s) not in the patch`] : [],
+    Array.isArray(d.gitlinks) && d.gitlinks.length ? [`gitlink(s) without content: ${d.gitlinks.slice(0, 5).join(', ')}`] : [])
+  // Scope: the paths the applied patch changed vs the brief's files. Outside them →
+  // outOfScope (reported here; triage-exec never inline-applies such a patch).
+  const changed = Array.isArray(pc.files) ? pc.files.filter(isStr) : null
+  const outOfScope = !files.length || !changed ? null : (pc.filesTruncated === true || changed.some(p => !inScope(p)))
+  const base = { applies: pc.applies, diffstat: pc.diffstat, patch: r.c.patch, changedFiles: changed, outOfScope, captureWarnings: warn.length ? warn : null }
+  // A model/effort other than the one asked for ran: the grade is not this candidate's.
+  if (r.mismatch) return Object.assign(base, { status: 'invalid', rc: null, tail: `MODEL/EFFORT MISMATCH — ${r.mismatch}` })
+  // patch-check could not grade it (a non-empty error: overlay-failed = the hidden
+  // tests never ran, harness = the grader itself failed), or an applied patch came
+  // back with no rc: never a pass or a fail.
+  if (isStr(pc.error) || (pc.applies === true && pc.rc == null)) {
+    return Object.assign(base, { status: 'invalid', rc: null, tail: `UNGRADABLE (${pc.error || 'applied, but no check rc'}) ${tail || ''}`.trim() })
   }
   const status = pc.applies === true && pc.rc === 0 ? 'pass' : 'fail'
-  return { status, applies: pc.applies, rc: pc.rc, diffstat: pc.diffstat, patch: r.c.patch, tail: pc.tail }
+  return Object.assign(base, { status, rc: pc.rc, tail })
 }
 
 const results = runs.map(r => {
   const g = grade(r)
   return {
-    label: r.c.label, vendor: r.c.vendor, level: r.c.level, model: r.model, effort: r.c.effort,
+    label: r.c.label, vendor: r.c.vendor, level: r.c.level, model: r.model, effort: r.effort == null ? null : r.effort,
     // Where `model` came from: the candidate spec, the runner's own ext-run line
     // (parity-report.sh ledgers that as modelIdSource "observed"), or nowhere (null).
     modelFrom: r.c.model ? 'candidate' : r.model ? 'runner' : null,
     status: g.status, applies: g.applies, rc: g.rc, diffstat: g.diffstat,
     patch: g.patch,
+    changedFiles: g.changedFiles == null ? null : g.changedFiles, outOfScope: g.outOfScope == null ? null : g.outOfScope,
+    captureWarnings: g.captureWarnings == null ? null : g.captureWarnings,
+    selfCheckEnv: selfCheckFor(r.c),
     outTokens: r.outTokens, totalTokens: r.totalTokens, seconds: r.seconds,
     selfRc: r.selfRc,
     tail: g.tail == null ? null : String(g.tail).slice(-2000),
   }
 })
+for (const x of results) {
+  if (x.outOfScope === true) log(`⚠ ${x.label}: its patch changes paths outside the brief's files (${(x.changedFiles || []).filter(p => !inScope(p)).slice(0, 5).join(', ') || 'more than 200 paths'}) — outOfScope.`)
+  if (x.captureWarnings) log(`⚠ ${x.label}: ${x.captureWarnings.join('; ')}.`)
+}
 const tally = s => results.filter(x => x.status === s).length
 log(`Bake-off graded by patch-check at ${sha.slice(0, 12)}: ${tally('pass')} pass, ${tally('fail')} fail, ${tally('unavailable')} unavailable` +
   (tally('ungraded') ? `, ${tally('ungraded')} UNGRADED` : '') + (tally('invalid') ? `, ${tally('invalid')} INVALID` : '') +
@@ -690,12 +753,18 @@ async function runReview() {
     return p
   }
   // The ONE spawn of the extend load: a tiny check of the snapshot on disk.
+  // scopeOk: the prior snapshot was cut with exactly these include/exclude/context
+  // globs and hard excludes (review-stage.sh records the two defaults first) — an
+  // extension with a new hardExclude would otherwise hand codex a path it excludes.
   const CHECK_JQ = '(($man[0] // {})) as $m | {ok: true, resolvedBase: $rb, resolvedHead: $rh, manifestBase: $m.base, manifestHead: $m.head,' +
+    ' scopeOk: ($m.include == $inc and ($m.exclude // []) == $exc and ($m.context // []) == $ctx and ($m.hardExclude // []) == (["context/", "PROJECT_MEMORY*.md"] + $hard)),' +
     ' snapshotExists: ($snap == "yes"), snapshotOk: ($snap == "yes" and $m.base == $pb and $m.head == $ph),' +
     ' fingerprintExists: ($fp == "yes"), codexDenied: ($m.codexDenied == true),' +
     ' files: (($m.files // []) | length), extras: (($m.extras // []) | length),' +
     ' diffBytes: ($db | tonumber? // null), snapKB: ($kb | tonumber? // null)}'
   const checkCmd = p => `jq -n -c --arg pb ${shq(p.base)} --arg ph ${shq(p.head)}` +
+    ` --argjson inc ${shq(JSON.stringify(include))} --argjson exc ${shq(JSON.stringify(exclude))}` +
+    ` --argjson ctx ${shq(JSON.stringify(context))} --argjson hard ${shq(JSON.stringify(hardExclude))}` +
     ` --arg snap "$([ -d ${shq(snap)} ] && [ -f ${shq(diffPath)} ] && echo yes)"` +
     ` --arg fp "$([ -f ${shq(fpBefore)} ] && echo yes)"` +
     ` --arg rb "$(git -C ${shq(repo)} rev-parse --verify --quiet ${shq(`${base}^{commit}`)})"` +
@@ -709,7 +778,7 @@ async function runReview() {
   const CHECK_SCHEMA = {
     type: 'object',
     properties: {
-      ok: BOOL, error: STR, resolvedBase: STR, resolvedHead: STR, manifestBase: STR_N, manifestHead: STR_N,
+      ok: BOOL, error: STR, resolvedBase: STR, resolvedHead: STR, manifestBase: STR_N, manifestHead: STR_N, scopeOk: BOOL,
       snapshotExists: BOOL, snapshotOk: BOOL, fingerprintExists: BOOL, codexDenied: BOOL,
       files: INT_N, extras: INT_N, diffBytes: INT_N, snapKB: INT_N,
     },
@@ -724,6 +793,9 @@ async function runReview() {
     }
     if (!(c.snapshotExists === true && c.snapshotOk === true && c.manifestBase === p.base && c.manifestHead === p.head)) {
       return `the prior snapshot is gone or is not the prior result's (${snap}, ${diffPath} and manifest.json base/head must all match)`
+    }
+    if (c.scopeOk !== true) {
+      return 'the prior snapshot was cut with a different include/exclude/context/hardExclude than these args — an extension reuses that snapshot as is, so re-pass the prior run\'s globs (a changed scope needs a fresh review)'
     }
     return null
   }
@@ -895,7 +967,14 @@ async function runReview() {
       'Paths in your findings are relative to the snapshot root. Read only the staged files; never run git.\n' +
       'Output ONLY one JSON object {"findings": [...]} matching the schema — no other text.')
   }
-  const cleanPath = f => String(f).trim().replace(/^\.\//, '').split(`${snap}/`).join('').replace(/^\/.*\/inputs\/snap\//, '')
+  // A finding's path, relative to the snapshot root: codex may name it under its
+  // workspace (/…/inputs/snap/x, inputs/snap/x) or as snap/x. An absolute path is cut
+  // at its FIRST /snap/ (the reviewed tree may itself hold a snap/ directory).
+  const cleanPath = f => {
+    const s = String(f).trim().replace(/^\.\//, '').split(`${snap}/`).join('')
+    if (s.startsWith('/')) { const i = s.indexOf('/snap/'); return i >= 0 ? s.slice(i + 6) : s }
+    return s.replace(/^(inputs\/)?snap\//, '')
+  }
   function cleanFindings(list) {
     const ok = []
     let dropped = 0
@@ -940,9 +1019,13 @@ async function runReview() {
     } catch (e) {
       return done('unavailable', { reason: `spawn failed: ${errText(e)}` })
     }
+    // Every finding malformed (a non-empty list, none usable) is a broken reply, not
+    // a reviewer that found nothing: unavailable, never a scored zero.
+    const allMalformed = c => c.ok.length === 0 && c.dropped > 0
     if (r.vendor === 'claude') {
       if (!out || !Array.isArray(out.findings)) return done('unavailable', { reason: 'the reviewer returned no findings object' })
       const c = cleanFindings(out.findings)
+      if (allMalformed(c)) return done('unavailable', { reason: `every finding (${c.dropped}) was malformed` })
       return done('ok', { findings: c.ok, dropped: c.dropped })
     }
     if (producedNothing(out)) return done('unavailable', { reason: firstLine(out).slice(0, 200) || 'no reply' })
@@ -951,6 +1034,7 @@ async function runReview() {
     const p = parseJsonObject(out)
     if (!p || !Array.isArray(p.findings)) return done('unavailable', Object.assign({ reason: 'the reply held no valid {"findings": [...]} JSON' }, cost))
     const c = cleanFindings(p.findings)
+    if (allMalformed(c)) return done('unavailable', Object.assign({ reason: `every finding (${c.dropped}) was malformed` }, cost))
     return done('ok', Object.assign({ findings: c.ok, dropped: c.dropped }, cost))
   }
   const got = await parallel(reviewers.map(r => () => runReviewer(r)))

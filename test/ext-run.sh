@@ -310,6 +310,13 @@ case "${CODEX_STUB_MODE:-ok}" in
       if ( printf 'gitdir: /nowhere\n' > "$(dirname "$PWD")/meta/worktree.git" ) 2>/dev/null; then echo "hidden-git-write=ok"; else echo "hidden-git-write=denied"; fi
     } > "$PWD/probe.txt" 2>/dev/null
     ok_events; printf 'probed\nDONE exit=0\n' > "$last" ;;
+  buildwait)
+    # Edit, then wait (at most ~30s) for the harness's go file: a second build on
+    # the same repo runs to completion in between (H7 — overlapping runs).
+    printf 'waited\n' > "$PWD/waited.txt"
+    : > "$HOME/.codex/h7-started"
+    i=0; while [ ! -e "$HOME/.codex/h7-go" ] && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
+    ok_events; printf 'edited waited.txt\nDONE exit=0\n' > "$last" ;;
   hang) exec sleep 30 ;;
   hanggc)
     # A grandchild that IGNORES TERM, then the CLI hangs: the watchdog's TERM
@@ -539,7 +546,7 @@ chk "C1g the stdin prompt carries the Workspace footer, the staged input and the
 chk "C1g2 ...and says filesystem access is limited to the workspace" \
   'grep -qx "Your filesystem access is limited to this workspace; other paths will fail - do not search the disk." "$STUB_PROMPT"'
 chk "C1h the token line is input+output from turn.completed, tagged codex/<model>, out= the output tokens (reasoning inside)" \
-  'printf "%s" "$ERR" | grep -q "^ext-run: 130 tokens ([0-9]*s, codex/gpt-fx-read) out=30$"'
+  'printf "%s" "$ERR" | grep -q "^ext-run: 130 tokens ([0-9]*s, codex/gpt-fx-read) out=30 effort=low$"'
 chk "C1i codex's TMPDIR is its private scratch dir inside the stage" \
   'grep -q "^TMPDIR=.*/ext-run\.[^/]*/cx/tmp$" "$STUB_LOG"'
 chk "C1j a clean read-only run prints NO staging-write note" \
@@ -1045,6 +1052,34 @@ chk "B4 stdout is the model answer and the apply is reported on stderr" \
 chk "B5 the worktree is removed on exit — the caller's repo has one worktree again" \
   '[ "$(wt_count "$REPO")" -eq 1 ] && [ ! -e "$STUB_PWD" ]'
 
+# B5b (H7): two build runs on ONE repo overlap. Run A is still inside codex (its
+# worktree's .git hidden) while run B finishes; B's cleanup `git worktree prune`
+# must not delete A's admin dir (A's worktree is locked), so A still captures and
+# applies its patch.
+REPO7="$BUILD/repo7"
+new_repo "$REPO7"
+rm -f "$ROOT/.codex/h7-started" "$ROOT/.codex/h7-go"
+( AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildwait CODEX_STUB_LOG="$ROOT/.codex/h7a.log" \
+    "$EXT_RUN" build --level builder --prompt-file "$BRIEF" --workdir "$REPO7" --output "$BUILD/h7a.patch" > "$BUILD/h7a.out" 2> "$BUILD/h7a.err"
+  echo "$?" > "$BUILD/h7a.rc" ) &
+H7_PID=$!
+i=0; while [ ! -e "$ROOT/.codex/h7-started" ] && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
+# shellcheck disable=SC2034  # read inside chk's eval'd condition strings
+H7_LOCKED=$(git -C "$REPO7" worktree list --porcelain | grep -c '^locked')
+AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildedit \
+  run_ext build --level builder --prompt-file "$BRIEF" --workdir "$REPO7" --output "$BUILD/h7b.patch"
+# shellcheck disable=SC2034  # read inside chk's eval'd condition strings
+H7B_RC=$RC
+: > "$ROOT/.codex/h7-go"
+wait "$H7_PID"
+# shellcheck disable=SC2034  # read inside chk's eval'd condition strings
+H7A_RC=$(cat "$BUILD/h7a.rc" 2>/dev/null)
+chk "B5b a build worktree is LOCKED while codex runs (a parallel prune cannot remove it)" '[ "$H7_LOCKED" -ge 1 ]'
+chk "B5c two overlapping builds on one repo both succeed: the second's prune leaves the first's worktree alone" \
+  '[ -f "$ROOT/.codex/h7-started" ] && [ "$H7B_RC" -eq 0 ] && [ "$H7A_RC" = 0 ] && [ -f "$REPO7/waited.txt" ] && [ -f "$REPO7/gen.txt" ] && ! grep -q UNAVAILABLE "$BUILD/h7a.err"'
+chk "B5d ...and both worktrees are gone afterwards (unlocked, removed, pruned)" '[ "$(wt_count "$REPO7")" -eq 1 ]'
+rm -f "$ROOT/.codex/h7-started" "$ROOT/.codex/h7-go"
+
 # B6: codex makes no change at all.
 REPO2="$BUILD/repo2"
 new_repo "$REPO2"
@@ -1260,6 +1295,22 @@ AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_DENY_REPOS="codex-only" \
   run_ext build --level builder --prompt-file "$BRIEF" --workdir "$DENY/codex-only/proj"
 chk "C6d a CODEX_DENY_REPOS name refuses codex (exit 3, component match)" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "codex-only"'
+
+# C6q: deny-query — the deny rules alone (scripts/review-stage.sh asks them).
+mkdir -p "$DENY/plain/sub" "$DENY/marked-below/x"
+: > "$DENY/marked-below/x/.codex-deny"
+run_ext deny-query "$DENY/plain"
+chk "C6q deny-query on an allowed path exits 0, runs nothing, needs no attestation" '[ "$RC" -eq 0 ] && [ ! -s "$STUB_LOG" ]'
+run_ext deny-query "$DENY/clip-creator/inner"
+chk "C6q2 deny-query refuses a clip-creator path (exit 3)" '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "clip-creator"'
+CODEX_DENY_REPOS="codex-only" run_ext deny-query "$DENY/codex-only/proj"
+chk "C6q3 deny-query honors CODEX_DENY_REPOS (exit 3)" '[ "$RC" -eq 3 ]'
+run_ext deny-query "$DENY/marked-below"
+chk "C6q4 without --beneath a marker below the path is not a refusal" '[ "$RC" -eq 0 ]'
+run_ext deny-query --beneath "$DENY/marked-below"
+chk "C6q5 --beneath refuses a .codex-deny marker anywhere below (exit 3)" '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q ".codex-deny"'
+run_ext deny-query "relative/path"
+chk "C6q6 a relative path is a usage error (exit 2)" '[ "$RC" -eq 2 ]'
 
 # --- C6w: a LINKED worktree outside the repo is deny-checked via its main worktree --
 # triage-compare stages candidates in linked worktrees under an outDir outside the

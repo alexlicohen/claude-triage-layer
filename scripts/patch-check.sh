@@ -9,7 +9,8 @@
 #
 # Usage:
 #   scripts/patch-check.sh --repo DIR --base REV --check CMD [--overlay DIR]
-#                          [--timeout SECS] [--env-map FILE] PATCH...
+#                          [--timeout SECS] [--env-map FILE]
+#                          [--summary --tail-dir DIR] PATCH...
 #   scripts/patch-check.sh --print-env --check CMD [--env-map FILE]
 #
 #   --repo DIR      the git repo the candidates were built against.
@@ -29,6 +30,14 @@
 #                   check runs. A referenced variable the map lacks (or no map, or an
 #                   invalid map) is exit 2 naming it, before anything runs. A check
 #                   that references no PARITY_ variable never reads the map.
+#   --summary       print ONE line instead of one per patch:
+#                     PATCHCHECK {"base":"<sha>","results":[{patch, applies, rc,
+#                       diffstat, files, filesTruncated, tailFile[, error]}, ...]}
+#                   and write each patch's tail to --tail-dir DIR/<n>.tail (n = its
+#                   argument position) — so a relay copying the line never sees
+#                   candidate-written check output. files = the paths the applied
+#                   patch changes (at most 200, then filesTruncated:true), before
+#                   the overlay. Requires --tail-dir.
 #   --print-env     print the `export PARITY_X='...'` lines for the variables CMD
 #                   references (nothing when it references none) and exit 0 — the
 #                   same resolution, same exit 2; no --repo/--base/PATCH needed.
@@ -46,8 +55,10 @@
 #   - applies:false => rc:null, the check never ran, tail says why.
 #   - error:"overlay-failed" (applies:true, rc:null): the patch applied but the
 #     --overlay copy failed, so the hidden tests are missing and the check was NOT
-#     run — this patch is UNGRADABLE, never a pass or a fail. `error` is present
-#     only then.
+#     run — this patch is UNGRADABLE, never a pass or a fail.
+#   - error:"harness" (applies:false, rc:null): the grader itself failed (patch
+#     file missing, no temp dir, no worktree) — UNGRADABLE, never the candidate's
+#     fail. `error` is present only in these two cases.
 #   - an EMPTY patch file applies trivially (diffstat "") and the check still runs,
 #     so a candidate that changed nothing is graded, not skipped.
 #   - `git apply --binary` first, `git apply --3way` as the fallback (needs the
@@ -64,14 +75,14 @@ set -uo pipefail
 # every `git -C` below at another repository — -C does not override it.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_NAMESPACE GIT_CEILING_DIRECTORIES
 
-REPO="" BASE="" CHECK="" OVERLAY="" TIMEOUT=600 ENV_MAP="" PRINT_ENV=0
+REPO="" BASE="" CHECK="" OVERLAY="" TIMEOUT=600 ENV_MAP="" PRINT_ENV=0 SUMMARY=0 TAIL_DIR=""
 usage() { echo "USAGE: $1" >&2; exit 2; }
 
 # A value-taking flag with no value is a usage error — never a `shift 2` that
 # fails without shifting and loops forever.
 while [ $# -gt 0 ]; do
   case "$1" in
-    --repo|--base|--check|--overlay|--timeout|--env-map) [ $# -ge 2 ] || usage "$1 needs a value" ;;
+    --repo|--base|--check|--overlay|--timeout|--env-map|--tail-dir) [ $# -ge 2 ] || usage "$1 needs a value" ;;
   esac
   case "$1" in
     --repo)    REPO="$2"; shift 2 ;;
@@ -80,6 +91,8 @@ while [ $# -gt 0 ]; do
     --overlay) OVERLAY="$2"; shift 2 ;;
     --timeout) TIMEOUT="$2"; shift 2 ;;
     --env-map) ENV_MAP="$2"; shift 2 ;;
+    --tail-dir) TAIL_DIR="$2"; shift 2 ;;
+    --summary) SUMMARY=1; shift ;;
     --print-env) PRINT_ENV=1; shift ;;
     --)        shift; break ;;
     -*)        usage "unknown flag $1" ;;
@@ -125,6 +138,11 @@ git -C "$REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1 || usage "--repo 
 REPO=$(git -C "$REPO" rev-parse --show-toplevel)
 BASE_SHA=$(git -C "$REPO" rev-parse --verify --quiet "$BASE^{commit}") || usage "--base does not name a commit in $REPO: $BASE"
 if [ -n "$OVERLAY" ] && [ ! -d "$OVERLAY" ]; then usage "--overlay is not a directory: $OVERLAY"; fi
+if [ "$SUMMARY" -eq 1 ]; then
+  [ -n "$TAIL_DIR" ] || usage "--summary needs --tail-dir"
+  case "$TAIL_DIR" in /*) ;; *) usage "--tail-dir must be an absolute path" ;; esac
+  mkdir -p "$TAIL_DIR" || usage "could not create --tail-dir $TAIL_DIR"
+fi
 
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/patch-check.XXXXXX") || usage "could not create a temp dir"
 ROOT=$(cd "$ROOT" && pwd -P)
@@ -148,7 +166,22 @@ on_exit() { if [ -n "$RUN_PID" ]; then reap_tree "$RUN_PID"; RUN_PID=""; fi; cle
 trap on_exit EXIT
 trap 'exit 130' INT TERM
 
+# emit — one result. Per-patch mode prints it; --summary keeps it (tail moved to
+# $TAIL_DIR/<n>.tail) for the single PATCHCHECK line printed at the end. $FILES
+# is the changed-path list of the patch just applied (empty when none).
+SUMMARY_LINES="$ROOT/summary.jsonl"
+: > "$SUMMARY_LINES"
+FILES=""
 emit() { # $1 patch, $2 applies(true|false), $3 rc(int|null), $4 diffstat, $5 tail file, [$6 error]
+  if [ "$SUMMARY" -eq 1 ]; then
+    cp "$5" "$TAIL_DIR/$n.tail" 2>/dev/null || : > "$TAIL_DIR/$n.tail"
+    printf '%s' "$FILES" | jq -R -s -c --arg patch "$1" --argjson applies "$2" --argjson rc "$3" --arg diffstat "$4" \
+      --arg tf "$TAIL_DIR/$n.tail" --arg error "${6:-}" \
+      'split("\u0001") | map(select(length > 0)) as $f
+       | {patch:$patch, applies:$applies, rc:$rc, diffstat:$diffstat, files:($f[:200]), filesTruncated:(($f | length) > 200), tailFile:$tf}
+         + (if $error == "" then {} else {error:$error} end)' >> "$SUMMARY_LINES"
+    return
+  fi
   jq -nc --arg patch "$1" --argjson applies "$2" --argjson rc "$3" --arg diffstat "$4" \
     --rawfile tail "$5" --arg error "${6:-}" \
     '{patch:$patch, applies:$applies, rc:$rc, diffstat:$diffstat, tail:($tail | rtrimstr("\n"))}
@@ -221,19 +254,22 @@ for patch in "$@"; do
   n=$((n + 1))
   log="$ROOT/$n.log"
   : > "$log"
+  FILES=""
   case "$patch" in /*) abs="$patch" ;; *) abs="$PWD/$patch" ;; esac
+  # Harness faults (no patch file, no temp dir, no worktree) are the grader's,
+  # never the candidate's: error "harness", ungradable.
   if [ ! -f "$abs" ]; then
     echo "patch-check: patch file not found: $patch" > "$log"
-    emit "$patch" false null "" "$log"; continue
+    emit "$patch" false null "" "$log" harness; continue
   fi
 
   WT="$ROOT/wt-$n"
   CACHE="$ROOT/cache-$n"
-  mkdir -p "$CACHE" || { echo "patch-check: could not create $CACHE" > "$log"; CACHE=""; WT=""; emit "$patch" false null "" "$log"; continue; }
+  mkdir -p "$CACHE" || { echo "patch-check: could not create $CACHE" > "$log"; CACHE=""; WT=""; emit "$patch" false null "" "$log" harness; continue; }
   # Hooks off: a post-checkout hook must not run (or write) on the grader's behalf.
   if ! git -C "$REPO" -c core.hooksPath=/dev/null worktree add --detach "$WT" "$BASE_SHA" > "$log" 2>&1; then
     { echo "patch-check: could not create a worktree at $BASE"; } >> "$log"
-    WT=""; cleanup_wt; emit "$patch" false null "" "$log"; continue
+    WT=""; cleanup_wt; emit "$patch" false null "" "$log" harness; continue
   fi
 
   applies=true diffstat=""
@@ -245,6 +281,7 @@ for patch in "$@"; do
     if [ "$applies" = true ]; then
       git -C "$WT" add -A > /dev/null 2>&1
       diffstat=$(git -C "$WT" diff --cached --shortstat "$BASE_SHA" 2>/dev/null | sed 's/^ *//')
+      FILES=$(git -C "$WT" -c core.quotePath=false diff --cached --name-only -z --no-renames "$BASE_SHA" 2>/dev/null | tr '\000' '\001')
     fi
   fi
   if [ "$applies" = false ]; then
@@ -265,4 +302,7 @@ for patch in "$@"; do
   emit "$patch" true "$RC" "$diffstat" "$log.tail"
   cleanup_wt
 done
+if [ "$SUMMARY" -eq 1 ]; then
+  jq -s -c --arg base "$BASE_SHA" '{base:$base, results:.}' "$SUMMARY_LINES" | sed 's/^/PATCHCHECK /'
+fi
 exit 0

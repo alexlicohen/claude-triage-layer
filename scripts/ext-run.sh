@@ -13,6 +13,12 @@
 #
 # Usage:
 #   scripts/ext-run.sh <mode> --prompt-file FILE [options]
+#   scripts/ext-run.sh deny-query [--beneath] PATH...
+#
+# deny-query runs ONLY the codex deny check (deny_check, and with --beneath also
+# deny_beneath_check) on each PATH and exits 0 (allowed) or 3 (REFUSED, reason on
+# stderr); nothing is staged or run. It is how scripts/review-stage.sh carries a
+# codex deny over to a snapshot without keeping a copy of these rules.
 #
 # Modes (mode picks the tiers entry + CLI flags + write policy):
 #   review    cross-vendor review of a diff / prompt / rubric        read-only
@@ -252,7 +258,12 @@ cleanup() {
   # The worktree goes first and unconditionally: it is registered in the real
   # repo's .git, so leaving it behind would litter the caller's repo, and
   # AGY_STAGE_KEEP must not be able to defeat that.
+  # It is unlocked first (see the worktree add below: the lock is what keeps a
+  # parallel run's `worktree prune` from deleting this run's admin dir while its
+  # .git is hidden); the prune after it can then only remove THIS run's entry —
+  # every other run's is still locked.
   if [ -n "$BUILD_WT" ] && [ -n "$BUILD_REPO" ]; then
+    git -C "$BUILD_REPO" worktree unlock "$BUILD_WT" >/dev/null 2>&1
     git -C "$BUILD_REPO" worktree remove --force "$BUILD_WT" >/dev/null 2>&1 || rm -rf "$BUILD_WT"
     git -C "$BUILD_REPO" worktree prune >/dev/null 2>&1
   fi
@@ -386,6 +397,18 @@ resolve_path() { # $1 = path -> absolute physical path
 
 deny_names() { echo "$HARD_DENY_REPOS $CODEX_DENY_REPOS"; }
 
+# deny_beneath_check PATH WHAT — exits E_REFUSED when a deny-listed repo or a
+# .$VENDOR-deny marker lies anywhere beneath the directory PATH (WHAT names the
+# flag in the message). Shared by --allow-read, --input-dir and deny-query.
+deny_beneath_check() {
+  local hit name
+  [ -d "$1" ] || return 0
+  set -- "$1" "$2" -name ".$VENDOR-deny"
+  for name in $(deny_names); do set -- "$@" -o -name "$name"; done
+  hit=$(find "$1" \( "${@:3}" \) -print -quit 2>/dev/null)
+  [ -z "$hit" ] || die "REFUSED: $2 $1 contains $hit — a deny-listed repo or a .$VENDOR-deny marker lies beneath it." "$E_REFUSED"
+}
+
 deny_check_path() { # $1 = one path, $2 = optional context for the message. exits E_REFUSED on a hit.
   local p d name marker why
   p=$(resolve_path "$1")
@@ -447,7 +470,7 @@ deny_check() { # $1 = path. exits E_REFUSED on a hit.
 # $HOME, or an ancestor of it) nor contain a deny-listed repo or a .codex-deny
 # marker anywhere beneath it. Exits E_REFUSED on a hit; prints the resolved path.
 allow_read_check() { # $1 = path as given
-  local real hit name
+  local real
   real=$(resolve_path "$1")
   [ -e "$real" ] || die "USAGE: --allow-read path not found: $1" "$E_USAGE"
   case "$real" in *"
@@ -459,12 +482,7 @@ allow_read_check() { # $1 = path as given
   case "$HOME_P/" in
     "$real"/*) die "REFUSED: --allow-read $real is an ancestor of \$HOME ($HOME_P) — it would re-open every repo in it." "$E_REFUSED" ;;
   esac
-  if [ -d "$real" ]; then
-    set -- -name ".$VENDOR-deny"
-    for name in $(deny_names); do set -- "$@" -o -name "$name"; done
-    hit=$(find "$real" \( "$@" \) -print -quit 2>/dev/null)
-    [ -z "$hit" ] || die "REFUSED: --allow-read $real contains $hit — a deny-listed repo or a .$VENDOR-deny marker lies beneath it." "$E_REFUSED"
-  fi
+  deny_beneath_check "$real" --allow-read
   printf '%s\n' "$real"
 }
 
@@ -475,7 +493,7 @@ allow_read_check() { # $1 = path as given
 # Special files and trees over the size cap are usage errors. Exits on a hit;
 # prints the resolved dir.
 input_dir_check() { # $1 = dir as given
-  local real hit name l t kb
+  local real hit l t kb
   real=$(resolve_path "$1")
   [ -d "$real" ] || die "USAGE: --input-dir is not a directory: $1" "$E_USAGE"
   case "$real" in *"
@@ -487,10 +505,7 @@ input_dir_check() { # $1 = dir as given
   case "$HOME_P/" in
     "$real"/*) die "REFUSED: --input-dir $real is an ancestor of \$HOME ($HOME_P)." "$E_REFUSED" ;;
   esac
-  set -- -name ".$VENDOR-deny"
-  for name in $(deny_names); do set -- "$@" -o -name "$name"; done
-  hit=$(find "$real" \( "$@" \) -print -quit 2>/dev/null)
-  [ -z "$hit" ] || die "REFUSED: --input-dir $real contains $hit — a deny-listed repo or a .$VENDOR-deny marker lies beneath it." "$E_REFUSED"
+  deny_beneath_check "$real" --input-dir
   while IFS= read -r -d '' l; do
     t=$(resolve_path "$l")
     case "$t/" in
@@ -527,6 +542,20 @@ resolve_bin() {
 # Args
 # ---------------------------------------------------------------------------
 [ $# -ge 1 ] || die "USAGE: ext-run.sh <review|read|verify|critique|fuzz|build> --prompt-file FILE [--vendor codex] [options]" "$E_USAGE"
+# deny-query: the deny rules alone, for scripts/review-stage.sh (see the header).
+if [ "$1" = deny-query ]; then
+  shift
+  VENDOR="codex"
+  DQ_BENEATH=0
+  if [ "${1:-}" = --beneath ]; then DQ_BENEATH=1; shift; fi
+  [ $# -ge 1 ] || die "USAGE: ext-run.sh deny-query [--beneath] PATH..." "$E_USAGE"
+  for dq in "$@"; do
+    case "$dq" in /*) ;; *) die "USAGE: deny-query needs absolute paths (got '$dq')" "$E_USAGE" ;; esac
+    deny_check "$dq"
+    [ "$DQ_BENEATH" -eq 0 ] || deny_beneath_check "$(resolve_path "$dq")" deny-query
+  done
+  exit 0
+fi
 MODE="$1"; shift
 is_mode "$MODE" || die "USAGE: unknown mode '$MODE' (review|read|verify|critique|fuzz|build)" "$E_USAGE"
 
@@ -756,7 +785,12 @@ CX="$STAGE_ABS/cx"
 # Build staging worktree. codex is pointed at $BUILD_WT, never at $BUILD_REPO.
 # ---------------------------------------------------------------------------
 if mode_writes "$MODE"; then
-  if ! git -C "$BUILD_REPO" worktree add --detach "$STAGE/build" HEAD >"$STAGE/meta/worktree.log" 2>&1; then
+  # --lock: while codex runs, this worktree's .git is hidden (see below), so to
+  # `git worktree prune` — run by any parallel ext-run, patch-check or
+  # stage-worktree cleanup on the same repo — it looks gone, and an unlocked entry
+  # would be pruned mid-run (the patch capture then dies UNAVAILABLE). Locked
+  # entries are never pruned; cleanup unlocks it before removing it.
+  if ! git -C "$BUILD_REPO" worktree add --lock --detach "$STAGE/build" HEAD >"$STAGE/meta/worktree.log" 2>&1; then
     echo "UNAVAILABLE: could not create the disposable build worktree — $(head -c 400 "$STAGE/meta/worktree.log")" >&2
     exit "$E_UNAVAIL"
   fi
@@ -1413,13 +1447,15 @@ fi
 
 # Accounting: vendor spend is invisible to scripts/triage-usage.sh, so the token
 # count goes to stderr where the caller can relay it:
-#   ext-run: <N> tokens (<S>s, codex/<model>) out=<M>
+#   ext-run: <N> tokens (<S>s, codex/<model>) out=<M> effort=<E>
+# effort = the reasoning effort the run was given (so a caller can see a dropped
+# --effort; triage-compare marks a model/effort mismatch invalid).
 # N = input + output summed over turn.completed events, out = output_tokens
 # (reasoning_output_tokens is already inside output_tokens — codex's own
 # total_tokens is input + output). out= is the part a bake-off compares.
 TOKENS=$(jq -R 'fromjson? | select(type == "object" and .type == "turn.completed") | ((.usage.input_tokens // 0) + (.usage.output_tokens // 0))' "$EVENTS" 2>/dev/null | jq -s 'add // 0')
 OUT_TOKENS=$(jq -R 'fromjson? | select(type == "object" and .type == "turn.completed") | (.usage.output_tokens // 0)' "$EVENTS" 2>/dev/null | jq -s 'add // 0')
-echo "ext-run: ${TOKENS:-0} tokens (${ELAPSED}s, codex/$MODEL) out=${OUT_TOKENS:-0}" >&2
+echo "ext-run: ${TOKENS:-0} tokens (${ELAPSED}s, codex/$MODEL) out=${OUT_TOKENS:-0} effort=$EFFORT" >&2
 
 if [ "$RAW" -eq 1 ]; then
   cat "$EVENTS"
