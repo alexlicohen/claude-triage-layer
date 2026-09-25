@@ -79,7 +79,15 @@ done
 # 87-90 cover model-version tracking (Wave 15) in parity-report.sh: grouping by
 # the concrete modelId, the inferred-by-date boundary (from <= date), family-based
 # cheapness (a new codex version still ranks) and backfill-modelid's idempotence.
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90"
+# 91-109 cover Wave 16A (bake-off / grading correctness, danger floor): an empty
+# diff never the passing choice, no out-of-scope inline apply, an unknown leak state
+# withheld, the same-repo guard, a failed apply never run in place, effort on a level
+# climb, an external rejection's Claude fallback, the weekly-unknown pause, the
+# danger family floor; per-check bash -c, the PATCHCHECK sha cross-check, the
+# model/effort mismatch, the extend scope check; the locked build worktree; the
+# **/ hard-exclude variants and the fail-closed deny carry-over; apply
+# --require-clean, the measured treeModified and the ignored-path fingerprint.
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -132,6 +140,11 @@ mut_file() {
     29) echo "workflows/triage-exec.js" ;;
     75|76|77|78|79|80|81|85|86) echo "workflows/triage-exec.js" ;;
     82|83|84|87|88|89|90) echo "scripts/parity-report.sh" ;;
+    91|92|93|94|95|96|97|98|99) echo "workflows/triage-exec.js" ;;
+    100|101|102|103) echo "workflows/triage-compare.js" ;;
+    104) echo "scripts/ext-run.sh" ;;
+    105|106) echo "scripts/review-stage.sh" ;;
+    107|108|109) echo "scripts/stage-worktree.sh" ;;
     31) echo "workflows/triage-compare.js" ;;
     32) echo "scripts/patch-check.sh" ;;
     33) echo "install.sh" ;;
@@ -252,6 +265,25 @@ mut_desc() {
     88) echo "parity-report.sh: the alias-history boundary is exclusive (from < date), so a line on an entry's own from date resolves to the previous version" ;;
     89) echo "parity-report.sh: the codex cheapness order is back to version-bound ids (gpt-6-*), so any other codex version is unranked" ;;
     90) echo "parity-report.sh: backfill-modelid refills rows that already have a modelId (an observed id is overwritten; a second run rewrites the ledger)" ;;
+    91) echo "triage-exec.js (bake-off): an EMPTY diff counts as the passing choice (a no-op 'pass' beats a challenger's real patch)" ;;
+    92) echo "triage-exec.js (bake-off): a patch that changes paths outside the subtask's files is inline-applied" ;;
+    93) echo "triage-exec.js (bake-off): an unknown leak state runs the subtask in place on an unchecked tree" ;;
+    94) echo "triage-exec.js (bake-off): args.bakeoff.repo is never compared with the session repo (the patch lands in one tree, checks run in another)" ;;
+    95) echo "triage-exec.js (bake-off): any failed apply counts as nothing written (a 3-way that left conflict markers is run in place on)" ;;
+    96) echo "triage-exec.js: an ESCALATE level climb carries the lower rung's plan effort (builder@low -> deep@low)" ;;
+    97) echo "triage-exec.js: a rejected external spawn escapes the same-level Claude fallback (the subtask is dropped)" ;;
+    98) echo "triage-exec.js (bake-off): a missing weeklyPct samples as if usage were known to be low" ;;
+    99) echo "triage-exec.js (bake-off): the danger floor by model family is not applied to challengers (danger work graded against sonnet / codex sol)" ;;
+    100) echo "triage-compare.js: checks are joined with a bare ' && ' again (['false', 'true || true'] grades as a pass)" ;;
+    101) echo "triage-compare.js: a PATCHCHECK line graded at another sha is accepted" ;;
+    102) echo "triage-compare.js: a model/effort other than the candidate asked for (ext-run line) is graded and credited" ;;
+    103) echo "triage-compare.js (review extend): the prior snapshot's include/exclude/context/hardExclude are not checked" ;;
+    104) echo "ext-run.sh: the build worktree is not locked, so a parallel run's git worktree prune deletes it mid-run" ;;
+    105) echo "review-stage.sh: no **/ variants — '**/secrets' misses a top-level secrets/, 'a/**/b' misses a/b" ;;
+    106) echo "review-stage.sh: a missing ext-run.sh lets the snapshot go to codex (the deny carry-over fails open)" ;;
+    107) echo "stage-worktree.sh: apply --require-clean is ignored (a patch lands on top of uncommitted work)" ;;
+    108) echo "stage-worktree.sh: a failed apply write is assumed to have left the tree untouched (treeModified false)" ;;
+    109) echo "stage-worktree.sh: ignored paths are left out of the leak fingerprint (a cache/build-output write is CLEAN)" ;;
     74) echo "triage-compare.js (review): a codex reviewer/adjudicator is spawned without TIMEOUT (ext-run's 5m read default kills a large review)" ;;
     *) echo "" ;;
   esac
@@ -266,15 +298,15 @@ mut_desc() {
 mut_suite() {
   case "$1" in
     1|2|3|4|5|6|10|12|18|19|20|21|33) echo "roundtrip" ;;
-    7|8|9|11|16|17|22|23|28|29|75|76|77|78|79|80|81|85|86) echo "scenarios" ;;
-    15|24|25|26|40|49|50|51|56|57|58|59|60|61|62|70|71) echo "extrun" ;;
-    31|34|36|37|38|47|68|69|72|73|74) echo "compare" ;;
+    7|8|9|11|16|17|22|23|28|29|75|76|77|78|79|80|81|85|86|91|92|93|94|95|96|97|98|99) echo "scenarios" ;;
+    15|24|25|26|40|49|50|51|56|57|58|59|60|61|62|70|71|104) echo "extrun" ;;
+    31|34|36|37|38|47|68|69|72|73|74|100|101|102|103) echo "compare" ;;
     32|48|63|66) echo "patchcheck" ;;
-    39|55) echo "stagewt" ;;
+    39|55|107|108|109) echo "stagewt" ;;
     41|42|46|64|65) echo "parity" ;;
     44|45) echo "paritysuite" ;;
     43|52|53|54|82|83|84|87|88|89|90) echo "parityreport" ;;
-    67) echo "reviewstage" ;;
+    67|105|106) echo "reviewstage" ;;
     *) echo "" ;;
   esac
 }
@@ -644,7 +676,7 @@ MUT37
       cat > "$rep" <<'MUT38'
 const leakInfo = { leak: false, baseMoved: false, detail: null } // MUTATED: leakcheck result ignored
 MUT38
-      mut_replace_block "$target" 'const leakInfo = leakState(gr && gr.leakcheck)' 1 "$rep"
+      mut_replace_block "$target" 'const leakInfo = leakState(gr && leakLine(gr.leakcheckLine))' 1 "$rep"
       ;;
     39)
       # stage-worktree.sh: `git add -u` stages modifications and deletions only, so
@@ -942,7 +974,7 @@ MUT74
       cat > "$rep" <<'MUT75'
 const bakeoffPaused = false // MUTATED: weekly pause ignored
 MUT75
-      mut_replace_block "$target" 'const bakeoffPaused = !!bo && bo.weeklyPct != null && bo.weeklyPct >= bo.tuning.pauseAtWeeklyPct' 1 "$rep"
+      mut_replace_block "$target" 'const bakeoffPaused = !!bo && (weeklyUnknown || bo.weeklyPct >= bo.tuning.pauseAtWeeklyPct)' 1 "$rep"
       ;;
     76)
       # triage-exec.js: bakeoffPick() loses its sample threshold.
@@ -956,7 +988,7 @@ MUT76
       cat > "$rep" <<'MUT77'
   // MUTATED: challenger fallback dropped
 MUT77
-      mut_replace_block "$target" "  if (ch.status === 'pass') return { apply: 'challenger', cand: ch, planned: p }" 1 "$rep"
+      mut_replace_block "$target" "  if (ch.status === 'pass' && realDiff(ch)) return { apply: 'challenger', cand: ch, planned: p }" 1 "$rep"
       ;;
     78)
       # triage-exec.js: runBakeoff() no longer treats leak:true as an abort.
@@ -975,9 +1007,9 @@ MUT79
     80)
       # triage-exec.js: bakeoffPick()'s challenger pool drops the codex danger floor.
       cat > "$rep" <<'MUT80'
-      true) // MUTATED: danger floor on challengers dropped
+      true && // MUTATED: danger floor on challengers dropped
 MUT80
-      mut_replace_block "$target" "      !(st.danger && v === 'codex' && !meetsCodexDangerFloor(st.level, c.effort)))" 1 "$rep"
+      mut_replace_block "$target" "      !(st.danger && v === 'codex' && !meetsCodexDangerFloor(st.level, c.effort)) &&" 1 "$rep"
       ;;
     81)
       # triage-exec.js: report() adds the bake-off fields unconditionally.
@@ -1049,6 +1081,139 @@ MUT89
 MUT90
       mut_replace_block "$target" '    | def unfilled: type == "object" and (has("modelId") | not);' 1 "$rep"
       ;;
+    91)
+      # triage-exec.js (H8): an empty diff counts as the passing choice again.
+      cat > "$rep" <<'MUT91'
+const realDiff = c => c.outOfScope !== true // MUTATED: empty diff counts
+MUT91
+      mut_replace_block "$target" 'const realDiff = c => isStr(c.diffstat) && c.outOfScope !== true' 1 "$rep"
+      ;;
+    92)
+      # triage-exec.js (M10): an out-of-scope patch is inline-applied.
+      cat > "$rep" <<'MUT92'
+const realDiff = c => isStr(c.diffstat) // MUTATED: out-of-scope patch applied
+MUT92
+      mut_replace_block "$target" 'const realDiff = c => isStr(c.diffstat) && c.outOfScope !== true' 1 "$rep"
+      ;;
+    93)
+      # triage-exec.js (M1): an unknown leak state runs the subtask in place again.
+      cat > "$rep" <<'MUT93'
+  if (res.leak !== false) { rec.outcome = 'in-place'; return { inPlace: true } } // MUTATED: unknown leak runs in place
+MUT93
+      mut_replace_block "$target" "  if (res.leak !== false) { noExt(); return withhold(" 1 "$rep"
+      ;;
+    94)
+      # triage-exec.js (M2): bakeoff.repo is never compared with the session repo.
+      cat > "$rep" <<'MUT94'
+  if (false) { // MUTATED: repo mismatch ignored
+MUT94
+      mut_replace_block "$target" '  if (!isStr(dirty.sessionTop) || !isStr(dirty.repoTop) || stripSlash(dirty.sessionTop) !== stripSlash(dirty.repoTop)) {' 1 "$rep"
+      ;;
+    95)
+      # triage-exec.js (M4): any failed apply counts as "nothing written" → in place.
+      cat > "$rep" <<'MUT95'
+    const untouched = !!ap // MUTATED: failed apply runs in place
+MUT95
+      mut_replace_block "$target" '    const untouched = !!ap && ap.applied === false && ap.treeModified === false && [0, 1, 6].includes(ap.rc)' 1 "$rep"
+      ;;
+    96)
+      # triage-exec.js (M6): an ESCALATE level climb carries the lower rung's plan effort.
+      cat > "$rep" <<'MUT96'
+  return { level: up, vendor, effort: r.subtask.effort, reason: 'reviewer returned ESCALATE' } // MUTATED: climb keeps plan effort
+MUT96
+      mut_replace_block "$target" "  return { level: up, vendor, effort: up === r.level ? r.subtask.effort : null, reason: 'reviewer returned ESCALATE' }" 1 "$rep"
+      ;;
+    97)
+      # triage-exec.js (codex#12): a rejected external spawn escapes the Claude fallback.
+      cat > "$rep" <<'MUT97'
+      throw e // MUTATED: external rejection escapes the fallback
+MUT97
+      mut_replace_block "$target" '      if (budgeted && budget.remaining() <= 0) throw e' 1 "$rep"
+      ;;
+    98)
+      # triage-exec.js: a missing weeklyPct no longer pauses sampling.
+      cat > "$rep" <<'MUT98'
+const bakeoffPaused = !!bo && bo.weeklyPct != null && bo.weeklyPct >= bo.tuning.pauseAtWeeklyPct // MUTATED: unknown weekly samples
+MUT98
+      mut_replace_block "$target" 'const bakeoffPaused = !!bo && (weeklyUnknown || bo.weeklyPct >= bo.tuning.pauseAtWeeklyPct)' 1 "$rep"
+      ;;
+    99)
+      # triage-exec.js: the danger floor by model family is not applied to challengers.
+      cat > "$rep" <<'MUT99'
+      true) // MUTATED: danger family floor dropped
+MUT99
+      mut_replace_block "$target" '      !(st.danger && !meetsDangerFloor(v, c.model)))' 1 "$rep"
+      ;;
+    100)
+      # triage-compare.js (codex#10): checks joined with a bare ' && ' again.
+      cat > "$rep" <<'MUT100'
+const checkCmd = checks.join(' && ') // MUTATED: checks joined unguarded
+MUT100
+      mut_replace_block "$target" "const checkCmd = checks.length === 1 ? checks[0] : checks.map(c => \`bash -c \${shq(c)}\`).join(' && ')" 1 "$rep"
+      ;;
+    101)
+      # triage-compare.js (H5): a PATCHCHECK line from another sha is accepted.
+      cat > "$rep" <<'MUT101'
+  : false ? '' // MUTATED: PATCHCHECK sha not cross-checked
+MUT101
+      mut_replace_block "$target" '  : pcLine.base !== sha ? `PATCHCHECK graded at' 1 "$rep"
+      ;;
+    102)
+      # triage-compare.js (M12): what ext-run ran is never compared with what was asked.
+      cat > "$rep" <<'MUT102'
+    const mismatch = null // MUTATED: model/effort mismatch ignored
+MUT102
+      mut_replace_block "$target" '    const mismatch = !nothing && ((c.model && ranModel && ranModel !== c.model)' 2 "$rep"
+      ;;
+    103)
+      # triage-compare.js (M13): an extension ignores the prior snapshot's scope.
+      cat > "$rep" <<'MUT103'
+    if (false) { // MUTATED: extend scope unchecked
+MUT103
+      mut_replace_block "$target" '    if (c.scopeOk !== true) {' 1 "$rep"
+      ;;
+    104)
+      # ext-run.sh (H7): the build worktree is not locked (a parallel prune removes it).
+      cat > "$rep" <<'MUT104'
+  if ! git -C "$BUILD_REPO" worktree add --detach "$STAGE/build" HEAD >"$STAGE/meta/worktree.log" 2>&1; then # MUTATED: build worktree unlocked
+MUT104
+      mut_replace_block "$target" '  if ! git -C "$BUILD_REPO" worktree add --lock --detach "$STAGE/build" HEAD' 1 "$rep"
+      ;;
+    105)
+      # review-stage.sh (H6): no **/ variants — **/x misses a top-level x, a/**/b misses a/b.
+      cat > "$rep" <<'MUT105'
+    : # MUTATED: no glob variants
+MUT105
+      mut_replace_block "$target" "    case \"\$v\" in '**/'?*)" 2 "$rep"
+      ;;
+    106)
+      # review-stage.sh (M14): no ext-run.sh to ask → codex allowed (fail open).
+      cat > "$rep" <<'MUT106'
+  [ -x "$EXT_RUN" ] || return 1 # MUTATED: missing ext-run allows codex
+MUT106
+      mut_replace_block "$target" '  [ -x "$EXT_RUN" ] || {' 1 "$rep"
+      ;;
+    107)
+      # stage-worktree.sh (M3): apply --require-clean is ignored.
+      cat > "$rep" <<'MUT107'
+  if false; then # MUTATED: require-clean ignored
+MUT107
+      mut_replace_block "$target" '  if [ "$REQUIRE_CLEAN" -eq 1 ]; then' 1 "$rep"
+      ;;
+    108)
+      # stage-worktree.sh (M4): a failed write is assumed to have left the tree untouched.
+      cat > "$rep" <<'MUT108'
+  modified() { echo false; } # MUTATED: failed write assumed untouched
+MUT108
+      mut_replace_block "$target" '  modified() { paths_state' 1 "$rep"
+      ;;
+    109)
+      # stage-worktree.sh (H4): ignored paths are left out of the leak fingerprint.
+      cat > "$rep" <<'MUT109'
+  : > "$out.ign" # MUTATED: ignored paths not fingerprinted
+MUT109
+      mut_replace_block "$target" '  ignored_snapshot "$r" "$out.ign" || return 1' 1 "$rep"
+      ;;
     *)
       return 1
       ;;
@@ -1097,7 +1262,7 @@ verify_mutation() {
     34) ! grep -qF 'args.outDir must not be inside args.repo' "$target" ;;
     36) ! grep -qF "if (candidates.some(c => c.vendor !== 'claude') && files.length === 0) {" "$target" ;;
     37) grep -qF 'MUTATED: real repo as WORKDIR' "$target" && ! grep -qF '` WORKDIR=${c.worktree}`' "$target" ;;
-    38) grep -qF 'MUTATED: leakcheck result ignored' "$target" && ! grep -qF 'const leakInfo = leakState(gr && gr.leakcheck)' "$target" ;;
+    38) grep -qF 'MUTATED: leakcheck result ignored' "$target" && ! grep -qF 'const leakInfo = leakState(gr && leakLine(gr.leakcheckLine))' "$target" ;;
     39) grep -qF 'MUTATED: untracked files omitted' "$target" && ! grep -qF 'git -C "$WT" add -A' "$target" ;;
     40) grep -qF 'MUTATED: common-dir deny check dropped' "$target" && ! grep -qF 'deny_check_path "$main"' "$target" ;;
     41) grep -qF 'MUTATED: unavailable counted as fail' "$target" && ! grep -qF "pb.other++" "$target" ;;
@@ -1150,6 +1315,25 @@ verify_mutation() {
     88) grep -qF 'MUTATED: alias boundary exclusive' "$target" && ! grep -qF 'select(.from <= $date)' "$target" ;;
     89) grep -qF 'MUTATED: version-bound cheapness order' "$target" && ! grep -qF '"codex":["luna","sol","astra"]' "$target" ;;
     90) grep -qF 'MUTATED: backfill refills filled rows' "$target" && ! grep -qF 'def unfilled: type == "object" and (has("modelId") | not);' "$target" ;;
+    91) grep -qF 'MUTATED: empty diff counts' "$target" && ! grep -qF 'const realDiff = c => isStr(c.diffstat) && c.outOfScope !== true' "$target" ;;
+    92) grep -qF 'MUTATED: out-of-scope patch applied' "$target" && ! grep -qF 'const realDiff = c => isStr(c.diffstat) && c.outOfScope !== true' "$target" ;;
+    93) grep -qF 'MUTATED: unknown leak runs in place' "$target" && ! grep -qF "if (res.leak !== false) { noExt(); return withhold(" "$target" ;;
+    94) grep -qF 'MUTATED: repo mismatch ignored' "$target" && ! grep -qF 'stripSlash(dirty.sessionTop) !== stripSlash(dirty.repoTop)' "$target" ;;
+    95) grep -qF 'MUTATED: failed apply runs in place' "$target" && ! grep -qF 'ap.treeModified === false && [0, 1, 6].includes(ap.rc)' "$target" ;;
+    96) grep -qF 'MUTATED: climb keeps plan effort' "$target" && ! grep -qF 'effort: up === r.level ? r.subtask.effort : null' "$target" ;;
+    97) grep -qF 'MUTATED: external rejection escapes the fallback' "$target" && ! grep -qF 'if (budgeted && budget.remaining() <= 0) throw e' "$target" ;;
+    98) grep -qF 'MUTATED: unknown weekly samples' "$target" && ! grep -qF '(weeklyUnknown || bo.weeklyPct >= bo.tuning.pauseAtWeeklyPct)' "$target" ;;
+    99) grep -qF 'MUTATED: danger family floor dropped' "$target" && ! grep -qF '!(st.danger && !meetsDangerFloor(v, c.model))' "$target" ;;
+    100) grep -qF 'MUTATED: checks joined unguarded' "$target" && ! grep -qF 'checks.map(c => `bash -c ${shq(c)}`)' "$target" ;;
+    101) grep -qF 'MUTATED: PATCHCHECK sha not cross-checked' "$target" && ! grep -qF ': pcLine.base !== sha ?' "$target" ;;
+    102) grep -qF 'MUTATED: model/effort mismatch ignored' "$target" && ! grep -qF 'ranModel !== c.model' "$target" ;;
+    103) grep -qF 'MUTATED: extend scope unchecked' "$target" && ! grep -qF 'if (c.scopeOk !== true) {' "$target" ;;
+    104) grep -qF 'MUTATED: build worktree unlocked' "$target" && ! grep -qF 'worktree add --lock' "$target" ;;
+    105) grep -qF 'MUTATED: no glob variants' "$target" && ! grep -qF "case \"\$v\" in '**/'?*)" "$target" ;;
+    106) grep -qF 'MUTATED: missing ext-run allows codex' "$target" && ! grep -qF 'is missing — marking the snapshot off-limits to codex' "$target" ;;
+    107) grep -qF 'MUTATED: require-clean ignored' "$target" && ! grep -qF 'if [ "$REQUIRE_CLEAN" -eq 1 ]; then' "$target" ;;
+    108) grep -qF 'MUTATED: failed write assumed untouched' "$target" && ! grep -qF 'modified() { paths_state' "$target" ;;
+    109) grep -qF 'MUTATED: ignored paths not fingerprinted' "$target" && ! grep -qF 'ignored_snapshot "$r" "$out.ign" || return 1' "$target" ;;
     *) return 1 ;;
   esac
 }

@@ -48,16 +48,32 @@ const STAGED = (prompt, over = {}) => {
   return Object.assign({ sha: SHA, worktrees: Array.from({ length: n }, (_, i) => `${dir}/wt-${i + 1}`), fingerprint: `${dir}/fingerprint` }, over)
 }
 // The grade reply, built from the grade prompt itself: one diff line per
-// `stage-worktree.sh diff` command (ok unless the label is in opts.badDiff), one
-// patch-check line per {label: [applies, rc, error?]}, and the leakcheck line.
-const FIN = (rows, { leak = 'CLEAN', rc, badDiff = [], leakField, baseMoved } = {}) => prompt => {
+// `stage-worktree.sh diff` command (ok unless the label is in opts.badDiff), the
+// PATCHCHECK line — one result per patch patch-check was given, in that order, for
+// each label in {label: [applies, rc, error?, files?]} (a label left out makes the
+// line not match the graded patches) — and the LEAKCHECK line. opts: base (the sha
+// patch-check reports), pcLine / lkLine (a raw line instead), diffExtra {label: {…}}.
+const FIN = (rows, { leak = 'CLEAN', rc, badDiff = [], leakField, baseMoved, base = SHA, pcLine, lkLine, diffExtra = {}, lkSha = SHA } = {}) => prompt => {
   const diffs = [...prompt.matchAll(/diff --worktree '([^']+)' --base '[^']+' --out '([^']+)'/g)].map(m => {
     const label = m[2].replace(/^.*\//, '').replace(/\.patch$/, '')
-    return badDiff.includes(label) ? { worktree: m[1], patch: m[2], ok: false, error: 'worktree does not exist' } : { worktree: m[1], patch: m[2], ok: true, shortstat: '' }
+    return badDiff.includes(label) ? { worktree: m[1], patch: m[2], ok: false, error: 'worktree does not exist' }
+      : Object.assign({ worktree: m[1], patch: m[2], ok: true, shortstat: '', ignoredNew: 0, gitlinks: [] }, diffExtra[label] || {})
   })
-  const results = Object.entries(rows).map(([label, [applies, rc2, error]]) => Object.assign({ patch: `/o/out/${label}.patch`, applies, rc: rc2, diffstat: applies ? '1 file changed, 1 insertion(+)' : '', tail: `tail-${label}` }, error ? { error } : {}))
-  const leakcheck = { status: leak, leak: leakField != null ? leakField : leak === 'LEAK', baseMoved: baseMoved != null ? baseMoved : leak === 'BASE_MOVED', rc: rc != null ? rc : leak === 'LEAK' ? 7 : 0, detail: `${leak}: detail` }
-  return { diffs, results, leakcheck }
+  const pcCmd = (prompt.match(/patch-check\.sh [^\n]*/) || [''])[0]
+  const given = [...pcCmd.replace(/ > '.*$/, '').matchAll(/'(\/o\/out\/[^']+\.patch)'/g)].map(m => m[1])
+  const results = given.map((p, i) => {
+    const label = p.replace(/^.*\//, '').replace(/\.patch$/, '')
+    if (!(label in rows)) return null
+    const [applies, rc2, error, fl] = rows[label]
+    return Object.assign({ patch: p, applies, rc: rc2, diffstat: applies ? '1 file changed, 1 insertion(+)' : '', files: fl || (applies ? ['calc.txt'] : []), filesTruncated: false,
+      tailFile: `/o/out/tails/${i + 1}.tail` }, error != null ? { error } : {})
+  }).filter(Boolean)
+  const patchcheckLine = pcLine != null ? pcLine : given.length ? `PATCHCHECK ${JSON.stringify({ base, results })}` : ''
+  const status = leak
+  const lk = { step: 'leakcheck', status, leak: leakField != null ? leakField : leak === 'LEAK', baseMoved: baseMoved != null ? baseMoved : leak === 'BASE_MOVED',
+    sha: lkSha, headBefore: SHA, headAfter: SHA, paths: [], detail: `${leak}: detail`, rc: rc != null ? rc : leak === 'LEAK' ? 7 : 0 }
+  const leakcheckLine = lkLine != null ? lkLine : `LEAKCHECK ${JSON.stringify(lk)}`
+  return { diffs, patchcheckLine, leakcheckLine }
 }
 const CLEANED = { ok: true, rc: 0 }
 
@@ -253,7 +269,7 @@ const repoAsWorkdir = p => /(^|\s)cd\s+'?\/r\/repo'?(\s|$|\/)/.test(p) || /WORKD
     cand.every(c => c.opts.agentType === 'triage-external' && !('isolation' in c.opts) && !('model' in c.opts) && !('effort' in c.opts)))
   chk('C4: the external brief states the data boundary is cleared and carries files, acceptance and the joined check command',
     cand[0].prompt.includes('The data boundary has been cleared by the orchestrator') && cand[0].prompt.includes('Relevant files: calc.txt') &&
-    cand[0].prompt.includes('Acceptance criteria: calc passes') && cand[0].prompt.includes('Check command (run from the workdir root): make test && npm t'))
+    cand[0].prompt.includes('Acceptance criteria: calc passes') && cand[0].prompt.includes("Check command (run from the workdir root): bash -c 'make test' && bash -c 'npm t'"))
 }
 
 // ---- C5: unavailable is never fail ------------------------------------------
@@ -311,7 +327,7 @@ const repoAsWorkdir = p => /(^|\s)cd\s+'?\/r\/repo'?(\s|$|\/)/.test(p) || /WORKD
   chk('C6: self-reported rc 1 but patch-check rc 0 → pass', byLabel(result, 'modest').status === 'pass' && byLabel(result, 'modest').rc === 0)
   chk('C6: a diff that does not apply at the sha → fail, whatever the candidate said', byLabel(result, 'noapply').status === 'fail' && byLabel(result, 'noapply').applies === false)
   chk('C6: the self-report is kept as selfRc (CHECK rc=, else DONE exit=), informational', byLabel(result, 'liar').selfRc === 0 && byLabel(result, 'modest').selfRc === 1)
-  chk('C6: diffstat and tail come from patch-check', byLabel(result, 'liar').diffstat === '1 file changed, 1 insertion(+)' && byLabel(result, 'liar').tail === 'tail-liar')
+  chk('C6: diffstat and tail come from patch-check', byLabel(result, 'liar').diffstat === '1 file changed, 1 insertion(+)' && byLabel(result, 'liar').tail === '(check output: /o/out/tails/1.tail)')
 }
 
 // ---- C7: never an apply step; the grade command is exact ---------------------
@@ -322,16 +338,24 @@ const repoAsWorkdir = p => /(^|\s)cd\s+'?\/r\/repo'?(\s|$|\/)/.test(p) || /WORKD
     ] }),
     { 'candidate:a': ['done'], 'candidate:b': [EXT_OK('codex', 'gpt-6-sol')], 'grade:': [FIN({ a: [true, 0], b: [true, 0] })] })
   const grade = calls.filter(c => c.label.startsWith('grade:'))
-  chk('C7: exactly one grade spawn, on triage-quick-task, with a diffs/results/leakcheck schema',
-    grade.length === 1 && grade[0].opts.agentType === 'triage-quick-task' && ['diffs', 'results', 'leakcheck'].every(k => grade[0].opts.schema.required.includes(k)))
+  chk('C7: exactly one grade spawn, on triage-quick-task, with a diffs/patchcheckLine/leakcheckLine schema',
+    grade.length === 1 && grade[0].opts.agentType === 'triage-quick-task' && ['diffs', 'patchcheckLine', 'leakcheckLine'].every(k => grade[0].opts.schema.required.includes(k)))
   const S = '~/.claude/scripts/stage-worktree.sh'
   const lines = grade[0].prompt.split('\n')
   const iA = lines.indexOf(`${S} diff --worktree '${STAGE}/wt-1' --base '${SHA}' --out '/o/out/a.patch'`)
   const iB = lines.indexOf(`${S} diff --worktree '${STAGE}/wt-2' --base '${SHA}' --out '/o/out/b.patch'`)
-  const iPC = lines.indexOf(`~/.claude/scripts/patch-check.sh --repo '${REPO}' --base '${SHA}' --check 'grep -q '\\''ok'\\'' calc.txt && make test' --overlay '/h/hidden' '/o/out/a.patch' '/o/out/b.patch'`)
-  const iLC = lines.indexOf(`${S} leakcheck --repo '${REPO}' --dir '${STAGE}'`)
-  chk('C7: in order — a diff of each candidate worktree at the sha, patch-check at the SHA (never HEAD) with the quoted checks, overlay and every patch, then leakcheck',
-    iA >= 0 && iB > iA && iPC > iB && iLC > iPC)
+  const shqT = x => `'${String(x).replace(/'/g, `'\\''`)}'`
+  const wantCheck = shqT(`bash -c ${shqT("grep -q 'ok' calc.txt")} && bash -c ${shqT('make test')}`)
+  const iPC = lines.indexOf(`rm -f '/o/out/patchcheck.rc'; ~/.claude/scripts/patch-check.sh --repo '${REPO}' --base '${SHA}' --check ${wantCheck} --overlay '/h/hidden' --summary --tail-dir '/o/out/tails' '/o/out/a.patch' '/o/out/b.patch' > '/o/out/patchcheck.out' 2> '/o/out/patchcheck.err'; echo $? > '/o/out/patchcheck.rc'`)
+  const iW = lines.indexOf(`for i in $(seq 1 100); do [ -s '/o/out/patchcheck.rc' ] && break; sleep 5; done; cat '/o/out/patchcheck.rc' 2>/dev/null || echo RUNNING`)
+  const iG = lines.indexOf(`grep '^PATCHCHECK ' '/o/out/patchcheck.out'`)
+  const iLC = lines.indexOf(`${S} leakcheck --repo '${REPO}' --dir '${STAGE}' --line`)
+  chk('C7: in order — a diff of each candidate worktree at the sha, patch-check at the SHA (never HEAD) with the quoted checks, overlay, --summary and every patch into a file, the wait, the grep, then leakcheck --line',
+    iA >= 0 && iB > iA && iPC > iB && iW > iPC && iG > iW && iLC > iG)
+  chk('C7: M8 — the grader is told the 600000 ms Bash timeout and to wait out a backgrounded command',
+    grade[0].prompt.includes('timeout 600000') && grade[0].prompt.includes('moves a command to the background'))
+  chk('C7: H5 — the grader copies only the PATCHCHECK / LEAKCHECK lines, verbatim', /PATCHCHECK[^\n]*verbatim/.test(grade[0].prompt) && /LEAKCHECK[^\n]*verbatim/.test(grade[0].prompt) &&
+    grade[0].prompt.includes('Copy nothing else'))
   chk('C7: the grade spawn never runs cleanup (it stays idempotent and retryable)', !grade[0].prompt.includes(' cleanup '))
   chk('C7: no spawn is ever asked to apply, am, stash or commit into the repo',
     calls.every(c => !/git (apply|am|stash|commit|merge|cherry-pick)\b/.test(c.prompt)))
@@ -408,7 +432,7 @@ const repoAsWorkdir = p => /(^|\s)cd\s+'?\/r\/repo'?(\s|$|\/)/.test(p) || /WORKD
     grade.prompt.includes("'/o/out/nochange.patch'") && byLabel(result, 'nochange').status === 'fail' && byLabel(result, 'nochange').rc === 1)
   const { result: r2 } = await run(
     A({ candidates: [{ vendor: 'claude', level: 'builder', label: 'a' }, { vendor: 'claude', level: 'deep', label: 'b' }] }),
-    { 'candidate:': ['done'], 'grade:': [FIN({ b: [true, 0] }, { badDiff: ['a'] })] })
+    { 'candidate:': ['done'], 'grade:': [FIN({ a: [false, null, 'harness'], b: [true, 0] }, { badDiff: ['a'] })] })
   chk('C11: a failed worktree diff is ungraded (never pass/fail), the others still grade',
     byLabel(r2, 'a').status === 'ungraded' && /worktree diff failed/.test(byLabel(r2, 'a').tail) && byLabel(r2, 'a').patch === null && byLabel(r2, 'b').status === 'pass' && r2.graded === false)
 }
@@ -426,7 +450,7 @@ const repoAsWorkdir = p => /(^|\s)cd\s+'?\/r\/repo'?(\s|$|\/)/.test(p) || /WORKD
   const { result: r2 } = await run(
     A({ candidates: [{ vendor: 'claude', level: 'builder', label: 'a' }] }),
     { 'candidate:': ['done'], 'grade:': [FIN({ a: [true, 0] }, { leak: 'CLEAN', rc: 7, leakField: false })] })
-  chk('C12: exit 7 alone is a leak, whatever the relayed status says', r2.leak === true && byLabel(r2, 'a').status === 'invalid')
+  chk('C12: a LEAKCHECK line whose status and rc disagree (CLEAN, rc 7) is UNKNOWN — never clean; every grade void', r2.leak === null && byLabel(r2, 'a').status === 'invalid')
   const { result: r3, logs: l3 } = await run(
     A({ candidates: [{ vendor: 'claude', level: 'builder', label: 'a' }] }),
     { 'candidate:': ['done'], 'grade:': [FIN({ a: [true, 0] }, { leak: 'ERROR', rc: 2, leakField: false })] })
@@ -436,7 +460,7 @@ const repoAsWorkdir = p => /(^|\s)cd\s+'?\/r\/repo'?(\s|$|\/)/.test(p) || /WORKD
     l3.some(l => l.startsWith('⚠ LEAK CHECK INCOMPLETE') && l.includes('Every candidate is INVALID')))
   const { result: r4 } = await run(
     A({ candidates: [{ vendor: 'claude', level: 'builder', label: 'a' }, { vendor: 'codex', level: 'builder', label: 'u' }] }),
-    { 'candidate:a': ['done'], 'candidate:u': ['UNAVAILABLE: x'], 'grade:': [FIN({ a: [true, 0] }, { leak: 'CLEAN', rc: 0, leakField: false })].map(f => p => Object.assign(f(p), { leakcheck: { rc: 0 } })) })
+    { 'candidate:a': ['done'], 'candidate:u': ['UNAVAILABLE: x'], 'grade:': [FIN({ a: [true, 0] }, { lkLine: 'LEAKCHECK {"step":"leakcheck","rc":0}' })] })
   chk('C12: a leakcheck line with no status (relayed badly) is UNKNOWN too — every candidate, unavailable included, is invalid',
     r4.leak === null && r4.candidates.every(c => c.status === 'invalid') && r4.graded === false)
   chk('C12: a LEAK also leaves graded:false (no grade stands)', result.graded === false)
@@ -561,13 +585,16 @@ const repoAsWorkdir = p => /(^|\s)cd\s+'?\/r\/repo'?(\s|$|\/)/.test(p) || /WORKD
   const opt = await run(A({ checks: [PCHECK], selfCheckEnv: true, candidates: cs }),
     { 'candidate:a': ['done'], 'candidate:x': [EXT_OK('codex', 'gpt-6-sol')], 'grade:': [FIN({})] })
   const [ca, cx] = cands(opt.calls)
-  chk('C19: the checks reach every candidate prompt with $PARITY_ UNEXPANDED, plus the one self-check line',
-    [ca, cx].every(c => c.prompt.includes(PCHECK) && c.prompt.includes('To run the checks yourself, first run: . .parity-env')))
+  chk('C19: the checks reach every candidate prompt with $PARITY_ UNEXPANDED; the self-check line reaches the CLAUDE candidate only (M11)',
+    [ca, cx].every(c => c.prompt.includes(PCHECK)) && ca.prompt.includes('To run the checks yourself, first run: . .parity-env') &&
+    !cx.prompt.includes('.parity-env') && cx.prompt.includes('set only at grading'))
+  chk('C19: M11 — the asymmetry is recorded per candidate and logged',
+    byLabel(opt.result, 'a').selfCheckEnv === true && byLabel(opt.result, 'x').selfCheckEnv === false && opt.logs.some(l => l.includes('selfCheckEnv applies to Claude candidates only')))
   chk('C19: the Claude candidate sources it in the SAME command, after its cd prefix',
     ca.prompt.includes(`\`cd ${STAGE}/wt-1 && . .parity-env && ${PCHECK}\``))
   const st = opt.calls.find(c => c.label === 'stage:create')
-  chk('C19: selfCheckEnv: the stage command copies <repo>/.parity-env into EACH staged worktree (never the other way)',
-    st && [1, 2].every(i => st.prompt.includes(`cp '${REPO}/.parity-env' '${STAGE}/wt-${i}/.parity-env'`)))
+  chk('C19: selfCheckEnv: the stage command copies <repo>/.parity-env into each CLAUDE candidate\'s staged worktree only (never the other way)',
+    st && st.prompt.includes(`cp '${REPO}/.parity-env' '${STAGE}/wt-1/.parity-env'`) && !st.prompt.includes(`'${STAGE}/wt-2/.parity-env'`))
   const no = await run(A({ checks: [PCHECK], candidates: cs }),
     { 'candidate:a': ['done'], 'candidate:x': [EXT_OK('codex', 'gpt-6-sol')], 'grade:': [FIN({})] })
   const [na, nx] = cands(no.calls)
@@ -578,6 +605,108 @@ const repoAsWorkdir = p => /(^|\s)cd\s+'?\/r\/repo'?(\s|$|\/)/.test(p) || /WORKD
   chk('C19: checks with no $PARITY_ variable get no env line at all', !cands(plain.calls)[0].prompt.includes('PARITY_'))
   const r = await throws(A({ selfCheckEnv: 'yes', candidates: [{ vendor: 'claude', level: 'builder' }] }))
   chk('C19: a non-boolean selfCheckEnv throws before any spawn', r.threw && r.calls.length === 0 && /args\.selfCheckEnv/.test(r.message))
+}
+
+// ---- C20 (codex#10): several checks are each their own `bash -c` — an `a || b`
+// check cannot mask an earlier failure; one check is passed as written.
+{
+  const { calls } = await run(A({ checks: ['false', 'true || true'], candidates: [{ vendor: 'codex', level: 'builder', label: 'x' }] }),
+    { 'candidate:': [EXT_OK('codex', 'm')], 'grade:': [FIN({ x: [true, 1] })] })
+  const line = cands(calls)[0].prompt.split('\n').find(l => l.startsWith('Check command (run from the workdir root): '))
+  const cmd = line.slice('Check command (run from the workdir root): '.length)
+  let rc = 0
+  try { execFileSync('bash', ['-c', cmd], { stdio: 'ignore' }) } catch (e) { rc = e.status }
+  chk("C20: ['false', 'true || true'] → the combined grade command exits non-zero (a plain && join would exit 0)", cmd === "bash -c 'false' && bash -c 'true || true'" && rc !== 0)
+  let rc0 = 0
+  try { execFileSync('bash', ['-c', "false && true || true"], { stdio: 'ignore' }) } catch (e) { rc0 = e.status }
+  chk('C20: (the old join really masked it: false && true || true exits 0)', rc0 === 0)
+  const one = await run(A({ checks: ['make test || true'], candidates: [{ vendor: 'codex', level: 'builder', label: 'x' }] }),
+    { 'candidate:': [EXT_OK('codex', 'm')], 'grade:': [FIN({ x: [true, 0] })] })
+  chk('C20: a single check is passed exactly as written', cands(one.calls)[0].prompt.includes('Check command (run from the workdir root): make test || true\n'))
+}
+
+// ---- C21 (H5): only the PATCHCHECK / LEAKCHECK machine lines count; a missing,
+// garbled or mismatched line is UNGRADABLE (invalid), never a pass or a fail.
+{
+  const two = A({ candidates: [{ vendor: 'claude', level: 'builder', label: 'a' }, { vendor: 'claude', level: 'deep', label: 'b' }] })
+  const cases = [
+    ['a missing PATCHCHECK line', { pcLine: '' }],
+    ['a garbled PATCHCHECK line', { pcLine: 'PATCHCHECK {"base":' }],
+    ['a PATCHCHECK line from another sha', { base: 'f'.repeat(40) }],
+    ['a relay that paraphrased (rc 0, all passed)', { pcLine: 'rc 0 — all candidates passed' }],
+  ]
+  for (const [name, opt] of cases) {
+    const { result, logs } = await run(two, { 'candidate:': ['done'], 'grade:': [FIN({ a: [true, 0], b: [true, 1] }, opt)] })
+    chk(`C21: ${name} → every graded candidate INVALID, graded:false, loud`,
+      result.candidates.length === 2 && result.candidates.every(c => c.status === 'invalid' && /UNGRADABLE/.test(c.tail)) && result.graded === false &&
+      logs.some(l => l.startsWith('⚠ GRADING UNUSABLE')))
+  }
+  const { result: swapped } = await run(two, { 'candidate:': ['done'], 'grade:': [p => {
+    const f = FIN({ a: [true, 0], b: [true, 1] })(p)
+    const j = JSON.parse(f.patchcheckLine.slice(11)); j.results.reverse()
+    return Object.assign(f, { patchcheckLine: `PATCHCHECK ${JSON.stringify(j)}` })
+  }] })
+  chk('C21: results in another order than the patches given → invalid (never a swapped grade)', swapped.candidates.every(c => c.status === 'invalid'))
+  const { result: missingOne } = await run(two, { 'candidate:': ['done'], 'grade:': [FIN({ a: [true, 0] })] })
+  chk('C21: a PATCHCHECK line missing one graded patch → invalid', missingOne.candidates.every(c => c.status === 'invalid'))
+  const { result: noLk } = await run(two, { 'candidate:': ['done'], 'grade:': [FIN({ a: [true, 0], b: [true, 1] }, { lkLine: '' })] })
+  chk('C21: no LEAKCHECK line → leak unknown (null), every grade void', noLk.leak === null && noLk.candidates.every(c => c.status === 'invalid'))
+  const { result: otherSha } = await run(two, { 'candidate:': ['done'], 'grade:': [FIN({ a: [true, 0], b: [true, 1] }, { lkSha: 'e'.repeat(40) })] })
+  chk('C21: a LEAKCHECK line for another sha → unknown', otherSha.leak === null)
+  const { result: ok } = await run(two, { 'candidate:': ['done'], 'grade:': [FIN({ a: [true, 0], b: [true, 1] })] })
+  chk('C21: well-formed lines grade normally (pass / fail), tail names the tail file', byLabel(ok, 'a').status === 'pass' && byLabel(ok, 'b').status === 'fail' &&
+    byLabel(ok, 'a').tail === '(check output: /o/out/tails/1.tail)' && ok.graded === true)
+  const { result: h } = await run(two, { 'candidate:': ['done'], 'grade:': [FIN({ a: [false, null, 'harness'], b: [true, 0] })] })
+  chk('C21: a patch-check HARNESS fault is invalid (ungradable), not the candidate\'s fail', byLabel(h, 'a').status === 'invalid' && /harness/.test(byLabel(h, 'a').tail) && byLabel(h, 'b').status === 'pass')
+  const { result: u4 } = await run(two, { 'candidate:': ['done'], 'grade:': [FIN({ a: [true, 0, ''], b: [true, 1] })] })
+  chk('C21: U4 — an EMPTY error string is not an error (the grade stands)', byLabel(u4, 'a').status === 'pass')
+}
+
+// ---- C22 (M10): changed files vs the brief's files → outOfScope (reported) ----
+{
+  const { result, logs } = await run(A({ files: ['calc.txt', 'lib'], candidates: [
+    { vendor: 'claude', level: 'builder', label: 'in' }, { vendor: 'claude', level: 'deep', label: 'out' }, { vendor: 'claude', level: 'deep', label: 'dir' }] }),
+  { 'candidate:': ['done'], 'grade:': [FIN({ in: [true, 0, null, ['calc.txt']], out: [true, 0, null, ['calc.txt', 'Makefile']], dir: [true, 0, null, ['lib/x.js']] })] })
+  chk('C22: a patch within files is in scope; one touching another path is outOfScope (grade still stands)',
+    byLabel(result, 'in').outOfScope === false && byLabel(result, 'out').outOfScope === true && byLabel(result, 'out').status === 'pass' &&
+    JSON.stringify(byLabel(result, 'out').changedFiles) === '["calc.txt","Makefile"]')
+  chk('C22: a path under a listed directory is in scope', byLabel(result, 'dir').outOfScope === false)
+  chk('C22: the out-of-scope path is logged', logs.some(l => l.startsWith('⚠ out: its patch changes paths outside') && l.includes('Makefile')))
+  const nf = await run(A({ files: undefined, candidates: [{ vendor: 'claude', level: 'builder', label: 'a' }] }),
+    { 'candidate:': ['done'], 'grade:': [FIN({ a: [true, 0, null, ['anything.txt']] })] })
+  chk('C22: with no files in the brief, outOfScope is null (unknown), never true', byLabel(nf.result, 'a').outOfScope === null)
+}
+
+// ---- C23 (M12): what ext-run RAN vs what the candidate asked for --------------
+{
+  const cs = [
+    { vendor: 'codex', level: 'deep', model: 'gpt-6-astra', effort: 'high', label: 'match' },
+    { vendor: 'codex', level: 'deep', model: 'gpt-6-astra', effort: 'high', label: 'wrongmodel' },
+    { vendor: 'codex', level: 'deep', model: 'gpt-6-astra', effort: 'high', label: 'wrongeffort' },
+    { vendor: 'codex', level: 'builder', label: 'unpinned' },
+  ]
+  const line = (m, e) => `EXTERNAL (codex · build · exit 0)\nCHANGED FILES: calc.txt\nDONE exit=0\next-run: 100 tokens (2s, codex/${m}) out=10${e ? ` effort=${e}` : ''}`
+  const { result } = await run(A({ candidates: cs }), {
+    'candidate:match': [line('gpt-6-astra', 'high')], 'candidate:wrongmodel': [line('gpt-6-sol', 'high')],
+    'candidate:wrongeffort': [line('gpt-6-astra', 'medium')], 'candidate:unpinned': [line('gpt-6-sol', 'medium')],
+    'grade:': [FIN({ match: [true, 0], wrongmodel: [true, 0], wrongeffort: [true, 0], unpinned: [true, 0] })],
+  })
+  chk('C23: model and effort as asked → graded normally', byLabel(result, 'match').status === 'pass')
+  chk('C23: ext-run ran another model → invalid (MODEL/EFFORT MISMATCH), never credited', byLabel(result, 'wrongmodel').status === 'invalid' && /MISMATCH/.test(byLabel(result, 'wrongmodel').tail))
+  chk('C23: ext-run ran another effort → invalid', byLabel(result, 'wrongeffort').status === 'invalid' && /asked gpt-6-astra@high, ext-run ran gpt-6-astra@medium/.test(byLabel(result, 'wrongeffort').tail))
+  chk('C23: an unpinned candidate takes model AND effort from the ext-run line', byLabel(result, 'unpinned').model === 'gpt-6-sol' && byLabel(result, 'unpinned').effort === 'medium' &&
+    byLabel(result, 'unpinned').modelFrom === 'runner' && byLabel(result, 'unpinned').status === 'pass')
+  const old = await run(A({ candidates: [cs[0]] }), { 'candidate:': [line('gpt-6-astra', null)], 'grade:': [FIN({ match: [true, 0] })] })
+  chk('C23: a line with no effort (an older ext-run) is not a mismatch', byLabel(old.result, 'match').status === 'pass')
+}
+
+// ---- C24: what the patch could not carry is reported (ignored new files, gitlinks)
+{
+  const { result, logs } = await run(A({ candidates: [{ vendor: 'claude', level: 'builder', label: 'a' }, { vendor: 'claude', level: 'deep', label: 'b' }] }),
+    { 'candidate:': ['done'], 'grade:': [FIN({ a: [true, 0], b: [true, 0] }, { diffExtra: { a: { ignoredNew: 2, gitlinks: ['vendored'] } } })] })
+  chk('C24: ignoredNew / gitlinks from the diff reach captureWarnings and the log; a clean capture has none',
+    JSON.stringify(byLabel(result, 'a').captureWarnings) === JSON.stringify(['2 new ignored file(s) not in the patch', 'gitlink(s) without content: vendored']) &&
+    byLabel(result, 'b').captureWarnings === null && logs.some(l => l.startsWith('⚠ a: 2 new ignored')))
 }
 
 // ═══ kind:'review' — the review bake-off ════════════════════════════════════════
@@ -931,12 +1060,14 @@ const RV = await run(RA({}), RV_SCRIPT())
   const xj = RV.calls.filter(c => c.label.startsWith('adjudicate:codex'))
   chk('RV21: every codex reviewer carries TIMEOUT=30m and every codex adjudicator TIMEOUT=15m (the defaults), in the header after INPUT_DIR',
     cx.length === 2 && cx.every(c => /\nINPUT_DIR=[^\n]+\nTIMEOUT=30m\n/.test(c.prompt)) && xj.length > 0 && xj.every(c => /\nINPUT_DIR=[^\n]+\nTIMEOUT=15m\n/.test(c.prompt)))
+  const claudeRA = RV.calls.filter(c => /^(reviewer:|adjudicate:)/.test(c.label) && !/^VENDOR=/.test(c.prompt))
   chk('RV21: no Claude reviewer or adjudicator gets a TIMEOUT line or option',
-    RV.calls.filter(c => /^(reviewer:|adjudicate:)/.test(c.label) && !/^VENDOR=/.test(c.prompt)).every(c => !/TIMEOUT=/.test(c.prompt) && !('timeout' in c.opts)))
+    claudeRA.length >= 3 && claudeRA.every(c => !/TIMEOUT=/.test(c.prompt) && !('timeout' in c.opts)))
   const { calls } = await run(RA({ reviewerTimeout: '45m', adjudicatorTimeout: '1h' }), RV_SCRIPT())
+  const ovR = calls.filter(c => /^reviewer:rv-(sol|astra)$/.test(c.label))
+  const ovJ = calls.filter(c => c.label.startsWith('adjudicate:codex'))
   chk('RV21: reviewerTimeout / adjudicatorTimeout override the defaults',
-    calls.filter(c => /^reviewer:rv-(sol|astra)$/.test(c.label)).every(c => hdr(c.prompt, 'TIMEOUT') === '45m') &&
-    calls.filter(c => c.label.startsWith('adjudicate:codex')).every(c => hdr(c.prompt, 'TIMEOUT') === '1h'))
+    ovR.length === 2 && ovR.every(c => hdr(c.prompt, 'TIMEOUT') === '45m') && ovJ.length > 0 && ovJ.every(c => hdr(c.prompt, 'TIMEOUT') === '1h'))
   for (const [name, extra] of [['a word', { reviewerTimeout: 'soon' }], ['zero', { reviewerTimeout: '0m' }], ['over 3h', { adjudicatorTimeout: '4h' }],
     ['a number', { reviewerTimeout: 30 }], ['a compound 1m30s (the watchdog cannot parse it)', { reviewerTimeout: '1m30s' }]]) {
     const r = await throws(RA(extra))
@@ -983,13 +1114,32 @@ const RV = await run(RA({}), RV_SCRIPT())
     pb.every(x => x && x.startsWith('P=<run dir>/prompt.txt; awk') && agentDoc.includes(x)) && wait.every(x => x && x.startsWith('for i in $(seq 1 100)') && agentDoc.includes(x)))
 }
 
+// ---- RV24: a reviewer whose EVERY finding is malformed is unavailable (never a
+// scored zero); finding paths are cut to the snapshot root.
+{
+  const bad = { file: 'docs/a.md', line: 3, severity: 'major', category: 'U1', claim: 'no evidence' }
+  const { result, calls } = await run(RA({}), RV_SCRIPT({
+    'reviewer:rv-sonnet': [{ findings: [bad, Object.assign({}, bad, { line: 'x' })] }],
+    'reviewer:rv-sol': [CX({ findings: [bad] })],
+    'reviewer:rv-opus': [{ findings: [RF('snap/docs/zz.md', 1, 'REAL snap-relative'), RF('inputs/snap/docs/yy.md', 2, 'REAL inputs-relative'),
+      RF('/private/tmp/x/ws/inputs/snap/tests/snap/q.md', 3, 'REAL absolute, a snap/ dir inside the repo')] }],
+  }))
+  const rs = l => result.reviewers.find(r => r.label === l) || {}
+  chk('RV24: every finding malformed → unavailable with the reason (Claude and codex alike), not ok with recall 0',
+    rs('rv-sonnet').status === 'unavailable' && /every finding \(2\) was malformed/.test(rs('rv-sonnet').reason) &&
+    rs('rv-sol').status === 'unavailable' && /malformed/.test(rs('rv-sol').reason))
+  const m = calls.find(c => c.label === 'review:merge')
+  chk('RV24: snap/x, inputs/snap/x and an absolute …/inputs/snap/x reach the merge relative to the snapshot root (first /snap/ only)',
+    m && m.prompt.includes('"file":"docs/zz.md"') && m.prompt.includes('"file":"docs/yy.md"') && m.prompt.includes('"file":"tests/snap/q.md"'))
+}
+
 // ═══ extend: add reviewers to a prior review result ════════════════════════════════
 // The prior is RV.result itself (this workflow's own output shape), passed INLINE as
 // args.extendResult. CHECK builds what the one tiny snapshot-check command prints.
 const PRIOR = RV.result
 const CHECK = (prior, over = {}) => Object.assign({
   ok: true, resolvedBase: prior.base, resolvedHead: prior.head, manifestBase: prior.base, manifestHead: prior.head,
-  snapshotExists: true, snapshotOk: true, fingerprintExists: true, codexDenied: false, files: 3, extras: 0, diffBytes: 50, snapKB: 4,
+  snapshotExists: true, snapshotOk: true, fingerprintExists: true, codexDenied: false, files: 3, extras: 0, diffBytes: 50, snapKB: 4, scopeOk: true,
 }, over)
 const clone = v => JSON.parse(JSON.stringify(v))
 const EXT_REVIEWERS = [
@@ -1093,6 +1243,8 @@ const noReviewer = calls => !calls.some(c => /^(reviewer:|review:merge|adjudicat
   await refuse('a manifest head mismatch even when the relay says snapshotOk', /snapshot is gone/, { 'review:extend-check': [CHECK(PRIOR, { manifestBase: 'e'.repeat(40) })] })
   await refuse('a missing manifest.json (the command printed no JSON)', /snapshot is gone or unreadable/, { 'review:extend-check': [{ ok: false, error: `jq: error: Could not open ${ROUT}/manifest.json` }] })
   await refuse('a dead check spawn (twice)', /snapshot check spawn failed/, { 'review:extend-check': [new Error('spawn died')] })
+  await refuse('M13: a prior snapshot cut with other include/exclude/context/hardExclude (scopeOk false)', /different include\/exclude\/context\/hardExclude/, { 'review:extend-check': [CHECK(PRIOR, { scopeOk: false })] })
+  await refuse('M13: a relay that drops scopeOk (never assumed in scope)', /different include/, { 'review:extend-check': [Object.assign(CHECK(PRIOR), { scopeOk: undefined })] })
   const { result } = await run(XA({}), XS({ 'review:extend-check': [CHECK(PRIOR, { snapshotOk: false }), CHECK(PRIOR)] }))
   chk('EX2: a failed check that passes on the retry proceeds', result.extendedFrom.items === 7 && result.newItems.join() === 'M8,M9')
 }
@@ -1106,7 +1258,7 @@ const noReviewer = calls => !calls.some(c => /^(reviewer:|review:merge|adjudicat
   const props = Object.keys(ck.opts.schema.properties)
   chk('EX3: exactly ONE extend spawn, and its schema holds only small snapshot scalars (no items, reviewers or digest)',
     ext.length === 1 && props.every(k => ['ok', 'error', 'resolvedBase', 'resolvedHead', 'manifestBase', 'manifestHead', 'snapshotExists', 'snapshotOk',
-      'fingerprintExists', 'codexDenied', 'files', 'extras', 'diffBytes', 'snapKB'].includes(k)) && !props.includes('items') && !props.includes('reviewers'))
+      'fingerprintExists', 'codexDenied', 'files', 'extras', 'diffBytes', 'snapKB', 'scopeOk'].includes(k)) && !props.includes('items') && !props.includes('reviewers'))
   chk('EX3: …its prompt carries no prior item text or reviewer label, and stays small',
     PRIOR.items.every(it => !ck.prompt.includes(it.claim)) && PRIOR.reviewers.every(x => !ck.prompt.includes(x.label)) && ck.prompt.length < 2000)
   chk('EX3: the prior items reach the result verbatim from the inline object (text, verdict, adjudication)',
@@ -1230,7 +1382,9 @@ const EX = await run(XA({}), XS())
   try {
     const repo = join(tmp, 'repo')
     const out = join(tmp, 'out')
-    const g = (...xs) => execFileSync('git', ['-C', repo, ...xs], { encoding: 'utf8' }).trim()
+    // Hermetic git: no global/system config (signing, hooks, templates) reaches it.
+    const gitEnv = Object.assign({}, process.env, { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' })
+    const g = (...xs) => execFileSync('git', ['-C', repo, ...xs], { encoding: 'utf8', env: gitEnv }).trim()
     mkdirSync(repo)
     g('init', '-q')
     writeFileSync(join(repo, 'a.md'), 'one\n')
@@ -1243,13 +1397,14 @@ const EX = await run(XA({}), XS())
     writeFileSync(join(out, 'snap', 'a.md'), 'two\n')
     writeFileSync(join(out, 'range.diff'), 'diff\n')
     writeFileSync(join(out, 'fingerprint-before.json'), '{}\n')
-    writeFileSync(join(out, 'manifest.json'), JSON.stringify({ base: baseSha, head: headSha, files: ['a.md', 'b.md'], extras: [], codexDenied: false }))
+    const scope = { include: ['docs/**/*.md'], exclude: [], context: ['review/RUBRIC.md'], hardExclude: ['context/', 'PROJECT_MEMORY*.md'] }
+    writeFileSync(join(out, 'manifest.json'), JSON.stringify(Object.assign({ base: baseSha, head: headSha, files: ['a.md', 'b.md'], extras: [], codexDenied: false }, scope)))
     const prior = JSON.parse(JSON.stringify(RV.result))
     Object.assign(prior, { base: baseSha, head: headSha, outDir: out })
     prior.items[0].claim += ' — café → 🔩'
     prior.items[0].adjudication[1].evidence = null
     const REAL_CHECK = p => {
-      try { return JSON.parse(execFileSync('bash', ['-c', p.split('\n').pop()], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })) } catch (e) { return { ok: false, error: String(e.stderr || e.message).trim().split('\n').pop() } }
+      try { return JSON.parse(execFileSync('bash', ['-c', p.split('\n').pop()], { encoding: 'utf8', env: gitEnv, stdio: ['ignore', 'pipe', 'pipe'] })) } catch (e) { return { ok: false, error: String(e.stderr || e.message).trim().split('\n').pop() } }
     }
     // base/head as revision NAMES, so the real rev-parse is what resolves them.
     const args = extra => RA(Object.assign({ repo, base: 'HEAD~1', head: 'HEAD', outDir: out, extendResult: prior, supersedes: [], reviewers: [{ vendor: 'claude', level: 'deep', label: 'rv-real' }] }, extra))
@@ -1263,6 +1418,21 @@ const EX = await run(XA({}), XS())
     if (ok.threw) console.log(`  (EX10 threw: ${ok.message.split('\n')[0]})`)
     const hm = await throws(args({ head: 'HEAD~1' }), script)
     chk('EX10: …a head that resolves elsewhere is refused (real rev-parse)', hm.threw && /base\/head mismatch/.test(hm.message) && noReviewer(hm.calls))
+    const sc = await throws(args({ hardExclude: ['secrets/'] }), script)
+    chk('EX10: …M13: a new hardExclude against the prior manifest is refused (real jq scopeOk)', sc.threw && /different include/.test(sc.message) && noReviewer(sc.calls))
+    const sc2 = await throws(args({ include: ['docs/**/*.md', 'more/**'] }), script)
+    chk('EX10: …M13: a new include is refused too', sc2.threw && /different include/.test(sc2.message))
+    // The scope check against a manifest the REAL review-stage.sh wrote (its default
+    // hard excludes are what the check's jq expects first).
+    const out2 = join(tmp, 'out2')
+    execFileSync(join(here, '..', 'scripts', 'review-stage.sh'), ['snapshot', '--repo', repo, '--base', baseSha, '--head', headSha,
+      '--include', 'docs/**/*.md', '--context', 'review/RUBRIC.md', '--hard-exclude', 'secrets/', '--out', out2], { encoding: 'utf8', env: gitEnv, stdio: ['ignore', 'pipe', 'pipe'] })
+    const prior2 = Object.assign(JSON.parse(JSON.stringify(prior)), { outDir: out2 })
+    const real = await throws(args({ outDir: out2, extendResult: prior2, hardExclude: ['secrets/'] }), script)
+    chk('EX10: …M13: the same scope as a REAL review-stage.sh manifest passes the check (defaults first, then the args\' hardExclude)', !real.threw)
+    if (real.threw) console.log(`  (EX10 M13 threw: ${real.message.split('\n')[0]})`)
+    const real2 = await throws(args({ outDir: out2, extendResult: prior2 }), script)
+    chk('EX10: …and dropping that hardExclude is refused', real2.threw && /different include/.test(real2.message))
     writeFileSync(join(out, 'manifest.json'), JSON.stringify({ base: baseSha, head: baseSha, files: [], extras: [] }))
     const wrongMan = await throws(args({}), script)
     chk('EX10: …a manifest of another head is refused (real jq)', wrongMan.threw && /snapshot is gone or is not the prior/.test(wrongMan.message) && noReviewer(wrongMan.calls))

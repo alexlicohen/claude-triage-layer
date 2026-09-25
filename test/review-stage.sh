@@ -206,8 +206,46 @@ mkdir -p "$CC/docs"; printf 'x\n' > "$CC/docs/x.md"
 git -C "$CC" add -A && git -C "$CC" commit -qm one
 run_rs snapshot --repo "$CC" --base HEAD --head HEAD --include 'docs/**' --out "$T/out-cc"
 chk "S7d a hard-denied repo (clip-creator) snapshots for Claude but carries .codex-deny" '[ "$RC" -eq 0 ] && [ -f "$T/out-cc/.codex-deny" ]'
-chk "S7e HARD_DENY_REPOS matches ext-run.sh (the owner of deny decisions)" \
-  '[ "$(sed -n "s/^HARD_DENY_REPOS=//p" "$RS")" = "$(sed -n "s/^HARD_DENY_REPOS=//p" "$REPO_DIR/scripts/ext-run.sh")" ]'
+chk "S7e the deny rule is ext-run.sh's own (deny-query), not a copy: no HARD_DENY_REPOS list here" \
+  '! grep -q "^HARD_DENY_REPOS=" "$RS" && grep -q "deny-query" "$RS"'
+CX="$T/cx/codex-private"
+git -c init.defaultBranch=main init -q "$CX"
+git -C "$CX" config user.email rs@localhost; git -C "$CX" config user.name rs
+mkdir -p "$CX/docs"; printf 'x\n' > "$CX/docs/x.md"
+git -C "$CX" add -A && git -C "$CX" commit -qm one
+OUT=$(CODEX_DENY_REPOS="codex-private" "$RS" snapshot --repo "$CX" --base HEAD --head HEAD --include 'docs/**' --out "$T/out-cx" 2>"$T/err"); RC=$?; ERR=$(cat "$T/err")
+chk "S7f a CODEX_DENY_REPOS name carries over too (M14): .codex-deny written, codexDenied true" \
+  '[ "$RC" -eq 0 ] && [ -f "$T/out-cx/.codex-deny" ] && [ "$(j .codexDenied)" = true ]'
+run_rs snapshot --repo "$CX" --base HEAD --head HEAD --include 'docs/**' --out "$T/out-cx2"
+chk "S7g ...and without it the same repo is not denied" '[ "$RC" -eq 0 ] && [ ! -e "$T/out-cx2/.codex-deny" ]'
+OUT=$(REVIEW_STAGE_EXT_RUN="$T/no-such-ext-run.sh" "$RS" snapshot --repo "$CX" --base HEAD --head HEAD --include 'docs/**' --out "$T/out-cx3" 2>"$T/err"); RC=$?; ERR=$(cat "$T/err")
+chk "S7h no ext-run.sh to ask → the snapshot is marked off-limits to codex (fail closed)" \
+  '[ "$RC" -eq 0 ] && [ -f "$T/out-cx3/.codex-deny" ] && printf "%s" "$ERR" | grep -q "missing"'
+
+# --- S8: hard-exclude globbing (H6) and case-insensitive defaults -------------------
+HX="$T/hx/repo"
+git -c init.defaultBranch=main init -q "$HX"
+git -C "$HX" config user.email rs@localhost; git -C "$HX" config user.name rs
+mkdir -p "$HX/secrets" "$HX/docs/secrets" "$HX/a/b" "$HX/a/x/b" "$HX/Context" "$HX/docs"
+printf 'TOP-SECRET\n' > "$HX/secrets/key.txt"
+printf 'NESTED-SECRET\n' > "$HX/docs/secrets/k.txt"
+printf 'AB\n' > "$HX/a/b/f.txt"
+printf 'AXB\n' > "$HX/a/x/b/f.txt"
+printf 'CTX-UPPER\n' > "$HX/Context/c.md"
+printf 'PM-LOWER\n' > "$HX/docs/project_memory.md"
+printf 'keep\n' > "$HX/docs/keep.md"
+git -C "$HX" add -A && git -C "$HX" commit -qm one
+run_rs snapshot --repo "$HX" --base HEAD --head HEAD --include '**' --hard-exclude '**/secrets' 'a/**/b' --out "$T/out-hx"
+chk "S8 '**/secrets' drops a TOP-LEVEL secrets/ as well as a nested one" \
+  '[ "$RC" -eq 0 ] && [ ! -e "$T/out-hx/snap/secrets" ] && [ ! -e "$T/out-hx/snap/docs/secrets" ] && ! grep -rq "SECRET" "$T/out-hx"'
+chk "S8b 'a/**/b' drops a/b (zero directories between) as well as a/x/b" \
+  '[ ! -e "$T/out-hx/snap/a/b" ] && [ ! -e "$T/out-hx/snap/a/x/b" ]'
+chk "S8c the default hard excludes match case-insensitively (Context/, project_memory.md)" \
+  '[ ! -e "$T/out-hx/snap/Context" ] && [ ! -e "$T/out-hx/snap/docs/project_memory.md" ] && ! grep -rq "CTX-UPPER\|PM-LOWER" "$T/out-hx"'
+chk "S8d ...and an unmatched file is still staged" '[ -f "$T/out-hx/snap/docs/keep.md" ]'
+run_rs snapshot --repo "$HX" --base HEAD --head HEAD --include '**' --hard-exclude 'SECRETS/' --out "$T/out-hx2"
+chk "S8e a user --hard-exclude stays case-sensitive (SECRETS/ does not drop secrets/)" \
+  '[ "$RC" -eq 0 ] && [ -f "$T/out-hx2/snap/secrets/key.txt" ]'
 
 # --- F*: fingerprint + compare ---------------------------------------------------------
 FP="$T/fp"; mkdir -p "$FP"

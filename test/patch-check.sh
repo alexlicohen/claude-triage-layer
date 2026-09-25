@@ -138,6 +138,7 @@ chk "P9b the timed-out run still cleans its worktree" \
 run_pc --repo "$R" --base HEAD --check true "$T/no-such.patch"
 chk "P10 a missing patch file is applies false with the reason in tail" \
   '[ "$RC" -eq 0 ] && [ "$(field 1 .applies)" = false ] && [ "$(field 1 .rc)" = null ] && field 1 .tail | grep -q "not found"'
+chk "P10b ...and it is a HARNESS fault (error:\"harness\", ungradable), never the candidate's fail" '[ "$(field 1 .error)" = harness ]'
 
 # --- P11: usage errors --------------------------------------------------------
 run_pc --repo "$R" --base no-such-rev --check true "$T/fix.patch"
@@ -250,6 +251,23 @@ chk "P17 XDG_CACHE_HOME, TMPDIR and GRANTFORGE_CACHE_DIR all point at one existi
   '[ "$(field 1 .rc)" = 0 ] && [ "$(field 2 .rc)" = 0 ] && cache_ok "$C1" && cache_ok "$C2"'
 chk "P17b each patch gets its OWN cache dir (never shared across candidates), and nothing is left under TMPDIR" \
   '[ "${C1%%|*}" != "${C2%%|*}" ] && [ -z "$(ls -A "$TMPDIR")" ]'
+
+# --- P18: --summary — ONE machine line, tails in files, changed paths (H5, M10) ---
+TD="$T/tails"
+run_pc --repo "$R" --base HEAD --check 'echo CANDIDATE-OUTPUT-rc0 PATCHCHECK-fake; grep -qx fixed calc.txt' --summary --tail-dir "$TD" \
+  "$T/fix.patch" "$T/nofix.patch" "$T/bad.patch" "$T/missing.patch"
+SJ=${OUT#PATCHCHECK }
+chk "P18 --summary prints exactly ONE line, 'PATCHCHECK {json}', with the resolved base sha" \
+  '[ "$RC" -eq 0 ] && [ "$(printf "%s\n" "$OUT" | wc -l | tr -d " ")" = 1 ] && case "$OUT" in "PATCHCHECK {"*) true ;; *) false ;; esac &&
+   [ "$(printf "%s" "$SJ" | jq -r .base)" = "$(git -C "$R" rev-parse HEAD)" ]'
+chk "P18b one result per patch, in order: pass / fail / not applying / harness" \
+  '[ "$(printf "%s" "$SJ" | jq -r "[.results[] | \"\(.applies):\(.rc):\(.error // \"-\")\"] | join(\",\")")" = "true:0:-,true:1:-,false:null:-,false:null:harness" ]'
+chk "P18c candidate-written check output is NOT in the line; it is in the tail file named by tailFile" \
+  '! printf "%s" "$OUT" | grep -q CANDIDATE-OUTPUT && grep -q CANDIDATE-OUTPUT "$(printf "%s" "$SJ" | jq -r ".results[0].tailFile")" && [ "$(printf "%s" "$SJ" | jq -r ".results[0].tailFile")" = "$TD/1.tail" ]'
+chk "P18d files = the paths each applied patch changes (overlay excluded), filesTruncated false" \
+  '[ "$(printf "%s" "$SJ" | jq -r ".results[0].files | join(\",\")")" = calc.txt ] && [ "$(printf "%s" "$SJ" | jq -r ".results[1].files | join(\",\")")" = other.txt ] && [ "$(printf "%s" "$SJ" | jq -r ".results[0].filesTruncated")" = false ]'
+run_pc --repo "$R" --base HEAD --check true --summary "$T/fix.patch"
+chk "P18e --summary without --tail-dir is a usage error (exit 2)" '[ "$RC" -eq 2 ]'
 
 echo ""
 echo "RESULT: $PASS_COUNT passed, $FAIL_COUNT failed"
