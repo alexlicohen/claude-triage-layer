@@ -44,13 +44,23 @@ for the current check catalog.
   Mutations 82–85 (rates n ≥ minN, CI width, proposal forces explore,
   triage-exec using `rates[level]`), each KILLED (`qc/mutate.sh --only`);
   #76's anchor refreshed for the new draw line; catalog 76 → 80.
-- **Deferred**: the orchestrator policy (pass `args.bakeoff` + `rates` on every
-  plan) lives in the triage.md fork, not here. A model swapped under an
-  unchanged claude alias (`opus`, `sonnet`) does not reset counts — bump the
-  tiers entry. AGENTS.md line 3 gate counts are stale (325 / 94 / 80
-  mutations; needs Alex's approval). Full `make mutate` not re-run (targeted
-  `--only "76 82 83 84 85"` only). No live triage-exec run with `rates`; live
-  install not synced.
+- **14C — bake-offs on by default + first live run.** `triage.md` rule 10
+  (and Alex's live fork, rule 9; approved 2026-09-25): every `triage-exec`
+  plan carries `args.bakeoff` (config from `triage-tiers.sh --bakeoff-json`,
+  rates from `parity-report.sh rates --json`) unless Alex opts out or the work
+  is PHI/BCH or classifier-sensitive; review bake-offs stay opt-in. AGENTS.md
+  gate counts updated (approved). First live inline bake-off (run
+  `bakeoff-1`, deep rate forced to 1 for the test): a danger deep subtask —
+  `externalReport()` gains `bakeoffApplied` and `report.external` appears when
+  a bake-off applied an external challenger's patch. Planned claude opus@high
+  and challenger codex gpt-6-astra@high both passed, leak false, planned patch
+  applied, checks green; ingested as one ledger line. This exercised the nested
+  `workflow('triage-compare')` live for the first time. workflow-scenarios
+  325 → 334; mutation 86 (the bake-off arm of `externalInPlay`), catalog 80 → 81.
+- **Deferred**: a model swapped under an unchanged claude alias (`opus`,
+  `sonnet`) does not reset counts — bump the tiers entry. The planned Claude
+  candidate's tokens are null in the ledger (parallel compare: Claude
+  outTokens unavailable), so cost comparisons stay one-sided for inline runs.
 
 ## Wave 13 — agy retired; every codex run OS-confined and audited (uncommitted)
 

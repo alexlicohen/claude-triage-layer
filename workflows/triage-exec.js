@@ -636,18 +636,29 @@ if (dropped > 0) log(`⚠ ${dropped} of ${subtasks.length} subtask(s) failed or 
 // and neverRanExternally, NOT read off `results`: remediation rewrites `results` in
 // place (results.length = 0; results.push(...merged)), so by the time report() runs, a
 // subtask that really did run on codex and was then redone on Claude reads back as a
-// Claude result. Ids only: bounded size, no worker prose.
+// Claude result. Ids only: bounded size, no worker prose. With args.bakeoff, each
+// vendor also carries bakeoffApplied = the subtasks whose APPLIED bake-off patch came
+// from that vendor's candidate (read off the bakeoffs records via appliedVendor(), so
+// codex work that landed as a challenger shows here and not only in report().bakeoffs).
 function externalReport() {
   const byVendor = {}
   for (const v of VENDORS.filter(isExternal)) {
     const routed = subtasks.filter(st => st.vendor === v).map(st => st.id)
-    byVendor[v] = {
+    byVendor[v] = Object.assign({
       routed,
       ranExternally: routed.filter(id => !neverRanExternally.has(id)),
       returnedToClaude: escalations.filter(e => e.from.startsWith(`${v}:`)).map(e => `${e.id}→${e.to}`),
-    }
+    }, bakeoffOn ? { bakeoffApplied: bakeoffs.filter(b => appliedVendor(b) === v).map(b => b.id) } : {})
   }
   return byVendor
+}
+
+// appliedVendor(b) — the vendor whose patch a bakeoffs record applied (null: none was):
+// the challenger's, or the planned candidate's = its subtask's vendor.
+function appliedVendor(b) {
+  if (b.applied === 'challenger') return b.challenger.vendor
+  if (b.applied === 'planned') return subtasks.find(st => st.id === b.id).vendor
+  return null
 }
 
 // bakeoffReport() — the inline bake-off half of the distillate (report() stays its
@@ -676,9 +687,11 @@ function report(extra) {
   // Present only when an external vendor was in play — mirroring how crossReview is
   // absent when not requested. The plan-flag arms keep the field honest when every
   // candidate was pulled back by the danger rule (routed: []). (The pre-Wave-12
-  // `overflow` mirror of external.agy went with agy.)
+  // `overflow` mirror of external.agy went with agy.) The last arm: a bake-off applied
+  // an external challenger's patch to an all-Claude plan.
   const externalInPlay = wantsOverflow || (planVendor && isExternal(planVendor)) ||
-    subtasks.some(st => isExternal(st.plannedVendor) || isExternal(st.vendor))
+    subtasks.some(st => isExternal(st.plannedVendor) || isExternal(st.vendor)) ||
+    bakeoffs.some(b => { const v = appliedVendor(b); return v !== null && isExternal(v) })
   const external = externalInPlay ? externalReport() : null
   return Object.assign({
     subtasks: subtasks.map(st => {

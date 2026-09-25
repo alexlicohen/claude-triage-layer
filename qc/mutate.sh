@@ -74,8 +74,9 @@ done
 # when args.bakeoff is absent.
 # 82-85 cover the adaptive sampling rate (Wave 14A): parity-report.sh rates' n >=
 # minN condition, its CI-width condition, a pending proposal forcing explore, and
-# triage-exec sampling at args.bakeoff.rates[level].
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85"
+# triage-exec sampling at args.bakeoff.rates[level]. 86: report.external appears
+# when a bake-off applied an external challenger's patch to an all-Claude plan.
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -126,7 +127,7 @@ mut_file() {
     26) echo "scripts/ext-run.sh" ;;
     28) echo "workflows/triage-exec.js" ;;
     29) echo "workflows/triage-exec.js" ;;
-    75|76|77|78|79|80|81|85) echo "workflows/triage-exec.js" ;;
+    75|76|77|78|79|80|81|85|86) echo "workflows/triage-exec.js" ;;
     82|83|84) echo "scripts/parity-report.sh" ;;
     31) echo "workflows/triage-compare.js" ;;
     32) echo "scripts/patch-check.sh" ;;
@@ -243,6 +244,7 @@ mut_desc() {
     83) echo "parity-report.sh (rates): the Wilson CI-width condition is dropped (a level at n = minN with a coin-flip pass rate drops to maintain)" ;;
     84) echo "parity-report.sh (rates): a pending tier proposal no longer forces explore (a level whose incumbent is about to be replaced drops to maintain)" ;;
     85) echo "triage-exec.js (bake-off): args.bakeoff.rates is ignored (every level samples at tuning.sampleRate)" ;;
+    86) echo "triage-exec.js (bake-off): an applied codex challenger patch on an all-Claude plan leaves report.external absent" ;;
     74) echo "triage-compare.js (review): a codex reviewer/adjudicator is spawned without TIMEOUT (ext-run's 5m read default kills a large review)" ;;
     *) echo "" ;;
   esac
@@ -257,7 +259,7 @@ mut_desc() {
 mut_suite() {
   case "$1" in
     1|2|3|4|5|6|10|12|18|19|20|21|33) echo "roundtrip" ;;
-    7|8|9|11|16|17|22|23|28|29|75|76|77|78|79|80|81|85) echo "scenarios" ;;
+    7|8|9|11|16|17|22|23|28|29|75|76|77|78|79|80|81|85|86) echo "scenarios" ;;
     15|24|25|26|40|49|50|51|56|57|58|59|60|61|62|70|71) echo "extrun" ;;
     31|34|36|37|38|47|68|69|72|73|74) echo "compare" ;;
     32|48|63|66) echo "patchcheck" ;;
@@ -1005,6 +1007,13 @@ MUT84
 MUT85
       mut_replace_block "$target" '  const rate = fromRates ? bo.rates[st.level] : bo.tuning.sampleRate' 1 "$rep"
       ;;
+    86)
+      # triage-exec.js report(): the bake-off arm of externalInPlay is dropped.
+      cat > "$rep" <<'MUT86'
+    false // MUTATED: applied external bake-off patch not in play
+MUT86
+      mut_replace_block "$target" '    bakeoffs.some(b => { const v = appliedVendor(b); return v !== null && isExternal(v) })' 1 "$rep"
+      ;;
     *)
       return 1
       ;;
@@ -1101,6 +1110,7 @@ verify_mutation() {
     83) grep -qF 'MUTATED: rates CI width ignored' "$target" && ! grep -qF 'elif ($g.wilsonUB - $g.wilsonLB) > $maxWidth' "$target" ;;
     84) grep -qF 'MUTATED: proposal does not force explore' "$target" && ! grep -qF '($proposals[] | select(.level == $L and .vendor == $V)' "$target" ;;
     85) grep -qF 'MUTATED: rates ignored' "$target" && ! grep -qF 'bo.rates[st.level] : bo.tuning.sampleRate' "$target" ;;
+    86) grep -qF 'MUTATED: applied external bake-off patch not in play' "$target" && ! grep -qF 'return v !== null && isExternal(v) })' "$target" ;;
     *) return 1 ;;
   esac
 }

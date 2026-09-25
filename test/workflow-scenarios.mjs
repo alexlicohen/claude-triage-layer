@@ -1503,6 +1503,62 @@ const BST = (id, level, extra = {}) => LV(id, level, [`src/${id}.js`], Object.as
   }
 }
 
+// ---- Scenario 55: report().external credits an APPLIED external bake-off patch
+// (bakeoffApplied, read off the bakeoffs records); absent/unchanged otherwise.
+{
+  const deepCodex = BO({ challengers: { deep: { codex: [{ model: 'gpt-6-astra', effort: 'high' }], claude: [] } } })
+  // (a) planned claude deep fails, codex challenger passes → applied → external appears.
+  const a = await run(
+    { subtasks: [BST('t1', 'deep')], checks: ['make test'], review: 'never', bakeoff: deepCodex },
+    { ...CLEAN, ...GREEN }, NO_BUDGET, CMP({ planned: 'fail', challenger: 'pass' }))
+  chk('S55: codex challenger applied to an all-Claude plan → external.codex.bakeoffApplied = [t1]',
+    a.result.bakeoffs[0].applied === 'challenger' &&
+    JSON.stringify(a.result.external) === JSON.stringify({ codex: { routed: [], ranExternally: [], returnedToClaude: [], bakeoffApplied: ['t1'] } }))
+  // … and it stays credited when verification then sends it back to Claude.
+  const back = await run(
+    { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
+    { ...CLEAN, 'verify:objective-check': ['src/t1.js broke\nFAIL'], 'verify:recheck': ['ok\nPASS'], 'redo:': ['fixed on claude'] },
+    NO_BUDGET, CMP({ planned: 'fail', challenger: 'pass' }))
+  chk('S55: an applied codex challenger redone on Claude → still bakeoffApplied, and returnedToClaude',
+    JSON.stringify(back.result.external.codex.bakeoffApplied) === '["t1"]' && back.result.external.codex.returnedToClaude.includes('t1→builder'))
+  // (b) planned passes → external absent exactly as before (all-Claude plan).
+  const b = await run(
+    { subtasks: [BST('t1', 'deep')], checks: ['make test'], review: 'never', bakeoff: deepCodex },
+    { ...CLEAN, ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
+  chk('S55: planned claude passes → no external field', b.result.bakeoffs[0].applied === 'planned' && b.result.external === undefined)
+  // A claude challenger applied, or nothing applied (in place) → still no external field.
+  const cl = await run(
+    { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO({ challengerMix: { codex: 0, claude: 1 } }) },
+    { ...CLEAN, ...GREEN }, NO_BUDGET, CMP({ planned: 'fail', challenger: 'pass' }))
+  chk('S55: claude challenger applied → no external field', cl.result.bakeoffs[0].applied === 'challenger' && cl.result.external === undefined)
+  const none = await run(
+    { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
+    { ...CLEAN, 'builder:': ['did t1'], ...GREEN }, NO_BUDGET, CMP({ planned: 'unavailable', challenger: 'fail' }))
+  chk('S55: nothing applied (in place) → no external field', none.result.bakeoffs[0].applied === null && none.result.external === undefined)
+  // A planned codex subtask: external was already present; the bakeoffApplied array
+  // names it when its own (codex) patch landed, and is empty when a claude one did.
+  const pc = await run(
+    { subtasks: [BST('t1', 'builder', { vendor: 'codex' })], checks: ['make test'], review: 'never', bakeoff: BO({ challengerMix: { codex: 0, claude: 1 } }) },
+    { ...CLEAN, ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
+  chk('S55: planned codex patch applied → bakeoffApplied names it',
+    JSON.stringify(pc.result.external.codex) === JSON.stringify({ routed: ['t1'], ranExternally: ['t1'], returnedToClaude: [], bakeoffApplied: ['t1'] }))
+  const pcl = await run(
+    { subtasks: [BST('t1', 'builder', { vendor: 'codex' })], checks: ['make test'], review: 'never', bakeoff: BO({ challengerMix: { codex: 0, claude: 1 } }) },
+    { ...CLEAN, ...GREEN }, NO_BUDGET, CMP({ planned: 'fail', challenger: 'pass' }))
+  chk('S55: planned codex, claude challenger applied → external present, bakeoffApplied empty',
+    JSON.stringify(pcl.result.external.codex.bakeoffApplied) === '[]' && JSON.stringify(pcl.result.external.codex.routed) === '["t1"]')
+  // (c) args.bakeoff absent → external exactly as before: no bakeoffApplied key.
+  const off = await run(
+    { subtasks: [BST('t1', 'builder', { vendor: 'codex' })], checks: ['make test'], review: 'never' },
+    { 'codex:': ['did t1 externally'], ...GREEN })
+  chk('S55: no bakeoff → external.codex has no bakeoffApplied key',
+    JSON.stringify(off.result.external) === JSON.stringify({ codex: { routed: ['t1'], ranExternally: ['t1'], returnedToClaude: [] } }))
+  const offClaude = await run(
+    { subtasks: [BST('t1', 'deep')], checks: ['make test'], review: 'never' },
+    { 'deep:': ['did t1'], ...GREEN })
+  chk('S55: no bakeoff, all-Claude plan → no external field', offClaude.result.external === undefined)
+}
+
 console.log('')
 console.log(`RESULT: ${pass} passed, ${fail} failed`)
 process.exit(fail > 0 ? 1 : 0)
