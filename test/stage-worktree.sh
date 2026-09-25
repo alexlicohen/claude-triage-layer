@@ -10,7 +10,9 @@
 # working tree and never leaving a stale patch; leakcheck CLEAN / LEAK (modified
 # tracked file, new untracked file, content change of an already-dirty file) /
 # BASE_MOVED (a commit, including a commit of pre-existing work); cleanup leaving
-# no worktree registered; and the caller's tree, index bytes and HEAD untouched.
+# no worktree registered; the caller's tree, index bytes and HEAD untouched; and
+# apply: clean / 3-way-recoverable / conflicting (exit 6, tree byte-identical) /
+# empty patches.
 # shellcheck disable=SC2034  # *_BEFORE etc. are read inside chk's eval'd conditions
 set -u
 
@@ -194,6 +196,51 @@ GIT_DIR="$DECOY/.git" GIT_WORK_TREE="$DECOY" "$SW" cleanup --repo "$R" --dir "$D
 # --- S11: a trailing value-taking flag is a usage error, never an endless loop ----
 OUT=$(perl -e 'alarm shift; exec @ARGV' 20 "$SW" create --repo "$R" --base HEAD --count 1 --dir 2>"$T/err"); RC=$?
 chk "S11 a trailing --dir with no value is exit 2 (needs a value)" '[ "$RC" -eq 2 ] && grep -q -- "--dir needs a value" "$T/err"'
+
+# --- S12: apply — writes the caller's tree only when proven clean ----------------
+AR="$T/apply-repo"
+mkrepo "$AR"
+printf 'l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\n' > "$AR/f.txt"
+printf 'keep\n' > "$AR/g.txt"
+git -C "$AR" add -A && git -C "$AR" commit -qm base
+A_BASE=$(git -C "$AR" rev-parse HEAD)
+sed 's/^l5$/l5-patched/' "$AR/f.txt" > "$AR/f.new" && cat "$AR/f.new" > "$AR/f.txt" && rm -f "$AR/f.new"
+git -C "$AR" diff > "$T/out/apply.patch"
+git -C "$AR" checkout -q -- f.txt
+: > "$T/out/empty.patch"
+# tree_sum R — every working-tree file plus the index bytes (byte-identical check).
+tree_sum() { ( cd "$1" && find . -path ./.git -prune -o -type f -print | LC_ALL=C sort | while IFS= read -r f; do cksum "$f"; done; cksum .git/index ); }
+
+run_sw apply --repo "$AR" --patch "$T/out/apply.patch"
+chk "S12 a clean patch applies (exit 0, method plain) and the change is in the tree" \
+  '[ "$RC" -eq 0 ] && [ "$(j .ok)" = true ] && [ "$(j .applied)" = true ] && [ "$(j .method)" = plain ] && grep -qx l5-patched "$AR/f.txt"'
+git -C "$AR" checkout -q -- f.txt
+
+sed 's/^l2$/l2-drift/' "$AR/f.txt" > "$AR/f.new" && cat "$AR/f.new" > "$AR/f.txt" && rm -f "$AR/f.new"
+git -C "$AR" commit -qam "drift inside the patch context"
+run_sw apply --repo "$AR" --patch "$T/out/apply.patch"
+chk "S12b a tree that drifted inside the patch context is recovered by a clean 3-way merge (method 3way, both changes, no markers)" \
+  '[ "$RC" -eq 0 ] && [ "$(j .method)" = 3way ] && grep -qx l5-patched "$AR/f.txt" && grep -qx l2-drift "$AR/f.txt" && ! grep -q "^<<<<<<<" "$AR/f.txt"'
+git -C "$AR" reset -q --hard "$A_BASE"
+
+sed 's/^l5$/l5-theirs/' "$AR/f.txt" > "$AR/f.new" && cat "$AR/f.new" > "$AR/f.txt" && rm -f "$AR/f.new"
+git -C "$AR" commit -qam "a conflicting change to the patched line"
+printf 'untracked wip\n' > "$AR/wip.txt"
+printf 'unstaged wip\n' >> "$AR/g.txt"
+git -C "$AR" update-index --refresh >/dev/null 2>&1
+A_SUM=$(tree_sum "$AR"); A_HEAD=$(git -C "$AR" rev-parse HEAD)
+run_sw apply --repo "$AR" --patch "$T/out/apply.patch"
+chk "S12c a CONFLICTING patch is refused with exit 6, ok:false, nothing applied" \
+  '[ "$RC" -eq 6 ] && [ "$(j .ok)" = false ] && [ "$(j .applied)" = false ] && j .error | grep -q "nothing was written"'
+chk "S12d ...and the tree (files, untracked + unstaged work, index bytes, HEAD) is byte-identical, no conflict markers" \
+  '[ "$(tree_sum "$AR")" = "$A_SUM" ] && [ "$(git -C "$AR" rev-parse HEAD)" = "$A_HEAD" ] && ! grep -q "^<<<<<<<" "$AR/f.txt" && grep -qx l5-theirs "$AR/f.txt"'
+run_sw apply --repo "$AR" --patch "$T/out/empty.patch"
+chk "S12e an empty patch is a no-op success (method empty) and changes nothing" \
+  '[ "$RC" -eq 0 ] && [ "$(j .ok)" = true ] && [ "$(j .applied)" = false ] && [ "$(j .method)" = empty ] && [ "$(tree_sum "$AR")" = "$A_SUM" ]'
+run_sw apply --repo "$AR" --patch "out/apply.patch"
+chk "S12f a relative --patch is a usage error (exit 2)" '[ "$RC" -eq 2 ] && [ "$(tree_sum "$AR")" = "$A_SUM" ]'
+OUT=$(GIT_DIR="$DECOY/.git" GIT_WORK_TREE="$DECOY" "$SW" apply --repo "$AR" --patch "$T/out/empty.patch" 2>"$T/err"); RC=$?
+chk "S12g apply resolves --repo itself even with a decoy GIT_DIR inherited" '[ "$RC" -eq 0 ] && [ "$(j .repo)" = "$AR" ] && [ "$({ st "$DECOY"; git -C "$DECOY" rev-parse HEAD; git -C "$DECOY" worktree list; })" = "$DECOY_BEFORE" ]'
 
 echo ""
 echo "RESULT: $PASS_COUNT passed, $FAIL_COUNT failed"

@@ -6,9 +6,12 @@
 // restricted per task and deny-marked vendors dropped per task; the adaptive stop
 // (consecutive failed bands only); unavailable/denied/invalid/unresolved never
 // counted as pass or fail; rubric judges (blind, agreement, disagreement); the
-// review scoring path; a LEAK aborting the run; the proposal (cheapest clearing
-// candidate, incumbents respected); the Fable warning; reps; the desk leg; and
-// that nothing outside outDir (never tiers.json) is ever written.
+// review scoring path; a LEAK aborting the run; the ranking with NO proposal (the
+// decision rule is scripts/parity-report.sh's, tested by test/parity-report.sh);
+// the Fable warning; reps; the desk leg; that nothing outside outDir (never
+// tiers.json) is ever written; the source-repo fingerprint guard on every task
+// kind (SOURCE_CHANGED/UNVERIFIED => invalid, run continues); judges given only
+// patch + key; selfCheckEnv passed through only on opt-in.
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -33,8 +36,12 @@ const task = (id, band, over = {}) => Object.assign({
   checks: ['sh test.sh'], overlay: 'hidden/', grading: 'check', key: null, vendors: ['claude', 'codex', 'agy'], timeoutMin: null,
 }, over)
 const LADDER = [task('t1', 1), task('t2', 2), task('t3', 3), task('t4', 4)]
+// The source fingerprint parity-suite.sh fingerprint prints for a git source
+// (materialize's first command, and source:after@<id> after grading).
+const FP = (id, over = {}) => Object.assign({ id, source: 'git', name: 'srcrepo', head: 'c'.repeat(40), tree: 'd'.repeat(40) }, over)
+const fpId = p => (p.match(/fingerprint --task '[^']*\/([^/']+)'/) || [])[1]
 
-// run(args, opts) — opts.tasks: the loader's list; opts.denied: {taskId: {agy,codex}};
+// run(args, opts) — opts.tasks: the loader's list; opts.denied: {taskId: {codex}};
 // opts.outcome(taskId, runLabel, cmpArgs) -> compare status (default 'pass');
 // opts.script: {labelPrefix: [responses]} for any other agent (longest prefix
 // wins, a queue repeats its last entry, an Error is thrown, a function is called
@@ -52,8 +59,9 @@ async function run(args, opts = {}) {
     'materialize:': [p => {
       const out = (p.match(/--out '([^']+)'/) || [])[1]
       const id = (p.match(/--task '[^']*\/([^/']+)'/) || [])[1]
-      return { repo: `${out}/repo`, sha: SHA, denied: Object.assign({ agy: false, codex: false }, denied[id] || {}), rc: 0 }
+      return { fingerprint: FP(fpId(p)), repo: `${out}/repo`, sha: SHA, denied: Object.assign({ codex: false }, denied[id] || {}), rc: 0 }
     }],
+    'source:': [p => FP(fpId(p))],
     'desk:': ['CROSS-REVIEW (x · verify · exit 0)\nsome published numbers'],
     'judge:copy': [{ ok: true, rc: 0 }],
   }, opts.script || {})
@@ -125,7 +133,8 @@ const cellOf = (result, id, l) => ((result.tasks.find(t => t.id === id) || { res
     ['outDir inside the suite', A({ outDir: `${SUITE}/runs`, candidates: ok })],
     ['no candidates', A({ candidates: [] })],
     ['unknown vendor', A({ candidates: [C('gemini', 'builder', 'a')] })],
-    ['agy off builder', A({ candidates: [C('agy', 'deep', 'a')] })],
+    ['retired agy candidate', A({ candidates: [C('agy', 'builder', 'a')] })],
+    ['retired agy judge', A({ candidates: ok, judges: [{ vendor: 'agy', level: 'builder' }, { vendor: 'claude', level: 'deep' }] })],
     ['bad effort', A({ candidates: [C('codex', 'deep', 'a', { effort: 'ultra' })] })],
     ['label reserved for reps', A({ candidates: [C('claude', 'deep', 'x-r2')] })],
     ['label with @', A({ candidates: [C('claude', 'deep', 'x@y')] })],
@@ -134,8 +143,7 @@ const cellOf = (result, id, l) => ((result.tasks.find(t => t.id === id) || { res
     ['reps 0', A({ reps: 0, candidates: ok })],
     ['bandPassRate 2', A({ bandPassRate: 2, candidates: ok })],
     ['stopAfterFailedBands 0', A({ stopAfterFailedBands: 0, candidates: ok })],
-    ['incumbent not a candidate', A({ candidates: ok, incumbents: { builder: { claude: 'zzz' } } })],
-    ['incumbent of the wrong vendor', A({ candidates: ok, incumbents: { builder: { codex: 'a' } } })],
+    ['incumbents (moved to parity-report.sh)', A({ candidates: ok, incumbents: { builder: { claude: 'a' } } })],
     ['judges empty', A({ candidates: ok, judges: [] })],
     ['judges not an array', A({ candidates: ok, judges: { vendor: 'claude', level: 'deep' } })],
     ['duplicate judge labels', A({ candidates: ok, judges: [{ vendor: 'claude', level: 'deep' }, { vendor: 'claude', level: 'deep' }] })],
@@ -149,8 +157,8 @@ const cellOf = (result, id, l) => ((result.tasks.find(t => t.id === id) || { res
 
 // ---- P2: loader -> materialize -> compare wiring, vendors per task, skipped ---
 {
-  const tasks = [task('t1', 1), task('t2', 1, { vendors: ['claude', 'codex'] })]
-  const { result, calls, wf } = await run(A({ bands: [1], candidates: [C('claude', 'builder', 'cb'), C('codex', 'builder', 'xb'), C('agy', 'builder', 'ab')] }), { tasks })
+  const tasks = [task('t1', 1), task('t2', 1, { vendors: ['codex'] })]
+  const { result, calls, wf } = await run(A({ bands: [1], candidates: [C('claude', 'builder', 'cb'), C('codex', 'builder', 'xb'), C('claude', 'quick', 'ab')] }), { tasks })
   const load = calls.filter(c => c.label === 'load:suite')
   chk('P2: ONE loader spawn — a triage-quick-task running parity-suite.sh list on the suite, with a schema',
     load.length === 1 && load[0].opts.agentType === 'triage-quick-task' && load[0].prompt.includes(`parity-suite.sh list --suite '${SUITE}'`) && !!load[0].opts.schema)
@@ -165,10 +173,10 @@ const cellOf = (result, id, l) => ((result.tasks.find(t => t.id === id) || { res
     w1.args.files[0] === 'calc.sh' && w1.args.acceptance === 'acc t1')
   chk('P2: the hidden overlay is passed as an absolute path in the task dir (never shown in a brief)', w1 && w1.args.overlay === `${SUITE}/1/t1/hidden`)
   chk('P2: compare candidates carry the stable parity labels, vendor and level',
-    w1 && w1.args.candidates.map(c => `${c.label}:${c.vendor}:${c.level}`).join() === 'cb:claude:builder,xb:codex:builder,ab:agy:builder')
+    w1 && w1.args.candidates.map(c => `${c.label}:${c.vendor}:${c.level}`).join() === 'cb:claude:builder,xb:codex:builder,ab:claude:quick')
   const w2 = wf.find(w => w.args.outDir === `${OUT}/1/t2/cmp`)
-  chk('P2: a vendor the task does not allow is not a candidate there, and is recorded as skipped', w2 && !w2.args.candidates.some(c => c.vendor === 'agy') && cellOf(result, 't2', 'ab').status === 'skipped')
-  chk('P2: skipped is not counted (agy: 1 graded task in band 1, not 2)', rank(result, 'ab').perBand[1].pass === 1 && rank(result, 'ab').perBand[1].other === 0)
+  chk('P2: a vendor the task does not allow is not a candidate there, and is recorded as skipped', w2 && !w2.args.candidates.some(c => c.vendor === 'claude') && cellOf(result, 't2', 'ab').status === 'skipped')
+  chk('P2: skipped is not counted (ab: 1 graded task in band 1, not 2)', rank(result, 'ab').perBand[1].pass === 1 && rank(result, 'ab').perBand[1].other === 0)
   chk('P2: the task matrix is complete: every task x candidate has a cell', result.tasks.length === 2 && result.tasks.every(t => t.results.length === 3))
   chk('P2: external tokens and seconds are summed from the compare results', rank(result, 'xb').externalTokens === 2000 && rank(result, 'xb').seconds === 20 && rank(result, 'cb').externalTokens === null)
 }
@@ -219,7 +227,7 @@ const cellOf = (result, id, l) => ((result.tasks.find(t => t.id === id) || { res
   chk('P5: a triage-compare that throws => unavailable (flagged), not fail', cellOf(crash.result, 't1', 'a').status === 'unavailable' && rank(crash.result, 'a').perBand[1].fail === 0 && crash.result.flags.some(f => /triage-compare failed/.test(f)))
   const mat = await run(A({ bands: [1], candidates: [C('claude', 'builder', 'a')] }), { tasks: [task('t1', 1)], script: { 'materialize:': [new Error('boom')] } })
   chk('P5: a failed materialize => unavailable (flagged), no compare', mat.wf.length === 0 && cellOf(mat.result, 't1', 'a').status === 'unavailable' && mat.result.flags.some(f => /materialize failed/.test(f)))
-  const badMat = await run(A({ bands: [1], candidates: [C('claude', 'builder', 'a')] }), { tasks: [task('t1', 1)], script: { 'materialize:': [{ repo: '/elsewhere/repo', sha: SHA, denied: { agy: false, codex: false } }] } })
+  const badMat = await run(A({ bands: [1], candidates: [C('claude', 'builder', 'a')] }), { tasks: [task('t1', 1)], script: { 'materialize:': [{ repo: '/elsewhere/repo', sha: SHA, denied: { codex: false } }] } })
   chk('P5: a materialize reply naming another repo path is rejected (the computed path is the only one used)', badMat.wf.length === 0 && cellOf(badMat.result, 't1', 'a').status === 'unavailable')
 }
 
@@ -249,13 +257,29 @@ const cellOf = (result, id, l) => ((result.tasks.find(t => t.id === id) || { res
   })
   const jc = calls.filter(c => /^judge:(claude|codex)-deep@rb:s\d+$/.test(c.label))
   chk('P6: each judge scores every graded candidate (2 judges x 4 patches, failing one included)', jc.length === 8)
-  chk('P6: the Claude judge is a deep-level agent with a schema; the codex judge is triage-cross-reviewer VENDOR=codex MODE=review with --input patch + key',
+  chk('P6: the Claude judge is a deep-level agent with a schema; the codex judge is triage-cross-reviewer VENDOR=codex MODE=review with --input patch + key (both staged in its own judge dir)',
     jc.filter(c => c.label.startsWith('judge:claude')).every(c => c.opts.agentType === 'triage-deep-reasoner' && c.opts.schema) &&
     jc.filter(c => c.label.startsWith('judge:codex')).every(c => c.opts.agentType === 'triage-cross-reviewer' && /^VENDOR=codex\nMODE=review\n/.test(c.prompt) &&
-      new RegExp(`--input ${OUT}/4/rb/judge/s\\d+\\.patch --input ${SUITE}/4/rb/key\\.md`).test(c.prompt)))
+      new RegExp(`--input ${OUT}/4/rb/judge/(s\\d+)/\\1\\.patch --input ${OUT}/4/rb/judge/\\1/key\\.md\\n`).test(c.prompt)))
+  // (e) JUDGES: patch + key only. No judge prompt names a repo (the materialized
+  // one or any source), the task dir or the suite; a codex judge gets exactly two
+  // --input files; a Claude judge is named exactly two paths, both in its own dir.
+  chk('P6: no judge prompt names a repo path, the task dir or the suite — and each says read only these two files, no cd',
+    jc.every(c => !c.prompt.includes('/mat/repo') && !c.prompt.includes('/mat') && !c.prompt.includes(SUITE) && !/\/src\/|repository is \//.test(c.prompt) &&
+      c.prompt.includes('Read only these two files; do not cd anywhere') && /no repository access/.test(c.prompt)))
+  chk('P6: a codex judge gets exactly 2 --input files (its patch and the key); a Claude judge is named exactly 2 paths, both in its own judge dir',
+    jc.filter(c => c.label.startsWith('judge:codex')).every(c => (c.prompt.match(/--input /g) || []).length === 2) &&
+    jc.every(c => {
+      const anon = (c.label.match(/:(s\d+)$/) || [])[1]
+      const paths = c.prompt.match(/\/[^\s'"`]+/g) || []
+      const fsPaths = paths.filter(x => x.startsWith('/o/') || x.startsWith('/s/'))
+      return fsPaths.length === 2 && fsPaths.every(x => x.startsWith(`${OUT}/4/rb/judge/${anon}/`))
+    }))
   chk('P6: judges are blind — no judge prompt or label names any candidate', jc.every(c => !/alpha|beta|gamma|zz-failing/.test(c.prompt + c.label)))
   const cp = calls.find(c => c.label === 'judge:copy@rb')
-  chk('P6: patches are copied to anonymized ids under outDir before judging', cp && /mkdir -p '\/o\/par\/4\/rb\/judge'/.test(cp.prompt) && Object.keys(anonOf).length === 4)
+  chk('P6: patches are copied to anonymized ids under outDir before judging, each with the key into its own fresh judge dir',
+    cp && /mkdir -p '\/o\/par\/4\/rb\/judge\/s1' '\/o\/par\/4\/rb\/judge\/s2'/.test(cp.prompt) && Object.keys(anonOf).length === 4 &&
+    [1, 2, 3, 4].every(i => cp.prompt.includes(`cp '${SUITE}/4/rb/key.md' '${OUT}/4/rb/judge/s${i}/key.md'`)))
   chk('P6: both judges >= 0.7 (and checks pass) => pass', cellOf(result, 'rb', 'alpha-agree').status === 'pass')
   chk('P6: judges 0.3+ apart => unresolved, flagged for Alex, counted neither pass nor fail',
     cellOf(result, 'rb', 'beta-split').status === 'unresolved' && result.flags.some(f => /JUDGES DISAGREE on rb\/beta-split/.test(f)) && rank(result, 'beta-split').perBand[4].other === 1 && rank(result, 'beta-split').perBand[4].fail === 0)
@@ -298,6 +322,8 @@ const cellOf = (result, id, l) => ((result.tasks.find(t => t.id === id) || { res
   const cj = calls.find(c => c.label === 'candidate:xjunk@rv')
   chk('P7: an external reviewer with no candidate model/effort omits the MODEL/EFFORT lines', cj && /^VENDOR=codex\nMODE=read\n(?!MODEL=)(?!EFFORT=)/.test(cj.prompt))
   chk('P7: no review-task candidate is ever sent MODE=review', calls.filter(c => c.label.startsWith('candidate:')).every(c => !/\bMODE=review\b/.test(c.prompt)))
+  chk('P7: the Claude reviewer is told to work only inside the materialized repo and search nowhere else',
+    cg.prompt.includes(`Work only inside ${OUT}/3/rv/mat/repo. Do not read, list or search any other directory on this machine (including other copies of this project)`))
   chk('P7: no reviewer prompt names the key or the task dir', calls.filter(c => c.label.startsWith('candidate:')).every(c => !c.prompt.includes('key.json') && !c.prompt.includes(SUITE)))
   chk('P7: the Claude reviewer prompt tells it never to inspect git history and gives no git-history command (git log/show/diff)',
     /never inspect git history/i.test(cg.prompt) && !/git (log|show|diff)\b/.test(cg.prompt))
@@ -329,7 +355,7 @@ const cellOf = (result, id, l) => ((result.tasks.find(t => t.id === id) || { res
   chk('P8: an incomplete leak check is flagged but does not abort', unk.result.flags.some(f => /leak check incomplete/.test(f)) && cellOf(unk.result, 't1', 'a').status === 'pass')
 }
 
-// ---- P9: the proposal — cheapest clearing candidate, incumbents respected ------
+// ---- P9: ranking only — no proposal; the orchestrator runs parity-report.sh ---
 {
   const tasks = [task('q1', 1), task('q2', 1), task('b1', 2), task('b2', 2)]
   // B1: everyone passes q1; haiku fails q2 (rate 0.5), sonnet and opus pass both (1.0).
@@ -344,22 +370,19 @@ const cellOf = (result, id, l) => ((result.tasks.find(t => t.id === id) || { res
     C('codex', 'quick', 'luna-hi', { model: 'gpt-6-luna', effort: 'high' }),
   ]
   const { result } = await run(A({ bands: [1, 2], candidates: cands }), { tasks, outcome })
-  chk('P9: among Claude candidates the ranking puts the strongest first (opus), so a proposal taken in ranking order would be wrong', result.ranking.filter(r => r.vendor === 'claude')[0].label === 'opus')
-  chk('P9: quick/claude = the CHEAPEST candidate clearing band 1 (haiku at 0.5 >= bandPassRate), not the top-ranked one',
-    result.proposal.quick && result.proposal.quick.claude.label === 'haiku' && result.proposal.quick.claude.basis === 'parity-run')
-  chk('P9: builder/claude = sonnet (clears band 2 at 0.5; haiku does not clear it)', result.proposal.builder.claude.label === 'sonnet')
-  chk('P9: model order before effort: codex quick = luna-hi (luna < sol even at high effort)', result.proposal.quick.codex.label === 'luna-hi')
-  chk('P9: same model, lower effort wins: codex builder = sol-lo', result.proposal.builder.codex.label === 'sol-lo')
-  chk('P9: a level whose band was not run gets no proposal', result.proposal.deep === undefined && result.proposal.top === undefined)
-  const inc = await run(A({ bands: [1, 2], candidates: cands, incumbents: { quick: { claude: 'sonnet' }, builder: { claude: 'opus' } } }), { tasks, outcome })
-  chk('P9: an incumbent raises the bar: quick/claude = sonnet (haiku 0.5 < incumbent sonnet 1.0)', inc.result.proposal.quick.claude.label === 'sonnet' && inc.result.proposal.quick.claude.incumbent === 'sonnet' && inc.result.proposal.quick.claude.incumbentRate === 1)
-  chk('P9: builder/claude with incumbent opus (1.0 in band 2) = opus itself (sonnet 0.5 falls short)', inc.result.proposal.builder.claude.label === 'opus')
-  chk('P9: the markdown summary has the ranking and the proposal tables and says it is a proposal',
-    /\| opus \| claude \| opus \| high \| B2 \|/.test(result.markdown) && /\| quick \| claude \| haiku/.test(result.markdown) && /Alex approves/.test(result.markdown))
-  const weakOutcome = (id, l) => (l === 'weak' ? 'fail' : 'pass')
-  const nm = await run(A({ bands: [1, 2], stopAfterFailedBands: 1, candidates: [C('claude', 'builder', 'weak'), C('claude', 'builder', 'ok')], incumbents: { builder: { claude: 'weak' } } }), { tasks, outcome: weakOutcome })
-  chk('P9: an incumbent that stopped before the level\'s band (never measured there) is flagged, not silently dropped',
-    nm.result.flags.some(f => /incumbent weak not measured at band 2 — bar dropped/.test(f)))
+  chk('P9: the ranking puts the strongest first (opus before sonnet before haiku among Claude)',
+    result.ranking.filter(r => r.vendor === 'claude').map(r => r.label).join() === 'opus,sonnet,haiku')
+  chk('P9: equal records tie by label, not by cost (sol-hi, sol-lo and opus all clear B2 at 1.0: opus, sol-hi, sol-lo)',
+    result.ranking.slice(0, 3).map(r => r.label).join() === 'opus,sol-hi,sol-lo')
+  chk('P9: no proposal is returned — the decision rule is parity-report.sh\'s alone', !('proposal' in result))
+  chk('P9: the result says what comes next: parity-report.sh ingest-parity, then report',
+    Array.isArray(result.next) && result.next.some(l => /parity-report\.sh ingest-parity --result/.test(l)) && result.next.some(l => /parity-report\.sh report/.test(l)) &&
+    result.next.findIndex(l => /ingest-parity/.test(l)) < result.next.findIndex(l => /parity-report\.sh report/.test(l)))
+  chk('P9: the markdown has the ranking table, no proposal table, and points at parity-report.sh',
+    /\| opus \| claude \| opus \| high \| B2 \|/.test(result.markdown) && !/\| Level \| Vendor \| Proposed/.test(result.markdown) && /parity-report\.sh ingest-parity/.test(result.markdown))
+  chk('P9: no cheapness inference is flagged any more (cost is not judged here)', !result.flags.some(f => /cheapness/.test(f)))
+  const inc = await throws(A({ bands: [1, 2], candidates: cands, incumbents: { quick: { claude: 'sonnet' } } }), { tasks, outcome })
+  chk('P9: an incumbents arg is refused before any spawn and names parity-report.sh', inc.threw && /incumbents is no longer accepted/.test(inc.message) && /parity-report\.sh/.test(inc.message) && inc.calls.length === 0)
 }
 
 // ---- P10: the Fable warning precedes any top-level Claude candidate or judge --
@@ -386,7 +409,7 @@ const cellOf = (result, id, l) => ((result.tasks.find(t => t.id === id) || { res
     tasks, script: { 'judge:claude-deep': [{ score: 0.9 }], 'judge:codex-deep': ['{"score": 0.9}'], 'candidate:b@rv': [{ findings: [] }], 'score:rv': [{ scores: [{ label: 'b', recall: 1, precision: 1 }] }] },
   })
   const text = calls.map(c => c.prompt).join('\n') + JSON.stringify(wf.map(w => w.args))
-  chk('P11: no prompt or nested workflow arg mentions tiers.json, tiers-sync or make tiers', !/tiers\.json|tiers-sync|make tiers/.test(text) && !/tiers\.json/.test(JSON.stringify(result.proposal)))
+  chk('P11: no prompt or nested workflow arg mentions tiers.json, tiers-sync or make tiers', !/tiers\.json|tiers-sync|make tiers/.test(text))
   const targets = []
   for (const c of calls) {
     for (const m of c.prompt.matchAll(/(?:--out|mkdir -p|cat >) '([^']+)'/g)) targets.push(m[1])
@@ -395,8 +418,8 @@ const cellOf = (result, id, l) => ((result.tasks.find(t => t.id === id) || { res
   for (const w of wf) targets.push(w.args.outDir)
   chk('P11: every path this run writes (materialize --out, compare outDir, findings, judge copies) is under outDir',
     targets.length >= 5 && targets.every(p => p === OUT || p.startsWith(`${OUT}/`)))
-  chk('P11: the proposal is only returned (basis parity-run), and the result carries the flags/desk/markdown fields',
-    Array.isArray(result.flags) && typeof result.markdown === 'string' && result.desk && result.desk.note === 'signal only, never scored')
+  chk('P11: nothing is proposed, and the result carries the flags/desk/markdown/next fields',
+    !('proposal' in result) && Array.isArray(result.next) && Array.isArray(result.flags) && typeof result.markdown === 'string' && result.desk && result.desk.note === 'signal only, never scored')
 }
 
 // ---- P12: reps, the desk leg, the loader --------------------------------------
@@ -411,9 +434,9 @@ const cellOf = (result, id, l) => ((result.tasks.find(t => t.id === id) || { res
   chk('P12: review tasks are not repeated (and that is logged)', calls.filter(c => c.label.startsWith('candidate:a')).length === 1 && logs.some(l => /reps=2 applies to build tasks only/.test(l)))
   const d = await run(A({ desk: true, bands: [1], candidates: [C('claude', 'builder', 'a', { model: 'sonnet' }), C('codex', 'deep', 'x', { model: 'gpt-6-astra', effort: 'high' })] }), { tasks: [task('t1', 1)] })
   const desk = d.calls.filter(c => c.label.startsWith('desk:'))
-  chk('P12: the desk leg is one codex and one agy cross-reviewer call in verify mode naming the candidate models',
-    desk.length === 2 && desk.every(c => c.opts.agentType === 'triage-cross-reviewer') && desk.some(c => /^VENDOR=codex\nMODE=verify\n/.test(c.prompt)) &&
-    desk.some(c => /^VENDOR=agy\nMODE=verify\n/.test(c.prompt)) && desk.every(c => c.prompt.includes('codex:gpt-6-astra@high') && c.prompt.includes('claude:sonnet')))
+  chk('P12: the desk leg is ONE codex cross-reviewer call in verify mode naming the candidate models (no agy)',
+    desk.length === 1 && desk.every(c => c.opts.agentType === 'triage-cross-reviewer') && /^VENDOR=codex\nMODE=verify\n/.test(desk[0].prompt) &&
+    desk.every(c => c.prompt.includes('codex:gpt-6-astra@high') && c.prompt.includes('claude:sonnet')) && !('agy' in d.result.desk))
   chk('P12: the desk result is returned as signal and never scored', d.result.desk.codex.includes('published numbers') && !d.result.ranking.some(r => r.label.startsWith('desk')))
   chk('P12: desk:false skips it', calls.every(c => !c.label.startsWith('desk:')) && result.desk === null)
   const filt = await run(A({ taskFilter: ['t2', 'nope'], candidates: [C('claude', 'builder', 'a')] }))
@@ -424,6 +447,85 @@ const cellOf = (result, id, l) => ((result.tasks.find(t => t.id === id) || { res
     dead.threw && /could not load a valid task list/.test(dead.message) && dead.calls.filter(c => c.label.startsWith('load:')).length === 2 && !dead.calls.some(c => c.label.startsWith('materialize:')))
   const out = await throws(A({ candidates: [C('claude', 'builder', 'a')] }), { script: { 'load:': [{ tasks: [task('t1', 1, { taskDir: '/elsewhere/1/t1' })] }] } })
   chk('P12: a loaded taskDir outside the suite is rejected', out.threw && /could not load/.test(out.message))
+}
+
+// ---- P13: SOURCE-REPO LEAK GUARD on every task kind -----------------------------
+{
+  const t1 = task('t1', 1)
+  const t2 = task('t2', 2)
+  const rb = task('rb', 1, { grading: 'rubric', key: 'key.md', vendors: ['claude'] })
+  const rv = task('rv', 1, { kind: 'review', grading: 'seeded', key: 'key.json', checks: [], overlay: null, vendors: ['claude'] })
+  const base = { 'candidate:a@rv': [{ findings: [] }], 'score:rv': [{ scores: [{ label: 'a', recall: 1, precision: 1 }] }], 'judge:claude-deep': [{ score: 0.9 }], 'judge:codex-deep': ['{"score": 0.9}'] }
+  // No change: every kind is fingerprinted before (in the materialize spawn,
+  // BEFORE the materialize command) and after grading, and the grades stand.
+  const ok = await run(A({ bands: [1], candidates: [C('claude', 'builder', 'a')] }), { tasks: [t1, rb, rv], script: base })
+  const mt = ok.calls.find(c => c.label === 'materialize:rv')
+  chk('P13: the before-fingerprint runs in the materialize spawn, BEFORE the materialize command, and the reply must carry it',
+    mt && mt.prompt.indexOf(`parity-suite.sh fingerprint --task '${SUITE}/1/rv'`) >= 0 &&
+    mt.prompt.indexOf(`parity-suite.sh fingerprint --task '${SUITE}/1/rv'`) < mt.prompt.indexOf('parity-suite.sh materialize --task') && mt.opts.schema.required.includes('fingerprint'))
+  chk('P13: build, rubric AND review tasks are each re-fingerprinted once after grading (quick-task, schema)',
+    ['t1', 'rb', 'rv'].every(id => ok.calls.filter(c => c.label === `source:after@${id}`).length === 1) &&
+    ok.calls.filter(c => c.label.startsWith('source:')).every(c => c.opts.agentType === 'triage-quick-task' && c.opts.schema && c.prompt.includes('parity-suite.sh fingerprint --task')))
+  const iJudge = ok.events.findIndex(e => e.startsWith('agent:judge:claude-deep@rb'))
+  const iAfter = ok.events.indexOf('agent:source:after@rb')
+  const iScore = ok.events.indexOf('agent:score:rv')
+  chk('P13: the after-fingerprint comes after grading (after the judges, after the review score)',
+    iJudge >= 0 && iAfter > iJudge && iScore >= 0 && ok.events.indexOf('agent:source:after@rv') > iScore)
+  chk('P13: an unchanged source leaves every grade standing, no flag', ['t1', 'rb', 'rv'].every(id => cellOf(ok.result, id, 'a').status === 'pass') && !ok.result.flags.some(f => /SOURCE_/.test(f)))
+
+  // HEAD moved on a build task; the tree changed on a review task: that task's
+  // results are all invalid, flagged, and the run CONTINUES (t2 in band 2 still runs).
+  const after = { t1: { head: 'e'.repeat(40) }, rv: { tree: 'f'.repeat(40) } }
+  const ch = await run(A({ bands: [1, 2], candidates: [C('claude', 'builder', 'a'), C('codex', 'builder', 'x')] }), {
+    tasks: [Object.assign({}, t1), Object.assign({}, rv, { vendors: ['claude', 'codex'] }), t2],
+    script: Object.assign({}, base, {
+      'source:': [p => FP(fpId(p), after[fpId(p)] || {})],
+      'candidate:x@rv': ['CROSS-REVIEW (codex · read · exit 0)\n{"findings": []}'],
+      'score:rv': [{ scores: [{ label: 'a', recall: 1, precision: 1 }, { label: 'x', recall: 1, precision: 1 }] }],
+    }),
+  })
+  chk('P13: HEAD moved on a build task => every result of it invalid (never pass/fail)', ['a', 'x'].every(l => cellOf(ch.result, 't1', l).status === 'invalid' && /^SOURCE_CHANGED srcrepo: HEAD moved/.test(cellOf(ch.result, 't1', l).reason)))
+  chk('P13: tree changed on a REVIEW task => every result invalid too', ['a', 'x'].every(l => cellOf(ch.result, 'rv', l).status === 'invalid' && /^SOURCE_CHANGED srcrepo: tree changed/.test(cellOf(ch.result, 'rv', l).reason)))
+  chk('P13: each change is flagged SOURCE_CHANGED <repo name>: <what> and logged with ⚠',
+    ch.result.flags.some(f => /^SOURCE_CHANGED srcrepo: HEAD moved \(task t1\)/.test(f)) && ch.result.flags.some(f => /^SOURCE_CHANGED srcrepo: tree changed \(task rv\)/.test(f)) &&
+    ch.logs.some(l => /^⚠ SOURCE_CHANGED srcrepo: HEAD moved/.test(l)))
+  chk('P13: the run continues — band 2 still runs, and invalid counts as other, never as a fail',
+    ch.wf.some(w => w.args.outDir === `${OUT}/2/t2/cmp`) && cellOf(ch.result, 't2', 'a').status === 'pass' && rank(ch.result, 'a').perBand[1].fail === 0 && rank(ch.result, 'a').perBand[1].other === 2)
+  const both = await run(A({ bands: [1], candidates: [C('claude', 'builder', 'a')] }), { tasks: [t1], script: { 'source:': [p => FP(fpId(p), { head: 'e'.repeat(40), tree: 'f'.repeat(40) })] } })
+  chk('P13: HEAD moved AND tree changed are both named', both.result.flags.some(f => /^SOURCE_CHANGED srcrepo: HEAD moved, tree changed/.test(f)))
+
+  // No usable after-fingerprint (twice) => SOURCE_UNVERIFIED, invalid.
+  const dead = await run(A({ bands: [1], candidates: [C('claude', 'builder', 'a')] }), { tasks: [t1], script: { 'source:': [new Error('dead')] } })
+  chk('P13: an after-fingerprint that fails twice => SOURCE_UNVERIFIED, results invalid, one retry',
+    cellOf(dead.result, 't1', 'a').status === 'invalid' && dead.result.flags.some(f => /^SOURCE_UNVERIFIED srcrepo/.test(f)) && dead.calls.filter(c => c.label.startsWith('source:after@t1')).length === 2)
+  const junk = await run(A({ bands: [1], candidates: [C('claude', 'builder', 'a')] }), { tasks: [t1], script: { 'source:': [{ source: 'generator' }] } })
+  chk('P13: an after-reply that downgrades a git source to "generator" is not accepted (unverified, invalid)', cellOf(junk.result, 't1', 'a').status === 'invalid')
+
+  // Generator sources carry nothing to guard: no after-fingerprint, grades stand.
+  const gen = await run(A({ bands: [1], candidates: [C('claude', 'builder', 'a')] }), {
+    tasks: [task('g1', 1, { source: { type: 'generator' } })],
+    script: { 'materialize:': [p => ({ fingerprint: { id: 'g1', source: 'generator' }, repo: `${OUT}/1/g1/mat/repo`, sha: SHA, denied: { codex: false } })] },
+  })
+  chk('P13: a generator-source task is not re-fingerprinted and its grades stand', !gen.calls.some(c => c.label.startsWith('source:')) && cellOf(gen.result, 'g1', 'a').status === 'pass')
+  // The before-fingerprint is mandatory: none, or one contradicting the task's
+  // source type => materialize failed, nothing runs.
+  const noFp = await run(A({ bands: [1], candidates: [C('claude', 'builder', 'a')] }), { tasks: [t1], script: { 'materialize:': [{ repo: `${OUT}/1/t1/mat/repo`, sha: SHA, denied: { codex: false } }] } })
+  chk('P13: a materialize reply with no fingerprint => unavailable, no compare', noFp.wf.length === 0 && cellOf(noFp.result, 't1', 'a').status === 'unavailable')
+  const lie = await run(A({ bands: [1], candidates: [C('claude', 'builder', 'a')] }), {
+    tasks: [task('t1', 1, { source: { type: 'git', repo: '/src/real', base: 'abc' } })],
+    script: { 'materialize:': [{ fingerprint: { source: 'generator' }, repo: `${OUT}/1/t1/mat/repo`, sha: SHA, denied: { codex: false } }] },
+  })
+  chk('P13: a before-fingerprint claiming "generator" for a git task => unavailable, no compare', lie.wf.length === 0 && cellOf(lie.result, 't1', 'a').status === 'unavailable')
+}
+
+// ---- P14: selfCheckEnv reaches triage-compare only when the task opts in -------
+{
+  const tasks = [task('t1', 1, { checks: ['"$PARITY_PY" -m pytest'], selfCheckEnv: true }), task('t2', 1, { checks: ['"$PARITY_PY" -m pytest'] })]
+  const { wf } = await run(A({ bands: [1], candidates: [C('claude', 'builder', 'a')] }), { tasks })
+  const w1 = wf.find(w => w.args.outDir === `${OUT}/1/t1/cmp`)
+  const w2 = wf.find(w => w.args.outDir === `${OUT}/1/t2/cmp`)
+  chk('P14: an opted-in task passes selfCheckEnv:true; checks go through with $PARITY_ unexpanded', w1 && w1.args.selfCheckEnv === true && w1.args.checks[0] === '"$PARITY_PY" -m pytest')
+  chk('P14: a task that did not opt in passes no selfCheckEnv', w2 && !('selfCheckEnv' in w2.args))
 }
 
 console.log('')

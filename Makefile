@@ -9,10 +9,12 @@ test:
 	./test/ext-run.sh
 	./test/patch-check.sh
 	./test/stage-worktree.sh
+	./test/review-stage.sh
 	node test/workflow-scenarios.mjs
 	node test/compare-scenarios.mjs
 	./test/parity-suite.sh
 	node test/parity-scenarios.mjs
+	./test/parity-report.sh
 
 drift:
 	./drift.sh
@@ -30,7 +32,7 @@ tiers:
 	./scripts/tiers-sync.sh
 
 # Mutation gate: prove the test suite has teeth (killed/survivor/error per
-# mutation). Strict since all 50 mutations have covering tests: any survivor
+# mutation). Strict since all 76 mutations have covering tests: any survivor
 # fails the gate.
 mutate:
 	./qc/mutate.sh --strict

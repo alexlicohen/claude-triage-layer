@@ -12,8 +12,11 @@
 #   4b. No agent file references a fixed /tmp/ext-* scratch path.
 #   5. Tiers sync: every agent's model:/effort: frontmatter equals
 #      config/tiers.json (scripts/tiers-sync.sh --check).
+#   5b. Tuning: config/tiers.json's tuning block passes triage-tiers.sh --bakeoff-json.
 #   6. Level map: triage-exec.js's CLAUDE_AGENT (level -> Claude agent) equals
 #      config/tiers.json levels.*.claude.agent, key for key.
+#   6b. triage-compare.js's DEFAULT_ADJUDICATORS (review bake-off) equal
+#      config/tiers.json levels.<level>.<vendor> model/effort.
 #
 # Fail-loud: accumulates all failures, exits non-zero if any hard failure
 # occurred (shellcheck's absence is NOT a hard failure — it's an explicit,
@@ -155,6 +158,16 @@ else
   printf '%s\n' "$TIERS_OUT" >&2
 fi
 
+# --- 5b. tuning block: the inline bake-off / parity-report config is valid --------
+# triage-tiers.sh --bakeoff-json owns the tuning schema (sampleRate, challengerMix,
+# challengers per level/vendor, the decision rule, ledger, pause threshold).
+if TUNING_OUT=$(TRIAGE_TIERS="$REPO_DIR/config/tiers.json" ./scripts/triage-tiers.sh --bakeoff-json 2>&1 >/dev/null); then
+  ok "tuning: config/tiers.json tuning block is valid (triage-tiers.sh --bakeoff-json)"
+else
+  fail "tuning: config/tiers.json tuning block is invalid"
+  printf '%s\n' "$TUNING_OUT" >&2
+fi
+
 # --- 6. level map: each workflow's CLAUDE_AGENT == tiers.json levels.*.claude.agent --
 # The workflows cannot read tiers.json at run time (the DSL has no fs), so each
 # carries its own level -> Claude agent map. This keeps them from drifting apart.
@@ -179,6 +192,26 @@ if command -v node >/dev/null 2>&1; then
     printf '%s\n' "$LEVEL_OUT" >&2
   fi
   done
+
+  # 6b. The review bake-off's default adjudicators name a model/effort per vendor; they
+  # must be exactly config/tiers.json levels.<level>.<vendor> (the one owner of ids).
+  if ADJ_OUT=$(node -e '
+    const fs = require("fs");
+    const src = fs.readFileSync("workflows/triage-compare.js", "utf8");
+    const m = src.match(/^const DEFAULT_ADJUDICATORS = (\[[^\n]*\])$/m);
+    if (!m) { console.error("no single-line `const DEFAULT_ADJUDICATORS = [...]` in workflows/triage-compare.js"); process.exit(1); }
+    const adj = Function(`"use strict"; return (${m[1]})`)();
+    const tiers = JSON.parse(fs.readFileSync("config/tiers.json", "utf8"));
+    const bad = adj.map(a => { const t = ((tiers.levels || {})[a.level] || {})[a.vendor] || {};
+      return t.model === a.model && t.effort === a.effort ? null : `${a.vendor}@${a.level}: workflow ${a.model}/${a.effort} vs tiers.json ${t.model}/${t.effort}`; }).filter(Boolean);
+    if (adj.length < 2) bad.push("fewer than two default adjudicators");
+    if (bad.length) { console.error(bad.join("\n")); process.exit(1); }
+  ' 2>&1); then
+    ok "review-adjudicators: triage-compare.js DEFAULT_ADJUDICATORS match config/tiers.json levels"
+  else
+    fail "review-adjudicators: triage-compare.js DEFAULT_ADJUDICATORS differ from config/tiers.json levels"
+    printf '%s\n' "$ADJ_OUT" >&2
+  fi
 
   # Workflow-DSL constraints (the runtime throws on these at run time, so catch them
   # here): meta is a pure literal, and no Date.now()/Math.random()/argless new Date().

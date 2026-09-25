@@ -206,33 +206,38 @@ GNU-only flags, or associative arrays.
 
 ---
 
-## `ext-run.sh` — the single owner of every external-CLI invocation (`agy`, `codex`)
+## `ext-run.sh` — the single owner of every external-CLI invocation (`codex`)
 
-Nothing else in this repo, and no agent, may call `agy` (Google Antigravity) or `codex`
-(OpenAI Codex CLI) directly. The vendor adapters, the deny-list, the known-good flag
-combinations, the timeouts, the build staging worktree and the exit-code contract all live
-in this one script. It was `agy-run.sh` until Wave 12; `install.sh` removes a leftover
-installed copy of the old name.
+Nothing else in this repo, and no agent, may call `codex` (OpenAI Codex CLI) directly. The
+adapter, the OS sandbox profile, the deny-list, the known-good flags, the timeouts, the build
+staging worktree, the command audit log and the exit-code contract all live in this one
+script. It was `agy-run.sh` until Wave 12; `install.sh` removes a leftover installed copy of
+the old name.
+
+**agy (Google Antigravity) was retired on 2026-09-24**: its headless mode let the model set a
+per-command `BypassSandbox` flag, and a read-only parity review used it to copy a file into a
+real repo. `--vendor agy` is exit 3 (`agy retired 2026-09-24`); leftover `.agy-deny` markers
+are inert.
 
 ```
 Usage: ext-run.sh <review|read|verify|critique|fuzz|build> --prompt-file FILE
-                  [--vendor agy|codex] [--level quick|builder|deep|top] [options]
+                  [--vendor codex] [--level quick|builder|deep|top] [options]
 ```
 
-`--vendor` defaults to `agy`, so pre-Wave-12 calls behave exactly as before.
+`--vendor` defaults to `codex` (the only vendor).
 
 ### Models come from the tiers file, never from the script
 
-Every model id and codex effort is read from the tiers file: `$TRIAGE_TIERS`, else
+Every model id and effort is read from the tiers file: `$TRIAGE_TIERS`, else
 `triage-tiers.json` next to the script (the installed copy of `config/tiers.json`), else
 `../config/tiers.json` (the repo). A missing or unparseable file is exit 2.
 
-- Read-only modes resolve `modes.<vendor>.<mode>`; build resolves `levels.<level>.<vendor>`
-  with `--level`, else `modes.<vendor>.build` (agy only).
-- **An absent entry is a refusal (exit 3), never a default model.** Deleting a vendor's
-  entry under a level is how that vendor stops being used there.
-- `--model` overrides the resolved model but must belong to the vendor (agy `gemini-*`,
-  codex `gpt-*`/`codex-*`); anything naming `claude` is always refused.
+- Read-only modes resolve `modes.codex.<mode>`; build resolves `levels.<level>.codex` with
+  `--level` (there is no `modes.codex.build`, so build without `--level` is refused).
+- **An absent entry is a refusal (exit 3), never a default model.** Deleting codex's entry
+  under a level is how it stops being used there.
+- `--model` overrides the resolved model but must be a codex model (`gpt-*`/`codex-*`);
+  anything naming `claude` is always refused.
 - `scripts/triage-tiers.sh` prints the level × vendor table and the latest parity note and
   flags `basis: "guess"` entries. `make tiers` (`scripts/tiers-sync.sh`) writes the Claude
   agents' `model:`/`effort:` frontmatter from the same file; `test/lint.sh` fails while the
@@ -240,62 +245,167 @@ Every model id and codex effort is read from the tiers file: `$TRIAGE_TIERS`, el
 
 ### Modes
 
-| Mode | agy flags | codex flags | cwd | Timeout | Writes |
-|---|---|---|---|---|---|
-| `review` | — | `-s read-only` | staging dir | 8m | no |
-| `read` | `--json-schema` with `--schema` | `-s read-only`, `--output-schema` with `--schema` | staging dir | 5m | no |
-| `verify` | — | `-s read-only -c web_search="live"` | staging dir | 5m | no |
-| `critique` | `--mode plan` | `-s read-only` | staging dir | 8m | no |
-| `fuzz` | — | `-s read-only` | staging dir | 8m | no |
-| `build` | `--mode accept-edits` | `-s workspace-write` | **disposable git worktree** | 20m | **yes** |
+| Mode | codex flags (besides the common set) | Workspace | Timeout | Writes |
+|---|---|---|---|---|
+| `review` | — | staging dir | 8m | no |
+| `read` | `--output-schema` with `--schema` | staging dir | 5m | no |
+| `verify` | `-c web_search="live"` | staging dir | 5m | no |
+| `critique` | — | staging dir | 8m | no |
+| `fuzz` | — | staging dir | 8m | no |
+| `build` | — | **disposable git worktree** | 20m | **yes** |
 
-**agy, every mode:** an explicit non-Claude `--model`, `--sandbox`,
-`--dangerously-skip-permissions`, `--output-format json`, `--print-timeout`, a
-script-computed `--add-dir`, and `</dev/null`. Never `--effort` — agy encodes effort in the
-model id and rejects the two together, so `--effort low|medium|high` rewrites the model-id
-**suffix** instead (`gemini-3.1-pro` has no `medium` rung, so medium resolves to high there).
+**Every run:** `cd <workspace> && TMPDIR=<stage>/cx/tmp sandbox-exec -f <profile> <codex>
+exec -C <workspace> --dangerously-bypass-approvals-and-sandbox -m <model> -c
+model_reasoning_effort=<effort> --ephemeral --skip-git-repo-check --ignore-user-config --json
+-o <stage>/cx/last-message.txt - < <prompt>`, with `CODEX_HOME` unset. `<codex>` is the real
+file `CODEX_BIN` names (a PATH lookup that never sees a shell function, symlinks resolved).
+codex has no print-timeout, so a background watchdog enforces the mode timeout (`--timeout
+N|Ns|Nm|Nh`). codex runs as its own process group (`set -m`; bash 3.2 has no `setsid`): the
+watchdog signals the whole tree (frozen with STOP, leaves first) and the group, and after
+every run `reap_tree` TERMs, then KILLs, whatever is left — a grandchild that ignores TERM or
+outlives its exiting parent dies with the run. (A descendant that moves itself into a new
+process group AND is orphaned escapes.) `--effort minimal|low|medium|high|xhigh|max`
+overrides the tiers effort. codex auto-loads `~/.codex/AGENTS.md`, so its prompt gets a
+footer: non-interactive worker, ask nothing, never touch `PROJECT_MEMORY.md`/handoffs/engram/
+memory files, touch only the workspace, and "Your filesystem access is limited to this
+workspace; other paths will fail - do not search the disk." (plus the `--allow-read` paths).
 
-**codex, every mode** (verified live, codex-cli 0.155.1): `codex exec -C <rundir> -s <sandbox>
--m <model> -c model_reasoning_effort=<effort> -c sandbox_workspace_write.exclude_slash_tmp=true
--c sandbox_workspace_write.exclude_tmpdir_env_var=true --ephemeral --skip-git-repo-check
---ignore-user-config --json -o <last-message> - < <prompt>`. Never a `--dangerously-*` flag.
-Without the two `/tmp` exclusions a workspace-write run can write anywhere under `/tmp` and
-`$TMPDIR`. codex has no print-timeout, so a background watchdog enforces the mode timeout
-(`--timeout N|Ns|Nm|Nh`). Both CLIs run as their own process group (`set -m`; bash 3.2 has no
-`setsid`): the watchdog signals the whole tree (frozen with STOP, leaves first) and the group,
-and after every run `reap_tree` TERMs, then KILLs, whatever is left — a grandchild that ignores
-TERM or outlives its exiting parent dies with the run. (A descendant that moves itself into a
-new process group AND is orphaned escapes; a CLI that needs the controlling terminal would be
-stopped, which none of the headless invocations here do.) `--effort minimal|low|medium|high|xhigh` overrides the tiers
-effort. codex auto-loads `~/.codex/AGENTS.md`, so its prompt gets a footer: non-interactive
-worker, ask nothing, never touch `PROJECT_MEMORY.md`/handoffs/engram/memory files, touch only
-the workspace.
+Options: `--prompt-file FILE` (required), `--input FILE` (repeatable), `--input-dir DIR`
+(repeatable, read-only modes) with `--input-dir-max-mb N` (default 200), `--allow-read PATH`
+(repeatable), `--schema FILE|JSON` (read only), `--workdir DIR`, `--output FILE`,
+`--patch-out FILE`, `--check CMD` and `--level` (build only), `--vendor`, `--model`,
+`--effort`, `--timeout`, `--raw`.
 
-Options: `--prompt-file FILE` (required), `--input FILE` (repeatable), `--schema FILE|JSON`
-(read only), `--workdir DIR`, `--output FILE`, `--patch-out FILE`, `--check CMD` and `--level`
-(build only), `--vendor`, `--model`, `--effort`, `--timeout`, `--raw`.
+Data — diffs, logs, corpora — goes in with `--input`, never inlined into the brief: the sandbox
+lets codex read only its workspace, so staging is the way in. A prompt file over 256 KB is a
+usage error that names `--input`. Staged inputs are copied into the workspace and named in a
+`--- Workspace ---` prompt footer by **absolute** path. A `--schema` (file or inline JSON; not
+JSON = usage error) is copied into codex's scratch dir (it reads it inside the sandbox) in
+**OpenAI-strict** form, because codex's `--output-schema` is strict structured output and the API
+rejects anything else (codex exits 1: UNAVAILABLE). Every object with `properties` gets
+`additionalProperties: false` and `required` = all its properties; a property the caller left
+optional becomes nullable (`type` gains `"null"`, an `enum` gains `null`, `anyOf`/`oneOf` gain
+`{"type":"null"}`). The reply is mapped back: a `null` under an originally-optional property is
+dropped, so stdout has the shape the caller's schema describes. The caller's file is never
+modified. When codex exits non-zero, the reason carries the API error (re-serialized onto one
+line) and its stderr minus the `codex_skills_extension … failed to walk skills root` lines every
+confined run logs.
 
-Data — diffs, logs, corpora — goes in with `--input`, never inlined into the brief: agy gets the
-prompt as `-p "$(cat FILE)"`, which is `ARG_MAX`-bounded. A prompt file over 256 KB is a usage
-error that names `--input`. Staged inputs are copied into the workspace and named in a
-`--- Workspace ---` prompt footer by **absolute** path.
+`--input-dir DIR` stages a **copy of a whole tree** (a review snapshot: many files plus page
+images) at `inputs/<basename>` and names it, with its file count, in the same footer. It is
+checked before anything is staged, like `--input` and more: the deny check on DIR and on the main
+worktree of the repo it sits in (exit 3); DIR is not `$HOME` or an ancestor of it (exit 3); no
+deny-listed repo or `.codex-deny` marker anywhere beneath it (exit 3); **no symlink in it may
+resolve outside it** — absolute, `../` or directory links alike (exit 3: a link out would smuggle
+in whatever it names); links that stay inside are copied as links and still resolve inside the
+copy; a special file (fifo, socket, device) is exit 2; a tree over `--input-dir-max-mb` (`du -sk`)
+is exit 2 naming its size and the cap. Two staged inputs with one basename are exit 2. Read-only
+modes only (build mode is exit 2). `triage-cross-reviewer` passes a brief's `INPUT_DIR=<dir>`
+header line through as `--input-dir`.
+
+### OS confinement (sandbox-exec) — fail closed
+
+Staging controls what codex is *handed*, not what it can *reach*: codex's own seatbelt blocks
+writes outside its workspace but not reads of the whole disk, its `sandbox_permissions` config
+does not restrict reads, and an outer `sandbox-exec` does not nest with codex's own seatbelt
+(every command rc 71 — the 2026-09-24 spike, codex-cli 0.156.1). So codex's sandbox is switched
+off and **replaced** by a profile `write_profile` generates per run (SBPL, last match wins,
+every path physical and escaped):
+
+```
+(version 1)
+(allow default)
+(deny file-read* (subpath "$HOME") (subpath "/private/tmp") (subpath "/private/var/folders")
+                 (subpath "/tmp") (subpath "/var/folders"))
+(deny file-read* file-write* (subpath <real repo>) (subpath <its git dir>) ...)   ; build only
+(allow file-read* (literal "$HOME") (subpath "$HOME/.codex") (subpath <workspace>)
+                  (subpath <stage>/cx) (subpath <each --allow-read>))
+(allow file-read-metadata (literal <each ancestor of those paths>) ...)
+(allow file-read* (literal "<per-user temp dir>/xcrun_db"))                          ; macOS
+(deny file-write* (subpath "/"))
+(allow file-write* (subpath "$HOME/.codex") (subpath <workspace>) (subpath <stage>/cx))
+(allow file-write* (literal "/dev/null") (literal "/dev/tty") (literal "/dev/dtracehelper")
+                   (regex #"^/dev/fd/[0-9]+$") (literal "/dev/ptmx"))
+(allow file-write* (require-all (regex #"^/dev/ttys[0-9]+$")
+                                (extension "com.apple.sandbox.pty")))
+```
+
+**Reads.** Nothing under `$HOME` or the temp dirs — where a parallel compare's sibling
+stages and patches, other concurrent ext-run stages and Claude session scratchpads
+(`/private/tmp/claude-<uid>/…`) live — is readable but `$HOME` itself (the directory entry),
+`~/.codex`, the workspace, `<stage>/cx` and each `--allow-read` path (which may sit in a temp
+dir). The stage root and `<stage>/meta` are not: codex gets the prompt on stdin and writes
+the event stream through inherited fds. The ancestors of the readable paths get
+**metadata only** (stat, never a listing): `realpath()` in git and node `lstat()`s every
+component and fails on a denied `/private/tmp` without it. One temp-dir file is readable,
+never writable: xcrun's tool-path cache, without which every `/usr/bin/git`, `python3`,
+`make`… shim takes ~2 s instead of ~20 ms; writable, it could redirect those shims for later,
+unsandboxed sessions.
+
+**Writes are deny-by-default:** nothing anywhere — a user-owned `/opt/homebrew`,
+`/Users/Shared`, `/private/var/tmp`, mounted volumes — but `~/.codex`, the workspace,
+`<stage>/cx` and these device files. Each was verified 2026-09-24 (macOS 26.6, codex-cli
+0.156.1) with a kill-on-touch rule and the stub; hard links, clones, renames, symlinks,
+fifos and Unix sockets outside the allowed dirs are denied too:
+
+| Device | Why |
+|---|---|
+| `/dev/null` | every shell redirect (`>/dev/null 2>&1`) |
+| `/dev/tty` | bash, sh and zsh open it at every start (also under git's and python3's xcrun shims); a headless run has no controlling terminal, so the open fails ENXIO exactly as unsandboxed |
+| `/dev/dtracehelper` | dyld opens it at every process start (sh, bash, zsh, git, python3, node, codex) to register DTrace probes; no filesystem effect |
+| `/dev/fd/N` | `> /dev/stdout`, `2> /dev/stderr`, `tee /dev/stderr`, `>(…)` process substitution |
+| `/dev/ptmx`, `/dev/ttysN` | codex's `exec_command` allocates a PTY when the model passes `tty: true`; a tty is writable only if it was created inside the sandbox (the `com.apple.sandbox.pty` extension), so the user's own terminals stay unwritable |
+
+`<stage>/cx` is codex's scratch (TMPDIR, the `-o` file, the schema copy). `<stage>/meta` —
+the prompt, the `--json` event stream, stderr, the profile and the build worktree's hidden
+`.git` — is neither readable nor writable by codex, so it cannot rewrite its own audit trail
+or swap in a gitdir for this script's later (unsandboxed) git calls. In build mode the real
+repo, its main worktree and its git dir are denied outright (this matters for repos outside
+`$HOME` and the temp dirs, which no other read rule covers).
+
+**Fail closed, no opt-out:** no `sandbox-exec` (Linux) is exit 4 before anything runs; a
+preflight then runs `/bin/sh` under the profile and requires it to apply (exit 0) **and** to
+enforce: its writes to two paths the profile denies must not land — the stage root (inside
+the temp dirs) and `.ext-run-canary-<run id>` in `/Users/Shared` (else `/private/var/tmp`,
+else `/var/tmp`), outside `$HOME` and the temp dirs, where only deny-by-default stops it. A
+landed canary is removed, then exit 4 and codex never starts; no qualifying canary dir, or a
+canary path that already exists, is exit 4 too. The canaries guard against an accidental
+no-op or a regressed profile (the pre-2026-09-24 one passes the stage canary and is caught by
+the outside one); whoever controls `PATH` controls `CODEX_BIN` as well.
+
+`--allow-read PATH` widens reads only, and is refused (exit 3) when the deny check refuses
+PATH, when PATH is `$HOME` or an ancestor of it (that would re-open every repo), or when a
+deny-listed repo or a `.codex-deny` marker lies anywhere beneath it.
+
+Known limits: `~/.codex` stays writable (auth refresh, logs), so a run could edit
+`~/.codex/config.toml` or `~/.codex/AGENTS.md`, which ext-run ignores (`--ignore-user-config`)
+but an interactive codex session would load. zsh here-documents write to `$TMPPREFIX`
+(default `/tmp/zsh`), which is denied, so a `cat <<EOF` inside a `zsh -lc` command fails.
+
+### Command audit log
+
+codex runs `--ephemeral`, so nothing of what it ran would survive the stage. After every run
+(also a failed or interrupted one) ext-run appends one JSONL line per `command_execution`
+item of the `--json` stream — item.started/item.completed collapse to one — to
+`$EXT_RUN_AUDIT_LOG` (default `~/.claude/logs/ext-run/codex-commands.jsonl`):
+`{ts, runId, mode, model, cwd, command (first 500 chars), exitCode}`. **Never**
+`aggregated_output` or any file content. The log is written by ext-run, outside the sandbox;
+a dir that cannot be created is exit 4 before codex runs. Lines older than 30 days are pruned
+opportunistically, under a `mkdir` lock concurrent runs share.
 
 ### Build mode never touches the caller's working tree
-
-Neither CLI's flags can express "which files it may change" safely (agy needs
-`--dangerously-skip-permissions`, and `--mode plan` is *not* a write guard), so build mode:
 
 1. `git worktree add --detach <stage> HEAD` — a disposable checkout of `--workdir`'s repo;
 2. carries the caller's uncommitted work in (`git diff HEAD --binary` applied with
    `--index`, plus every untracked file from `git ls-files --others --exclude-standard`);
 3. commits that carried state as the stage base, so the result patch is the **pure model
    delta** rather than a re-application of the caller's own changes;
-4. points the CLI (agy `--add-dir` + cwd, codex `-C` + cwd) at the worktree — never at the
-   real repo; staged `--input` files go in `.<vendor>-inputs/`. For the duration of the run
-   the worktree's `.git` file — which names the REAL repo's gitdir — is moved into the
-   script's private meta dir, so the CLI (agy runs with `--dangerously-skip-permissions`)
-   cannot discover or write the real repository through git; it is restored (any `.git` the
-   CLI created is discarded) before the capture, and always in the exit trap;
+4. points codex (`-C` + cwd) at the worktree — never at the real repo; staged `--input`
+   files go in `.codex-inputs/`. For the duration of the run the worktree's `.git` file —
+   which names the REAL repo's gitdir — is moved into the script's private meta dir (not
+   codex-writable), so codex cannot discover or write the real repository through git; it
+   is restored (any `.git` the CLI created is discarded) before the capture, and always in
+   the exit trap;
 5. captures `git add -A && git diff --cached --binary` into `--output` (a `mktemp` file
    when `--output` is omitted; the path is always printed on stderr). `add -A` honours
    `.gitignore`, so a deliverable at an ignored path comes back as "no changes";
@@ -323,92 +433,105 @@ stderr and never changes the exit code.
 
 | Code | Meaning | Caller action |
 |---|---|---|
-| 0 | OK — stdout is the model's answer (the raw envelope / JSONL events with `--raw`) | relay |
+| 0 | OK — stdout is the model's answer (the JSONL events with `--raw`) | relay |
 | 2 | USAGE — bad mode/flags/missing file/bad tiers file; nothing ran | caller bug, fail loud |
-| 3 | REFUSED — deny-list hit, boundary not attested, vendor not listed in the tiers file for this level/mode, or `--patch-out` on a dirty tree; nothing ran | return `REFUSED: …` |
-| 4 | UNAVAILABLE — CLI missing, non-zero exit, timeout, unparseable envelope, denied tools, non-SUCCESS status, a codex failure event, empty response, or the build stage could not be prepared | return `UNAVAILABLE: …`; never substitute your own work, never read as "no findings" |
+| 3 | REFUSED — deny-list hit, boundary not attested, codex not listed in the tiers file for this level/mode, a refused `--allow-read`, the retired agy vendor, or `--patch-out` on a dirty tree; nothing ran | return `REFUSED: …` |
+| 4 | UNAVAILABLE — CLI missing, no `sandbox-exec` or a profile that does not apply/enforce, audit log dir not writable, non-zero exit, timeout, a codex failure event, empty response, or the build stage could not be prepared | return `UNAVAILABLE: …`; never substitute your own work, never read as "no findings" |
 | 5 | SCHEMA — `--schema` given and the response is not valid JSON | retry once or report INCOMPLETE |
 | 6 | APPLY — build only: the patch would not apply cleanly to the real repo, so NOTHING was written (the tree is unchanged). The patch is left at `--output`; the answer still went to stdout | resolve by hand, or re-run |
 
-**Exit 0 alone is never proof of work.** A headless agy run whose tools were auto-denied
-exits 0 and reports `{"status":"SUCCESS","response":"","denied_actions":[…]}`; a
-`--print-timeout` expiry looks the same. The agy gate therefore needs exit 0,
-`.denied_actions` empty and `.response` non-empty. A failed codex turn emits `turn.failed` and
+Every REFUSED/USAGE decision is made before any availability check, so a refusal is the same
+exit 3 on a machine without `sandbox-exec`.
+
+**Exit 0 alone is never proof of work.** A failed codex turn emits `turn.failed` and
 `{"type":"error"}` events, exits 1, and writes no `-o` file; the codex gate needs rc 0, a
 non-empty `-o` file and no failure event. A codex rate limit is therefore UNAVAILABLE too.
 
 ### Deny-list and the data boundary
 
 Applied to the resolved path of `--prompt-file`, `--workdir` (and its repo top level), a
-`--schema` file, and every `--input`. "Resolved" is the whole symlink chain (`resolve_path`,
-bash-3.2 `readlink` loop), not just the parent dir, and the resolved path is also the one that
-is read — a link in an allowed dir pointing into a denied repo is refused, never followed:
+`--schema` file, every `--input` and every `--allow-read`. "Resolved" is the whole symlink
+chain (`resolve_path`, bash-3.2 `readlink` loop), not just the parent dir, and the resolved
+path is also the one that is read — a link in an allowed dir pointing into a denied repo is
+refused, never followed:
 
 1. refuse if any **path component equals** a denied name — component equality, not
    substring, so `…/clip-creator/media` refuses and `…/clip-creators-lab` does not.
-   `clip-creator` is hard-denied for every vendor; `AGY_DENY_REPOS` / `CODEX_DENY_REPOS`
-   add names for one vendor;
-2. refuse if the vendor's marker — `.agy-deny` (agy only) or `.codex-deny` (codex only) —
-   exists anywhere from that path up to **and including** `$HOME` (or `/` for a path outside
-   it): a per-repo, per-vendor opt-out that needs no edit to this script;
-3. refuse unless `AGY_BOUNDARY_CLEARED=1` (both vendors) — clinical/BCH/PHI and COI
-   material is not a path pattern, so it stays an explicit caller attestation.
+   `clip-creator` is hard-denied; `CODEX_DENY_REPOS` adds names;
+2. refuse if a `.codex-deny` marker exists anywhere from that path up to **and including**
+   `$HOME` (or `/` for a path outside it): a per-repo opt-out that needs no edit to this
+   script;
+3. refuse unless `AGY_BOUNDARY_CLEARED=1` — clinical/BCH/PHI and COI material is not a path
+   pattern, so it stays an explicit caller attestation (the name predates agy's retirement).
 
-The workspace flag (`--add-dir` / `-C`) is **not** exposed as a caller option: the script
+The workspace (`-C`, cwd, the profile's workspace rule) is **not** a caller option: the script
 supplies exactly one value, its own run directory, after that path has passed the deny check.
-
-This is a default-ALLOW list. In build mode the CLI may read any file in the repo, and agy
-persists its own plan/walkthrough artifacts under `~/.gemini/antigravity-cli/brain/…`,
-outside anything this script can clean up. Drop the vendor's empty marker into any tree you
-have not consciously cleared for it.
 
 ### Environment
 
 | Var | Effect |
 |---|---|
-| `AGY_BIN` / `CODEX_BIN` | executables (default: `agy` / `codex` on PATH) |
-| `AGY_DENY_REPOS` / `CODEX_DENY_REPOS` | extra space-separated names that vendor must never see (`clip-creator` is always denied) |
-| `AGY_BOUNDARY_CLEARED` | must be `1`, else REFUSED before anything runs (both vendors) |
+| `CODEX_BIN` | the codex executable (default `codex` looked up on PATH); resolved to its real file |
+| `CODEX_DENY_REPOS` | extra space-separated names codex must never see (`clip-creator` is always denied) |
+| `AGY_BOUNDARY_CLEARED` | must be `1`, else REFUSED before anything runs |
 | `AGY_STAGE_KEEP` | `1` keeps the staging dir (its path is printed on stderr). Never keeps the build worktree |
+| `EXT_RUN_AUDIT_LOG` | the command audit log (default `~/.claude/logs/ext-run/codex-commands.jsonl`) |
 | `TRIAGE_TIERS` | the tiers file to read (overrides the installed and repo copies) |
 | `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_COMMON_DIR`, `GIT_NAMESPACE`, `GIT_CEILING_DIRECTORIES` | **cleared** at the top (also by `patch-check.sh`, `stage-worktree.sh`, `parity-suite.sh`): an inherited absolute `GIT_DIR`/`GIT_WORK_TREE` (a git hook's environment) would otherwise redirect `git -C` into another repository |
 
 Vendor-side token spend is invisible to `triage-usage.sh`, so each run echoes
-`ext-run: <N> tokens (<S>s, <vendor>/<model>)[ out=<M>]` to **stderr**. `N` is the total
-(codex: `input_tokens + output_tokens` summed over `turn.completed`; agy:
-`.usage.total_tokens`). `out=` is the output side, reasoning included, which is what a bake-off
-compares: codex `output_tokens` (reasoning tokens are already inside it); agy only when its
-envelope carries a numeric `.usage.output_tokens`, otherwise the field is omitted, never guessed
-(unverified whether agy 1.2.3 emits it).
+`ext-run: <N> tokens (<S>s, codex/<model>) out=<M>` to **stderr**: `N` = `input_tokens +
+output_tokens` summed over `turn.completed`; `out=` = `output_tokens` (reasoning included), the
+part a bake-off compares.
 
 ### Requirements and tests
 
-`bash` (3.2+, macOS default), `jq`, and `git` for build mode.
+`bash` (3.2+, macOS default), `jq`, `sandbox-exec` (macOS) for any codex run, and `git` for
+build mode.
 
-`test/ext-run.sh` (wired into `make test`) is hermetic: stub `agy` and `codex` executables
-first on `PATH` replay canned envelopes / JSONL events and log their cwd, argv and prompt, so
-the flag tables (codex's from a fixture tiers file), the deny-list, the exit-code contract,
-the watchdog, `--patch-out`/`--check` and the whole build-worktree round trip are asserted
-without ever reaching a real CLI or the network — including: the CLI sees no `.git` in its
-cwd, a conflicting 3-way apply leaves the caller's tree byte-identical (exit 6), symlink
-chains into denied repos, a marker at `$HOME`, an inherited `GIT_DIR`, a trailing option with
-no value (exit 2, never a hang) and grandchildren reaped. It also covers `tiers-sync.sh` and
-`triage-tiers.sh`. `qc/mutate.sh` #49–#51 prove the git-env, symlink and apply-back guards
-have teeth.
+`test/ext-run.sh` (wired into `make test`) is hermetic: a stub `codex` (a shell script living
+in the test's `$HOME/.codex`) replays canned JSONL events and logs its cwd, argv, prompt and
+whether it ran confined. On macOS every stub run goes through the REAL generated profile, and
+the P* checks prove enforcement: workspace read/write works; a file under `$HOME/projects`,
+writes to `$HOME` and `/private/tmp`, and writes to the private meta dir are denied; outside
+`$HOME` and the temp dirs (`/private/var/tmp`, `/Users/Shared`) no file, dir, symlink,
+rename-out or write through a hard link lands; with the stage under a real `/private/tmp`
+fixture and `$HOME` elsewhere, a sibling stage, a sibling candidate's patch, a
+Claude-scratchpad-like dir, a file in the per-user temp dir and the stage's own meta are
+unreadable while the workspace and an `--allow-read` dir in the temp dirs stay readable; a
+login zsh, git (init, realpath, commit), python3, a PTY and `/dev/fd` work; an
+`--allow-read` dir is readable and read-only; in build mode the real repo (outside `$HOME`
+and the temp dirs) and its git dir are unreadable and the hidden `.git` cannot be rewritten;
+missing / non-applying / non-enforcing `sandbox-exec` is exit 4 with the stub never run —
+including a double that stops only the stage canary and the real `sandbox-exec` on the old
+allow-by-default write rule, both caught by the outside canary, which is then removed. Where
+`sandbox-exec` does not exist (Linux CI) a NON-confining test double that forges the
+preflight canary stands in, the enforcement checks SKIP, and everything else — the profile
+text included — still runs. Also covered: the flag table, the
+deny-list, `--allow-read` refusals, `--input-dir` (I*: a whole tree copied, links inside kept,
+absolute / `../` / directory links out refused, deny-listed repos and markers in or above it,
+`$HOME`, the size cap, special files, name collisions, read-only modes only), the audit log
+(fields, no output, failed runs, prune), the exit-code contract, the watchdog, `--patch-out`/`--check`, the build-worktree round trip, symlink
+chains, a marker at `$HOME`, an inherited `GIT_DIR`, a trailing option with no value, and
+`tiers-sync.sh`/`triage-tiers.sh`. `qc/mutate.sh` proves the confinement, audit and agy-refusal
+guards have teeth (#56–#59), deny-by-default writes, the temp-dir read rule and the outside
+canary (#60–#62), the `--input-dir` outside-symlink refusal (#70), as well as the git-env,
+symlink and apply-back guards (#49–#51).
 
 **Known limitation — `--check` is not sandboxed.** The check command runs in the disposable
-worktree with this user's full rights, OUTSIDE the model sandbox, and it may execute code the
-external CLI wrote (tests, Makefiles, scripts). The worktree is the only confinement. The same
-holds for `patch-check.sh`. A macOS seatbelt profile would close this, but would also block
-checks that need LibreOffice (grant-forge's docx rendering), so it is deliberately not done.
+worktree with this user's full rights, OUTSIDE the model sandbox, and it may execute code
+codex wrote (tests, Makefiles, scripts). The worktree is the only confinement. The same holds
+for `patch-check.sh`. A seatbelt profile would close this, but would also block checks that
+need LibreOffice (grant-forge's docx rendering), so it is deliberately not done.
 
 ## `patch-check.sh` — the independent grader of a bake-off
 
 ```
-patch-check.sh --repo DIR --base REV --check CMD [--overlay DIR] [--timeout SECS] PATCH...
+patch-check.sh --repo DIR --base REV --check CMD [--overlay DIR] [--timeout SECS] [--env-map FILE] PATCH...
+patch-check.sh --print-env --check CMD [--env-map FILE]
 ```
 
-`workflows/triage-compare.js` runs one brief on several candidates (Claude levels, codex, agy),
+`workflows/triage-compare.js` runs one brief on several candidates (Claude levels, codex),
 each writing a patch. The candidates' own claims about their checks are never the grade; this
 script is. For each PATCH, in argument order:
 
@@ -418,7 +541,13 @@ script is. For each PATCH, in argument order:
 3. copies `--overlay DIR` into the worktree after the patch: hidden tests the candidates
    never saw, kept out of the diffstat;
 4. runs CMD (`bash -c`) from the worktree root under a wall-clock watchdog (default 600s;
-   over time = rc 124);
+   over time = rc 124), with the mapped `$PARITY_` tool variables exported (see **Parity env
+   map** below) and `XDG_CACHE_HOME`, `TMPDIR` and `GRANTFORGE_CACHE_DIR` all pointed at a fresh
+   per-patch dir beside the grading worktree (`<tmp root>/cache-<n>`, removed with it) — a check
+   never refreshes a real user cache. grantforge honours `GRANTFORGE_CACHE_DIR` (its
+   `config.cache_dir()`, whose default is `~/Library/Caches/grant-forge`, not XDG); the other two
+   cover tools that follow XDG or `$TMPDIR`. (An old grant-forge base that still wrote its cache
+   inside the package dir writes into the grading worktree, which is discarded.);
 5. removes the worktree and its `.git/worktrees` bookkeeping (`cleanup_wt()`, also on every
    exit path via the trap).
 
@@ -434,7 +563,30 @@ but the `--overlay` copy failed, so the hidden tests are missing and the check w
 patch is ungradable — `triage-compare.js` maps it to `invalid`, `parity-suite.sh verify-task`
 to "neither base-fails nor solution-passes"; never a pass or a fail. `error` appears only then.
 Exit 0 = every patch was reported; exit 2 = usage error (bad flag, a flag with no value, not a
-repo, unknown REV), nothing ran. It never touches the caller's working tree, index or HEAD.
+repo, unknown REV, an unmapped `$PARITY_` variable), nothing ran. It never touches the caller's
+working tree, index or HEAD.
+
+### Parity env map — no real paths to candidates
+
+Task checks are shown to candidates, so they never name a real tool path (a
+`/Users/…/.venv/bin/python` tells a candidate where the source repo lives). A check names a tool
+only as an env var **`PARITY_[A-Z0-9_]+`**, quoted as usual: `"$PARITY_PY_3DP" -m pytest`. The
+**env map** — `--env-map FILE`, else `$PARITY_ENV_MAP`, else `~/.agents/parity/envs.json` — is a
+JSON object mapping each variable to an absolute path:
+
+```json
+{"PARITY_PY_3DP": "/abs/parity/env/3dp/bin/python", "PARITY_MKDOCS_3DP": "/abs/parity/env/3dp/bin/mkdocs"}
+```
+
+`resolve_env()` in `patch-check.sh` is the one owner of the rule: it collects every
+`$PARITY_…`/`${PARITY_…}` reference in CMD (bash's full name, so `$PARITY_py` is refused, not
+read as `PARITY_`), and exits 2 naming the variable when it is unmapped, when there is no map,
+or when the map is not `{"PARITY_<NAME>": "/abs"}`. A check that references none never reads the
+map. The mapped values are exported into the check at grading, OUTSIDE any sandbox. `--print-env`
+prints the same resolution as `export PARITY_X='…'` lines (`parity-suite.sh` materialize and
+verify-task call it). Candidates see the checks with the variables UNEXPANDED; only a task with
+`"selfCheckEnv": true` lets them run the checks themselves (see `parity-suite.sh`) — the
+trade-off: `.parity-env` reveals tool paths, never repo content.
 
 The check runs as its own process group; on timeout the whole tree is killed, and after every
 check `reap_tree` kills anything it left running (a background server, a TERM-ignoring child)
@@ -447,7 +599,11 @@ applies+fail, non-applying, empty, binary/new file, overlay visible to the check
 the diffstat and the caller's tree, caller tree/index/HEAD untouched, worktrees cleaned (also
 after a timeout), missing patch, usage errors (incl. a trailing flag with no value), overlay
 copy failure (`overlay-failed`), an inherited decoy `GIT_DIR`, grandchildren killed (timeout and
-normal exit). `qc/mutate.sh` #32 and #48 prove the cleanup and overlay assertions have teeth.
+normal exit), the env map (export with quoting intact, `PARITY_ENV_MAP`, `--env-map` precedence,
+unmapped / missing map / invalid map / bad name => exit 2 before anything runs, a map-free check
+never reading it, `--print-env`) and the per-patch cache dir (all three variables, one dir per
+patch beside its worktree, removed). `qc/mutate.sh` #32, #48, #63 (unmapped variable ignored) and
+#66 (cache env not set) prove those assertions have teeth.
 
 ## `stage-worktree.sh` — the staging area of a bake-off
 
@@ -456,6 +612,7 @@ stage-worktree.sh create    --repo R --base REV --count N --dir D
 stage-worktree.sh diff      --worktree W --base SHA --out FILE
 stage-worktree.sh leakcheck --repo R --dir D
 stage-worktree.sh cleanup   --repo R --dir D
+stage-worktree.sh apply     --repo R --patch P
 ```
 
 `workflows/triage-compare.js` never gives a candidate the real repo as its working directory.
@@ -473,8 +630,21 @@ the fingerprint: `CLEAN` (exit 0); `LEAK` (exit 7) when, with HEAD unchanged, th
 path's content changed, or, with HEAD moved, any path's content changed; `BASE_MOVED` (exit 0,
 flagged) when someone committed and nothing else changed — grading stays at the recorded sha.
 `cleanup` removes each staged worktree and its bookkeeping, prunes, and deletes D; it refuses a
-D without a fingerprint. Every step prints one JSON line; R's working tree and index are only
-ever read (`--no-optional-locks`).
+D without a fingerprint. Every step prints one JSON line; except for `apply`, R's working tree
+and index are only ever read (`--no-optional-locks`).
+
+`apply` is the one deliberate write into R: an inline bake-off's fallback applies the chosen
+candidate's patch P. Only an apply proven clean first is written: `git apply --check` then
+`git apply` (index-free, so unrelated unstaged/untracked work does not block it); else `git apply
+--3way --check`, which exits 0 even when the merge WOULD conflict, so it counts as clean only
+with rc 0 **and** no `conflict` in its output, then `git apply --3way`; else nothing is written
+and the exit is **6** with R byte-identical. An empty P is a no-op success. It prints
+`{step:"apply", repo, patch, ok, applied, method: plain|3way|empty|none, error?}`. The rule
+mirrors `ext-run.sh`'s `apply_back()` on purpose instead of sharing a helper: ext-run stays
+self-contained (single owner of every external-CLI run, its own exit-6 contract and
+diagnostics), and a runtime dependency from that danger-zone script on this one was judged
+worse than a three-command rule kept in two places. Each copy has its own conflict-marker
+mutation (#51 ext-run, #55 here).
 
 `test/stage-worktree.sh` (wired into `make test`): sha resolution, worktrees at the exact sha,
 refusals (D inside/containing R, populated D, relative D, unknown REV), a diff with
@@ -482,14 +652,158 @@ new/modified/deleted/binary files that applies cleanly at the sha through `patch
 empty diff still checked, diff refusing the main tree and never leaving a stale patch, leakcheck
 CLEAN / LEAK (tracked edit, untracked file, content change to an already-dirty file) /
 BASE_MOVED (including committing pre-existing work), cleanup leaving no worktree registered, and
-R's tree, index bytes and HEAD untouched. `qc/mutate.sh` #39 proves the new-file capture has teeth.
+R's tree, index bytes and HEAD untouched; `apply` with a clean patch, a drifted tree recovered by
+a clean 3-way merge, a conflicting patch (exit 6, tree incl. untracked/unstaged work and index
+byte-identical, no markers), an empty patch and a relative path. `qc/mutate.sh` #39 proves the
+new-file capture has teeth, #55 the apply conflict pre-check.
+
+## `review-stage.sh` — the staging area of a review bake-off
+
+```
+review-stage.sh snapshot    --repo R --base B --head H --include GLOB... [--exclude GLOB...]
+                            [--context PATH...] [--extra SRC:DEST...] [--hard-exclude PATTERN...]
+                            --out DIR
+review-stage.sh fingerprint --repo R --path P... [--hard-exclude PATTERN...] [--out FILE]
+review-stage.sh compare     A.json B.json
+```
+
+A multi-value flag takes every argument up to the next `--flag` (and may repeat). Globs are git
+pathspecs with `:(glob)` magic relative to the repo root (`*` stays in one directory, `**/` spans
+any depth, so `docs/**/*.md` matches `docs/a.md`; a directory matches everything below it); no
+leading `/`, `-` or `:`, no `.`/`..` components.
+
+`snapshot` resolves B and H to shas and writes, into a DIR that is absolute, outside R, not
+containing R and absent or empty: `DIR/snap` — the files of **commit H** (`git archive H`, never
+the live tree, no `.git`) selected as (include − exclude) + context, symlinks and submodules
+dropped, each `--extra SRC:DEST` (an absolute regular file **outside** R, e.g. a CAD cache) copied
+to `snap/_extra/DEST`; `DIR/range.diff` — `git diff B H` over (include − exclude), no renames, no
+external diff/textconv, `a/`/`b/` prefixes; `DIR/manifest.json` — `{base, head, baseRef, headRef,
+include, exclude, context, hardExclude, files:[{path,bytes}], extras:[{src,dest,bytes}],
+excluded:[{path, reason: hard-exclude|symlink|submodule, pattern?}], codexDenied}`. It prints one
+JSON line `{step, ok, base, head, snap, diff, manifest, files, bytes, diffBytes, extras, excluded,
+codexDenied}`; a failure removes what it wrote.
+
+**Hard excludes** — `context/` and `PROJECT_MEMORY*.md` always, plus each `--hard-exclude` — are
+applied to everything written into DIR whatever git thinks of the path (tracked, ignored or
+untracked) and whatever `--include`/`--context` name. gitignore semantics, erring wide: a pattern
+with no inner slash matches **any** path component (`context/` also drops `docs/context/x.md`); one
+with a slash is anchored at the repo root and its `*` may cross directories. A hard-excluded path
+is never archived and never in range.diff (only its name, in `manifest.excluded`); an `--extra`
+whose DEST, or any component of whose SRC, matches is refused (exit 2). **Deny carries over:** when
+R (or its main worktree) or an extra SRC is under a hard-denied repo (clip-creator), or a
+`.codex-deny` marker lies inside R or on the way up to `$HOME`, DIR gets a `.codex-deny` of its
+own — `ext-run.sh` then refuses the snapshot and the diff for codex exactly as it would the repo;
+Claude reviewers may still read them.
+
+`fingerprint` is the review's SOURCE_CHANGED guard, scoped to its paths: `{step, head, paths,
+status (git status --porcelain=v1 -uall --no-renames -- paths), tree (a hash over the content of
+every changed/untracked path there, so a second edit to a dirty file counts), committed (a hash
+over HEAD's blobs at the paths)}`, hard-excluded paths left out of all three, read-only
+(`--no-optional-locks`). `compare` exits 0 when status, tree and committed are equal — a change
+outside the paths, or HEAD moving by a commit outside them, is no change (`headMoved` says so) —
+and **7** otherwise, printing `{step, same, changed, headMoved, detail}`.
+
+Exit codes: 0 ok / same; 1 the step failed; 2 usage, nothing written; 7 compare: changed.
+`test/review-stage.sh` (in `make test`): the archive of H, never live edits or untracked files;
+include/exclude/context; hard excludes winning over include, context and tracking at any depth,
+in the snapshot and the diff, with the manifest listing them; symlinks dropped; extras (and their
+refusals); range.diff byte-equal to `git diff B H` of the included paths; out-dir refusals; the
+deny carry-over; R untouched; fingerprint scoping and compare codes; `HARD_DENY_REPOS` equal to
+ext-run.sh's. `qc/mutate.sh` #67 proves the hard exclude holds for tracked paths.
+
+### The review bake-off (`triage-compare` kind `review`)
+
+`Workflow({name:'triage-compare', args:{kind:'review', repo, repoName, base, head?, include,
+exclude?, context?, extras?:[{src,dest}], hardExclude?, groundTruth, accepted?, conventions?,
+outDir, reviewers:[{vendor, level, model?, effort?, label?}], adjudicators?, batchSize?:10,
+reviewerTimeout?:'30m', adjudicatorTimeout?:'15m', extendResult?, supersedes?}}`:
+
+1. one quick task runs `review-stage.sh snapshot` and `fingerprint` (to
+   `<outDir>/fingerprint-before.json`); a failed snapshot throws before any reviewer;
+2. every reviewer runs **in parallel** on the snapshot + range.diff only — Claude: its level's
+   agent (model/effort passed through) with a findings schema, told to read nothing else, to
+   prefix every command with `cd <snap> && `, never to run git, and that it may view images;
+   codex: `triage-cross-reviewer` with `VENDOR=codex MODE=read MODEL= EFFORT= INPUT_DIR=<snap>`
+   and `--input range.diff` (codex reviewers must pin model **and** effort: read mode's default
+   model is the read-mode one, not the level's). Every codex spawn (reviewer or adjudicator) also
+   carries `TIMEOUT=` (reviewers `30m`, adjudicators `15m`, overridable; N|Ns|Nm|Nh up to 3h —
+   ext-run's read default of 5m killed a 144 MB snapshot review) and `PROMPT_BYTES=` = the UTF-8
+   byte length of the prompt-file body (the text after the `…goes into the prompt file ---`
+   marker, plus one final newline): `triage-cross-reviewer` writes the body into a private
+   `mktemp -d` dir, normalizes the relay's two-space indent, checks `wc -c`, rewrites once and
+   otherwise returns `REFUSED: prompt not verbatim` — an LLM wrapper is never trusted to carry a
+   brief verbatim. Findings: `{file, line, severity:
+   blocker|major|minor, category, claim, evidence (a ground-truth path/page), suggestedFix}`.
+   Every prompt carries groundTruth, conventions and accepted deviations verbatim ("do not flag
+   these unless you cite NEW ground-truth evidence"; a summary or replacement text is never
+   ground truth), and the same note for both vendors that image links in the markdown are
+   URL-encoded (`%5B` = `[` …) and must be decoded before opening. The live repo path and repo name appear in no reviewer, merge or adjudicator
+   prompt. A reviewer that fails or returns no valid findings JSON is **unavailable** — never
+   scored as zero; malformed single findings are dropped and flagged;
+3. one deep merge agent clusters duplicates over opaque finding ids (it sees no reviewer label or
+   id); membership is enforced by the workflow, which keeps the provenance (anonymized `R1..Rn`,
+   label-blind order);
+4. items (ids `M1..` in file/line order) go in batches to each adjudicator (default: claude deep
+   opus·high + codex deep gpt-6-astra·high, i.e. `levels.deep` — `make lint` checks the pair
+   against tiers.json), **blind** to labels, reviewer ids and provenance, reading only the
+   snapshot; verdict per item `real | not-real | accepted-deviation | unsure` with evidence; a
+   failed batch is retried once. Every adjudicator real → **real**; every one not-real or
+   accepted-deviation → **rejected**; unsure, a missing verdict or any disagreement →
+   **disputed** (for Alex);
+5. per reviewer, over non-disputed items only: precision = its real / its adjudicated, recall =
+   its real / all real (null when the denominator is 0), plus findings, real, rejected,
+   disputed, tokens and seconds (codex from its ext-run line; parallel Claude spawns have none);
+6. a final quick task re-fingerprints and runs `compare`: `sourceChanged` true is flagged
+   SOURCE_CHANGED but is informational — every reviewer read the pinned snapshot.
+
+Returns `{kind:'review', repoName, base, head, outDir, reviewers, items:[{id, file, line, severity,
+category, claim, evidence, suggestedFix, verdict, adjudication, foundBy}], disputed, sourceChanged,
+mergeFallback, flags, markdown}` — the markdown lists real items by file, then the disputed ones
+with both adjudicators' evidence, the rejected, and the score table. ⚠ Fable before any top-level
+Claude reviewer or adjudicator; a snapshot carrying `.codex-deny` makes every codex reviewer and
+adjudicator unavailable without a spawn. Nothing is applied, nothing written outside outDir.
+Known limit: an adjudicator of the same model as a reviewer judges its own kind of finding blind,
+not independently. `test/compare-scenarios.mjs` RV* covers it; `qc/mutate.sh` #68 (provenance
+reaching an adjudicator) and #69 (a disputed item scored as real) prove the blind + scoring rules.
+
+**Extending a review** (`extendResult: <the prior result object>`, passed **inline**;
+`supersedes?: [labels]`): re-pass the prior run's args (same groundTruth/conventions/accepted,
+`outDir` = the prior outDir, `base`/`head` resolving to the prior shas — pass the shas) with
+**only the new reviewers**, plus the result object the prior run returned (e.g. `JSON.parse` of its
+saved result file). The path form `extend: '/file.json'` is refused with that guidance: the DSL
+cannot read files, and a prior result (tens of KB) relayed through a quick
+task is never verbatim — a large payload never passes through an LLM. The workflow validates the
+object in code before any spawn — `kind:'review'`, base/head shas, `repoName` and `outDir` equal to
+the args, well-formed items (`M<n>` ids, file, line, severity, text fields, verdict,
+adjudication, foundBy naming only listed reviewers) and reviewers (unique file-safe labels, known
+status), a sha `base`/`head` equal to the prior's — and the caller errors: a new label colliding
+with a prior one, `supersedes` naming no prior reviewer, adjudicators other than the prior panel.
+Then, instead of a snapshot, ONE quick task runs one tiny `jq -n` command (`git rev-parse` of
+base/head, `snap/` + `range.diff` present, `<outDir>/manifest.json` base/head, file/extra counts,
+diff/snapshot size, codexDenied, fingerprint-before present) and relays its few scalars; a
+base/head that does not resolve to the prior shas, or a snapshot that is gone or whose manifest is
+not the prior's, is retried once and then refused before any reviewer. The merge agent sees the
+prior items (ids + text, never verdicts or provenance) and the new findings: each new finding
+**attaches** to a prior item (its reviewer joins `foundBy`; text, verdict and adjudication stay —
+never re-adjudicated) or joins a **new item** numbered after the prior ids (`M31…`). Only new
+items are adjudicated (same blind panel). Every reviewer not superseded — prior ones included — is
+rescored over the combined items (a new real item lowers everyone's recall who missed it);
+superseded runs stay in `reviewers` with `status: 'superseded'`, `priorStatus`, no scores, and
+their findings stay in the items. The re-fingerprint goes to `fingerprint-extend.json`. Returns the
+normal shape plus `extendedFrom: {base, head, outDir, reviewers, items}`, `newItems`, `superseded`; prior flags are carried as `prior
+run: …`; the markdown is regenerated for the combined set with an "Extended with" line. EX* covers
+it (EX10 runs the check's real `jq`/`git` command against a temp repo + outDir); #72 (attached items
+re-adjudicated), #73 (a superseded reviewer scored) and #74 (a codex spawn without TIMEOUT) prove
+it. `ingest-review` counts a superseded row as unavailable, and derives the run id from the
+outDir basename — pass `--run` when ingesting an extension of an already-ingested review.
 
 ## `parity-suite.sh` — the task suite of a parity run
 
 ```
 parity-suite.sh list         --suite DIR
-parity-suite.sh materialize  --task DIR --out DIR
-parity-suite.sh verify-task  --task DIR --out DIR
+parity-suite.sh materialize  --task DIR --out DIR [--env-map FILE]
+parity-suite.sh verify-task  --task DIR --out DIR [--env-map FILE]
+parity-suite.sh fingerprint  --task DIR
 parity-suite.sh score-review --key FILE --findings FILE
 ```
 
@@ -509,13 +823,19 @@ ships the machinery and three tiny synthetic fixtures (`test/fixtures/parity/sui
 | `setup` | no | a patch applied at base and committed as the task's starting point |
 | `brief`, `acceptance` | yes | what the candidates are told |
 | `files` | yes | non-empty; the files the candidates may touch (build) or review |
-| `checks` | build | shell commands run from the materialized repo root; the grade |
+| `checks` | build | shell commands run from the materialized repo root; the grade. Tools only as `"$PARITY_<NAME>"` (see **Parity env map** under `patch-check.sh`) |
 | `overlay` | no | a dir (e.g. `hidden/`) copied only into GRADING worktrees — hidden tests |
 | `solution` | build, for `verify-task` | the reference fix; never shown to candidates |
 | `grading` | yes | `check` (the checks), `rubric` (checks + two blind judges vs the key), `seeded` (review tasks only) |
 | `key` | rubric/seeded | `key.md`/`key.json` (rubric), `key.json` = `[{file,line,id,desc}]` (seeded) |
-| `vendors` | yes | subset of `claude`, `codex`, `agy` allowed on this task |
+| `vendors` | yes | subset of `claude`, `codex` allowed on this task (`agy`, retired 2026-09-24, is still tolerated in older task files) |
 | `timeoutMin` | no | per-check wall clock for `verify-task` (default 10) |
+| `selfCheckEnv` | no | `true` = candidates get `.parity-env` so they can run the `$PARITY_` checks themselves (reveals tool paths, never repo content); default: they cannot |
+
+**No real paths to candidates.** `brief`, `acceptance` and every `checks` entry are what
+candidates see, so `list` (and every command that loads a task) rejects one naming a path under
+`$HOME` — lint-style: `/Users/`, `~/`, `$HOME`/`${HOME}`, or the actual home dir — exit 2 naming
+the field. `source.repo` is exempt: it is never shown to a candidate.
 
 `list` prints every task (task.json + `taskDir`) sorted by band then id; any invalid task, or a
 duplicate id, is exit 2 naming it. `materialize` builds `<out>/repo`: a git source is
@@ -527,17 +847,40 @@ gives the same sha. It never writes into the source repo, refuses an `--out` ins
 or the task dir, rebuilds an `--out` it made before and refuses any other non-empty one.
 
 **Deny propagation.** A clone's git-common-dir is the clone itself, so `ext-run.sh` — the owner
-of every deny decision — would no longer see the source's `.agy-deny`/`.codex-deny` markers or
-its `AGY_DENY_REPOS`/`CODEX_DENY_REPOS` names. `materialize` therefore refuses (exit 3) any
-source or task path with a `clip-creator` component (`HARD_DENY_REPOS`, kept equal to
-ext-run's by a test), and writes `<out>/.<vendor>-deny` for any vendor the source is denied to
-(the same walk as ext-run: up to and including `$HOME`; the source paths are kept as an array,
-so a path with spaces keeps its status). ext-run finds that marker walking up from the clone and
-from any worktree of it (triage-compare's staged worktrees). It prints
-`{repo, sha, denied:{agy, codex}}`, `denied` being what ext-run will see.
+of every deny decision — would no longer see the source's `.codex-deny` markers or its
+`CODEX_DENY_REPOS` names. `materialize` therefore refuses (exit 3) any source or task path with
+a `clip-creator` component (`HARD_DENY_REPOS`, kept equal to ext-run's by a test), and writes
+`<out>/.codex-deny` when the source is denied to codex (the same walk as ext-run: up to and
+including `$HOME`; the source paths are kept as an array, so a path with spaces keeps its
+status). ext-run finds that marker walking up from the clone and from any worktree of it
+(triage-compare's staged worktrees). It prints `{repo, sha, denied:{codex}}`, `denied` being
+what ext-run will see. (`.agy-deny` markers are no longer propagated: agy was retired
+2026-09-24.)
+
+**Env and `.parity-env`.** `materialize` resolves the task's checks against the env map first
+(`patch-check.sh --print-env`; an unmapped variable is exit 2 naming it, nothing made). Only a
+task with `"selfCheckEnv": true` gets `<out>/repo/.parity-env` — the `export PARITY_X='…'` lines
+for the variables its checks use — and `/.parity-env` in the repo's `.git/info/exclude`. The
+exclude lives in the common git dir, so it holds in every worktree of the repo: triage-compare
+(`selfCheckEnv: true`) copies the file into each staged worktree, candidates are told
+`To run the checks yourself, first run: . .parity-env`, and the file never enters a diff.
+Without the opt-in, candidates are told the checks run only at grading.
+
+**Source-repo leak guard.** `fingerprint` prints, for a git source,
+`{id, source:"git", name, head, tree}`: `name` is the repo directory's name (never its path),
+`head` its HEAD sha, `tree` one hash over `git status --porcelain=v1 -uall` and the content of
+every modified or untracked non-ignored file (so a second edit to an already-dirty file changes
+it too); everything runs with `--no-optional-locks`, so not even the index is refreshed. A
+generator source prints `{id, source:"generator"}` (nothing to guard). triage-parity takes it
+before a task's candidates run (in the materialize spawn, before materializing — no valid
+fingerprint, no run) and after grading, for EVERY task kind (build, rubric, review): any
+difference voids every result of the task (`invalid`, reason and flag
+`SOURCE_CHANGED <name>: HEAD moved|tree changed`); no after-fingerprint (one retry) is
+`SOURCE_UNVERIFIED`, also invalid. The run continues — a concurrent human commit is possible, so
+the flag tells the orchestrator to investigate rather than aborting.
 
 `verify-task` materializes, then for a build task runs `patch-check.sh` twice — an empty patch
-(the base) and `solution.patch`, both with the overlay — and prints
+(the base) and `solution.patch`, both with the overlay and the env map's variables exported — and prints
 `{id, kind, sha, baseFails, solutionPasses, ok}`: `ok` needs the base to FAIL (the task is not
 pre-solved) and the solution to PASS. For a review task it checks the key is a non-empty seed
 list whose files exist at the sha. Exit 0 = ok, 1 = not.
@@ -551,7 +894,108 @@ precision 0). triage-parity passes a review at recall ≥ 0.6 and precision ≥ 
 Exit codes: 0 ok; 1 the step failed; 2 usage error or invalid task; 3 refused (deny-listed).
 `test/parity-suite.sh` (in `make test`) covers every subcommand on the synthetic fixtures,
 including the real `ext-run.sh` refusing a clone of a marked source (stub CLIs that must not
-run); `qc/mutate.sh` #44 proves deny propagation has teeth.
+run), the `$HOME`-path lint, the env map through verify-task (exported, unmapped => exit 2),
+`.parity-env` only on opt-in and never in a staged worktree's diff, and `fingerprint` (HEAD move,
+tracked/re-edited/untracked changes, generator, clip-creator, missing repo). `qc/mutate.sh` #44
+proves deny propagation has teeth; #64 (review tasks not re-fingerprinted) and #65 (judges handed
+a repo path) cover the workflow side in `test/parity-scenarios.mjs`.
+
+## `parity-report.sh` — the parity ledger and the tier-change decision rule
+
+```
+parity-report.sh ingest-compare --result FILE --repo-name NAME --level L --source inline|suite
+                                [--task ID] [--applied LABEL] [--run ID] [--ts ISO]
+parity-report.sh ingest-parity  --result FILE [--ts ISO]
+parity-report.sh ingest-review  --result FILE --repo-name NAME [--resolved FILE] [--run ID] [--ts ISO]
+parity-report.sh migrate        [--from ~/.agents/evidence/vendor-parity.jsonl]
+parity-report.sh report         [--json]
+      every subcommand also takes [--ledger F] [--tiers F]
+```
+
+Single owner of the ledger schema and of the rule that turns outcomes into a **proposed**
+`config/tiers.json` change. `triage-parity.js` and inline bake-offs only produce results; the
+orchestrator saves a result as JSON, ingests it here, then runs `report`. It never writes
+tiers.json (a `--ledger` that is the tiers file is refused) — Alex approves every change.
+
+**Config.** `tuning` in the tiers file, read through `triage-tiers.sh --bakeoff-json` (the one
+validator; also what the orchestrator passes to triage-exec as `args.bakeoff.config`):
+`sampleRate`, `challengerMix` (vendor shares, sum 1), `challengers` (`level → vendor → [{model,
+effort}]`), `rule {minN, cheaperTolerance, pricierMargin, confidence: "wilson95"}`, `ledger`
+(default path, `~` expanded) and `pauseAtWeeklyPct`. An invalid or missing block is exit 2 for
+every subcommand and a `make lint` failure.
+
+**Ledger** (JSON lines, schema v 1) — scores and metadata only, never patch contents, briefs,
+checks, tails, diffstats or paths from the target repo (`repoName` is a bare name; `task`, `run`
+and labels are id tokens; anything else is refused with exit 2 and nothing written):
+
+```
+{"v":1, "ts":"<ISO>", "source":"inline|suite", "run":<id|null>, "repoName":"<name>",
+ "level":"quick|builder|deep|top", "band":<1-4, suite lines only>, "task":<id|null>,
+ "candidates":[{"label","vendor","model","effort","status","totalTokens","seconds"}],
+ "applied":<label|null>, "migrated":"vendor-parity.jsonl" (migrated lines only)}
+```
+
+`status` is `pass`/`fail` (graded) or the candidate's own non-graded status (`unavailable`,
+`invalid`, `denied`, `unresolved`, `ungraded`, `skipped`, else `unknown`) — never turned into a
+fail. A null model/effort is filled at ingest from `levels.<the candidate's level>.<vendor>`,
+which is exactly what ran (agents and ext-run default to that entry). `ingest-compare` writes one
+line per compare (`--level` = the planned level). `ingest-parity` writes one line per **graded**
+(task, candidate run), `level` = the band's level (B1 quick … B4 top), `run` = the outDir
+basename; a run already in the ledger is skipped. `migrate` converts the legacy evidence file
+best-effort: a compare line → one line; a parity aggregate → one pass/fail line per counted
+outcome per band (it had no task ids or per-task tokens; models resolved from the label via the
+tiers file); idempotent by run id.
+
+`ingest-review` takes a `triage-compare` kind `review` result and writes **one** line with
+`source: "inline-review"` and no `candidates` (so it can never enter the build rule):
+
+```
+{"v":1, "ts", "source":"inline-review", "run":<id|null>, "repoName",
+ "reviewers":[{"label","vendor","level","model","effort","status":"ok|unavailable","precision",
+   "recall","n","real","rejected","disputed","findings","totalTokens","seconds"}],
+ "items":<merged items>, "real":<real items>, "disputed":<still disputed>, "resolved":<by Alex>}
+```
+
+Scores are **recomputed here** from the items' verdicts and `foundBy` after applying `--resolved`
+(Alex's verdicts for disputed ids, `{"M3":"real","M7":"not-real"}`; an id that is not a disputed
+item, or any other value, is exit 2): precision = real / (real + rejected) with `n` = that
+denominator, recall = real / all real, null for a zero denominator; an unavailable reviewer keeps
+null scores and n 0. No file path, claim, evidence, flag or markdown reaches the ledger. Run id =
+`--run`, else the result's outDir basename; a run already in the ledger is skipped — resolve the
+disputes first, then ingest once.
+
+**Rule** (`report`). Groups graded outcomes per level × vendor × (model, effort): n, passes,
+rate, Wilson 95% lower bound, excluded (non-graded) count, mean tokens and seconds. Per level ×
+vendor the incumbent is `levels.<level>.<vendor>`; every other (model, effort) there is a
+challenger. Cheapness: claude haiku < sonnet < opus < fable; codex gpt-6-luna < gpt-6-sol <
+gpt-6-astra; agy flash < pro (agy is retired and has no levels entry: historical ledger rows
+still validate, and it is never an incumbent or proposed); then effort low < medium < high <
+xhigh < max.
+
+| Case | Verdict |
+|---|---|
+| either side has n < minN | `insufficient-data`, naming the graded runs still needed on each side |
+| cheaper challenger | `propose` iff its Wilson LB ≥ incumbent rate − cheaperTolerance, else `keep` |
+| pricier challenger | `propose` iff its rate − incumbent rate ≥ pricierMargin, else `keep` |
+| unknown model / same cost | `unranked`, never proposed |
+
+One proposal per level × vendor: a qualifying pricier challenger first (quality; highest rate,
+then cheapest), else the cheapest qualifying cheaper one. Markdown by default (a table per
+level, the decisions with their reasons, the proposals, then a separate **Reviews
+(inline-review)** section: per vendor × model × effort, reviews, mean precision and mean recall
+(each with its n) and unavailable count — never mixed into the build pass rates, and "Review
+metrics do not drive tier proposals yet"); `--json` gives `{ledger, tiers, lines, malformed, rule,
+groups, decisions, proposals, reviews: {lines, groups, note}, note}`. Malformed ledger lines are
+counted, not fatal.
+
+Exit codes: 0 ok; 1 ledger write failed; 2 usage / invalid input / invalid tiers file (nothing
+written). `test/parity-report.sh` (in `make test`) covers both ingest shapes, the refusals,
+no-repo-content, migrate + idempotence, Wilson bounds, every rule branch, exclusions and that
+tiers.json is never written, and (RV*) ingest-review: the line schema, recomputed scores with
+and without resolutions, unavailable never zero, no review content, idempotence, and a report
+whose build groups/decisions/proposals are byte-identical with or without review lines; `qc/mutate.sh`
+#43 (cheapness order), #52 (minN), #53 (Wilson LB vs point rate) and #54 (non-graded status as
+fail) prove the rule has teeth.
 
 ## `parity-cost.sh` — Claude cost per parity candidate
 

@@ -339,6 +339,10 @@ chk "G15: workflows/triage-compare.js copied (byte-identical)" \
 chk "G16: scripts/patch-check.sh copied and executable" '[ -x "$G_DIR/scripts/patch-check.sh" ]'
 chk "G17: scripts/stage-worktree.sh copied (byte-identical) and executable" \
   '[ -x "$G_DIR/scripts/stage-worktree.sh" ] && cmp -s "$REPO_DIR/scripts/stage-worktree.sh" "$G_DIR/scripts/stage-worktree.sh"'
+chk "G20: scripts/review-stage.sh copied (byte-identical) and executable" \
+  '[ -x "$G_DIR/scripts/review-stage.sh" ] && cmp -s "$REPO_DIR/scripts/review-stage.sh" "$G_DIR/scripts/review-stage.sh"'
+chk "G19: scripts/parity-report.sh copied (byte-identical) and executable" \
+  '[ -x "$G_DIR/scripts/parity-report.sh" ] && cmp -s "$REPO_DIR/scripts/parity-report.sh" "$G_DIR/scripts/parity-report.sh"'
 chk "G18: workflows/triage-parity.js, scripts/parity-suite.sh and scripts/parity-cost.sh copied (byte-identical; scripts executable)" \
   'cmp -s "$REPO_DIR/workflows/triage-parity.js" "$G_DIR/workflows/triage-parity.js" && [ -x "$G_DIR/scripts/parity-suite.sh" ] && cmp -s "$REPO_DIR/scripts/parity-suite.sh" "$G_DIR/scripts/parity-suite.sh" && [ -x "$G_DIR/scripts/parity-cost.sh" ] && cmp -s "$REPO_DIR/scripts/parity-cost.sh" "$G_DIR/scripts/parity-cost.sh"'
 
@@ -402,6 +406,8 @@ chk "M1c: install placed scripts/triage-tiers.json and scripts/triage-tiers.sh" 
 chk "M1d: install removed the legacy scripts/agy-run.sh (renamed to ext-run.sh)" '[ ! -e "$I_DIR/scripts/agy-run.sh" ]'
 chk "M1f: install placed workflows/triage-compare.js, scripts/patch-check.sh and scripts/stage-worktree.sh (executable)" \
   '[ -f "$I_DIR/workflows/triage-compare.js" ] && [ -x "$I_DIR/scripts/patch-check.sh" ] && [ -x "$I_DIR/scripts/stage-worktree.sh" ]'
+chk "M1k: install placed scripts/parity-report.sh (executable)" '[ -x "$I_DIR/scripts/parity-report.sh" ]'
+chk "M1l: install placed scripts/review-stage.sh (executable)" '[ -x "$I_DIR/scripts/review-stage.sh" ]'
 chk "M1h: install placed workflows/triage-parity.js, scripts/parity-suite.sh and scripts/parity-cost.sh (executable)" \
   '[ -f "$I_DIR/workflows/triage-parity.js" ] && [ -x "$I_DIR/scripts/parity-suite.sh" ] && [ -x "$I_DIR/scripts/parity-cost.sh" ]'
 printf '#!/bin/bash\necho legacy\n' > "$I_DIR/scripts/agy-run.sh"
@@ -419,6 +425,8 @@ chk "M1b: uninstall removes scripts/ext-run.sh, triage-tiers.sh and triage-tiers
 chk "M1e: uninstall also removes a legacy scripts/agy-run.sh" '[ ! -e "$I_DIR/scripts/agy-run.sh" ]'
 chk "M1g: uninstall removes workflows/triage-compare.js, scripts/patch-check.sh and scripts/stage-worktree.sh" \
   '[ ! -e "$I_DIR/workflows/triage-compare.js" ] && [ ! -e "$I_DIR/scripts/patch-check.sh" ] && [ ! -e "$I_DIR/scripts/stage-worktree.sh" ]'
+chk "M1j: uninstall removes scripts/parity-report.sh" '[ ! -e "$I_DIR/scripts/parity-report.sh" ]'
+chk "M1m: uninstall removes scripts/review-stage.sh" '[ ! -e "$I_DIR/scripts/review-stage.sh" ]'
 chk "M1i: uninstall removes workflows/triage-parity.js, scripts/parity-suite.sh and scripts/parity-cost.sh" \
   '[ ! -e "$I_DIR/workflows/triage-parity.js" ] && [ ! -e "$I_DIR/scripts/parity-suite.sh" ] && [ ! -e "$I_DIR/scripts/parity-cost.sh" ]'
 
@@ -444,7 +452,8 @@ chk "J2: freshly installed sandbox has no MISSING/FORKED lines" \
 # so drift.sh's per-file list is exercised for both.
 rm -f "$J_DIR/scripts/triage-usage.sh" "$J_DIR/scripts/ext-run.sh" "$J_DIR/scripts/triage-tiers.json" \
       "$J_DIR/scripts/patch-check.sh" "$J_DIR/workflows/triage-compare.js" "$J_DIR/scripts/stage-worktree.sh" \
-      "$J_DIR/workflows/triage-parity.js" "$J_DIR/scripts/parity-suite.sh" "$J_DIR/scripts/parity-cost.sh"
+      "$J_DIR/workflows/triage-parity.js" "$J_DIR/scripts/parity-suite.sh" "$J_DIR/scripts/parity-cost.sh" \
+      "$J_DIR/scripts/parity-report.sh" "$J_DIR/scripts/review-stage.sh"
 
 J_MISSING_OUT=$(mktemp)
 ALL_TMP="$ALL_TMP $J_MISSING_OUT"
@@ -460,6 +469,10 @@ chk "J7: drift.sh reports MISSING for the deleted patch-check.sh, stage-worktree
   'grep -q "MISSING (not installed): scripts/patch-check.sh" "$J_MISSING_OUT" && grep -q "MISSING (not installed): scripts/stage-worktree.sh" "$J_MISSING_OUT" && grep -q "MISSING (not installed): workflows/triage-compare.js" "$J_MISSING_OUT"'
 chk "J8: drift.sh reports MISSING for the deleted triage-parity.js, parity-suite.sh and parity-cost.sh" \
   'grep -q "MISSING (not installed): workflows/triage-parity.js" "$J_MISSING_OUT" && grep -q "MISSING (not installed): scripts/parity-suite.sh" "$J_MISSING_OUT" && grep -q "MISSING (not installed): scripts/parity-cost.sh" "$J_MISSING_OUT"'
+chk "J9: drift.sh reports MISSING for the deleted parity-report.sh" \
+  'grep -q "MISSING (not installed): scripts/parity-report.sh" "$J_MISSING_OUT"'
+chk "J10: drift.sh reports MISSING for the deleted review-stage.sh" \
+  'grep -q "MISSING (not installed): scripts/review-stage.sh" "$J_MISSING_OUT"'
 chk "J6: drift.sh reports MISSING for the deleted installed tiers file (config/tiers.json)" \
   'grep -q "MISSING (not installed): config/tiers.json" "$J_MISSING_OUT"'
 

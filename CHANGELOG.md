@@ -4,6 +4,106 @@ Reverse-chronological. Each entry cites the commit(s) it corresponds to and,
 where known, the test-count delta. See `test/roundtrip.sh` and `test/lint.sh`
 for the current check catalog.
 
+## Wave 13 — agy retired; every codex run OS-confined and audited (uncommitted)
+
+- **13B — inline build bake-offs in `triage-exec` (opt-in `args.bakeoff`).**
+  `bakeoff = {config: <triage-tiers.sh --bakeoff-json>, seed, repo, outDir
+  (outside repo), weeklyPct?}`; absent → unchanged (no bake-off fields). New
+  optional subtask field `checks: string[]` (its own checks: the bake-off's
+  grade; the plan checks stay the verify gate). `bakeoffPick()` owns sampling:
+  eligible = own checks (or the plan's, when it is the only subtask), non-empty
+  `files`, an id usable as a path/ledger token, and a `tuning.challengers` entry
+  differing from the planned (vendor, model, effort); codex challengers of
+  danger work must clear `codexDangerEffort()`'s floor (excluded, never
+  lifted); none at `weeklyPct >= pauseAtWeeklyPct`. Deterministic: FNV-1a over
+  `seed\0id\0brief` < `sampleRate`, second/third hashes pick the vendor
+  (cumulative `challengerMix`, VENDORS order; empty pool → the other) and the
+  entry. Sampled subtasks run first, one at a time: `git status --porcelain`
+  on their files (any output or no answer → run in place), then a nested
+  two-candidate `triage-compare` (planned = exactly what `runSubtask()` would
+  spawn, vs the challenger; `parallel:true`, base HEAD, outDir `<outDir>/<id>`).
+  `bakeoffChoice()` owns the apply: planned pass → planned; else challenger
+  pass → challenger (`⚠ Bake-off fallback` log); else a failing planned diff
+  that applied at the sha → planned (verify + remediation run on it); else in
+  place. Applied via `stage-worktree.sh apply` (exit 6 / no answer → in place);
+  the applied result joins `results` (`bakeoff:true`, the candidate's
+  level/vendor/effort) so verify/assess/remediation are unchanged — an applied
+  codex challenger that fails verification is redone on Claude at its level by
+  `redoStep()` (no new path). A compare LEAK aborts the run (nothing applied,
+  nothing else runs, `error: LEAK…`, as triage-parity does); throw / no result /
+  unknown leak state → in place. Budget: each bake-off is WORK via `spawn()`
+  on `RESERVE`. `report()` gains `bakeoffs` (per sampled subtask),
+  `bakeoffSkipped` ({id, reason} for the rest) and `ingest`: a workflow cannot
+  write files, so each graded compare returns its compact result (scores and ids
+  only) plus a `file` path and a ready `parity-report.sh ingest-compare` command;
+  the orchestrator writes the file and runs it (`--run <outDir basename>:<id>`,
+  `--applied` only when a patch was applied). Test harness: `workflow()` mock.
+- **Checks (13B)**: workflow-scenarios 228 → 310 (S40–S53). Mutations 75–81
+  (pause, sample threshold, challenger fallback, LEAK abort, dirty-files guard,
+  codex danger floor on challengers, bake-off fields without `args.bakeoff`),
+  each KILLED by an assertion (`qc/mutate.sh --only`); catalog 69 → 76.
+- **Deferred (13B)**: no live run yet (the nested `workflow()` call from
+  triage-exec is exercised only by the mock); `triage.md`/README usage text and
+  AGENTS.md counts (approval); a sampled subtask is graded at HEAD without
+  other subtasks' changes (plans already assume independent subtasks); a Claude
+  challenger's redo keeps its effort but reverts to the level agent's model;
+  `external` in the report stays plan-derived (a codex challenger shows in
+  `bakeoffs`, and in `returnedToClaude` only if redone); the in-place run after
+  a failed bake-off is a second spend on the planned rung.
+- **agy retired (Alex, 2026-09-24).** A read-only parity review on agy set its
+  model-settable `BypassSandbox` flag and copied a file into a real repo. agy
+  is gone from `config/tiers.json` (`levels.builder.agy`, `modes.agy`),
+  `ext-run.sh` (adapter, effort-suffix handling, flags, `.agy-deny`,
+  `AGY_DENY_REPOS`), `triage-tiers.sh` (column + tuning vendor) and
+  `parity-suite.sh` (marker propagation; `denied` is `{codex}`). Refused by
+  name everywhere: `ext-run.sh --vendor agy` → exit 3; triage-exec `vendor`,
+  plan `vendor`, `crossReview: 'agy'|'both'` → `bad()`; compare/parity
+  candidates and parity judges → entry-contract error. `overflow` (flag and
+  alias) now means builder-level work on **codex**; overflow + `danger` still
+  runs on Claude deep (an explicit `vendor:'codex'` + danger is lifted, as in
+  Wave 12). `crossReview: true` = codex. The report's `overflow` mirror of
+  `external.agy` is gone. Leftover `.agy-deny` markers are inert; old parity
+  task files listing `agy` and historical agy ledger rows still validate.
+  `AGY_BOUNDARY_CLEARED`/`AGY_STAGE_KEEP` keep their names (callers and the
+  live install use them).
+- **Codex OS confinement (`ext-run.sh`).** Every codex run is `cd <ws> &&
+  TMPDIR=<stage>/cx/tmp sandbox-exec -f <per-run profile> <codex real path>
+  exec -C <ws> --dangerously-bypass-approvals-and-sandbox …` (codex's `-s` and
+  `sandbox_workspace_write.*` flags dropped: its seatbelt does not nest).
+  Profile: no reads under `$HOME` but `$HOME` (literal), `~/.codex`, the
+  workspace, codex's scratch dir and `--allow-read` paths; no writes under
+  `$HOME`, `/private/tmp`, `/private/var/folders` or the stage but `~/.codex`,
+  the workspace, the scratch dir and `/dev/null`. Tighter than the spike's
+  profile in three places: the private meta dir (event stream, profile,
+  hidden `.git`) is not codex-writable, the build repo + its git dir are
+  denied read/write, and the stage root is write-denied (the canary target).
+  Fail closed: no `sandbox-exec`, a profile that does not apply, or one that
+  does not enforce (preflight canary write lands) → exit 4, codex never runs.
+  All REFUSED/USAGE checks now precede the availability checks.
+- **`--allow-read PATH`** (repeatable): refused when the deny check refuses it,
+  when it is `$HOME` or an ancestor, or when a deny-listed repo or
+  `.codex-deny` lies beneath it.
+- **Command audit log**: one JSONL line per `command_execution` item —
+  `{ts, runId, mode, model, cwd, command[0:500], exitCode}`, never output —
+  to `${EXT_RUN_AUDIT_LOG:-~/.claude/logs/ext-run/codex-commands.jsonl}`,
+  also for failed/interrupted runs; 30-day prune under a mkdir lock; an
+  uncreatable log dir is exit 4.
+- **Tests**: `test/ext-run.sh` rewritten around a stub codex run under the REAL
+  profile (macOS): enforcement P1–P11, `--allow-read` A1–A8, audit L1–L5,
+  agy refusal V1–V2; a non-confining canary-forging double on Linux (P2–P7
+  SKIP there). 172 → 168 checks (agy duplicates gone). Scenarios 226 → 228,
+  compare 116 → 117, parity-suite 74 → 75, parity-scenarios 100 → 101.
+- **Mutations**: dropped 13/14 (agy gates), 27 (`exclude_slash_tmp`), 30
+  (`crossReview 'both'`); re-anchored 16 (overflow danger guard), 24, 44; new
+  56 (no sandbox-exec), 57 (`$HOME` subpath read), 58 (audit records output),
+  59 (`--vendor agy` accepted). Still 54.
+- Deferred: live codex run under the profile (orchestrator); the live
+  `~/.claude/triage.md` fork, AGENTS.md line 4 and PROJECT_MEMORY need
+  Alex-approved edits; writes outside `$HOME`/tmp dirs (e.g. `/opt/homebrew`,
+  `/Users/Shared`, `/private/var/tmp`) still fall to `(allow default)`;
+  `--check`/patch-check still run candidate code unsandboxed; no Linux
+  confinement backend (codex is unavailable there by design).
+
 ## Wave 12 — vendor-neutral tiers: Codex alongside agy, level/vendor/role split
 
 - **Three axes replace the 7-tier list.** **level** (`quick|builder|deep|top`,

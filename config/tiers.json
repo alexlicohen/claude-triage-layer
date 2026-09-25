@@ -11,8 +11,7 @@
     },
     "builder": {
       "claude": {"agent": "triage-builder", "model": "sonnet", "effort": "medium"},
-      "codex": {"model": "gpt-6-sol", "effort": "medium", "basis": "parity-run 2026-09-24"},
-      "agy": {"model": "gemini-3.1-pro-high", "basis": "incumbent 2026-09-15"}
+      "codex": {"model": "gpt-6-sol", "effort": "medium", "basis": "parity-run 2026-09-24"}
     },
     "deep": {
       "claude": {"agent": "triage-deep-reasoner", "model": "opus", "effort": "high"},
@@ -23,20 +22,33 @@
       "codex": {"model": "gpt-6-astra", "effort": "xhigh", "basis": "alex 2026-09-23"}
     }
   },
+  "tuning": {
+    "sampleRate": 0.2,
+    "challengerMix": {"codex": 0.8, "claude": 0.2},
+    "challengers": {
+      "builder": {
+        "codex": [{"model": "gpt-6-sol", "effort": "medium"}],
+        "claude": [{"model": "sonnet", "effort": "high"}]
+      },
+      "deep": {
+        "codex": [{"model": "gpt-6-sol", "effort": "medium"}, {"model": "gpt-6-astra", "effort": "high"}],
+        "claude": [{"model": "opus", "effort": "medium"}, {"model": "sonnet", "effort": "high"}]
+      },
+      "top": {
+        "codex": [{"model": "gpt-6-astra", "effort": "xhigh"}],
+        "claude": []
+      }
+    },
+    "rule": {"minN": 8, "cheaperTolerance": 0.05, "pricierMargin": 0.15, "confidence": "wilson95"},
+    "ledger": "~/.agents/parity/ledger.jsonl",
+    "pauseAtWeeklyPct": 80
+  },
   "agents": {
     "triage-reviewer": {"model": "opus", "effort": "medium"},
     "triage-cross-reviewer": {"model": "haiku", "effort": "low"},
     "triage-external": {"model": "haiku", "effort": "low"}
   },
   "modes": {
-    "agy": {
-      "review": {"model": "gemini-3.1-pro-high", "basis": "incumbent 2026-09-15"},
-      "critique": {"model": "gemini-3.1-pro-high", "basis": "incumbent 2026-09-15"},
-      "fuzz": {"model": "gemini-3.1-pro-high", "basis": "incumbent 2026-09-15"},
-      "build": {"model": "gemini-3.1-pro-high", "basis": "incumbent 2026-09-15"},
-      "verify": {"model": "gemini-3.8-flash-medium", "basis": "incumbent 2026-09-15"},
-      "read": {"model": "gemini-3.8-flash-low", "basis": "incumbent 2026-09-15"}
-    },
     "codex": {
       "review": {"model": "gpt-6-astra", "effort": "high", "basis": "alex 2026-09-23"},
       "critique": {"model": "gpt-6-astra", "effort": "high", "basis": "alex 2026-09-23"},

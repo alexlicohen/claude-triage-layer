@@ -1,7 +1,7 @@
 export const meta = {
   name: 'triage-exec',
   description: 'Execute a pre-built triage plan: delegate each subtask to its level agent (Claude, or an external vendor), run the objective checks, remediate and escalate',
-  whenToUse: 'Run a plan the orchestrator has ALREADY classified: /triage-exec with args = {subtasks:[{brief,level,vendor,files,acceptance,danger,effort}], checks:[shell commands], review, crossReview, overflow, vendor}. level is quick|builder|deep|top (tier is an alias; fable = top on Claude, overflow = builder on agy); vendor is claude|codex|agy. It executes, verifies, re-runs only the implicated subtasks on failure (always on Claude), and escalates one rung up on ESCALATE (deep below max effort gets one deep@max attempt before Fable). It never classifies — a malformed plan throws before any spawn.',
+  whenToUse: 'Run a plan the orchestrator has ALREADY classified: /triage-exec with args = {subtasks:[{brief,level,vendor,files,acceptance,danger,effort}], checks:[shell commands], review, crossReview, overflow, vendor}. level is quick|builder|deep|top (tier is an alias; fable = top on Claude, overflow = builder on codex); vendor is claude|codex (agy was retired 2026-09-24 and is refused). It executes, verifies, re-runs only the implicated subtasks on failure (always on Claude), and escalates one rung up on ESCALATE (deep below max effort gets one deep@max attempt before Fable). It never classifies — a malformed plan throws before any spawn. A subtask may carry checks:[cmd] (its own objective checks: an inline bake-off\'s grade; the plan checks stay the verify gate). Opt-in INLINE BAKE-OFFS: bakeoff = {config: the `triage-tiers.sh --bakeoff-json` object, seed, repo (abs), outDir (abs, outside repo), weeklyPct?}. An eligible subtask (own checks, or the plan checks when it is the only subtask; non-empty files; a tuning challenger differing from its planned vendor/model/effort; codex challengers of danger work at effort >= high) is sampled deterministically (FNV-1a of seed+id+brief < sampleRate; none at weeklyPct >= pauseAtWeeklyPct) and runs FIRST, one at a time, as a planned-vs-challenger triage-compare, only if git status shows its files unmodified. Applied via stage-worktree.sh apply: the planned patch if it passed, else a passing challenger (logged as a fallback), else a failing planned diff (normal verify + remediation), else the subtask runs in place; a LEAK aborts the run. Returns bakeoffs, bakeoffSkipped and ingest: for each ingest entry the orchestrator writes result as JSON to file, then runs cmd (parity-report.sh ingest-compare).',
   phases: [
     { title: 'Execute' },
     { title: 'Verify' },
@@ -16,20 +16,27 @@ export const meta = {
 // free, never half-execute and bill for it.
 //
 // Two axes (Wave 12): LEVEL describes the task (quick|builder|deep|top, never a model)
-// and VENDOR says who serves it (claude|codex|agy). Which models serve a level is data
+// and VENDOR says who serves it (claude|codex). Which models serve a level is data
 // in config/tiers.json (ext-run.sh reads it for the external vendors); the routing
 // POLICY — defaults, danger floors, fallbacks — lives here.
 const LEVELS = ['quick', 'builder', 'deep', 'top']
 // Legacy tier names that are really a level + a vendor. `fable` was the top level's
-// Claude slot; `overflow` was builder work moved onto agy.
-const LEVEL_ALIASES = { fable: { level: 'top', vendor: 'claude' }, overflow: { level: 'builder', vendor: 'agy' } }
+// Claude slot; `overflow` is builder work moved onto codex (on agy until its
+// retirement, 2026-09-24).
+const LEVEL_ALIASES = { fable: { level: 'top', vendor: 'claude' }, overflow: { level: 'builder', vendor: 'codex' } }
 const LEVEL_NAMES = [...LEVELS, ...Object.keys(LEVEL_ALIASES)]
-const VENDORS = ['claude', 'codex', 'agy']
+const VENDORS = ['claude', 'codex']
+// Vendors that once existed and are now refused by name, with the reason. agy's
+// headless mode let the model set a per-command BypassSandbox flag, and a
+// read-only review run used it to write into a real repo.
+const RETIRED_VENDORS = { agy: 'agy was retired 2026-09-24 (it bypassed its own sandbox and wrote into a real repo) — use codex or claude' }
+const isRetired = v => typeof v === 'string' && Object.prototype.hasOwnProperty.call(RETIRED_VENDORS, v)
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 const REVIEW_MODES = ['auto', 'always', 'never']
-// crossReview → the external reviewers spawned. `true` keeps its pre-Wave-12 meaning
-// (agy); false/absent = none.
-const CROSS_REVIEW_VENDORS = { agy: ['agy'], codex: ['codex'], both: ['agy', 'codex'] }
+// crossReview → the external reviewers spawned: `true` or 'codex' = codex (agy until
+// its retirement); false/absent = none. 'agy' and 'both' are refused by name.
+const CROSS_REVIEW_VENDORS = { codex: ['codex'] }
+const RETIRED_CROSS_REVIEW = ['agy', 'both']
 // The Claude agent serving each level. test/lint.sh checks this map against
 // config/tiers.json levels.*.claude.agent. `top` is listed for that check only: its
 // one spawn path is runFable().
@@ -37,12 +44,15 @@ const CLAUDE_AGENT = { quick: 'triage-quick-task', builder: 'triage-builder', de
 
 const USAGE = 'Expected args = {\n' +
   `  subtasks: [{ id?, brief, level: ${LEVELS.join('|')} (alias tier; ${Object.keys(LEVEL_ALIASES).join('|')} also accepted), vendor?: ${VENDORS.join('|')},\n` +
-  `               files?: string[], acceptance, danger?: bool, effort?: ${EFFORTS.join('|')} }]  // at least one\n` +
+  `               files?: string[], acceptance, danger?: bool, effort?: ${EFFORTS.join('|')},\n` +
+  '               checks?: string[] }]  // at least one; checks = this subtask\'s own checks (an inline bake-off\'s grade)\n' +
   '  checks?:      string[]   // shell commands run as objective gates\n' +
   `  vendor?:      ${VENDORS.join('|')}   // default vendor for subtasks that omit one (default: claude)\n` +
-  '  overflow?:    boolean    // default: false — builder-level subtasks without a vendor run on agy\n' +
+  '  overflow?:    boolean    // default: false — builder-level subtasks without a vendor run on codex\n' +
   `  review?:      ${REVIEW_MODES.join('|')}   // default: auto\n` +
-  `  crossReview?: boolean|${Object.keys(CROSS_REVIEW_VENDORS).join('|')}   // default: false (true = agy)\n}`
+  `  crossReview?: boolean|${Object.keys(CROSS_REVIEW_VENDORS).join('|')}   // default: false (true = codex)\n` +
+  '  bakeoff?:     { config: <triage-tiers.sh --bakeoff-json object>, seed: string, repo: "/abs repo",\n' +
+  '                  outDir: "/abs dir outside repo", weeklyPct?: number }   // opt-in inline bake-offs\n}'
 
 function bad(msg) {
   throw new Error(`triage-exec: ${msg}\n${USAGE}`)
@@ -59,13 +69,51 @@ if (!args || typeof args !== 'object' || Array.isArray(args)) bad(`args must be 
 if (!Array.isArray(args.subtasks) || args.subtasks.length === 0) bad('args.subtasks must be a non-empty array.')
 if (args.checks != null && !(Array.isArray(args.checks) && args.checks.every(isStr))) bad('args.checks must be an array of non-empty shell-command strings.')
 if (args.review != null && !REVIEW_MODES.includes(args.review)) bad(`args.review must be one of ${REVIEW_MODES.join('|')} (got ${JSON.stringify(args.review)}).`)
+if (RETIRED_CROSS_REVIEW.includes(args.crossReview)) bad(`args.crossReview ${JSON.stringify(args.crossReview)} is no longer accepted: ${RETIRED_VENDORS.agy}; crossReview true means codex.`)
 if (args.crossReview != null && typeof args.crossReview !== 'boolean' && !Object.keys(CROSS_REVIEW_VENDORS).includes(args.crossReview)) {
   bad(`args.crossReview must be a boolean or one of ${Object.keys(CROSS_REVIEW_VENDORS).join('|')} (got ${JSON.stringify(args.crossReview)}).`)
 }
 if (args.overflow != null && typeof args.overflow !== 'boolean') bad('args.overflow must be a boolean.')
+if (isRetired(args.vendor)) bad(`args.vendor ${JSON.stringify(args.vendor)}: ${RETIRED_VENDORS[args.vendor]}.`)
 if (args.vendor != null && !VENDORS.includes(args.vendor)) bad(`args.vendor must be one of ${VENDORS.join('|')} (got ${JSON.stringify(args.vendor)}).`)
 const wantsOverflow = args.overflow === true
 const planVendor = args.vendor || null
+
+// args.bakeoff — opt-in inline build bake-offs (Wave 13B; see bakeoffPick() and
+// runBakeoff()). Absent → none of that code runs and the return has no bake-off
+// fields. config is `triage-tiers.sh --bakeoff-json` verbatim (that script owns the
+// full tuning schema; a workflow has no fs), so only the fields read here are checked.
+// Paths go into shell commands: absolute, no whitespace or quotes; outDir outside repo
+// (each subtask's compare stages worktrees and patches under it).
+const isAbsPath = v => isStr(v) && v.startsWith('/') && !/[\s'"`$\\]/.test(v)
+const stripSlash = v => String(v).trim().replace(/\/+$/, '')
+const isNum = v => typeof v === 'number' && Number.isFinite(v)
+const isObj = v => !!v && typeof v === 'object' && !Array.isArray(v)
+const bakeoffOn = args.bakeoff != null
+if (bakeoffOn) {
+  const b = args.bakeoff
+  if (!isObj(b)) bad(`args.bakeoff must be an object (got ${typeName(b)}).`)
+  const cfg = b.config
+  if (!isObj(cfg) || !isObj(cfg.levels) || !isObj(cfg.tuning)) bad('args.bakeoff.config must be the object `triage-tiers.sh --bakeoff-json` prints ({asOf, levels, tuning}).')
+  const t = cfg.tuning
+  if (!(isNum(t.sampleRate) && t.sampleRate > 0 && t.sampleRate <= 1)) bad('args.bakeoff.config.tuning.sampleRate must be a number in (0, 1].')
+  if (!isObj(t.challengerMix) || !Object.entries(t.challengerMix).every(([v, s]) => VENDORS.includes(v) && isNum(s) && s >= 0 && s <= 1)) {
+    bad(`args.bakeoff.config.tuning.challengerMix must be {vendor: share in [0, 1]} over ${VENDORS.join('|')}.`)
+  }
+  if (!isObj(t.challengers) || !Object.entries(t.challengers).every(([l, byV]) => LEVELS.includes(l) && isObj(byV) &&
+      Object.entries(byV).every(([v, list]) => VENDORS.includes(v) && Array.isArray(list) &&
+        list.every(c => isObj(c) && isStr(c.model) && /^[A-Za-z0-9._+-]+$/.test(c.model) && EFFORTS.includes(c.effort))))) {
+    bad('args.bakeoff.config.tuning.challengers must be {level: {vendor: [{model, effort}]}}.')
+  }
+  if (!isNum(t.pauseAtWeeklyPct)) bad('args.bakeoff.config.tuning.pauseAtWeeklyPct must be a number.')
+  if (!isStr(b.seed)) bad('args.bakeoff.seed must be a non-empty string (the orchestrator picks it; sampling is a pure function of it).')
+  if (!isAbsPath(b.repo)) bad('args.bakeoff.repo must be an absolute path with no whitespace or quotes.')
+  if (!isAbsPath(b.outDir)) bad('args.bakeoff.outDir must be an absolute path with no whitespace or quotes.')
+  const repoC = stripSlash(b.repo)
+  const outC = stripSlash(b.outDir)
+  if (outC === repoC || outC.startsWith(`${repoC}/`) || repoC.startsWith(`${outC}/`)) bad('args.bakeoff.outDir must be outside args.bakeoff.repo (and must not contain it) — the staged worktrees and patches would dirty the real tree.')
+  if (b.weeklyPct != null && !isNum(b.weeklyPct)) bad(`args.bakeoff.weeklyPct must be a number when given (got ${JSON.stringify(b.weeklyPct)}).`)
+}
 
 // codexDangerEffort() — the danger floor for codex: effort at least `high`. An unset
 // effort would otherwise fall to the tiers.json default, which is data and may drop;
@@ -97,8 +145,10 @@ const subtasks = args.subtasks.map((raw, i) => {
   const aliasVendor = (byLevel && byLevel.vendor) || (byTier && byTier.vendor) || null
   if (!isStr(raw.acceptance)) bad(`subtasks[${i}].acceptance must be a non-empty string — verification has nothing to check against without it.`)
   if (raw.files != null && !(Array.isArray(raw.files) && raw.files.every(isStr))) bad(`subtasks[${i}].files must be an array of path strings.`)
+  if (raw.checks != null && !(Array.isArray(raw.checks) && raw.checks.every(isStr))) bad(`subtasks[${i}].checks must be an array of non-empty shell-command strings.`)
   if (raw.danger != null && typeof raw.danger !== 'boolean') bad(`subtasks[${i}].danger must be a boolean.`)
   if (raw.effort != null && !EFFORTS.includes(raw.effort)) bad(`subtasks[${i}].effort must be one of ${EFFORTS.join('|')} (got ${JSON.stringify(raw.effort)}).`)
+  if (isRetired(raw.vendor)) bad(`subtasks[${i}].vendor ${JSON.stringify(raw.vendor)}: ${RETIRED_VENDORS[raw.vendor]}.`)
   if (raw.vendor != null && !VENDORS.includes(raw.vendor)) bad(`subtasks[${i}].vendor must be one of ${VENDORS.join('|')} (got ${JSON.stringify(raw.vendor)}).`)
   if (raw.vendor != null && aliasVendor && raw.vendor !== aliasVendor) bad(`subtasks[${i}]: ${byLevel && byLevel.vendor ? `level ${JSON.stringify(raw.level)}` : `tier ${JSON.stringify(raw.tier)}`} implies vendor ${aliasVendor}, but vendor is ${JSON.stringify(raw.vendor)}.`)
   if (raw.id != null && !isStr(raw.id)) bad(`subtasks[${i}].id must be a non-empty string when given.`)
@@ -113,24 +163,25 @@ const subtasks = args.subtasks.map((raw, i) => {
   // alias implies, plan-level overflow (builder-level work only — quick work is too cheap
   // to be worth the external round-trip, and deep/top was never overflow's remit), the
   // plan-level vendor default, then Claude.
-  const plannedVendor = raw.vendor || aliasVendor ||
-    (wantsOverflow && plannedLevel === 'builder' ? 'agy' : null) || planVendor || 'claude'
-  if (plannedVendor === 'agy' && plannedLevel !== 'builder') {
-    bad(`subtasks[${i}] ("${id}"): vendor agy serves the builder level only (got level ${plannedLevel}${raw.vendor ? '' : ', from the plan-level vendor'}).`)
-  }
+  const overflowVendor = wantsOverflow && plannedLevel === 'builder' ? LEVEL_ALIASES.overflow.vendor : null
+  const plannedVendor = raw.vendor || aliasVendor || overflowVendor || planVendor || 'claude'
+  // viaOverflow — this subtask is external because of OVERFLOW (the alias, or the plan
+  // flag deciding its vendor): a throughput choice for work that was never hard, not a
+  // parity-based routing decision.
+  const viaOverflow = raw.level === 'overflow' || raw.tier === 'overflow' || (!raw.vendor && !aliasVendor && overflowVendor !== null)
   const plannedEffort = raw.effort || null
   // Danger-zone routing, ENFORCED here rather than trusted to the caller. The plan is
   // well-formed, only mis-routed — so upgrade loudly instead of throwing:
-  //   agy    → Claude deep. Correctness-critical work never runs on agy (the builder-
-  //            only overflow vendor), exactly as overflow+danger always did.
-  //   codex  → allowed (parity is data in tiers.json), but lifted to at least deep and
-  //            to at least effort high (codexDangerEffort()).
-  //   claude → quick/builder lifted to deep.
+  //   overflow → Claude deep. Correctness-critical work never goes off-vendor for
+  //              throughput, exactly as overflow+danger always did (on agy, then codex).
+  //   codex    → allowed (parity is data in tiers.json), but lifted to at least deep and
+  //              to at least effort high (codexDangerEffort()).
+  //   claude   → quick/builder lifted to deep.
   let level = plannedLevel
   let vendor = plannedVendor
   let effort = plannedEffort
   if (danger) {
-    if (vendor === 'agy') { vendor = 'claude'; level = 'deep' }
+    if (viaOverflow) { vendor = 'claude'; level = 'deep' }
     else if (vendor === 'codex') { level = atLeast(level, 'deep'); effort = codexDangerEffort(level, effort) }
     else level = atLeast(level, 'deep')
   }
@@ -146,19 +197,20 @@ const subtasks = args.subtasks.map((raw, i) => {
     acceptance: raw.acceptance.trim(),
     danger,
     effort,
+    checks: raw.checks ? raw.checks.map(c => c.trim()) : [],
   }
 })
 
 const checks = (args.checks || []).map(c => c.trim())
 const reviewMode = args.review || 'auto'
-const crossVendors = args.crossReview === true ? CROSS_REVIEW_VENDORS.agy : (CROSS_REVIEW_VENDORS[args.crossReview] || [])
+const crossVendors = args.crossReview === true ? CROSS_REVIEW_VENDORS.codex : (CROSS_REVIEW_VENDORS[args.crossReview] || [])
 const isExternal = v => v !== 'claude'
 
 for (const st of subtasks) {
   const planned = `${tierName(st.plannedLevel, st.plannedVendor)}${st.plannedEffort ? `@${st.plannedEffort}` : ''}`
   const now = `${tierName(st.level, st.vendor)}${st.effort ? `@${st.effort}` : ''}`
   if (planned !== now) {
-    log(`⚠ Danger-zone routing: "${st.id}" was planned as ${planned} but danger=true — running it on ${now} instead (correctness-critical work never runs below deep, never below effort high off-vendor, and never on agy).`)
+    log(`⚠ Danger-zone routing: "${st.id}" was planned as ${planned} but danger=true — running it on ${now} instead (correctness-critical work never runs below deep, never below effort high off-vendor, and never via overflow).`)
   }
   if (isExternal(st.vendor)) {
     log(`⚠ External routing: "${st.id}" runs on ${st.vendor} at level ${st.level}${st.effort ? ` (effort ${st.effort})` : ''} instead of Claude — its workspace leaves this machine.`)
@@ -290,7 +342,7 @@ const externalHeader = step => `VENDOR=${step.vendor} LEVEL=${step.level}` + (st
 // runOn(st, step, prompt, ph, prefix, afterMax, label) — SINGLE place a work step
 // {level, vendor, effort} is spawned, in Execute and in remediation alike. Returns
 // {output, level, vendor, effort} (what actually ran) or null.
-//   external (codex|agy): triage-external with the header line. Its own effort stays
+//   external (codex): triage-external with the header line. Its own effort stays
 //     the wrapper's default — EFFORT in the header is the external model's effort.
 //     No work (null, UNAVAILABLE, REFUSED) → the SAME level on Claude, logged
 //     '<vendor>→claude' and recorded. An external CLI that never ran has taught us
@@ -331,7 +383,238 @@ async function runSubtask(st) {
   })
 }
 
-const results = (await parallel(subtasks.map(st => () => runSubtask(st)))).filter(Boolean)
+// ─── Inline bake-offs (Wave 13B, opt-in: args.bakeoff) ──────────────────────
+// A sampled subtask runs as a two-candidate triage-compare — its planned rung vs one
+// challenger from config.tuning.challengers — BEFORE the rest of the plan, one at a
+// time, so no compare's leakcheck ever overlaps a worker editing the tree. The winner's
+// patch is applied with stage-worktree.sh apply and joins `results` like any other
+// result, so verify()/assess()/remediation run unchanged on it. Reused, never
+// reimplemented: triage-compare (staging, grading, leakcheck), stage-worktree.sh apply
+// (the only writer of the real tree here), parity-report.sh ingest-compare (the only
+// ledger writer — the orchestrator runs it; this workflow never writes the ledger).
+const STAGE_WT = '~/.claude/scripts/stage-worktree.sh'
+const PARITY_REPORT = '~/.claude/scripts/parity-report.sh'
+const shq = s => `'${String(s).replace(/'/g, `'\\''`)}'`
+const errText = e => String((e && e.message) || e).slice(0, 200)
+// Subtask ids name the compare's outDir and the ledger's task token.
+const BAKEOFF_ID = /^[A-Za-z0-9._+-]{1,80}$/
+// Deterministic sampling (the DSL forbids Math.random/Date.now): FNV-1a 32-bit over
+// UTF-16 code units, as a unit-interval draw.
+function fnv1a32(s) {
+  let h = 0x811c9dc5
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0 }
+  return h >>> 0
+}
+const draw = s => fnv1a32(s) / 4294967296
+const bo = bakeoffOn ? {
+  cfg: args.bakeoff.config,
+  tuning: args.bakeoff.config.tuning,
+  seed: args.bakeoff.seed,
+  repo: stripSlash(args.bakeoff.repo),
+  outDir: stripSlash(args.bakeoff.outDir),
+  weeklyPct: args.bakeoff.weeklyPct != null ? args.bakeoff.weeklyPct : null,
+} : null
+const bakeoffPaused = !!bo && bo.weeklyPct != null && bo.weeklyPct >= bo.tuning.pauseAtWeeklyPct
+const bakeoffs = []        // one record per SAMPLED subtask (report().bakeoffs)
+const bakeoffSkipped = []  // {id, reason} for every subtask not sampled
+const ingest = []          // one ledger hand-off per compare that graded
+
+// A codex challenger for a danger subtask must clear the same floor the plan's own
+// codex danger work does (level >= deep, effort >= high): codexDangerEffort() is that
+// rule, so an effort it would lift fails the floor and the challenger is excluded.
+const meetsCodexDangerFloor = (level, effort) => atLeast(level, 'deep') === level && codexDangerEffort(level, effort) === effort
+
+// bakeoffPick(st) — SINGLE OWNER of the whole sampling decision: eligibility, the
+// deterministic sample, the challenger vendor and entry. → {planned, challenger, checks}
+// | {skip: reason}. Eligible: its own checks (or the plan's, when it is the only
+// subtask), non-empty files (compare needs them for an external candidate), an id
+// usable as a path/ledger token, and at least one challenger that differs from the
+// planned (vendor, model, effort) — planned model/effort = the subtask's effort, else
+// config.levels[level][vendor]. Sampled iff draw(seed, id, brief) < sampleRate; the
+// vendor from a second draw over challengerMix's cumulative shares (VENDORS order);
+// an empty vendor pool falls to the other; the entry from a third hash.
+function bakeoffPick(st) {
+  if (bakeoffPaused) return { skip: 'paused' }
+  const own = st.checks.length ? st.checks : (subtasks.length === 1 ? checks : [])
+  if (!own.length) return { skip: subtasks.length === 1 ? 'no-checks' : 'no-own-checks' }
+  if (!st.files.length) return { skip: 'no-files' }
+  if (!BAKEOFF_ID.test(st.id)) return { skip: 'id-not-a-token' }
+  const inc = (bo.cfg.levels[st.level] || {})[st.vendor]
+  if (!isObj(inc) || !isStr(inc.model)) return { skip: 'no-levels-entry' }
+  const planned = { vendor: st.vendor, level: st.level, model: inc.model, effort: st.effort || inc.effort || null }
+  const byVendor = bo.tuning.challengers[st.level] || {}
+  const pool = {}
+  for (const v of VENDORS) {
+    pool[v] = (byVendor[v] || []).filter(c =>
+      !(v === planned.vendor && c.model === planned.model && c.effort === planned.effort) &&
+      !(st.danger && v === 'codex' && !meetsCodexDangerFloor(st.level, c.effort)))
+  }
+  if (!VENDORS.some(v => pool[v].length)) return { skip: 'no-challenger' }
+  const key = `${bo.seed}\0${st.id}\0${st.brief}`
+  if (!(draw(key) < bo.tuning.sampleRate)) return { skip: 'not-sampled' }
+  const u = draw(`${key}\0vendor`)
+  let acc = 0
+  let vendor = null
+  for (const v of VENDORS) { acc += bo.tuning.challengerMix[v] || 0; if (u < acc) { vendor = v; break } }
+  if (!vendor || !pool[vendor].length) vendor = VENDORS.find(v => v !== vendor && pool[v].length) || VENDORS.find(v => pool[v].length)
+  const list = pool[vendor]
+  const c = list[fnv1a32(`${key}\0entry`) % list.length]
+  return { planned, challenger: { vendor, level: st.level, model: c.model, effort: c.effort }, checks: own }
+}
+
+// bakeoffChoice(res) — SINGLE OWNER of which patch (if any) an inline bake-off applies.
+//   planned pass                                 → planned
+//   planned not pass AND challenger pass         → challenger (the logged fallback)
+//   planned fail with a real diff that applied   → planned: the normal verify +
+//                                                  remediation ladder then runs on it,
+//                                                  as if it had run in place
+//   anything else (planned produced nothing: unavailable / ungraded / invalid / an
+//   empty or non-applying diff)                  → null: run the subtask in place
+function bakeoffChoice(res) {
+  const by = new Map(res.candidates.map(c => [c.label, c]))
+  const p = by.get('planned') || { status: 'missing' }
+  const ch = by.get('challenger') || { status: 'missing' }
+  if (p.status === 'pass') return { apply: 'planned', cand: p }
+  if (ch.status === 'pass') return { apply: 'challenger', cand: ch, planned: p }
+  if (p.status === 'fail' && p.applies === true && isStr(p.diffstat)) return { apply: 'planned', cand: p }
+  return { apply: null, why: `planned ${p.status}${p.status === 'fail' ? ' with no usable diff' : ''}, challenger ${ch.status}` }
+}
+
+// runBakeoff(st, pick) — one sampled subtask: dirty-files guard → triage-compare →
+// bakeoffChoice() → stage-worktree.sh apply. → {result} (applied; joins results),
+// {inPlace: true} (run it normally after the bake-offs) or {leak: true} (abort).
+async function runBakeoff(st, pick, rec, at) {
+  const files = st.files.map(shq).join(' ')
+  const dirty = await agent(`Run this one command exactly as written and return porcelain = its stdout verbatim ("" if it printed nothing) and rc = its exit status. Do not run anything else, and do not interpret or fix anything.\n` +
+    `git -C ${shq(bo.repo)} status --porcelain -- ${files}`,
+  { phase: 'Execute', agentType: 'triage-quick-task', label: `bakeoff:dirty:${st.id}`,
+    schema: { type: 'object', properties: { porcelain: { type: 'string' }, rc: { type: ['integer', 'null'] } }, required: ['porcelain', 'rc'] } })
+  // Unknown counts as dirty: a bake-off runs only on files proven unmodified.
+  if (!dirty || dirty.rc !== 0 || typeof dirty.porcelain !== 'string' || dirty.porcelain.trim() !== '') {
+    rec.reason = dirty && dirty.rc === 0 && typeof dirty.porcelain === 'string' ? 'files modified in the tree' : 'dirty check failed'
+    log(`Bake-off: "${st.id}" not run (${rec.reason}) — running it normally in place.`)
+    return { inPlace: true }
+  }
+  at.stage = 'compare'
+  const cand = (x, label) => Object.assign({ vendor: x.vendor, level: x.level, label }, x.model ? { model: x.model } : {}, x.effort ? { effort: x.effort } : {})
+  // The planned candidate is exactly what runSubtask() would spawn: the level's own
+  // agent / ext-run default model, the plan's effort when it set one.
+  const plannedCand = cand({ vendor: st.vendor, level: st.level, effort: st.effort }, 'planned')
+  if (isExternal(st.vendor) || isExternal(pick.challenger.vendor)) log(`⚠ Bake-off "${st.id}": an external candidate's workspace leaves this machine.`)
+  let res = null
+  let err = null
+  try {
+    res = await workflow('triage-compare', {
+      repo: bo.repo, base: 'HEAD', brief: st.brief, files: st.files, acceptance: st.acceptance, checks: pick.checks,
+      outDir: rec.compareOutDir, parallel: true, candidates: [plannedCand, cand(pick.challenger, 'challenger')],
+    })
+  } catch (e) {
+    err = errText(e)
+  }
+  if (res && res.leak === true) {
+    rec.outcome = 'skipped'
+    rec.reason = 'LEAK'
+    rec.candidates = Array.isArray(res.candidates) ? res.candidates.map(c => ({ label: c.label, status: c.status })) : []
+    log(`⚠ LEAK in the bake-off for "${st.id}": triage-compare reports ${bo.repo} changed during the run — nothing applied; aborting before any further work. Inspect the repo first.`)
+    return { leak: true }
+  }
+  if (!res || !Array.isArray(res.candidates)) {
+    rec.outcome = 'in-place'
+    rec.reason = err ? `triage-compare failed: ${err}` : 'triage-compare returned no candidate list'
+    log(`⚠ Bake-off "${st.id}": ${rec.reason} — its candidates are unavailable; running it normally in place.`)
+    return { inPlace: true }
+  }
+  rec.candidates = res.candidates.map(c => ({ label: c.label, status: c.status }))
+  if (res.leak == null) log(`⚠ Bake-off "${st.id}": triage-compare could not confirm ${bo.repo} is unchanged (leak check incomplete) — its grades are void.`)
+  if (res.leak === false && res.candidates.some(c => c.status === 'pass' || c.status === 'fail')) {
+    const file = `${rec.compareOutDir}/compare-result.json`
+    const repoName = bo.repo.split('/').pop().replace(/[^A-Za-z0-9._-]/g, '-').slice(0, 64) || 'repo'
+    const run = `${bo.outDir.split('/').pop().replace(/[^A-Za-z0-9._:+-]/g, '-')}:${st.id}`.slice(0, 80)
+    ingest.push({ id: st.id, file,
+      result: { base: res.base, sha: res.sha, leak: res.leak, baseMoved: res.baseMoved, graded: res.graded,
+        candidates: res.candidates.map(c => ({ label: c.label, vendor: c.vendor, level: c.level, model: c.model == null ? null : c.model,
+          effort: c.effort == null ? null : c.effort, status: c.status, totalTokens: c.totalTokens == null ? null : c.totalTokens,
+          seconds: c.seconds == null ? null : c.seconds })) },
+      cmd: `${PARITY_REPORT} ingest-compare --result ${shq(file)} --repo-name ${repoName} --level ${st.level} --source inline --task ${st.id} --run ${run}` })
+  }
+  const choice = res.leak === false ? bakeoffChoice(res) : { apply: null, why: 'leak state unknown — every grade void' }
+  if (!choice.apply) {
+    rec.outcome = 'in-place'
+    rec.reason = choice.why
+    log(`Bake-off "${st.id}": nothing to apply (${choice.why}) — running it normally in place.`)
+    return { inPlace: true }
+  }
+  const plannedRung = `${tierName(st.level, st.vendor)}${st.effort ? `@${st.effort}` : ''}`
+  const ch = pick.challenger
+  if (choice.apply === 'challenger') {
+    log(`⚠ Bake-off fallback: "${st.id}" planned ${plannedRung} ${choice.planned.status === 'fail' ? 'failed' : `was ${choice.planned.status}`}, challenger ${ch.vendor} ${ch.model}@${ch.effort} passed — applying the challenger's patch`)
+  }
+  at.stage = 'apply'
+  const patch = `${rec.compareOutDir}/${choice.apply}.patch`
+  const ap = await agent(`Run this one command exactly as written and return its stdout JSON line field for field, plus rc = its exit status. Do not run anything else, and do not interpret or fix anything.\n` +
+    `${STAGE_WT} apply --repo ${shq(bo.repo)} --patch ${shq(patch)}`,
+  { phase: 'Execute', agentType: 'triage-quick-task', label: `bakeoff:apply:${st.id}`,
+    schema: { type: 'object', properties: { ok: { type: 'boolean' }, applied: { type: 'boolean' }, method: { type: 'string' }, error: { type: 'string' }, rc: { type: ['integer', 'null'] } }, required: ['ok', 'rc'] } })
+  if (!ap || ap.rc !== 0 || ap.ok !== true) {
+    rec.outcome = 'in-place'
+    rec.reason = !ap ? 'apply result unknown' : ap.rc === 6 ? 'patch would not apply to the tree (exit 6, nothing written)' : `apply failed (rc ${ap.rc})`
+    log(`⚠ Bake-off "${st.id}": the ${choice.apply} patch was not applied (${rec.reason}) — running it normally in place.` +
+      (!ap ? ` The apply step returned nothing: check ${bo.repo} for a half-known state (stage-worktree.sh apply is atomic).` : ''))
+    return { inPlace: true }
+  }
+  rec.outcome = choice.apply
+  rec.applied = choice.apply
+  const who = choice.apply === 'planned' ? { level: st.level, vendor: st.vendor, effort: st.effort } : { level: st.level, vendor: ch.vendor, effort: ch.effort }
+  const c = choice.cand
+  log(`Bake-off "${st.id}": applied the ${choice.apply} patch (${c.vendor} ${c.model || 'default'}@${c.effort || 'default'}; patch-check ${c.status}${c.diffstat ? `, ${c.diffstat}` : ''}).`)
+  return { result: { subtask: st, level: who.level, vendor: who.vendor, effort: who.effort, attempts: 1, bakeoff: true,
+    output: `Inline bake-off: applied the ${choice.apply} candidate's patch (${c.vendor} ${c.model || 'default'}@${c.effort || 'default'}), ` +
+      `graded ${c.status} by patch-check at ${String(res.sha || '').slice(0, 12)}${c.diffstat ? ` (${c.diffstat})` : ''}. Nothing else ran in place.` } }
+}
+
+// runBakeoffs() — pick every subtask (logged), then run the sampled ones in plan
+// order, one at a time. Each is WORK: budget-gated on RESERVE via spawn(). A budget
+// skip leaves the subtask to run in place (where spawn() decides again).
+async function runBakeoffs() {
+  if (bakeoffPaused) log(`Bake-off paused: weekly usage ${bo.weeklyPct}% >= pauseAtWeeklyPct ${bo.tuning.pauseAtWeeklyPct}% — no subtask sampled.`)
+  const picks = subtasks.map(st => ({ st, pick: bakeoffPick(st) }))
+  for (const x of picks) if (x.pick.skip) bakeoffSkipped.push({ id: x.st.id, reason: x.pick.skip })
+  const chosen = picks.filter(x => !x.pick.skip)
+  log(`Bake-off: ${chosen.length ? `sampled ${chosen.map(x => `"${x.st.id}" (vs ${x.pick.challenger.vendor} ${x.pick.challenger.model}@${x.pick.challenger.effort})`).join(', ')}` : 'no subtask sampled'}` +
+    (bakeoffSkipped.length ? `; not sampled: ${bakeoffSkipped.map(s => `"${s.id}" (${s.reason})`).join(', ')}` : '') + '.')
+  const applied = []
+  for (const { st, pick } of chosen) {
+    const ch = pick.challenger
+    const rec = { id: st.id, challenger: { vendor: ch.vendor, model: ch.model, effort: ch.effort }, outcome: 'skipped',
+      compareOutDir: `${bo.outDir}/${st.id}`, applied: null, candidates: [] }
+    bakeoffs.push(rec)
+    const at = { stage: 'dirty' }
+    const out = await spawn(RESERVE, `Bakeoff:${tierName(st.level, st.vendor)}`, st.id, () => runBakeoff(st, pick, rec, at))
+    if (!out) {
+      rec.reason = rec.reason || 'budget'
+      if (at.stage === 'apply') log(`⚠ Bake-off "${st.id}" stopped during its apply step — check ${bo.repo} before trusting the in-place run.`)
+      continue
+    }
+    if (out.leak) return { leak: true, applied }
+    if (out.result) applied.push(out.result)
+  }
+  return { leak: false, applied }
+}
+
+const bake = bakeoffOn ? await runBakeoffs() : null
+const results = bake ? bake.applied.slice() : []
+if (bake && bake.leak) {
+  return report({
+    checks: checks.map(cmd => ({ cmd, pass: null })),
+    review: { ran: false, verdict: null, text: '' },
+    remediation: null,
+    incomplete: true,
+    failed: false,
+    error: 'LEAK: a bake-off\'s triage-compare reports the real repo changed during the run — aborted before any further work',
+  })
+}
+const appliedIds = new Set(results.map(r => r.subtask.id))
+results.push(...(await parallel(subtasks.filter(st => !appliedIds.has(st.id)).map(st => () => runSubtask(st)))).filter(Boolean))
 const dropped = subtasks.length - results.length
 if (dropped > 0) log(`⚠ ${dropped} of ${subtasks.length} subtask(s) failed or were dropped — results are incomplete`)
 
@@ -354,6 +637,23 @@ function externalReport() {
   return byVendor
 }
 
+// bakeoffReport() — the inline bake-off half of the distillate (report() stays its
+// single owner; present only when args.bakeoff was given). bakeoffs = one record per
+// sampled subtask; bakeoffSkipped = why every other subtask was not sampled; ingest =
+// one ledger hand-off per compare that graded. A workflow cannot write files, so each
+// ingest entry carries the compact compare result (scores and ids only — no patch,
+// tail or diffstat): the orchestrator writes `result` as JSON to `file`, then runs
+// `cmd` (parity-report.sh ingest-compare, the one ledger writer; --applied is added
+// here when a candidate's patch was applied, and left out when none was).
+function bakeoffReport() {
+  const appliedOf = new Map(bakeoffs.map(b => [b.id, b.applied]))
+  return {
+    bakeoffs: bakeoffs.map(b => Object.assign({}, b)),
+    bakeoffSkipped: bakeoffSkipped.slice(),
+    ingest: ingest.map(x => Object.assign({}, x, { cmd: x.cmd + (appliedOf.get(x.id) ? ` --applied ${appliedOf.get(x.id)}` : '') })),
+  }
+}
+
 // report() — the SINGLE place the compact return value is built. Only distillate
 // leaves this workflow: worker prose stays out of the orchestrator's context (that
 // is the whole point of delegating), so subtasks report status, not output.
@@ -362,8 +662,8 @@ function report(extra) {
   const skippedIds = new Set(skipped.filter(s => s.stage.startsWith('Execute') || s.stage.startsWith('Remediate')).map(s => s.desc))
   // Present only when an external vendor was in play — mirroring how crossReview is
   // absent when not requested. The plan-flag arms keep the field honest when every
-  // candidate was pulled back by the danger rule (routed: []). `overflow` mirrors
-  // external.agy for consumers written before Wave 12.
+  // candidate was pulled back by the danger rule (routed: []). (The pre-Wave-12
+  // `overflow` mirror of external.agy went with agy.)
   const externalInPlay = wantsOverflow || (planVendor && isExternal(planVendor)) ||
     subtasks.some(st => isExternal(st.plannedVendor) || isExternal(st.vendor))
   const external = externalInPlay ? externalReport() : null
@@ -377,7 +677,8 @@ function report(extra) {
     }),
     escalations,
     budget: budgetReport(),
-    ...(external ? { external, overflow: external.agy } : {}),
+    ...(external ? { external } : {}),
+    ...(bakeoffOn ? bakeoffReport() : {}),
   }, extra)
 }
 
@@ -420,7 +721,7 @@ const rung = r => (ranMax(r) ? 'deep@max' : tierName(r.level, r.vendor))
 // redoStep(r, isEscalate) → { level, vendor, effort, reason?, owesFable? } for one failed
 // result. Any rung change it implies is logged to `escalations` by remediate().
 function redoStep(r, isEscalate) {
-  // Every redo runs on CLAUDE. An external (codex/agy) result that failed verification
+  // Every redo runs on CLAUDE. An external (codex) result that failed verification
   // comes back onto the Claude ladder FROM ITS OWN LEVEL, exactly as a Claude result at
   // that level would: FIX / objective FAIL → the same level on Claude, ESCALATE → one
   // level up (deep → deep@max first). Choice, replacing pre-Wave-12 overflow's "any
@@ -655,9 +956,9 @@ if (first.failed && results.length) {
 // returned for the orchestrator to weigh, and deliberately NOT fed into assess(),
 // remediation, or the pass/fail verdict. The objective checks remain the gate.
 //
-// One spawn per requested vendor (crossReview 'both' → agy AND codex, in parallel),
-// each told its vendor on a VENDOR= first line. findings is keyed by vendor and holds
-// only the vendors that returned something; ran = at least one did.
+// One spawn per requested vendor (today: codex), each told its vendor on a VENDOR=
+// first line. findings is keyed by vendor and holds only the vendors that returned
+// something; ran = at least one did.
 let crossReview = null
 if (crossVendors.length) {
   const dangerNames = subtasks.filter(st => st.danger).map(st => st.id)

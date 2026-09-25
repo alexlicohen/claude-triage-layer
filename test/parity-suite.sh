@@ -9,11 +9,15 @@
 # Covers: list (merge + taskDir, band/id order, every validation failure => exit
 # 2 naming the task, duplicate ids); materialize (deterministic sha for git+setup
 # and generator sources, fixed identity, origin removed, clean tree; the source
-# repo's status/HEAD/index/refs untouched; clip-creator refused; .agy-deny /
-# .codex-deny / *_DENY_REPOS propagated next to the clone and honoured by the
-# REAL ext-run.sh for the clone and a worktree of it; out-dir guards; rollback);
+# repo's status/HEAD/index/refs untouched; clip-creator refused; .codex-deny /
+# CODEX_DENY_REPOS propagated next to the clone and honoured by the REAL
+# ext-run.sh for the clone and a worktree of it, a retired .agy-deny marker NOT
+# propagated; out-dir guards; rollback);
 # verify-task (ok, pre-solved base, broken solution, non-applying solution,
-# review keys); score-review math; parity-cost.sh on a synthetic transcript.
+# review keys); the $HOME-path lint; the PARITY_ env map (verify-task export,
+# unmapped => exit 2, .parity-env only with selfCheckEnv and never in a diff);
+# fingerprint (HEAD move, tree/content change, generator, refusals);
+# score-review math; parity-cost.sh on a synthetic transcript.
 # shellcheck disable=SC2034  # values are read inside chk's eval'd conditions
 set -u
 
@@ -31,7 +35,7 @@ done
 
 export GIT_CONFIG_GLOBAL=/dev/null
 export GIT_CONFIG_SYSTEM=/dev/null
-unset AGY_DENY_REPOS CODEX_DENY_REPOS
+unset CODEX_DENY_REPOS
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -40,6 +44,9 @@ T=$(cd "$T" && pwd -P)
 trap 'rm -rf "$T"' EXIT
 export TMPDIR="$T/tmp"
 mkdir -p "$TMPDIR"
+# Hermetic: the deny walk stops at $HOME, so a machine-level marker above $T
+# (e.g. a real $TMPDIR/.codex-deny) never leaks into these cases.
+export HOME="$T"
 
 OUT=""; ERR=""; RC=0
 chk() {
@@ -105,6 +112,12 @@ bad_case "build task with no checks" 2/gen-fix '.checks = []'
 bad_case "missing solution file" 2/gen-fix '.solution = "nope.patch"'
 bad_case "generator not executable" 2/gen-fix '' 'chmod -x "$s/2/gen-fix/gen.sh"'
 bad_case "not JSON" 3/rev-seed '' 'printf "{" > "$s/3/rev-seed/task.json"'
+# NO REAL PATHS TO CANDIDATES: brief/acceptance/checks never name a path under $HOME.
+bad_case "a check runs a tool by its /Users/ path" 1/g-fix '.checks = ["/Users/someone/proj/.venv/bin/python -m pytest"]'
+bad_case "a brief names ~/ " 2/gen-fix '.brief = "See ~/projects/x/CONVENTIONS.md for the style."'
+bad_case "acceptance names \$HOME" 2/gen-fix '.acceptance = "${HOME}/proj/.venv/bin/mkdocs build passes"'
+bad_case "a check names the actual home dir (Linux-style)" 1/g-fix '.checks = ["'"$T"'/tools/bin/lint x"]'
+bad_case "selfCheckEnv not a boolean" 2/gen-fix '.selfCheckEnv = "yes"'
 DUP="$T/dup"
 mksuite "$DUP" "$SRC"
 mkdir -p "$DUP/b4"; cp -R "$DUP/2/gen-fix" "$DUP/b4/gen-fix"; edit_task "$DUP/b4/gen-fix/task.json" '.band = 4'
@@ -113,6 +126,11 @@ chk "L3: a duplicate id across bands => exit 2 naming it (a bN band dir is accep
   '[ "$RC" -eq 2 ] && [ -z "$OUT" ] && printf "%s" "$ERR" | grep -q "duplicate task id.*gen-fix"'
 run_ps list --suite "$T/no-such-suite"
 chk "L4: a missing suite dir is a usage error" '[ "$RC" -eq 2 ]'
+HOK="$T/homeok"; mksuite "$HOK" "$SRC"
+edit_task "$HOK/1/g-fix/task.json" '.checks = ["\"$PARITY_SH\" test_calc.sh"] | .selfCheckEnv = true'
+run_ps list --suite "$HOK"
+chk "L5: source.repo under \$HOME is exempt (never shown to candidates); \$PARITY_ checks and selfCheckEnv are valid" \
+  '[ "$RC" -eq 0 ] && case "$SRC" in "$HOME"/*) true ;; *) false ;; esac && [ "$(j ".[0].checks[0]")" = "\"\$PARITY_SH\" test_calc.sh" ]'
 
 # ---- materialize: determinism, identity, source untouched -------------------
 printf 'uncommitted\n' >> "$SRC/calc.sh"   # the source may be dirty; that must survive untouched
@@ -123,7 +141,7 @@ run_ps materialize --task "$SUITE/1/g-fix" --out "$T/m1"
 M1_SHA=$(j .sha); M1_REPO=$(j .repo)
 run_ps materialize --task "$SUITE/1/g-fix" --out "$T/m2"
 chk "M1: git+setup materialize is deterministic (same sha in two fresh outs) and prints {repo, sha, denied}" \
-  '[ "$RC" -eq 0 ] && [ -n "$M1_SHA" ] && [ "$(j .sha)" = "$M1_SHA" ] && [ "$M1_REPO" = "$T/m1/repo" ] && [ "$(j .denied.agy)" = false ] && [ "$(j .denied.codex)" = false ]'
+  '[ "$RC" -eq 0 ] && [ -n "$M1_SHA" ] && [ "$(j .sha)" = "$M1_SHA" ] && [ "$M1_REPO" = "$T/m1/repo" ] && [ "$(printf "%s" "$OUT" | jq -c .denied)" = "{\"codex\":false}" ]'
 chk "M2: the tree + setup is ONE orphan root commit with the fixed identity; tree clean; HEAD detached" \
   '[ "$(git -C "$T/m1/repo" log -1 --format=%an/%ae/%cn/%ad --date=unix)" = "parity/parity@localhost/parity/946684800" ] && [ -f "$T/m1/repo/NOTES.txt" ] && [ -z "$(git -C "$T/m1/repo" status --porcelain)" ] && ! git -C "$T/m1/repo" symbolic-ref -q HEAD >/dev/null'
 chk "M2b: no source history — exactly one commit reachable, no branches/tags/remotes, no unreachable objects" \
@@ -184,26 +202,32 @@ chk "D2: a task (generator source) under clip-creator is REFUSED (exit 3)" '[ "$
 chk "D3: parity-suite.sh's HARD_DENY_REPOS equals ext-run.sh's (ext-run owns deny decisions)" \
   '[ "$(sed -n "s/^HARD_DENY_REPOS=//p" "$PS")" = "$(sed -n "s/^HARD_DENY_REPOS=//p" "$EXT_RUN")" ]'
 
-AD="$T/agydenied/area"; mkdir -p "$AD"; : > "$T/agydenied/.agy-deny"
+AD="$T/codexdenied/area"; mkdir -p "$AD"; : > "$T/codexdenied/.codex-deny"
 mksrc "$AD/src"; ADS="$T/adsuite"; mksuite "$ADS" "$AD/src"
 run_ps materialize --task "$ADS/1/g-fix" --out "$T/ad-out"
-chk "D4: an .agy-deny above the source is propagated as <out>/.agy-deny (denied.agy true, codex false)" \
-  '[ "$RC" -eq 0 ] && [ -f "$T/ad-out/.agy-deny" ] && [ ! -e "$T/ad-out/.codex-deny" ] && [ "$(j .denied.agy)" = true ] && [ "$(j .denied.codex)" = false ] && grep -q "$T/agydenied/.agy-deny" "$T/ad-out/.agy-deny"'
+chk "D4: a .codex-deny above the source is propagated as <out>/.codex-deny (denied.codex true)" \
+  '[ "$RC" -eq 0 ] && [ -f "$T/ad-out/.codex-deny" ] && [ "$(j .denied.codex)" = true ] && grep -q "$T/codexdenied/.codex-deny" "$T/ad-out/.codex-deny"'
 chk "D5: the propagated marker sits outside the clone (the clone stays clean)" '[ -z "$(git -C "$T/ad-out/repo" status --porcelain)" ]'
+
+AG="$T/agyleft/area"; mkdir -p "$AG"; : > "$T/agyleft/.agy-deny"
+mksrc "$AG/src"; AGS="$T/agsuite"; mksuite "$AGS" "$AG/src"
+run_ps materialize --task "$AGS/1/g-fix" --out "$T/ag-out"
+chk "D4b: a leftover .agy-deny (agy retired) is NOT propagated and denied has only codex (false)" \
+  '[ "$RC" -eq 0 ] && [ ! -e "$T/ag-out/.agy-deny" ] && [ ! -e "$T/ag-out/.codex-deny" ] && [ "$(printf "%s" "$OUT" | jq -c .denied)" = "{\"codex\":false}" ]'
 
 mksrc "$T/cdn/src"; : > "$T/cdn/src/.codex-deny"; CDS="$T/cdsuite"; mksuite "$CDS" "$T/cdn/src"
 run_ps materialize --task "$CDS/1/g-fix" --out "$T/cd-out"
-chk "D6: a .codex-deny in the source repo root is propagated (denied.codex true, agy false)" \
-  '[ "$RC" -eq 0 ] && [ -f "$T/cd-out/.codex-deny" ] && [ ! -e "$T/cd-out/.agy-deny" ] && [ "$(j .denied.codex)" = true ] && [ "$(j .denied.agy)" = false ]'
+chk "D6: a .codex-deny in the source repo root is propagated (denied.codex true)" \
+  '[ "$RC" -eq 0 ] && [ -f "$T/cd-out/.codex-deny" ] && [ "$(j .denied.codex)" = true ]'
 
 mksrc "$T/named/secretproj"; NS="$T/nsuite"; mksuite "$NS" "$T/named/secretproj"
 OUT=$(CODEX_DENY_REPOS="secretproj" "$PS" materialize --task "$NS/1/g-fix" --out "$T/n-out" 2>"$T/err"); RC=$?; ERR=$(cat "$T/err")
 chk "D7: a CODEX_DENY_REPOS name matching the source path is propagated as <out>/.codex-deny" \
   '[ "$RC" -eq 0 ] && [ -f "$T/n-out/.codex-deny" ] && [ "$(j .denied.codex)" = true ]'
 
-TD="$T/taskdeny"; mkdir -p "$TD"; mksuite "$TD/suite" "$SRC"; : > "$TD/.agy-deny"
+TD="$T/taskdeny"; mkdir -p "$TD"; mksuite "$TD/suite" "$SRC"; : > "$TD/.codex-deny"
 run_ps materialize --task "$TD/suite/2/gen-fix" --out "$T/td-out"
-chk "D8: a generator task under an .agy-deny tree carries that status to its repo" '[ "$RC" -eq 0 ] && [ "$(j .denied.agy)" = true ] && [ -f "$T/td-out/.agy-deny" ]'
+chk "D8: a generator task under a .codex-deny tree carries that status to its repo" '[ "$RC" -eq 0 ] && [ "$(j .denied.codex)" = true ] && [ -f "$T/td-out/.codex-deny" ]'
 
 # A source path WITH SPACES keeps its deny status (the source list is an array,
 # never whitespace-split text).
@@ -215,10 +239,10 @@ chk "D13: a .codex-deny in a source repo whose path has a space is propagated (d
   '[ "$RC" -eq 0 ] && [ -f "$T/sp-out/.codex-deny" ] && [ "$(j .denied.codex)" = true ] && grep -qF "$T/sp ace/src/.codex-deny" "$T/sp-out/.codex-deny"'
 
 # A marker exactly AT $HOME counts (the same walk as ext-run.sh, $HOME included).
-HP="$T/homedeny"; mksrc "$HP/src"; : > "$HP/.agy-deny"; HPS="$T/hpsuite"; mksuite "$HPS" "$HP/src"
+HP="$T/homedeny"; mksrc "$HP/src"; : > "$HP/.codex-deny"; HPS="$T/hpsuite"; mksuite "$HPS" "$HP/src"
 OUT=$(HOME="$HP" "$PS" materialize --task "$HPS/1/g-fix" --out "$T/hp-out" 2>"$T/err"); RC=$?; ERR=$(cat "$T/err")
-chk "D14: a .agy-deny at \$HOME itself is propagated (denied.agy true)" \
-  '[ "$RC" -eq 0 ] && [ -f "$T/hp-out/.agy-deny" ] && [ "$(j .denied.agy)" = true ]'
+chk "D14: a .codex-deny at \$HOME itself is propagated (denied.codex true)" \
+  '[ "$RC" -eq 0 ] && [ -f "$T/hp-out/.codex-deny" ] && [ "$(j .denied.codex)" = true ]'
 
 # An inherited GIT_DIR/GIT_WORK_TREE (a hook's environment) must not redirect the
 # source lookup or the materialized repo.
@@ -236,21 +260,21 @@ chk "G1: a trailing --out with no value is exit 2 (needs a value)" '[ "$RC" -eq 
 # worktree of it — with stub CLIs that must never be invoked.
 if [ -x "$EXT_RUN" ]; then
   mkdir -p "$T/bin"
-  printf '#!/bin/sh\n: > "%s/stub-called"\nexit 1\n' "$T" > "$T/bin/agy"; cp "$T/bin/agy" "$T/bin/codex"; chmod +x "$T/bin/agy" "$T/bin/codex"
+  printf '#!/bin/sh\n: > "%s/stub-called"\nexit 1\n' "$T" > "$T/bin/codex"; chmod +x "$T/bin/codex"
   printf 'Review this.\n' > "$T/brief.txt"
-  ext() { OUT=$(AGY_BOUNDARY_CLEARED=1 AGY_BIN="$T/bin/agy" CODEX_BIN="$T/bin/codex" "$EXT_RUN" "$@" 2>"$T/err"); RC=$?; ERR=$(cat "$T/err"); }
+  ext() { OUT=$(AGY_BOUNDARY_CLEARED=1 CODEX_BIN="$T/bin/codex" "$EXT_RUN" "$@" 2>"$T/err"); RC=$?; ERR=$(cat "$T/err"); }
   rm -f "$T/stub-called"
-  ext read --vendor agy --prompt-file "$T/brief.txt" --input "$T/ad-out/repo/calc.sh"
-  chk "D9: ext-run.sh REFUSES agy on a file in the materialized clone (exit 3) — the propagated marker works" \
-    '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "\.agy-deny" && [ ! -e "$T/stub-called" ]'
+  ext read --prompt-file "$T/brief.txt" --input "$T/ad-out/repo/calc.sh"
+  chk "D9: ext-run.sh REFUSES codex on a file in the materialized clone (exit 3) — the propagated marker works" \
+    '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "\.codex-deny" && [ ! -e "$T/stub-called" ]'
   git -C "$T/ad-out/repo" worktree add -q --detach "$T/ad-wt" >/dev/null 2>&1
-  ext read --vendor agy --prompt-file "$T/brief.txt" --input "$T/ad-wt/calc.sh"
+  ext read --prompt-file "$T/brief.txt" --input "$T/ad-wt/calc.sh"
   chk "D10: ...and on a file in a linked worktree of the clone staged elsewhere (triage-compare's layout)" \
-    '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "\.agy-deny" && [ ! -e "$T/stub-called" ]'
-  ext read --vendor codex --prompt-file "$T/brief.txt" --input "$T/ad-out/repo/calc.sh"
-  chk "D11: ...while codex is NOT refused there (the marker is per vendor)" '[ "$RC" -ne 3 ]'
+    '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "\.codex-deny" && [ ! -e "$T/stub-called" ]'
+  ext read --prompt-file "$T/brief.txt" --input "$T/ag-out/repo/calc.sh"
+  chk "D11: ...while a clone of an .agy-deny source is NOT refused (the retired marker is inert)" '[ "$RC" -ne 3 ]'
   rm -f "$T/stub-called"
-  ext read --vendor agy --prompt-file "$T/brief.txt" --input "$T/m1/repo/calc.sh"
+  ext read --prompt-file "$T/brief.txt" --input "$T/m1/repo/calc.sh"
   chk "D12: an unmarked clone is not refused by ext-run.sh" '[ "$RC" -ne 3 ]'
 else
   chk "D9-D12: ext-run.sh present" 'false'
@@ -304,6 +328,74 @@ chk "V9: an empty seed list => ok false" '[ "$RC" -eq 1 ] && [ "$(j .ok)" = fals
 RM="$T/rm"; mksuite "$RM" "$SRC"; printf '[{"file":"gone.py","line":1,"id":"S1","desc":"d"}]\n' > "$RM/3/rev-seed/key.json"
 run_ps verify-task --task "$RM/3/rev-seed" --out "$T/v9"
 chk "V10: a seed naming a file absent at the sha => missing lists it, ok false" '[ "$RC" -eq 1 ] && [ "$(j ".missing[0]")" = gone.py ]'
+
+# ---- (d) env map: $PARITY_ tool variables, .parity-env only on opt-in ----------
+EM="$T/envs.json"; printf '{"PARITY_SH":"/bin/sh","PARITY_UNUSED":"/nowhere"}\n' > "$EM"
+ES="$T/envsuite"; mksuite "$ES" "$SRC"
+edit_task "$ES/1/g-fix/task.json" '.checks = ["\"$PARITY_SH\" test_calc.sh"]'
+cp -R "$ES/1/g-fix" "$ES/1/g-self"; edit_task "$ES/1/g-self/task.json" '.id = "g-self" | .selfCheckEnv = true'
+run_ps verify-task --task "$ES/1/g-fix" --out "$T/e1" --env-map "$EM"
+chk "E1: verify-task exports the mapped PARITY_ variable into the checks (base fails, solution passes: the tool ran)" \
+  '[ "$RC" -eq 0 ] && [ "$(j .baseFails)" = true ] && [ "$(j .solutionPasses)" = true ] && [ "$(j .ok)" = true ]'
+OUT=$(PARITY_ENV_MAP="$EM" "$PS" verify-task --task "$ES/1/g-fix" --out "$T/e1b" 2>"$T/err"); RC=$?; ERR=$(cat "$T/err")
+chk "E1b: ...and PARITY_ENV_MAP names the map when --env-map is absent" '[ "$RC" -eq 0 ] && [ "$(j .ok)" = true ]'
+printf '{"PARITY_OTHER":"/bin/sh"}\n' > "$T/envs-other.json"
+run_ps verify-task --task "$ES/1/g-fix" --out "$T/e2" --env-map "$T/envs-other.json"
+chk "E2: an UNMAPPED variable a check references => exit 2 naming it, nothing materialized" \
+  '[ "$RC" -eq 2 ] && [ -z "$OUT" ] && printf "%s" "$ERR" | grep -q "PARITY_SH" && [ ! -e "$T/e2/repo" ]'
+run_ps materialize --task "$ES/1/g-fix" --out "$T/e3"
+chk "E3: materialize with no env map (HOME has none) and a \$PARITY_ check => exit 2 naming it" \
+  '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q "PARITY_SH" && [ ! -e "$T/e3/repo" ]'
+run_ps materialize --task "$ES/1/g-fix" --out "$T/e4" --env-map "$EM"
+chk "E4: a task that does not opt in gets NO .parity-env (and no exclude line for it)" \
+  '[ "$RC" -eq 0 ] && [ ! -e "$T/e4/repo/.parity-env" ] && ! grep -q parity-env "$T/e4/repo/.git/info/exclude" 2>/dev/null'
+run_ps materialize --task "$ES/1/g-self" --out "$T/e5" --env-map "$EM"
+E5_SHA=$(j .sha)
+chk "E5: selfCheckEnv:true writes <repo>/.parity-env holding ONLY the referenced variables' export lines" \
+  '[ "$RC" -eq 0 ] && grep -qx "export PARITY_SH='"'"'/bin/sh'"'"'" "$T/e5/repo/.parity-env" && ! grep -q PARITY_UNUSED "$T/e5/repo/.parity-env"'
+chk "E5b: ...it is git-excluded: the tree stays clean and the committed tree is the same as without it" \
+  '[ -z "$(git -C "$T/e5/repo" status --porcelain --ignored=no)" ] && git -C "$T/e5/repo" check-ignore -q .parity-env && [ "$(git -C "$T/e5/repo" rev-parse "HEAD^{tree}")" = "$(git -C "$T/e4/repo" rev-parse "HEAD^{tree}")" ]'
+chk "E5c: ...and sourcing it gives a candidate the tool (the checks run by hand)" \
+  '( cd "$T/e5/repo" && . ./.parity-env && [ "$PARITY_SH" = /bin/sh ] )'
+SW="$REPO_DIR/scripts/stage-worktree.sh"
+git -C "$T/e5/repo" worktree add -q --detach "$T/e5-wt" >/dev/null 2>&1
+cp "$T/e5/repo/.parity-env" "$T/e5-wt/.parity-env"; printf 'x\n' > "$T/e5-wt/candidate-change.txt"
+"$SW" diff --worktree "$T/e5-wt" --base "$E5_SHA" --out "$T/e5.patch" >/dev/null 2>&1
+chk "E5d: a .parity-env copied into a worktree never enters the candidate's patch (the exclude is shared)" \
+  'grep -q "candidate-change.txt" "$T/e5.patch" && ! grep -q "parity-env" "$T/e5.patch"'
+
+# ---- (b) fingerprint: the source-repo leak guard ----------------------------------
+FS="$T/fpsrc"; mksrc "$FS"; FPS="$T/fpsuite"; mksuite "$FPS" "$FS"
+fp_state() { git -C "$FS" --no-optional-locks status --porcelain=v1 -uall; git -C "$FS" rev-parse HEAD; cksum < "$FS/.git/index"; }
+FS_BEFORE=$(fp_state)
+run_ps fingerprint --task "$FPS/1/g-fix"
+FP0="$OUT"
+chk "F1: a git source prints {id, source:git, name, head, tree} — the repo NAME only, never its path" \
+  '[ "$RC" -eq 0 ] && [ "$(j .source)" = git ] && [ "$(j .name)" = fpsrc ] && [ "$(j .head)" = "$(git -C "$FS" rev-parse HEAD)" ] && printf "%s" "$(j .tree)" | grep -Eq "^[0-9a-f]{40}$" && ! printf "%s" "$OUT" | grep -qF "$FS"'
+chk "F1b: fingerprinting leaves the source untouched (status, HEAD, index bytes)" '[ "$(fp_state)" = "$FS_BEFORE" ]'
+run_ps fingerprint --task "$FPS/1/g-fix"
+chk "F2: an unchanged source fingerprints identically" '[ "$OUT" = "$FP0" ]'
+printf 'dirty\n' >> "$FS/calc.sh"
+run_ps fingerprint --task "$FPS/1/g-fix"; FP1="$OUT"
+chk "F3: a tracked edit changes tree, not head (tree changed)" \
+  '[ "$(printf "%s" "$FP1" | jq -r .head)" = "$(printf "%s" "$FP0" | jq -r .head)" ] && [ "$(printf "%s" "$FP1" | jq -r .tree)" != "$(printf "%s" "$FP0" | jq -r .tree)" ]'
+printf 'dirtier\n' >> "$FS/calc.sh"
+run_ps fingerprint --task "$FPS/1/g-fix"
+chk "F4: a second edit to an already-dirty file changes tree again (content, not just status)" '[ "$(j .tree)" != "$(printf "%s" "$FP1" | jq -r .tree)" ]'
+FP2="$OUT"
+printf 'new\n' > "$FS/planted.md"
+run_ps fingerprint --task "$FPS/1/g-fix"
+chk "F5: an untracked file planted in the source changes tree" '[ "$(j .tree)" != "$(printf "%s" "$FP2" | jq -r .tree)" ]'
+git -C "$FS" add -A; git -C "$FS" commit -qm "a concurrent commit"
+run_ps fingerprint --task "$FPS/1/g-fix"
+chk "F6: a commit moves head (HEAD moved)" '[ "$(j .head)" = "$(git -C "$FS" rev-parse HEAD)" ] && [ "$(j .head)" != "$(printf "%s" "$FP0" | jq -r .head)" ]'
+run_ps fingerprint --task "$FPS/2/gen-fix"
+chk "F7: a generator source prints {id, source:generator} and nothing to compare" '[ "$RC" -eq 0 ] && [ "$OUT" = "{\"id\":\"gen-fix\",\"source\":\"generator\"}" ]'
+run_ps fingerprint --task "$CCS/1/g-fix"
+chk "F8: a clip-creator source is REFUSED (exit 3)" '[ "$RC" -eq 3 ]'
+GONE="$T/gonesuite"; mksuite "$GONE" "$SRC"; edit_task "$GONE/1/g-fix/task.json" '.source.repo = "'"$T"'/no/such/repo"'
+run_ps fingerprint --task "$GONE/1/g-fix"
+chk "F9: a missing source repo => exit 1 (the guard reports unverified, never clean)" '[ "$RC" -eq 1 ] && [ -z "$OUT" ]'
 
 # ---- score-review -------------------------------------------------------------
 KEY="$FIX/3/rev-seed/key.json"   # S1 app.py:3, S2 app.py:9, S3 app.py:13

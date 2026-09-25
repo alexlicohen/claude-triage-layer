@@ -8,8 +8,10 @@
 # from the diffstat and the caller's tree, the caller's tree AND index untouched,
 # worktrees (dirs and git bookkeeping) cleaned up, the timeout, a missing patch
 # file, JSON shape/order, usage errors (a trailing flag with no value), an overlay
-# copy failure (ungradable, never graded), an inherited GIT_DIR/GIT_WORK_TREE, and
-# a check's grandchildren killed with it (timeout and normal exit).
+# copy failure (ungradable, never graded), an inherited GIT_DIR/GIT_WORK_TREE,
+# a check's grandchildren killed with it (timeout and normal exit), the PARITY_
+# env map (export, precedence, unmapped/missing/invalid => exit 2, --print-env)
+# and the per-patch cache dir (XDG_CACHE_HOME/TMPDIR/GRANTFORGE_CACHE_DIR).
 # shellcheck disable=SC2034  # *_BEFORE/START are read inside chk's eval'd conditions
 set -u
 
@@ -193,6 +195,61 @@ GC2=$(cat "$GCF" 2>/dev/null)
 chk "P15b a background process left by a check that exited normally is killed too (rc 0 kept)" \
   '[ "$(field 1 .rc)" = 0 ] && [ -n "$GC2" ] && ! alive "$GC2" && [ "$(git -C "$R" worktree list | wc -l | tr -d " ")" -eq 1 ]'
 alive "$GC2" && kill -9 "$GC2" 2>/dev/null
+
+# --- P16: the PARITY_ env map — tools reach the check only as mapped variables ----
+EM="$T/envs.json"
+printf '{"PARITY_PY":"/opt/tools/it'"'"'s py","PARITY_SH":"/bin/sh"}\n' > "$EM"
+SEEN="$T/seen.txt"
+rm -f "$SEEN"
+run_pc --repo "$R" --base HEAD --env-map "$EM" --check "printf '%s|%s\n' \"\$PARITY_PY\" \"\${PARITY_SH}\" > '$SEEN'; \"\$PARITY_SH\" -c 'grep -qx fixed calc.txt'" "$T/fix.patch"
+chk "P16 every PARITY_ variable the check references is exported from --env-map (quotes/spaces intact) and the check passes" \
+  '[ "$RC" -eq 0 ] && [ "$(field 1 .rc)" = 0 ] && [ "$(cat "$SEEN" 2>/dev/null)" = "/opt/tools/it'"'"'s py|/bin/sh" ]'
+printf '{"PARITY_SH":"/bin/sh"}\n' > "$T/envs-sh.json"
+rm -f "$SEEN"
+OUT=$(PARITY_ENV_MAP="$T/envs-sh.json" "$PC" --repo "$R" --base HEAD --check "echo \"\$PARITY_SH\" > '$SEEN'" "$T/fix.patch" 2>"$T/err"); RC=$?
+chk "P16b PARITY_ENV_MAP names the map when --env-map is absent" '[ "$RC" -eq 0 ] && [ "$(cat "$SEEN" 2>/dev/null)" = /bin/sh ]'
+rm -f "$SEEN"
+OUT=$(PARITY_ENV_MAP="$T/no-such.json" "$PC" --repo "$R" --base HEAD --env-map "$EM" --check "echo \"\$PARITY_SH\" > '$SEEN'" "$T/fix.patch" 2>"$T/err"); RC=$?
+chk "P16c --env-map wins over PARITY_ENV_MAP" '[ "$RC" -eq 0 ] && [ "$(cat "$SEEN" 2>/dev/null)" = /bin/sh ]'
+rm -f "$SEEN"
+run_pc --repo "$R" --base HEAD --env-map "$EM" --check "echo ran > '$SEEN'; \"\$PARITY_PY\" x && \"\$PARITY_NOPE\" y" "$T/fix.patch"
+chk "P16d an UNMAPPED PARITY_ variable => exit 2 naming it; nothing ran, nothing printed, no worktree" \
+  '[ "$RC" -eq 2 ] && [ -z "$OUT" ] && grep -q "unmapped PARITY_ variable(s) referenced by the check: PARITY_NOPE" "$T/err" && [ ! -e "$SEEN" ] && [ "$(git -C "$R" worktree list | wc -l | tr -d " ")" -eq 1 ]'
+OUT=$(PARITY_ENV_MAP="$T/no-such.json" "$PC" --repo "$R" --base HEAD --check '"$PARITY_SH" -c true' "$T/fix.patch" 2>"$T/err"); RC=$?
+chk "P16e a PARITY_ reference with no env map at all => exit 2 naming the variable and the map path" \
+  '[ "$RC" -eq 2 ] && [ -z "$OUT" ] && grep -q "PARITY_SH" "$T/err" && grep -qF "$T/no-such.json" "$T/err"'
+printf '{"PARITY_SH":"bin/sh"}\n' > "$T/envs-rel.json"
+run_pc --repo "$R" --base HEAD --env-map "$T/envs-rel.json" --check '"$PARITY_SH" -c true' "$T/fix.patch"
+chk "P16f an env map with a relative path (or a non-PARITY_ key) is invalid => exit 2" '[ "$RC" -eq 2 ] && [ -z "$OUT" ]'
+run_pc --repo "$R" --base HEAD --env-map "$EM" --check '"$PARITY_sh" -c true' "$T/fix.patch"
+chk "P16g a \$PARITY_ reference that is not PARITY_[A-Z0-9_]+ (bash would read PARITY_sh) => exit 2" '[ "$RC" -eq 2 ] && grep -q "PARITY_sh" "$T/err"'
+OUT=$(PARITY_ENV_MAP="$T/no-such.json" "$PC" --repo "$R" --base HEAD --check 'grep -qx fixed calc.txt' "$T/fix.patch" 2>"$T/err"); RC=$?
+chk "P16h a check that references no PARITY_ variable never reads the map (a missing one is fine)" '[ "$RC" -eq 0 ] && [ "$(field 1 .rc)" = 0 ]'
+OUT=$("$PC" --print-env --env-map "$EM" --check '"$PARITY_SH" a && ${PARITY_PY} b && "$PARITY_SH" c' 2>"$T/err"); RC=$?
+chk "P16i --print-env prints one export line per referenced variable (sorted, shell-quoted), no repo/patch needed" \
+  '[ "$RC" -eq 0 ] && [ "$OUT" = "export PARITY_PY='"'"'/opt/tools/it'"'"'\'"'"''"'"'s py'"'"'
+export PARITY_SH='"'"'/bin/sh'"'"'" ]'
+OUT=$("$PC" --print-env --check 'true' 2>"$T/err"); RC=$?
+chk "P16j --print-env with no PARITY_ reference prints nothing, exit 0" '[ "$RC" -eq 0 ] && [ -z "$OUT" ]'
+OUT=$("$PC" --print-env --env-map "$EM" --check '"$PARITY_NOPE"' 2>"$T/err"); RC=$?
+chk "P16k --print-env: an unmapped variable is exit 2 naming it" '[ "$RC" -eq 2 ] && grep -q PARITY_NOPE "$T/err"'
+
+# --- P17: cache isolation — every check gets its own cache/temp dir ---------------
+CE="$T/cacheenv.txt"
+rm -f "$CE"
+run_pc --repo "$R" --base HEAD --check "printf '%s|%s|%s|%s\n' \"\$XDG_CACHE_HOME\" \"\$TMPDIR\" \"\$GRANTFORGE_CACHE_DIR\" \"\$PWD\" >> '$CE'; [ -d \"\$XDG_CACHE_HOME\" ] && : > \"\$GRANTFORGE_CACHE_DIR/retraction_watch.csv\"" "$T/fix.patch" "$T/nofix.patch"
+C1=$(sed -n 1p "$CE" 2>/dev/null); C2=$(sed -n 2p "$CE" 2>/dev/null)
+cache_ok() { # $1 = one line: XDG|TMPDIR|GRANTFORGE|PWD
+  local x t g w
+  IFS='|' read -r x t g w <<EOF2
+$1
+EOF2
+  [ -n "$x" ] && [ "$x" = "$t" ] && [ "$x" = "$g" ] && [ "$(dirname "$x")" = "$(dirname "$w")" ] && [ "$x" != "$w" ] && [ ! -e "$x" ]
+}
+chk "P17 XDG_CACHE_HOME, TMPDIR and GRANTFORGE_CACHE_DIR all point at one existing dir beside the grading worktree, and it is removed afterwards" \
+  '[ "$(field 1 .rc)" = 0 ] && [ "$(field 2 .rc)" = 0 ] && cache_ok "$C1" && cache_ok "$C2"'
+chk "P17b each patch gets its OWN cache dir (never shared across candidates), and nothing is left under TMPDIR" \
+  '[ "${C1%%|*}" != "${C2%%|*}" ] && [ -z "$(ls -A "$TMPDIR")" ]'
 
 echo ""
 echo "RESULT: $PASS_COUNT passed, $FAIL_COUNT failed"

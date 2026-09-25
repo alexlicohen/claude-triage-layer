@@ -1,11 +1,15 @@
 #!/bin/bash
 # scripts/ext-run.sh — SINGLE OWNER of every invocation of an external,
-# non-Anthropic agent CLI made by this layer: Google's Antigravity (`agy`) and
-# OpenAI's Codex CLI (`codex`). Nothing else in the repo, and no agent, may call
-# either CLI directly: the vendor adapters, the deny-list, the known-good flag
-# combos, the timeouts, the build staging worktree and the exit-code contract
-# all live here. Model ids and efforts do NOT live here: they come from the
-# tiers file (config/tiers.json; see "Tiers" below).
+# non-Anthropic agent CLI made by this layer: OpenAI's Codex CLI (`codex`).
+# Nothing else in the repo, and no agent, may call codex directly: the adapter,
+# the OS confinement profile, the deny-list, the known-good flags, the timeouts,
+# the build staging worktree, the command audit log and the exit-code contract
+# all live here. Model ids and efforts do NOT live here: they come from the tiers
+# file (config/tiers.json; see "Tiers" below).
+#
+# Google's Antigravity (`agy`) was RETIRED on 2026-09-24: its headless mode let
+# the model set a per-command BypassSandbox flag, and a read-only review run used
+# it to copy a file into a real repo. `--vendor agy` is refused (exit 3).
 #
 # Usage:
 #   scripts/ext-run.sh <mode> --prompt-file FILE [options]
@@ -22,20 +26,35 @@
 #             (or only written out, with --patch-out)
 #
 # Options:
-#   --vendor agy|codex   which external CLI (default agy — existing callers
-#                        behave exactly as before).
+#   --vendor codex       the external CLI. codex is the only one (and the default);
+#                        `agy` is refused (exit 3, retired 2026-09-24).
 #   --level L            build mode only: quick|builder|deep|top. Resolves the
-#                        model (and codex effort) from tiers.json levels.L.<vendor>.
-#                        Without it, build resolves modes.<vendor>.build.
+#                        model and effort from tiers.json levels.L.codex.
+#                        Without it, build resolves modes.codex.build.
 #   --prompt-file FILE   (required) the brief. Never passed inline on argv.
 #   --input FILE         stage FILE into the workspace and name it by ABSOLUTE
 #                        path in the prompt footer. Repeatable. This is how a
 #                        diff/log/corpus gets in. Read-only modes: inputs/<base>
-#                        in the stage; build: .<vendor>-inputs/<base> in the
+#                        in the stage; build: .codex-inputs/<base> in the
 #                        worktree, removed again before the result patch is captured.
+#   --input-dir DIR      read-only modes only: stage a COPY of the whole directory
+#                        tree DIR into the workspace as inputs/<basename> and name
+#                        it in the prompt footer (repeatable). DIR is deny-checked
+#                        like --input (itself and the main worktree of its repo),
+#                        and refused (exit 3) when a deny-listed repo or a
+#                        .codex-deny marker lies beneath it, or a symlink in it
+#                        resolves OUTSIDE it; a special file in it, or a tree over
+#                        the size cap, is a usage error (exit 2).
+#   --input-dir-max-mb N the --input-dir size cap in MB (default 200), per dir.
+#   --allow-read PATH    let codex READ one more file or directory (repeatable).
+#                        Its sandbox otherwise reads nothing under $HOME except
+#                        its workspace and ~/.codex. Refused (exit 3) when the deny
+#                        check refuses PATH, when PATH is $HOME or an ancestor of
+#                        it, or when a deny-listed repo or a .codex-deny marker lies
+#                        anywhere beneath it.
 #   --schema FILE|JSON   read mode only: enforce typed output (implies JSON out).
-#   --workdir DIR        build mode only: the git repo to change. The external CLI
-#                        NEVER sees it — it sees a disposable worktree of it.
+#   --workdir DIR        build mode only: the git repo to change. codex NEVER sees
+#                        it — it sees a disposable worktree of it.
 #   --output FILE        build mode only: where to write the result patch.
 #                        Defaults to a mktemp file; the path is always printed
 #                        on stderr. The patch is kept when it fails to apply.
@@ -47,48 +66,46 @@
 #                        passed its gates, run CMD (bash -c) in the worktree,
 #                        OUTSIDE the model sandbox. Prints `CHECK rc=<n>` and the
 #                        tail of its output on stderr. Never changes the exit code.
-#   --model ID           override the tiers model. Must belong to the vendor
-#                        (agy: gemini-*; codex: gpt-*|codex-*); anything naming
-#                        claude is always refused.
-#   --effort E           agy: low|medium|high — rewrites the SUFFIX of the model
-#                        id (agy encodes effort in the id and rejects --effort
-#                        next to such an id, so agy NEVER receives --effort).
-#                        codex: minimal|low|medium|high|xhigh|max — overrides the
-#                        tiers effort (passed as -c model_reasoning_effort=E).
-#   --timeout DURATION   override the mode's timeout. agy: its --print-timeout
-#                        (Go duration). codex: the wall-clock watchdog (N, Ns,
-#                        Nm or Nh).
-#   --raw                print the full vendor output (agy JSON envelope / codex
-#                        JSONL event stream) instead of the answer.
+#   --model ID           override the tiers model. Must be a codex model
+#                        (gpt-*|codex-*); anything naming claude is always refused.
+#   --effort E           minimal|low|medium|high|xhigh|max — overrides the tiers
+#                        effort (passed as -c model_reasoning_effort=E).
+#   --timeout DURATION   override the mode's wall-clock watchdog (N, Ns, Nm or Nh).
+#   --raw                print the full codex JSONL event stream instead of the answer.
 #
 # Tiers (the ONLY source of external model ids and efforts):
 #   $TRIAGE_TIERS, else <script dir>/triage-tiers.json (the installed copy), else
 #   <script dir>/../config/tiers.json (the repo). Missing/unparseable => exit 2.
-#   A vendor entry present under a level/mode means that vendor is allowed there;
-#   an ABSENT entry is a refusal (exit 3) — never a fallback to a default model.
+#   A codex entry present under a level/mode means codex is allowed there; an
+#   ABSENT entry is a refusal (exit 3) — never a fallback to a default model.
 #
 # Environment:
-#   AGY_BIN / CODEX_BIN   executables (default: agy / codex on PATH)
-#   AGY_DENY_REPOS        extra space-separated repo/dir names agy must never see.
-#   CODEX_DENY_REPOS      the same for codex.
-#                         clip-creator is hard-denied for EVERY vendor whatever
-#                         these hold (standing decision 2026-07-10; engram left
-#                         the list 2026-09-15 — see CHANGELOG.md, Wave 10).
-#   AGY_BOUNDARY_CLEARED  must be 1, for every vendor. The caller attests the data
-#                         boundary was checked (no clinical/BCH/PHI, no COI
-#                         material, not a deny-listed repo). Absent => REFUSED.
+#   CODEX_BIN             the codex executable: a path, or a name looked up on
+#                         PATH (never a shell function or alias), then resolved to
+#                         its real file. Default: codex.
+#   CODEX_DENY_REPOS      extra space-separated repo/dir names codex must never see.
+#                         clip-creator is hard-denied whatever this holds (standing
+#                         decision 2026-07-10; engram left the list 2026-09-15 —
+#                         see CHANGELOG.md, Wave 10).
+#   AGY_BOUNDARY_CLEARED  must be 1. The caller attests the data boundary was
+#                         checked (no clinical/BCH/PHI, no COI material, not a
+#                         deny-listed repo). Absent => REFUSED. The name predates
+#                         agy's retirement; it is the vendor-neutral attestation.
 #   AGY_STAGE_KEEP        1 = keep the staging dir (debugging). It NEVER keeps
 #                         the build worktree — that is always removed.
+#   EXT_RUN_AUDIT_LOG     the command audit log (default
+#                         ~/.claude/logs/ext-run/codex-commands.jsonl).
 #
 # Exit codes (the contract every caller keys off):
 #   0  OK          stdout is the model's answer (or the raw output with --raw)
 #   2  USAGE       bad mode/flags/missing file/bad tiers file — nothing ran
-#   3  REFUSED     deny-list hit, boundary not attested, vendor not listed in
-#                  tiers.json for this level/mode, or --patch-out on a dirty
-#                  tree — nothing ran
-#   4  UNAVAILABLE CLI missing, auth failed, timed out, tools were denied, a
-#                  failure event, the response was empty, or the build stage
-#                  could not be prepared. NEVER silently a pass.
+#   3  REFUSED     deny-list hit, boundary not attested, codex not listed in
+#                  tiers.json for this level/mode, a refused --allow-read, the
+#                  retired agy vendor, or --patch-out on a dirty tree — nothing ran
+#   4  UNAVAILABLE CLI missing, OS sandbox missing or not enforcing, audit log not
+#                  writable, auth failed, timed out, a failure event, the response
+#                  was empty, or the build stage could not be prepared. NEVER
+#                  silently a pass.
 #   5  SCHEMA      --schema was given and the response is not valid JSON
 #   6  APPLY       build only: a patch was produced but would NOT apply cleanly
 #                  to the real repo. The real repo is left exactly as it was (the
@@ -96,32 +113,45 @@
 #                  the patch is left at --output; the answer still went to stdout.
 #
 # WHY exit code alone is not enough:
-#   agy (verified live, agy 1.2.3, 2026-09-15): a run whose tools were auto-denied
-#   in headless mode exits 0, prints nothing on stdout, and reports
-#   {"status":"SUCCESS","response":"","denied_actions":[...]}. The agy gate
-#   therefore requires .response non-empty and .denied_actions empty.
 #   codex (verified live, codex-cli 0.155.1, 2026-09-23): a failed turn emits a
 #   turn.failed event and a top-level {"type":"error"} event, exits 1, and does
 #   NOT write the -o file. The codex gate requires rc 0 AND a non-empty -o file
 #   AND no turn.failed/error event.
 #
-# WHY build mode never lets the external CLI touch the caller's tree:
-#   agy runs with --dangerously-skip-permissions (the only way any tool runs
-#   headless) and --mode plan is not a write guard; codex's workspace-write
-#   sandbox is scoped to its -C dir. Either way "which files it may change" is
-#   best expressed as "a disposable copy": build mode checks out a disposable
-#   `git worktree --detach HEAD`, carries the caller's uncommitted changes and
-#   untracked files into it, commits that carried state as the stage base, and
-#   points the CLI at the worktree. This script then captures
-#   `git add -A && git diff --cached --binary` (the pure model delta, because the
-#   stage base already holds the caller's changes) and applies it back to the
-#   real repo. Failure to apply is exit 6, never a silent half-write, and the
-#   worktree is removed on every exit path. `git add -A` honours .gitignore, so
-#   files the repo ignores are NOT carried back. While the CLI runs, the
-#   worktree's `.git` file (which names the REAL repo's gitdir) is moved into
-#   this script's private meta dir, so the CLI cannot discover or write the real
-#   repo through git; it is restored before this script's own git calls and in
-#   the exit trap.
+# WHY codex runs inside an OS sandbox this script generates (sandbox-exec):
+#   Staging controls what we HAND codex, not what it can REACH. codex's own
+#   seatbelt blocks writes outside its workspace but not reads of the whole disk,
+#   its config (sandbox_permissions) does not restrict reads, and an outer
+#   sandbox-exec does NOT nest with codex's own seatbelt (every command rc 71 —
+#   verified 2026-09-24, codex-cli 0.156.1). So codex's sandbox is switched off
+#   (--dangerously-bypass-approvals-and-sandbox) and REPLACED by a per-run
+#   profile applied by sandbox-exec around the whole codex process: nothing under
+#   $HOME or the temp dirs (/private/tmp, /private/var/folders — sibling stages,
+#   other runs' patches, Claude session scratchpads) is readable but the
+#   workspace, ~/.codex, codex's scratch dir and each --allow-read path; writes
+#   are DENIED BY DEFAULT — nothing anywhere is writable but the workspace,
+#   ~/.codex, codex's own scratch dir and a few device files. The two flags travel
+#   ONLY together. FAIL CLOSED: no sandbox-exec, a profile that does not apply, or
+#   one that applies without enforcing (either of two canary writes that must be
+#   denied lands: one in the stage root, one outside $HOME and the temp dirs) is
+#   exit 4 — codex never runs unconfined, and there is no opt-out. (The canaries
+#   defend against an accidental no-op or a regressed profile; whoever controls
+#   PATH controls CODEX_BIN too.)
+#
+# WHY build mode never lets codex touch the caller's tree:
+#   "Which files it may change" is best expressed as "a disposable copy": build
+#   mode checks out a disposable `git worktree --detach HEAD`, carries the
+#   caller's uncommitted changes and untracked files into it, commits that carried
+#   state as the stage base, and points codex at the worktree. This script then
+#   captures `git add -A && git diff --cached --binary` (the pure model delta,
+#   because the stage base already holds the caller's changes) and applies it back
+#   to the real repo. Failure to apply is exit 6, never a silent half-write, and
+#   the worktree is removed on every exit path. `git add -A` honours .gitignore,
+#   so files the repo ignores are NOT carried back. While codex runs, the
+#   worktree's `.git` file (which names the REAL repo's gitdir) is moved into this
+#   script's private meta dir — which the sandbox does not let codex write, so it
+#   cannot swap in a gitdir of its own for this script's later git calls — and
+#   the profile denies the real repo and its git dir outright.
 set -uo pipefail
 
 # Inherited git redirection (a git hook, a caller running under GIT_DIR=...)
@@ -131,13 +161,12 @@ set -uo pipefail
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_NAMESPACE GIT_CEILING_DIRECTORIES
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-AGY_BIN="${AGY_BIN:-agy}"
 CODEX_BIN="${CODEX_BIN:-codex}"
 # Hard-denied for every vendor; not overridable from the environment.
 HARD_DENY_REPOS="clip-creator"
-AGY_DENY_REPOS="${AGY_DENY_REPOS:-}"
 CODEX_DENY_REPOS="${CODEX_DENY_REPOS:-}"
-# $HOME in its physical spelling too: deny paths are compared after pwd -P.
+# $HOME in its physical spelling too: deny paths are compared after pwd -P, and
+# the sandbox profile matches physical paths.
 HOME_P=$(cd "${HOME:-/}" 2>/dev/null && pwd -P) || HOME_P="${HOME:-/}"
 
 E_USAGE=2
@@ -147,10 +176,13 @@ E_SCHEMA=5
 E_APPLY=6
 
 STAGE=""
+OUTSIDE_CANARY=""   # set only while the preflight's outside canary may exist (see sandbox_preflight)
 BUILD_REPO=""
 BUILD_WT=""
 WD_PID=""
 RUN_PID=""
+RUN_STARTED=0
+AUDIT_DONE=0
 HIDDEN_GIT=""   # where the build worktree's .git file sits while the CLI runs
 stop_watchdog() {
   # Kill the watchdog subshell FIRST, then its pending `sleep`: killing the sleep
@@ -210,6 +242,11 @@ restore_git() {
 cleanup() {
   stop_watchdog
   if [ -n "$RUN_PID" ]; then reap_tree "$RUN_PID"; RUN_PID=""; fi
+  # A run interrupted before its audit (a signal mid-run) is still audited: the
+  # event stream is in the stage, which goes below.
+  [ "$RUN_STARTED" -eq 1 ] && audit_commands
+  # A signal during the preflight: its outside canary is not in the stage.
+  [ -n "$OUTSIDE_CANARY" ] && rm -f "$OUTSIDE_CANARY"
   restore_git
   # The worktree goes first and unconditionally: it is registered in the real
   # repo's .git, so leaving it behind would litter the caller's repo, and
@@ -223,39 +260,22 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
-# A signal must still run cleanup (reap the CLI's tree, restore .git, remove the
-# worktree): exit through the EXIT trap.
+# A signal must still run cleanup (reap the CLI's tree, audit, restore .git,
+# remove the worktree): exit through the EXIT trap.
 trap 'exit 130' INT TERM HUP
 
 die() { echo "$1" >&2; exit "$2"; }
 
 # ---------------------------------------------------------------------------
 # Mode table — write policy and timeout per mode. Models are NOT here: they come
-# from tiers.json (resolve_tier below), always an explicit non-Claude id — agy's
-# roster includes Claude models, and a defaulted run would review Claude with
-# Claude, defeating the whole point of the cross-vendor tier.
+# from tiers.json (resolve_tier below), always an explicit non-Claude id: a
+# defaulted run could review Claude with Claude, defeating the cross-vendor tier.
 # ---------------------------------------------------------------------------
 is_mode() {
   case "$1" in
     review|read|verify|critique|fuzz|build) return 0 ;;
   esac
   return 1
-}
-# Effort is encoded in an agy model id, NOT passed as --effort (verified live: agy
-# rejects --model <id with a suffix> together with --effort). apply_effort swaps
-# the suffix on the resolved model; gemini-3.1-pro has no "medium" rung, so medium
-# resolves to high there rather than inventing an id agy would reject.
-apply_effort() { # $1 = model id, $2 = low|medium|high
-  local base want
-  case "$1" in
-    *-low|*-medium|*-high) base="${1%-*}" ;;
-    *) echo "$1"; return ;;
-  esac
-  want="$2"
-  case "$base" in
-    gemini-3.1-pro) [ "$want" = "medium" ] && want="high" ;;
-  esac
-  echo "$base-$want"
 }
 mode_timeout() {
   case "$1" in
@@ -269,12 +289,9 @@ mode_timeout() {
 # NOTHING of the real repo in it but the files explicitly staged by --input.
 mode_writes() { [ "$1" = "build" ]; }
 
-# A model id must belong to the vendor it is sent to.
+# A model id must belong to codex.
 vendor_model_ok() { # $1 = model id
-  case "$VENDOR" in
-    agy)   case "$1" in gemini-*) return 0 ;; esac ;;
-    codex) case "$1" in gpt-*|codex-*) return 0 ;; esac ;;
-  esac
+  case "$1" in gpt-*|codex-*) return 0 ;; esac
   return 1
 }
 
@@ -297,8 +314,8 @@ to_seconds() {
 
 # ---------------------------------------------------------------------------
 # Tiers. find_tiers locates the file; resolve_tier is the single owner of
-# "which model/effort may this vendor use for this level/mode". An absent entry
-# is a refusal — there is deliberately no default model anywhere in this script.
+# "which model/effort may codex use for this level/mode". An absent entry is a
+# refusal — there is deliberately no default model anywhere in this script.
 # ---------------------------------------------------------------------------
 TIERS=""
 find_tiers() {
@@ -334,15 +351,16 @@ resolve_tier() {
 
 # ---------------------------------------------------------------------------
 # Deny-list. Enforced on the resolved, symlink-free path (resolve_path: the whole
-# symlink chain) of the workdir, of every --input source, of a --schema file and
-# of the prompt file — and that resolved path is what is then read. Component
-# equality (not substring), so ".../clip-creator/media" is refused and
-# ".../clip-creators-lab" is not. A per-vendor marker file (.agy-deny for agy,
-# .codex-deny for codex) anywhere from the path up to AND INCLUDING $HOME (or /,
-# outside $HOME) also refuses, so a repo can opt itself out of one vendor
-# without editing this script. Each of those paths that sits in a git work tree
-# is ALSO checked via the main worktree of its repository (git-common-dir), so a
-# linked worktree created outside a deny-listed repo is refused like the repo.
+# symlink chain) of the workdir, of every --input source, of every --allow-read
+# path, of a --schema file and of the prompt file — and that resolved path is
+# what is then read. Component equality (not substring), so
+# ".../clip-creator/media" is refused and ".../clip-creators-lab" is not. A
+# .codex-deny marker file anywhere from the path up to AND INCLUDING $HOME (or /,
+# outside $HOME) also refuses, so a repo can opt itself out without editing this
+# script. Each of those paths that sits in a git work tree is ALSO checked via the
+# main worktree of its repository (git-common-dir), so a linked worktree created
+# outside a deny-listed repo is refused like the repo. (The .agy-deny markers of
+# the retired agy vendor are inert.)
 # ---------------------------------------------------------------------------
 # resolve_path — SINGLE OWNER of "which file does this path really name". The
 # whole symlink chain of the leaf is followed (a link in an allowed dir pointing
@@ -365,12 +383,7 @@ resolve_path() { # $1 = path -> absolute physical path
   echo "$d/$(basename "$p")"
 }
 
-deny_names() {
-  case "$VENDOR" in
-    agy)   echo "$HARD_DENY_REPOS $AGY_DENY_REPOS" ;;
-    codex) echo "$HARD_DENY_REPOS $CODEX_DENY_REPOS" ;;
-  esac
-}
+deny_names() { echo "$HARD_DENY_REPOS $CODEX_DENY_REPOS"; }
 
 deny_check_path() { # $1 = one path, $2 = optional context for the message. exits E_REFUSED on a hit.
   local p d name marker why
@@ -428,14 +441,95 @@ deny_check() { # $1 = path. exits E_REFUSED on a hit.
   if [ -n "$main" ] && [ "$main" != "$p" ]; then deny_check_path "$main" " (the main worktree of the repository $p belongs to)"; fi
 }
 
+# allow_read_check PATH — an --allow-read path widens what the sandbox lets codex
+# READ, so on top of the deny check it must not re-open $HOME wholesale (PATH is
+# $HOME, or an ancestor of it) nor contain a deny-listed repo or a .codex-deny
+# marker anywhere beneath it. Exits E_REFUSED on a hit; prints the resolved path.
+allow_read_check() { # $1 = path as given
+  local real hit name
+  real=$(resolve_path "$1")
+  [ -e "$real" ] || die "USAGE: --allow-read path not found: $1" "$E_USAGE"
+  case "$real" in *"
+"*) die "USAGE: --allow-read path contains a newline: $1" "$E_USAGE" ;; esac
+  deny_check "$real" >&2
+  if [ "$real" = / ] || [ "$real" = "$HOME_P" ]; then
+    die "REFUSED: --allow-read $real would re-open all of \$HOME ($HOME_P) to codex." "$E_REFUSED"
+  fi
+  case "$HOME_P/" in
+    "$real"/*) die "REFUSED: --allow-read $real is an ancestor of \$HOME ($HOME_P) — it would re-open every repo in it." "$E_REFUSED" ;;
+  esac
+  if [ -d "$real" ]; then
+    set -- -name ".$VENDOR-deny"
+    for name in $(deny_names); do set -- "$@" -o -name "$name"; done
+    hit=$(find "$real" \( "$@" \) -print -quit 2>/dev/null)
+    [ -z "$hit" ] || die "REFUSED: --allow-read $real contains $hit — a deny-listed repo or a .$VENDOR-deny marker lies beneath it." "$E_REFUSED"
+  fi
+  printf '%s\n' "$real"
+}
+
+# input_dir_check DIR — an --input-dir is copied WHOLE into the workspace, so
+# everything in it leaves the machine: the deny check on DIR (and its repo's main
+# worktree), no deny-listed repo or .codex-deny marker beneath it, and no symlink
+# in it that resolves outside it (a link out would smuggle in whatever it names).
+# Special files and trees over the size cap are usage errors. Exits on a hit;
+# prints the resolved dir.
+input_dir_check() { # $1 = dir as given
+  local real hit name l t kb
+  real=$(resolve_path "$1")
+  [ -d "$real" ] || die "USAGE: --input-dir is not a directory: $1" "$E_USAGE"
+  case "$real" in *"
+"*) die "USAGE: --input-dir path contains a newline: $1" "$E_USAGE" ;; esac
+  deny_check "$real" >&2
+  if [ "$real" = / ] || [ "$real" = "$HOME_P" ]; then
+    die "REFUSED: --input-dir $real would copy all of \$HOME ($HOME_P) to codex." "$E_REFUSED"
+  fi
+  case "$HOME_P/" in
+    "$real"/*) die "REFUSED: --input-dir $real is an ancestor of \$HOME ($HOME_P)." "$E_REFUSED" ;;
+  esac
+  set -- -name ".$VENDOR-deny"
+  for name in $(deny_names); do set -- "$@" -o -name "$name"; done
+  hit=$(find "$real" \( "$@" \) -print -quit 2>/dev/null)
+  [ -z "$hit" ] || die "REFUSED: --input-dir $real contains $hit — a deny-listed repo or a .$VENDOR-deny marker lies beneath it." "$E_REFUSED"
+  while IFS= read -r -d '' l; do
+    t=$(resolve_path "$l")
+    case "$t/" in
+      "$real"/*) ;;
+      *) die "REFUSED: --input-dir $real holds a symlink that leaves it ($l -> $(readlink "$l")) — stage the target itself, or drop the link." "$E_REFUSED" ;;
+    esac
+  done < <(find "$real" -type l -print0 2>/dev/null)
+  hit=$(find "$real" ! -type f ! -type d ! -type l -print -quit 2>/dev/null)
+  [ -z "$hit" ] || die "USAGE: --input-dir $real holds a special file ($hit) — only regular files, directories and links inside it can be staged." "$E_USAGE"
+  kb=$(du -sk "$real" 2>/dev/null | cut -f1)
+  case "$kb" in ''|*[!0-9]*) die "USAGE: could not measure --input-dir $real" "$E_USAGE" ;; esac
+  if [ "$kb" -gt $((INPUT_DIR_MAX_MB * 1024)) ]; then
+    die "USAGE: --input-dir $real is $(( (kb + 1023) / 1024 )) MB, over the ${INPUT_DIR_MAX_MB} MB cap — stage less, or raise the cap with --input-dir-max-mb." "$E_USAGE"
+  fi
+  printf '%s\n' "$real"
+}
+
+# resolve_bin NAME|PATH — the real file an executable name or path runs: a name
+# is looked up on PATH only (type -P: never a shell function or alias), then the
+# whole symlink chain is resolved. Prints nothing (rc 1) when there is none.
+resolve_bin() {
+  local p
+  case "$1" in
+    */*) p="$1" ;;
+    *) p=$(type -P "$1" 2>/dev/null) || return 1 ;;
+  esac
+  [ -n "$p" ] || return 1
+  p=$(resolve_path "$p")
+  [ -f "$p" ] && [ -x "$p" ] || return 1
+  printf '%s\n' "$p"
+}
+
 # ---------------------------------------------------------------------------
 # Args
 # ---------------------------------------------------------------------------
-[ $# -ge 1 ] || die "USAGE: ext-run.sh <review|read|verify|critique|fuzz|build> --prompt-file FILE [--vendor agy|codex] [options]" "$E_USAGE"
+[ $# -ge 1 ] || die "USAGE: ext-run.sh <review|read|verify|critique|fuzz|build> --prompt-file FILE [--vendor codex] [options]" "$E_USAGE"
 MODE="$1"; shift
 is_mode "$MODE" || die "USAGE: unknown mode '$MODE' (review|read|verify|critique|fuzz|build)" "$E_USAGE"
 
-VENDOR="agy"
+VENDOR="codex"
 LEVEL=""
 PROMPT_FILE=""
 WORKDIR=""
@@ -448,13 +542,16 @@ EFFORT=""
 TIMEOUT="$(mode_timeout "$MODE")"
 RAW=0
 INPUTS=()
+INPUT_DIRS=()
+INPUT_DIR_MAX_MB=200
+ALLOW_READS=()
 
 # Every value-taking option REQUIRES its value: a trailing `--vendor` would make
 # `shift 2` fail without shifting, and the loop would spin forever.
 while [ $# -gt 0 ]; do
   case "$1" in
     --raw) RAW=1; shift; continue ;;
-    --vendor|--level|--prompt-file|--input|--schema|--workdir|--output|--patch-out|--check|--model|--effort|--timeout)
+    --vendor|--level|--prompt-file|--input|--input-dir|--input-dir-max-mb|--allow-read|--schema|--workdir|--output|--patch-out|--check|--model|--effort|--timeout)
       [ $# -ge 2 ] || die "USAGE: $1 needs a value" "$E_USAGE" ;;
     *) die "USAGE: unknown argument '$1'" "$E_USAGE" ;;
   esac
@@ -463,6 +560,9 @@ while [ $# -gt 0 ]; do
     --level)       LEVEL="$2" ;;
     --prompt-file) PROMPT_FILE="$2" ;;
     --input)       INPUTS+=("$2") ;;
+    --input-dir)   INPUT_DIRS+=("$2") ;;
+    --input-dir-max-mb) INPUT_DIR_MAX_MB="$2" ;;
+    --allow-read)  ALLOW_READS+=("$2") ;;
     --schema)      SCHEMA="$2" ;;
     --workdir)     WORKDIR="$2" ;;
     --output)      OUTPUT="$2" ;;
@@ -476,8 +576,9 @@ while [ $# -gt 0 ]; do
 done
 
 case "$VENDOR" in
-  agy|codex) ;;
-  *) die "USAGE: unknown --vendor '$VENDOR' (agy|codex)" "$E_USAGE" ;;
+  codex) ;;
+  agy) die "REFUSED: agy retired 2026-09-24 — Antigravity bypassed its own sandbox (a model-settable BypassSandbox flag) and wrote into a real repo; codex is the only external vendor." "$E_REFUSED" ;;
+  *) die "USAGE: unknown --vendor '$VENDOR' (codex)" "$E_USAGE" ;;
 esac
 if [ -n "$LEVEL" ]; then
   case "$LEVEL" in
@@ -493,10 +594,9 @@ fi
 PROMPT_FILE=$(resolve_path "$PROMPT_FILE")
 [ -f "$PROMPT_FILE" ] || die "USAGE: prompt file not found: $PROMPT_FILE" "$E_USAGE"
 [ -s "$PROMPT_FILE" ] || die "USAGE: prompt file is empty: $PROMPT_FILE" "$E_USAGE"
-# The prompt reaches agy as `-p "$(cat FILE)"`, so it is bounded by ARG_MAX (~1MB
-# on macOS). Data — diffs, logs, corpora — belongs in --input (staged as a file the
-# CLI opens itself), NOT inlined into the brief. Fail loudly rather than produce the
-# truncated/E2BIG failure that looks like a model error.
+# Data — diffs, logs, corpora — belongs in --input (staged as a file the CLI
+# opens itself), NOT inlined into the brief. Fail loudly rather than send a
+# prompt that big.
 PROMPT_BYTES=$(wc -c < "$PROMPT_FILE" | tr -d ' ')
 if [ "$PROMPT_BYTES" -gt 262144 ]; then
   die "USAGE: prompt file is ${PROMPT_BYTES} bytes (>256KB) — pass bulk data with --input instead of inlining it into the brief." "$E_USAGE"
@@ -508,29 +608,17 @@ resolve_tier
 
 MODEL="$TIER_MODEL"
 [ -n "$MODEL_OVERRIDE" ] && MODEL="$MODEL_OVERRIDE"
-case "$VENDOR" in
-  agy)
-    if [ -n "$EFFORT" ]; then
-      case "$EFFORT" in
-        low|medium|high) MODEL="$(apply_effort "$MODEL" "$EFFORT")" ;;
-        *) die "USAGE: --effort must be low|medium|high for agy" "$E_USAGE" ;;
-      esac
-    fi
-    ;;
-  codex)
-    [ -n "$EFFORT" ] || EFFORT="$TIER_EFFORT"
-    [ -n "$EFFORT" ] || die "USAGE: $TIERS gives no effort for this codex entry and --effort was not passed" "$E_USAGE"
-    case "$EFFORT" in
-      minimal|low|medium|high|xhigh|max) ;;  # gpt-6-* list max (~/.codex/models_cache.json); 'ultra' auto-delegates, excluded
-      *) die "USAGE: --effort must be minimal|low|medium|high|xhigh|max for codex (got '$EFFORT')" "$E_USAGE" ;;
-    esac
-    [ -n "$(to_seconds "$TIMEOUT")" ] || die "USAGE: --timeout for codex must be N, Ns, Nm or Nh (got '$TIMEOUT')" "$E_USAGE"
-    ;;
+[ -n "$EFFORT" ] || EFFORT="$TIER_EFFORT"
+[ -n "$EFFORT" ] || die "USAGE: $TIERS gives no effort for this codex entry and --effort was not passed" "$E_USAGE"
+case "$EFFORT" in
+  minimal|low|medium|high|xhigh|max) ;;  # gpt-6-* list max (~/.codex/models_cache.json); 'ultra' auto-delegates, excluded
+  *) die "USAGE: --effort must be minimal|low|medium|high|xhigh|max for codex (got '$EFFORT')" "$E_USAGE" ;;
 esac
+[ -n "$(to_seconds "$TIMEOUT")" ] || die "USAGE: --timeout must be N, Ns, Nm or Nh (got '$TIMEOUT')" "$E_USAGE"
 case "$MODEL" in
   claude*|*claude*) die "USAGE: refusing to run the cross-vendor tier on a Claude model ('$MODEL')." "$E_USAGE" ;;
 esac
-vendor_model_ok "$MODEL" || die "USAGE: model '$MODEL' does not belong to vendor '$VENDOR' (agy: gemini-*; codex: gpt-*|codex-*)" "$E_USAGE"
+vendor_model_ok "$MODEL" || die "USAGE: model '$MODEL' does not belong to vendor '$VENDOR' (codex: gpt-*|codex-*)" "$E_USAGE"
 
 if [ -n "$SCHEMA" ] && [ "$MODE" != "read" ]; then
   die "USAGE: --schema is only valid in read mode" "$E_USAGE"
@@ -544,6 +632,12 @@ fi
 if [ -n "$PATCH_OUT" ] && ! mode_writes "$MODE"; then
   die "USAGE: --patch-out is only valid in build mode" "$E_USAGE"
 fi
+if [ ${#INPUT_DIRS[@]} -gt 0 ] && mode_writes "$MODE"; then
+  die "USAGE: --input-dir is only valid in read-only modes (build mode works in a disposable worktree of --workdir)" "$E_USAGE"
+fi
+case "$INPUT_DIR_MAX_MB" in
+  ''|*[!0-9]*|0) die "USAGE: --input-dir-max-mb must be a positive whole number of MB (got '$INPUT_DIR_MAX_MB')" "$E_USAGE" ;;
+esac
 if [ -n "$CHECK_CMD" ] && ! mode_writes "$MODE"; then
   die "USAGE: --check is only valid in build mode (it runs in the build worktree)" "$E_USAGE"
 fi
@@ -569,45 +663,41 @@ fi
 deny_check "$PROMPT_FILE"
 if [ -n "$WORKDIR" ]; then deny_check "$WORKDIR"; fi
 if [ -n "$SCHEMA" ] && [ -f "$SCHEMA" ]; then SCHEMA=$(resolve_path "$SCHEMA"); deny_check "$SCHEMA"; fi
+if [ -n "$SCHEMA" ]; then
+  if [ -f "$SCHEMA" ]; then jq -e . "$SCHEMA" >/dev/null 2>&1
+  else printf '%s' "$SCHEMA" | jq -e . >/dev/null 2>&1
+  fi || die "USAGE: --schema is neither a readable JSON file nor inline JSON" "$E_USAGE"
+fi
+ALLOW_READ_ABS=()
+for ar in ${ALLOW_READS+"${ALLOW_READS[@]}"}; do
+  ar_real=$(allow_read_check "$ar") || exit $?
+  ALLOW_READ_ABS+=("$ar_real")
+done
 
-case "$VENDOR" in
-  agy)   VENDOR_BIN="$AGY_BIN" ;;
-  codex) VENDOR_BIN="$CODEX_BIN" ;;
-esac
-command -v "$VENDOR_BIN" >/dev/null 2>&1 || die "UNAVAILABLE: $VENDOR_BIN is not installed or not on PATH." "$E_UNAVAIL"
-if mode_writes "$MODE"; then
-  command -v git >/dev/null 2>&1 || die "USAGE: git is required for build mode (the run is staged in a disposable worktree)" "$E_USAGE"
+# --input files: resolved and deny-checked now (copied into the stage below),
+# so every refusal happens before anything is staged, on every platform.
+INPUT_REALS=()
+for src in ${INPUTS+"${INPUTS[@]}"}; do
+  real=$(resolve_path "$src")
+  [ -f "$real" ] || die "USAGE: --input file not found: $src" "$E_USAGE"
+  deny_check "$real"
+  INPUT_REALS+=("$real")
+done
+# --input-dir trees: checked now too (copied into the stage below). Each lands at
+# inputs/<basename>, so no two staged names may collide.
+INPUT_DIR_REALS=()
+for src in ${INPUT_DIRS+"${INPUT_DIRS[@]}"}; do
+  real=$(input_dir_check "$src") || exit $?
+  INPUT_DIR_REALS+=("$real")
+done
+if [ ${#INPUT_DIRS[@]} -gt 0 ]; then
+  dup=$(for src in ${INPUTS+"${INPUTS[@]}"} "${INPUT_DIRS[@]}"; do basename "$src"; done | sort | uniq -d | head -n 1)
+  [ -z "$dup" ] || die "USAGE: two staged inputs share the name '$dup' (--input files and --input-dir trees land side by side in inputs/)" "$E_USAGE"
 fi
 
-# ---------------------------------------------------------------------------
-# Staging. Read-only modes get a fresh empty dir as cwd containing ONLY the
-# staged inputs, because agy's read-only-ness cannot be enforced by flags:
-#   - without --dangerously-skip-permissions headless runs have their tools
-#     auto-denied (verified: view_file/read_url/command all hit the permission
-#     gate) and return an empty response;
-#   - with it, every tool including write_to_file is approved;
-#   - and `--mode plan` is NOT a write guard either: verified live 2026-09-15,
-#     `--mode plan --dangerously-skip-permissions` wrote the file it had just
-#     said it would write only "once you approve".
-# Workspace isolation, not a flag, is what keeps a read-only mode off the repo.
-# codex gets the same stage (plus its own -s read-only sandbox on top).
-# Build mode is the same principle one step further: it gets a real checkout,
-# but a disposable one (see the worktree section below).
-# ---------------------------------------------------------------------------
-# $STAGE/ws is the workspace the CLI is given (read-only modes) — it holds ONLY
-# the staged inputs, so anything else appearing in it is something the CLI wrote.
-# $STAGE/meta holds this script's own files (prompt, output, stderr) and is
-# deliberately NOT inside ws, so the write-detection fingerprint stays honest.
-# $STAGE/build is the build worktree (build mode only).
-STAGE=$(mktemp -d "${TMPDIR:-/tmp}/ext-run.XXXXXX") || die "USAGE: could not create a staging dir" "$E_USAGE"
-mkdir -p "$STAGE/ws/inputs" "$STAGE/meta"
-STAGE_ABS=$(resolve_path "$STAGE")
-[ "${AGY_STAGE_KEEP:-0}" = "1" ] && echo "ext-run: staging dir kept at $STAGE_ABS" >&2
-
-# ---------------------------------------------------------------------------
-# Build staging worktree. The CLI is pointed at $BUILD_WT, never at $BUILD_REPO.
-# ---------------------------------------------------------------------------
+# Build mode: the repo behind --workdir, checked before anything is staged.
 if mode_writes "$MODE"; then
+  command -v git >/dev/null 2>&1 || die "USAGE: git is required for build mode (the run is staged in a disposable worktree)" "$E_USAGE"
   git -C "$WORKDIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 || \
     die "USAGE: --workdir is not a git work tree: $WORKDIR (build mode stages the run in a disposable worktree)" "$E_USAGE"
   BUILD_REPO=$(git -C "$WORKDIR" rev-parse --show-toplevel 2>/dev/null)
@@ -621,7 +711,50 @@ if mode_writes "$MODE"; then
   if [ -n "$PATCH_OUT" ] && [ -n "$(git -C "$BUILD_REPO" status --porcelain 2>/dev/null)" ]; then
     die "REFUSED: --patch-out needs a clean tree, and $BUILD_REPO has uncommitted or untracked changes (commit or stash them first)." "$E_REFUSED"
   fi
+fi
 
+# The codex binary is the REAL file it names (never a shell function), and the
+# OS sandbox must exist: without it codex is never run (fail closed).
+CODEX_REAL=$(resolve_bin "$CODEX_BIN") || die "UNAVAILABLE: $CODEX_BIN is not installed or not on PATH." "$E_UNAVAIL"
+SANDBOX_EXEC=$(resolve_bin sandbox-exec) || \
+  die "UNAVAILABLE: sandbox-exec not found — codex runs only inside the OS sandbox this script generates (macOS sandbox-exec), never unconfined." "$E_UNAVAIL"
+[ -n "${HOME:-}" ] && [ "$HOME_P" != / ] || \
+  die "UNAVAILABLE: HOME is unset or / — the sandbox profile is scoped to \$HOME." "$E_UNAVAIL"
+# The command audit log must be writable before codex runs: an unaudited run is
+# exactly what it exists to prevent.
+AUDIT_LOG="${EXT_RUN_AUDIT_LOG:-$HOME/.claude/logs/ext-run/codex-commands.jsonl}"
+AUDIT_DIR=$(dirname "$AUDIT_LOG")
+{ mkdir -p "$AUDIT_DIR" 2>/dev/null && [ -w "$AUDIT_DIR" ]; } || \
+  die "UNAVAILABLE: the command audit log dir $AUDIT_DIR is not writable — codex runs only audited." "$E_UNAVAIL"
+
+# ---------------------------------------------------------------------------
+# Staging. Read-only modes get a fresh empty dir as the workspace containing ONLY
+# the staged inputs; build mode gets a disposable checkout (the worktree section
+# below). The sandbox profile, not a flag, is what keeps codex off everything
+# else.
+#   $STAGE/ws     the workspace (read-only modes): ONLY the staged inputs, so
+#                 anything else appearing in it is something codex wrote.
+#   $STAGE/build  the workspace (build mode): the disposable worktree.
+#   $STAGE/cx     codex's own scratch: its TMPDIR, the -o final message and the
+#                 --output-schema copy. The only stage dir besides the workspace
+#                 it may write.
+#   $STAGE/meta   this script's private files (prompt, event stream, stderr,
+#                 profile, the hidden .git): neither readable nor writable by
+#                 codex (it gets the prompt on stdin and writes the event stream
+#                 through inherited fds), so it can neither rewrite its own audit
+#                 trail nor swap the .git pointer.
+# ---------------------------------------------------------------------------
+STAGE=$(mktemp -d "${TMPDIR:-/tmp}/ext-run.XXXXXX") || die "USAGE: could not create a staging dir" "$E_USAGE"
+mkdir -p "$STAGE/ws/inputs" "$STAGE/meta" "$STAGE/cx/tmp"
+STAGE_ABS=$(resolve_path "$STAGE")
+RUN_ID=$(basename "$STAGE_ABS")
+CX="$STAGE_ABS/cx"
+[ "${AGY_STAGE_KEEP:-0}" = "1" ] && echo "ext-run: staging dir kept at $STAGE_ABS" >&2
+
+# ---------------------------------------------------------------------------
+# Build staging worktree. codex is pointed at $BUILD_WT, never at $BUILD_REPO.
+# ---------------------------------------------------------------------------
+if mode_writes "$MODE"; then
   if ! git -C "$BUILD_REPO" worktree add --detach "$STAGE/build" HEAD >"$STAGE/meta/worktree.log" 2>&1; then
     echo "UNAVAILABLE: could not create the disposable build worktree — $(head -c 400 "$STAGE/meta/worktree.log")" >&2
     exit "$E_UNAVAIL"
@@ -656,8 +789,8 @@ if mode_writes "$MODE"; then
   fi
 fi
 
-# --input staging. Read-only modes: $STAGE/ws/inputs. Build: .<vendor>-inputs
-# inside the worktree (the CLI only sees the worktree), removed again before the
+# --input staging. Read-only modes: $STAGE/ws/inputs. Build: .codex-inputs
+# inside the worktree (codex only sees the worktree), removed again before the
 # result patch is captured so staged inputs never land in the caller's repo.
 INPUT_DIR="$STAGE/ws/inputs"
 BUILD_INPUTS_NAME=".$VENDOR-inputs"
@@ -670,24 +803,120 @@ if mode_writes "$MODE"; then
 fi
 
 STAGED_LIST=""
-for src in ${INPUTS+"${INPUTS[@]}"}; do
-  real=$(resolve_path "$src")
-  [ -f "$real" ] || die "USAGE: --input file not found: $src" "$E_USAGE"
-  deny_check "$real"
+i=0
+while [ "$i" -lt ${#INPUT_REALS[@]} ]; do
+  src="${INPUTS[$i]}"
   # Staged under the name the caller gave, read from the path that was checked.
-  cp "$real" "$INPUT_DIR/$(basename "$src")" || die "UNAVAILABLE: could not stage --input $src" "$E_UNAVAIL"
+  cp "${INPUT_REALS[$i]}" "$INPUT_DIR/$(basename "$src")" || die "UNAVAILABLE: could not stage --input $src" "$E_UNAVAIL"
   STAGED_LIST="$STAGED_LIST  $INPUT_DIR/$(basename "$src")
 "
+  i=$((i + 1))
+done
+
+# --input-dir trees (read-only modes): a copy, links kept as links — every one
+# of them was proven above to resolve inside its own tree.
+i=0
+while [ "$i" -lt ${#INPUT_DIR_REALS[@]} ]; do
+  dst="$INPUT_DIR/$(basename "${INPUT_DIRS[$i]}")"
+  { mkdir "$dst" && cp -RP "${INPUT_DIR_REALS[$i]}/." "$dst/"; } 2>"$STAGE/meta/input-dir.err" ||
+    die "UNAVAILABLE: could not stage --input-dir ${INPUT_DIRS[$i]} — $(head -c 300 "$STAGE/meta/input-dir.err")" "$E_UNAVAIL"
+  STAGED_LIST="$STAGED_LIST  $dst/ (a directory: $(find "$dst" -type f | wc -l | tr -d ' ') files; read what you need from it)
+"
+  i=$((i + 1))
 done
 
 RUNDIR="$STAGE/ws"
 mode_writes "$MODE" && RUNDIR="$BUILD_WT"
 RUNDIR_ABS=$(resolve_path "$RUNDIR")
 
-# The prompt the CLI actually sees: the brief, plus a footer naming the workspace
-# and every staged file by ABSOLUTE path. Relative paths are not enough: agy has
-# been observed resolving its workspace to $HOME rather than the process working
-# directory (verified live 2026-09-15), so the brief says where the files are
+# --schema, codex side. codex's --output-schema is OpenAI STRICT structured
+# output: an object schema without additionalProperties:false, or with a
+# property missing from `required`, is rejected by the API (codex exits 1, the
+# run is UNAVAILABLE). Callers write ordinary JSON Schema, so the copy codex
+# gets is normalized (STRICT_SCHEMA_JQ): every object with `properties` gets
+# additionalProperties:false and required = all its properties, and a property
+# that was optional becomes nullable instead (type T -> [T,"null"], null added to
+# an enum, {"type":"null"} added to anyOf/oneOf, a $ref/const wrapped in anyOf).
+# Recurses into properties, items, anyOf/oneOf/allOf, $defs/definitions;
+# anything else is left as-is. The reply is mapped back to the caller's schema
+# (DENULL_JQ, below): a null for an originally-optional property is dropped.
+# Codex adapter only: the caller's file is never modified.
+STRICT_SCHEMA_JQ='
+def nullable:
+  def addnull: if any(.[]; . == {"type": "null"}) then . else . + [{"type": "null"}] end;
+  if (.anyOf | type) == "array" then .anyOf |= addnull
+  elif (.oneOf | type) == "array" then .oneOf |= addnull
+  elif has("type") or has("enum") then
+    (if (.enum | type) == "array" and (any(.enum[]; . == null) | not) then .enum += [null] else . end)
+    | (if has("type") then .type = ((if (.type | type) == "array" then .type else [.type] end)
+                                   | if any(.[]; . == "null") then . else . + ["null"] end)
+       else . end)
+  elif has("$ref") or has("const") then {"anyOf": [., {"type": "null"}]}
+  else . end;
+def strict:
+  if type != "object" then .
+  else
+    (if (.properties | type) == "object" then
+       ((.required // []) | if type == "array" then . else [] end) as $req
+       | .properties |= with_entries(.key as $k
+           | .value |= (strict | if any($req[]; . == $k) then . else nullable end))
+       | .additionalProperties = false
+       | .required = (.properties | keys_unsorted)
+     else . end)
+    | (if (.items | type) == "object" then .items |= strict
+       elif (.items | type) == "array" then .items |= map(strict) else . end)
+    | reduce ("anyOf", "oneOf", "allOf") as $kw (.;
+        if (.[$kw] | type) == "array" then .[$kw] |= map(strict) else . end)
+    | reduce ("$defs", "definitions") as $kw (.;
+        if (.[$kw] | type) == "object" then .[$kw] |= map_values(strict) else . end)
+  end;
+strict'
+# DENULL_JQ — the reply, walked against the ORIGINAL schema ($s[0]): a null value
+# under a property that schema did not require is removed, so the caller sees the
+# shape it asked for. Local $refs ("#/...") are followed; for anyOf/oneOf the
+# first branch that fits the value (an object's keys all declared, or an array
+# schema for an array) is used.
+DENULL_JQ='
+def resolve($root):
+  if type == "object" and (.["$ref"] | type) == "string" and (.["$ref"] | startswith("#/"))
+  then (.["$ref"][2:] | split("/")) as $p | ($root | getpath($p)) // {} else . end;
+def denull($root; $schema):
+  ($schema | resolve($root)) as $s
+  | if ($s | type) != "object" then .
+    elif type == "object" and ($s.properties | type) == "object" then
+      ((($s.required // []) | if type == "array" then . else [] end)) as $req
+      | reduce ($s.properties | keys_unsorted[]) as $k (.;
+          if has($k) | not then .
+          elif .[$k] == null and (any($req[]; . == $k) | not) then del(.[$k])
+          else .[$k] |= denull($root; $s.properties[$k]) end)
+    elif type == "array" and ($s.items | type) == "object" then map(denull($root; $s.items))
+    elif ($s.allOf | type) == "array" then reduce $s.allOf[] as $b (.; denull($root; $b))
+    elif (($s.anyOf // $s.oneOf) | type) == "array" and (type == "object" or type == "array") then
+      . as $v
+      | ([($s.anyOf // $s.oneOf)[] | resolve($root) | select(type == "object")
+          | select(if ($v | type) == "object"
+                   then (.properties | type) == "object" and ((($v | keys) - (.properties | keys)) == [])
+                   else (.items | type) == "object" end)] | first) as $b
+      | if $b == null then . else denull($root; $b) end
+    else . end;
+denull($s[0]; $s[0])'
+
+# The --output-schema file is read by codex itself, inside the sandbox, so it is
+# always a copy in codex's scratch dir (a caller's schema under $HOME would be
+# unreadable there). The original goes to the private meta dir for DENULL_JQ.
+SCHEMA_FILE=""
+SCHEMA_ORIG=""
+if [ -n "$SCHEMA" ]; then
+  SCHEMA_FILE="$CX/schema.json"
+  SCHEMA_ORIG="$STAGE/meta/schema.orig.json"
+  if [ -f "$SCHEMA" ]; then jq -c . "$SCHEMA" > "$SCHEMA_ORIG"
+  else printf '%s' "$SCHEMA" | jq -c . > "$SCHEMA_ORIG"
+  fi || die "UNAVAILABLE: could not stage --schema $SCHEMA" "$E_UNAVAIL"
+  jq -c "$STRICT_SCHEMA_JQ" "$SCHEMA_ORIG" > "$SCHEMA_FILE" || die "UNAVAILABLE: could not normalize --schema to OpenAI-strict form" "$E_UNAVAIL"
+fi
+
+# The prompt codex actually sees: the brief, plus a footer naming the workspace
+# and every staged file by ABSOLUTE path, so the brief says where the files are
 # rather than assuming "here".
 PROMPT="$STAGE/meta/prompt.txt"
 cat "$PROMPT_FILE" > "$PROMPT"
@@ -711,21 +940,191 @@ if [ -n "$STAGED_LIST" ]; then
 fi
 # codex auto-loads ~/.codex/AGENTS.md (verified live 2026-09-23), whose rules are
 # written for an interactive orchestrator (memory files, handoffs, asking first).
-# This footer scopes it back to a headless worker.
-if [ "$VENDOR" = "codex" ]; then
+# This footer scopes it back to a headless, OS-confined worker.
+{
+  printf '\n--- Non-interactive worker ---\n'
+  printf 'You are a non-interactive worker. Nobody will answer questions: do not ask any;\n'
+  printf 'make the most reasonable assumption and state it in your answer.\n'
+  printf 'Do not create or edit PROJECT_MEMORY.md, handoff files, engram, or any memory file.\n'
+  printf 'Touch only files inside the workspace named above.\n'
+  printf 'Your filesystem access is limited to this workspace; other paths will fail - do not search the disk.\n'
+} >> "$PROMPT"
+if [ ${#ALLOW_READ_ABS[@]} -gt 0 ]; then
   {
-    printf '\n--- Non-interactive worker ---\n'
-    printf 'You are a non-interactive worker. Nobody will answer questions: do not ask any;\n'
-    printf 'make the most reasonable assumption and state it in your answer.\n'
-    printf 'Do not create or edit PROJECT_MEMORY.md, handoff files, engram, or any memory file.\n'
-    printf 'Touch only files inside the workspace named above.\n'
+    printf 'Also readable (read-only):\n'
+    printf '  %s\n' "${ALLOW_READ_ABS[@]}"
   } >> "$PROMPT"
 fi
-# Build mode hides the worktree's .git during the CLI run (the pointer names the
+# Build mode hides the worktree's .git during the run (the pointer names the
 # caller's real gitdir), so say so: a self-check that shells out to git would fail.
 if mode_writes "$MODE"; then
   printf '\nNote: git is unavailable in this workspace during your run; do not run git commands. Checks that need git run afterwards, outside your session.\n' >> "$PROMPT"
 fi
+
+# ---------------------------------------------------------------------------
+# The OS sandbox profile (SBPL), generated per run. write_profile is the SINGLE
+# OWNER of what codex may read and write. Rules are last-match-wins, so each
+# deny comes before the allows that carve out of it. Every path is physical
+# (resolve_path / pwd -P: the sandbox matches real paths) and SBPL-escaped.
+#   read:  everything but $HOME and the temp dirs (/private/tmp,
+#          /private/var/folders, and their /tmp, /var/folders spellings), where
+#          sibling compare stages, other runs' patches and Claude session
+#          scratchpads live. Of those, only $HOME itself (the directory entry),
+#          ~/.codex, the workspace, codex's scratch dir and each --allow-read path
+#          are readable — never the stage root or $STAGE/meta — plus the METADATA
+#          (stat, never a listing) of every ancestor of those: realpath() in git
+#          and node lstat()s each component (verified: both fail on a denied
+#          /private/tmp without it). One file in the per-user temp dir is
+#          readable too, never writable: xcrun's tool-path cache
+#          ($(getconf DARWIN_USER_TEMP_DIR)/xcrun_db), without which every
+#          /usr/bin/git, python3, make... shim takes ~2s instead of ~20ms
+#          (verified); writable, it could redirect those shims for later,
+#          unsandboxed sessions. In build mode never the real repo, its main
+#          worktree or its git dir.
+#   write: DENY BY DEFAULT (subpath "/"): nothing anywhere — not /opt/homebrew,
+#          /Users/Shared, /private/var/tmp, mounted volumes — but ~/.codex, the
+#          workspace and codex's scratch dir, plus these device files (each one
+#          verified 2026-09-24, macOS 26.6 / codex-cli 0.156.1, with a
+#          kill-on-touch rule and the stub):
+#            /dev/null          every shell redirect (>/dev/null 2>&1).
+#            /dev/tty           bash, sh and zsh open it at every start (also
+#                               under git's and python3's xcrun shims); a headless
+#                               run has no controlling terminal, so the open then
+#                               fails ENXIO as it would unsandboxed.
+#            /dev/dtracehelper  dyld opens it at every process start (sh, bash,
+#                               zsh, git, python3, node, codex) to register DTrace
+#                               probes; no filesystem effect.
+#            /dev/fd/N          > /dev/stdout, 2> /dev/stderr, tee /dev/stderr,
+#                               >(...) process substitution.
+#            /dev/ptmx, /dev/ttysN
+#                               codex's exec_command allocates a PTY when the model
+#                               passes tty:true; a tty is writable only if it was
+#                               created inside the sandbox (the
+#                               com.apple.sandbox.pty extension), so the user's own
+#                               terminals stay unwritable.
+# ---------------------------------------------------------------------------
+sbpl_q() { # $1 = path -> an SBPL string literal. A newline is never escaped: die.
+  local s="$1"
+  case "$s" in *"
+"*) die "UNAVAILABLE: a sandbox path contains a newline ($s) — cannot confine codex." "$E_UNAVAIL" ;; esac
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  printf '"%s"' "$s"
+}
+# sbpl_ancestors PATH... — ' (literal "<dir>")' for every proper ancestor of each
+# PATH except /, each once (an ancestor already emitted means all of its own are).
+sbpl_ancestors() {
+  local p seen="
+"
+  for p in "$@"; do
+    while :; do
+      p=$(dirname "$p")
+      [ "$p" != / ] && [ "$p" != . ] || break
+      case "$seen" in *"
+$p
+"*) break ;; esac
+      seen="$seen$p
+"
+      printf ' (literal %s)' "$(sbpl_q "$p")"
+    done
+  done
+}
+# xcrun_cache_rule — ' (literal "<per-user temp dir>/xcrun_db")' on macOS, else
+# nothing. Physical path; only ever under /private/var/folders.
+xcrun_cache_rule() {
+  local t
+  t=$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null) || return 0
+  [ -n "$t" ] && t=$(cd "$t" 2>/dev/null && pwd -P) || return 0
+  case "$t" in /private/var/folders/*) printf ' (literal %s)' "$(sbpl_q "$t/xcrun_db")" ;; esac
+}
+PROFILE="$STAGE/meta/sandbox.sb"
+write_profile() {
+  local codex_home repo_rule p common main anc xcrun
+  codex_home="$HOME_P/.codex"
+  repo_rule=""
+  if mode_writes "$MODE"; then
+    repo_rule="(subpath $(sbpl_q "$BUILD_REPO"))"
+    common=$(git -C "$BUILD_REPO" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+    [ -n "$common" ] && repo_rule="$repo_rule (subpath $(sbpl_q "$(resolve_path "$common")"))"
+    main=$(main_worktree_of "$BUILD_REPO")
+    [ -n "$main" ] && [ "$main" != "$BUILD_REPO" ] && repo_rule="$repo_rule (subpath $(sbpl_q "$main"))"
+  fi
+  # Never empty ($HOME_P is not /), and an empty filter list would allow the
+  # metadata of every path: refuse to write such a profile.
+  anc=$(sbpl_ancestors "$codex_home" "$RUNDIR_ABS" "$CX" ${ALLOW_READ_ABS+"${ALLOW_READ_ABS[@]}"})
+  [ -n "$anc" ] || die "UNAVAILABLE: no ancestor paths for the sandbox's metadata rule — cannot confine codex." "$E_UNAVAIL"
+  xcrun=$(xcrun_cache_rule)
+  {
+    printf '(version 1)\n'
+    printf '(allow default)\n'
+    printf '(deny file-read* (subpath %s) (subpath "/private/tmp") (subpath "/private/var/folders") (subpath "/tmp") (subpath "/var/folders"))\n' "$(sbpl_q "$HOME_P")"
+    [ -n "$repo_rule" ] && printf '(deny file-read* file-write* %s)\n' "$repo_rule"
+    printf '(allow file-read* (literal %s) (subpath %s) (subpath %s) (subpath %s)' \
+      "$(sbpl_q "$HOME_P")" "$(sbpl_q "$codex_home")" "$(sbpl_q "$RUNDIR_ABS")" "$(sbpl_q "$CX")"
+    for p in ${ALLOW_READ_ABS+"${ALLOW_READ_ABS[@]}"}; do printf ' (subpath %s)' "$(sbpl_q "$p")"; done
+    printf ')\n'
+    printf '(allow file-read-metadata%s)\n' "$anc"
+    [ -n "$xcrun" ] && printf '(allow file-read*%s)\n' "$xcrun"
+    printf '(deny file-write* (subpath "/"))\n'
+    printf '(allow file-write* (subpath %s) (subpath %s) (subpath %s))\n' \
+      "$(sbpl_q "$codex_home")" "$(sbpl_q "$RUNDIR_ABS")" "$(sbpl_q "$CX")"
+    printf '(allow file-write* (literal "/dev/null") (literal "/dev/tty") (literal "/dev/dtracehelper") (regex #"^/dev/fd/[0-9]+$") (literal "/dev/ptmx"))\n'
+    printf '(allow file-write* (require-all (regex #"^/dev/ttys[0-9]+$") (extension "com.apple.sandbox.pty")))\n'
+  } > "$PROFILE"
+}
+write_profile
+
+# outside_canary_path — the preflight's second canary: a file in an always-present,
+# user-writable dir OUTSIDE $HOME, the temp dirs and the stage, so that only the
+# profile's deny-by-default write rule can stop it (a profile that confined just
+# $HOME, the temp dirs and the stage — the pre-2026-09-24 one — lets it land).
+# /Users/Shared (macOS: world-writable, sticky), else /private/var/tmp, else
+# /var/tmp (Linux: only the test double runs there). The name carries the run id
+# (the stage's random mktemp suffix). Prints nothing (rc 1) when none qualifies.
+outside_canary_path() {
+  local d p
+  for d in /Users/Shared /private/var/tmp /var/tmp; do
+    [ -d "$d" ] && [ -w "$d" ] || continue
+    p=$(cd "$d" 2>/dev/null && pwd -P) || continue
+    case "$p/" in
+      "$HOME_P"/*|"$STAGE_ABS"/*|/private/tmp/*|/private/var/folders/*|/tmp/*|/var/folders/*) continue ;;
+    esac
+    printf '%s/.ext-run-canary-%s\n' "$p" "$RUN_ID"
+    return 0
+  done
+  return 1
+}
+
+# sandbox_preflight — FAIL CLOSED before codex ever starts: the profile must apply
+# (sandbox-exec runs a trivial command under it) AND enforce: that command's
+# writes to two paths the profile denies must not land — the stage root (inside
+# the temp dirs) and the outside canary (outside $HOME and the temp dirs: only
+# deny-by-default covers it). Anything that lands is removed first; then either
+# failure is exit 4. There is no opt-out.
+sandbox_preflight() {
+  local canary="$STAGE_ABS/.sandbox-canary" outside rc c landed=""
+  outside=$(outside_canary_path) || \
+    die "UNAVAILABLE: no writable directory outside \$HOME and the temp dirs (/Users/Shared, /private/var/tmp, /var/tmp) for the sandbox's enforcement canary — codex is never run unconfined." "$E_UNAVAIL"
+  if [ -e "$outside" ] || [ -L "$outside" ]; then
+    die "UNAVAILABLE: the sandbox canary path $outside already exists (not this run's) — codex is never run unconfined." "$E_UNAVAIL"
+  fi
+  rm -f "$canary"
+  OUTSIDE_CANARY="$outside"
+  ( cd "$RUNDIR_ABS" && export TMPDIR="$CX/tmp" && exec "$SANDBOX_EXEC" -f "$PROFILE" /bin/sh -c 'true > "$1"; true > "$2"; exit 0' sh "$canary" "$outside" ) \
+    > "$STAGE/meta/preflight.log" 2>&1 </dev/null
+  rc=$?
+  for c in "$canary" "$outside"; do
+    if [ -e "$c" ] || [ -L "$c" ]; then rm -f "$c"; landed="$landed $c"; fi
+  done
+  OUTSIDE_CANARY=""
+  if [ "$rc" -ne 0 ]; then
+    die "UNAVAILABLE: the sandbox profile did not apply ($SANDBOX_EXEC exited $rc: $(head -c 300 "$STAGE/meta/preflight.log")) — codex is never run unconfined." "$E_UNAVAIL"
+  fi
+  if [ -n "$landed" ]; then
+    die "UNAVAILABLE: $SANDBOX_EXEC ran but did not enforce the profile (a write it must deny landed:$landed) — codex is never run unconfined." "$E_UNAVAIL"
+  fi
+}
+sandbox_preflight
 
 # Read-only modes: fingerprint the stage so we can SAY whether the run tried to
 # write. It is contained either way (the stage is thrown away), but a silent
@@ -736,86 +1135,101 @@ if ! mode_writes "$MODE"; then
 fi
 
 ERRLOG="$STAGE/meta/cli.err"
-ENVELOPE="$STAGE/meta/envelope.json"   # agy
-EVENTS="$STAGE/meta/events.jsonl"      # codex --json
-LASTMSG="$STAGE/meta/last-message.txt" # codex -o
+EVENTS="$STAGE/meta/events.jsonl"      # codex --json (codex writes it through its inherited stdout)
+LASTMSG="$CX/last-message.txt"         # codex -o
 TIMEDOUT_MARK="$STAGE/meta/timed-out"
-SCHEMA_FILE=""
 RC=0
 
 # ---------------------------------------------------------------------------
-# agy adapter. Flags — invariants, all verified live against agy 1.2.3:
-#   --model <id>                    always explicit, always non-Claude, and the
-#                                   ONLY place effort is expressed (never --effort).
-#   --sandbox                       terminal restrictions on; always.
-#   --dangerously-skip-permissions  REQUIRED: headless mode cannot prompt, so
-#                                   without it every tool call is auto-denied
-#                                   and the run returns an empty response.
-#   --output-format json            the only way to see denied_actions/usage;
-#                                   also required by --json-schema.
-#   --add-dir "$RUNDIR_ABS"         pins the workspace. COMPUTED HERE, never taken
-#                                   from the caller, so it cannot widen past a deny
-#                                   check. In build mode this is the disposable
-#                                   worktree, NEVER the caller's repo.
-#   </dev/null                      non-TTY stdout-drop workaround.
+# Command audit log. codex runs --ephemeral, so nothing of what it ran survives
+# the stage: after every run, one JSONL line per command_execution item of the
+# --json stream is appended to $AUDIT_LOG — {ts, runId, mode, model, cwd,
+# command (first 500 chars), exitCode} and NEVER aggregated_output or any file
+# content. The log is written by this script, outside the sandbox (codex cannot
+# write it). Lines older than 30 days are pruned opportunistically, under a
+# mkdir lock that concurrent runs share (no lock after ~5s: append only).
 # ---------------------------------------------------------------------------
-agy_invoke() {
-  set -- -p "$(cat "$PROMPT")" \
-    --model "$MODEL" \
-    --print-timeout "$TIMEOUT" \
-    --output-format json \
-    --add-dir "$RUNDIR_ABS" \
-    --sandbox \
-    --dangerously-skip-permissions
-  case "$MODE" in
-    build)    set -- "$@" --mode accept-edits ;;
-    critique) set -- "$@" --mode plan ;;
-  esac
-  [ -n "$SCHEMA" ] && set -- "$@" --json-schema "$SCHEMA"
-  # cd to the RESOLVED path, so agy's own $PWD and the --add-dir it is given are
-  # the same string (on macOS $TMPDIR is a symlink). Run as its own process group
-  # (set -m) so reap_tree can clear anything it leaves running.
-  set -m
-  ( cd "$RUNDIR_ABS" && exec "$AGY_BIN" "$@" ) > "$ENVELOPE" 2> "$ERRLOG" </dev/null &
-  RUN_PID=$!
-  set +m
-  wait "$RUN_PID" 2>/dev/null
-  RC=$?
+audit_lock() { # $1 = lock dir. rc 0 = held.
+  local n=0
+  while ! mkdir "$1" 2>/dev/null; do
+    n=$((n + 1))
+    if [ "$n" -eq 25 ] && [ -n "$(find "$1" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
+      rmdir "$1" 2>/dev/null   # stale: its holder died over a minute ago
+    fi
+    [ "$n" -lt 50 ] || return 1
+    sleep 0.1
+  done
+  return 0
+}
+audit_prune() { # $1 = log. Keeps only lines stamped within the last 30 days.
+  local cutoff first
+  [ -s "$1" ] || return 0
+  cutoff=$(date -u -v-30d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '30 days ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || return 0
+  [ -n "$cutoff" ] || return 0
+  first=$(head -n 1 "$1" | jq -r '.ts // empty' 2>/dev/null)
+  [ -n "$first" ] && [[ "$first" < "$cutoff" ]] || return 0
+  if jq -R -c --arg c "$cutoff" 'fromjson? | select(type == "object" and ((.ts // "") | tostring) >= $c)' "$1" > "$1.prune.$$" 2>/dev/null; then
+    cat "$1.prune.$$" > "$1"
+  fi
+  rm -f "$1.prune.$$"
+}
+audit_commands() {
+  [ "$AUDIT_DONE" -eq 0 ] || return 0
+  AUDIT_DONE=1
+  [ -s "$EVENTS" ] || return 0
+  local ts lines
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  # The LAST event per item id (item.completed over item.started), in order of
+  # first appearance; an item with no id stands alone.
+  lines=$(jq -R -c 'fromjson? | select(type == "object" and ((.type // "") | tostring | startswith("item.")) and (.item | type) == "object" and .item.type == "command_execution") | .item' "$EVENTS" 2>/dev/null |
+    jq -s -c --arg ts "$ts" --arg run "$RUN_ID" --arg mode "$MODE" --arg model "$MODEL" --arg cwd "$RUNDIR_ABS" '
+      reduce .[] as $it ({order: [], last: {}};
+        (if ($it.id | type) == "string" then "id:" + $it.id else "n:" + (.order | length | tostring) end) as $k
+        | (if .last[$k] == null then .order += [$k] else . end) | .last[$k] = $it)
+      | .order[] as $k | .last[$k]
+      | {ts: $ts, runId: $run, mode: $mode, model: $model, cwd: $cwd,
+         command: ((.command | if type == "string" then . elif type == "array" then map(tostring) | join(" ") else tostring end) | .[0:500]),
+         exitCode: (.exit_code | if type == "number" then . else null end)}' 2>/dev/null)
+  [ -n "$lines" ] || return 0
+  if audit_lock "$AUDIT_LOG.lock"; then
+    audit_prune "$AUDIT_LOG"
+    printf '%s\n' "$lines" >> "$AUDIT_LOG" || echo "ext-run: WARNING could not append to the command audit log $AUDIT_LOG" >&2
+    rmdir "$AUDIT_LOG.lock" 2>/dev/null
+  else
+    printf '%s\n' "$lines" >> "$AUDIT_LOG" || echo "ext-run: WARNING could not append to the command audit log $AUDIT_LOG" >&2
+  fi
 }
 
 # ---------------------------------------------------------------------------
-# codex adapter. Flags — verified live against codex-cli 0.155.1 (2026-09-23):
-#   exec -C <rundir>                non-interactive; workspace root pinned here.
-#   -s read-only|workspace-write    codex's own sandbox; write only in build.
+# codex adapter. Flags — verified live against codex-cli 0.155.1 (2026-09-23) and
+# the sandbox-exec wrapping against 0.156.1 (2026-09-24):
+#   sandbox-exec -f <profile>       the OS confinement (see write_profile), always.
+#   exec -C <rundir>                non-interactive; workspace root pinned here,
+#                                   and the process cwd is the same dir (a cwd
+#                                   outside the profile's allowed paths fails at
+#                                   startup).
+#   --dangerously-bypass-approvals-and-sandbox
+#                                   codex's own seatbelt OFF — it does not nest
+#                                   inside sandbox-exec. Passed ONLY here, ONLY
+#                                   under sandbox-exec.
 #   -m / -c model_reasoning_effort  always explicit, from tiers.json.
-#   -c sandbox_workspace_write.exclude_slash_tmp=true
-#   -c sandbox_workspace_write.exclude_tmpdir_env_var=true
-#                                   without these, workspace-write can write
-#                                   anywhere under /tmp and $TMPDIR (verified);
-#                                   with them only the workspace is writable.
-#   --ephemeral                     no session files persisted.
+#   --ephemeral                     no session files persisted (hence the audit log).
 #   --skip-git-repo-check           the read-only stage is not a git repo.
 #   --ignore-user-config            no ~/.codex/config.toml (notify hooks etc.);
 #                                   auth is kept.
-#   --json -o <file>                JSONL events on stdout; final message in -o.
+#   --json -o <file>                JSONL events on stdout; final message in -o
+#                                   (in codex's scratch dir: it must be writable).
 #   -c web_search="live"            verify mode only.
 #   - <PROMPT                       brief on stdin, never on argv.
-# NEVER any --dangerously-* flag. codex has no print-timeout, so a bash-3.2-safe
-# background watchdog enforces the mode's wall-clock limit.
+#   TMPDIR=<scratch>/tmp            codex's temp files stay in its scratch dir.
+# CODEX_HOME is unset for the run: the profile allows exactly ~/.codex. codex has
+# no print-timeout, so a bash-3.2-safe background watchdog enforces the mode's
+# wall-clock limit.
 # ---------------------------------------------------------------------------
 codex_invoke() {
-  local sandbox tsecs
-  sandbox="read-only"
-  mode_writes "$MODE" && sandbox="workspace-write"
+  local tsecs
   tsecs=$(to_seconds "$TIMEOUT")
-  if [ -n "$SCHEMA" ]; then
-    if [ -f "$SCHEMA" ]; then SCHEMA_FILE=$(resolve_path "$SCHEMA")
-    else SCHEMA_FILE="$STAGE/meta/schema.json"; printf '%s' "$SCHEMA" > "$SCHEMA_FILE"
-    fi
-  fi
-  set -- exec -C "$RUNDIR_ABS" -s "$sandbox" -m "$MODEL" -c "model_reasoning_effort=$EFFORT"
-  set -- "$@" -c sandbox_workspace_write.exclude_slash_tmp=true
-  set -- "$@" -c sandbox_workspace_write.exclude_tmpdir_env_var=true
+  set -- exec -C "$RUNDIR_ABS" --dangerously-bypass-approvals-and-sandbox -m "$MODEL" -c "model_reasoning_effort=$EFFORT"
   set -- "$@" --ephemeral --skip-git-repo-check --ignore-user-config --json -o "$LASTMSG"
   [ -n "$SCHEMA_FILE" ] && set -- "$@" --output-schema "$SCHEMA_FILE"
   [ "$MODE" = "verify" ] && set -- "$@" -c 'web_search="live"'
@@ -823,8 +1237,10 @@ codex_invoke() {
   # Its own process group (set -m): the watchdog and reap_tree signal the WHOLE
   # tree, so a grandchild (a tool the CLI spawned) cannot outlive the run.
   set -m
-  ( cd "$RUNDIR_ABS" && exec "$CODEX_BIN" "$@" ) < "$PROMPT" > "$EVENTS" 2> "$ERRLOG" &
+  ( cd "$RUNDIR_ABS" && unset CODEX_HOME && export TMPDIR="$CX/tmp" &&
+    exec "$SANDBOX_EXEC" -f "$PROFILE" "$CODEX_REAL" "$@" ) < "$PROMPT" > "$EVENTS" 2> "$ERRLOG" &
   RUN_PID=$!
+  RUN_STARTED=1
   set +m
   local cpid=$RUN_PID
   ( sleep "$tsecs"
@@ -839,24 +1255,21 @@ codex_invoke() {
   stop_watchdog
 }
 
-# Build: hide the worktree's .git file for the duration of the CLI run. It names
-# the REAL repo's gitdir, so with it in place the CLI (agy runs with
-# --dangerously-skip-permissions) could `git -C`/commit its way into the caller's
-# repository. restore_git puts it back — below, and in the exit trap.
+# Build: hide the worktree's .git file for the duration of the run. It names the
+# REAL repo's gitdir; it waits in the private meta dir (not codex-writable).
+# restore_git puts it back — below, and in the exit trap.
 if mode_writes "$MODE"; then
   HIDDEN_GIT="$STAGE/meta/worktree.git"
   mv "$BUILD_WT/.git" "$HIDDEN_GIT" || { HIDDEN_GIT=""; die "UNAVAILABLE: could not detach the build worktree's .git for the run" "$E_UNAVAIL"; }
 fi
 
 RUN_START=$SECONDS
-case "$VENDOR" in
-  agy)   agy_invoke ;;
-  codex) codex_invoke ;;
-esac
+codex_invoke
 ELAPSED=$((SECONDS - RUN_START))
-# The CLI has exited; clear anything it left running (grandchildren), then give
-# the worktree its .git back before this script's own git calls.
+# The CLI has exited; clear anything it left running (grandchildren), record what
+# it ran, then give the worktree its .git back before this script's own git calls.
 if [ -n "$RUN_PID" ]; then reap_tree "$RUN_PID" reaped; RUN_PID=""; fi
+audit_commands
 restore_git
 
 # Capture the result patch BEFORE the gates, so a failed run still leaves
@@ -869,7 +1282,7 @@ if mode_writes "$MODE"; then
 fi
 
 # ---------------------------------------------------------------------------
-# Result gating. Every vendor gate must hold before this is a pass.
+# Result gating. Every gate must hold before this is a pass.
 # ---------------------------------------------------------------------------
 gate_fail() { # $1 = message, $2 = exit code
   if mode_writes "$MODE"; then
@@ -879,34 +1292,24 @@ gate_fail() { # $1 = message, $2 = exit code
 }
 
 RESPONSE=""
-agy_gate() {
-  if [ "$RC" -ne 0 ]; then
-    gate_fail "UNAVAILABLE: $AGY_BIN exited $RC — $(head -c 400 "$ERRLOG")" "$E_UNAVAIL"
-  fi
-  if ! jq -e . "$ENVELOPE" >/dev/null 2>&1; then
-    gate_fail "UNAVAILABLE: $AGY_BIN produced no parseable JSON envelope — $(head -c 400 "$ERRLOG")" "$E_UNAVAIL"
-  fi
-
-  local status
-  status=$(jq -r '.status // ""' "$ENVELOPE")
-  DENIED=$(jq -r '(.denied_actions // []) | map(.action) | join(",")' "$ENVELOPE")
-  RESPONSE=$(jq -r '.response // ""' "$ENVELOPE")
-
-  if [ -n "$DENIED" ]; then
-    gate_fail "UNAVAILABLE: agy tool calls were denied ($DENIED) — the run produced nothing usable." "$E_UNAVAIL"
-  fi
-  if [ "$status" != "SUCCESS" ]; then
-    gate_fail "UNAVAILABLE: agy status=$status — $(head -c 400 "$ERRLOG")" "$E_UNAVAIL"
-  fi
-  if [ -z "$RESPONSE" ]; then
-    gate_fail "UNAVAILABLE: agy returned an empty response (exit 0 and status SUCCESS are NOT sufficient) — $(head -c 400 "$ERRLOG")" "$E_UNAVAIL"
-  fi
+# codex_stderr — the CLI's stderr minus the skills-loader lines it logs on every
+# confined run (it walks ~/.agents/skills, which the profile denies: expected,
+# harmless, and long enough to push the real error out of the reason).
+codex_stderr() {
+  grep -v 'codex_skills_extension.*failed to walk skills root' "$ERRLOG" 2>/dev/null
 }
-
 codex_detail() { # the most useful one-line reason codex gave, plus stderr
   local msg
-  msg=$(jq -rR 'fromjson? | select(type == "object") | select(.type == "error" or .type == "turn.failed") | (.message // .error.message // empty)' "$EVENTS" 2>/dev/null | head -1)
-  printf '%s %s' "$msg" "$(head -c 400 "$ERRLOG")"
+  # The first failure message, on ONE line: an API error arrives as a
+  # (pretty-printed) JSON document inside .message, so it is re-serialized
+  # compactly rather than cut at its first line (which was just "{").
+  msg=$(jq -rR 'fromjson? | select(type == "object") | select(.type == "error" or .type == "turn.failed")
+    | (.message // .error.message // empty)
+    | if type == "string" then ((try fromjson catch null) as $j
+        | if ($j | type) == "object" or ($j | type) == "array" then ($j | tojson) else . end)
+      else tojson end
+    | gsub("\\s+"; " ")' "$EVENTS" 2>/dev/null | head -1 | head -c 1500)
+  printf '%s %s' "$msg" "$(codex_stderr | tr '\n' ' ' | head -c 600)"
 }
 
 codex_gate() {
@@ -927,12 +1330,16 @@ codex_gate() {
   RESPONSE=$(cat "$LASTMSG")
 }
 
-case "$VENDOR" in
-  agy)   agy_gate ;;
-  codex) codex_gate ;;
-esac
-if [ -n "$SCHEMA" ] && ! printf '%s' "$RESPONSE" | jq -e . >/dev/null 2>&1; then
-  gate_fail "SCHEMA: --schema was requested but the response is not valid JSON." "$E_SCHEMA"
+codex_gate
+if [ -n "$SCHEMA" ]; then
+  if ! printf '%s' "$RESPONSE" | jq -e . >/dev/null 2>&1; then
+    gate_fail "SCHEMA: --schema was requested but the response is not valid JSON." "$E_SCHEMA"
+  fi
+  # Back to the caller's schema: drop the nulls the strict form forced onto
+  # originally-optional properties. Rewritten (compact) only when that changed it.
+  DENULLED=$(printf '%s' "$RESPONSE" | jq -c --slurpfile s "$SCHEMA_ORIG" "$DENULL_JQ" 2>/dev/null) || \
+    gate_fail "SCHEMA: the response could not be mapped back to the caller's --schema." "$E_SCHEMA"
+  [ "$DENULLED" != "$(printf '%s' "$RESPONSE" | jq -c .)" ] && RESPONSE="$DENULLED"
 fi
 
 if ! mode_writes "$MODE"; then
@@ -1005,29 +1412,16 @@ fi
 
 # Accounting: vendor spend is invisible to scripts/triage-usage.sh, so the token
 # count goes to stderr where the caller can relay it:
-#   ext-run: <N> tokens (<S>s, <vendor>/<model>)[ out=<M>]
-# N is the total; out= is the OUTPUT side (reasoning included), the part a
-# bake-off compares across vendors. codex: N = input + output summed over
-# turn.completed events, out = output_tokens (reasoning_output_tokens is already
-# inside output_tokens — codex's own total_tokens is input + output). agy: N is
-# .usage.total_tokens; out= appears only when the envelope carries a numeric
-# .usage.output_tokens (unverified live whether agy 1.2.3 emits it; absent => omitted, never guessed).
-case "$VENDOR" in
-  agy)
-    jq -r --arg m "agy/$MODEL" '"ext-run: \(.usage.total_tokens // 0) tokens (\(.duration_seconds // 0)s, \($m))" + (if (.usage.output_tokens | type) == "number" then " out=\(.usage.output_tokens)" else "" end)' "$ENVELOPE" >&2
-    ;;
-  codex)
-    TOKENS=$(jq -R 'fromjson? | select(type == "object" and .type == "turn.completed") | ((.usage.input_tokens // 0) + (.usage.output_tokens // 0))' "$EVENTS" 2>/dev/null | jq -s 'add // 0')
-    OUT_TOKENS=$(jq -R 'fromjson? | select(type == "object" and .type == "turn.completed") | (.usage.output_tokens // 0)' "$EVENTS" 2>/dev/null | jq -s 'add // 0')
-    echo "ext-run: ${TOKENS:-0} tokens (${ELAPSED}s, codex/$MODEL) out=${OUT_TOKENS:-0}" >&2
-    ;;
-esac
+#   ext-run: <N> tokens (<S>s, codex/<model>) out=<M>
+# N = input + output summed over turn.completed events, out = output_tokens
+# (reasoning_output_tokens is already inside output_tokens — codex's own
+# total_tokens is input + output). out= is the part a bake-off compares.
+TOKENS=$(jq -R 'fromjson? | select(type == "object" and .type == "turn.completed") | ((.usage.input_tokens // 0) + (.usage.output_tokens // 0))' "$EVENTS" 2>/dev/null | jq -s 'add // 0')
+OUT_TOKENS=$(jq -R 'fromjson? | select(type == "object" and .type == "turn.completed") | (.usage.output_tokens // 0)' "$EVENTS" 2>/dev/null | jq -s 'add // 0')
+echo "ext-run: ${TOKENS:-0} tokens (${ELAPSED}s, codex/$MODEL) out=${OUT_TOKENS:-0}" >&2
 
 if [ "$RAW" -eq 1 ]; then
-  case "$VENDOR" in
-    agy)   cat "$ENVELOPE" ;;
-    codex) cat "$EVENTS" ;;
-  esac
+  cat "$EVENTS"
 else
   printf '%s\n' "$RESPONSE"
 fi

@@ -1,7 +1,7 @@
 export const meta = {
   name: 'triage-parity',
-  description: 'Parity research run: every candidate (vendor x model x effort) climbs a private task suite band by band (B1 mechanical to B4 danger/judgment), each build task graded by a nested triage-compare bake-off, rubric tasks by two blind judges, review tasks by seeded-defect recall/precision. Returns a ranking, plateau clusters and a PROPOSED tiers.json change; never writes tiers.json or anything outside outDir.',
-  whenToUse: 'Re-rank models and efforts when a model ships or on request: /triage-parity with args = {suite:"/abs task suite dir", outDir:"/abs fresh dir outside any source repo", candidates:[{vendor:claude|codex|agy, level:quick|builder|deep|top, model?, effort?, label?}], bands?:[1,2,3,4], reps?:1, stopAfterFailedBands?:2, bandPassRate?:0.5, judges?:[{vendor,level,label?}], taskFilter?:[ids], incumbents?:{level:{vendor:label}}, desk?:true}. Adaptive: a candidate stops after stopAfterFailedBands consecutive failed bands. unavailable/denied/invalid/unresolved never count as pass or fail; a compare LEAK aborts the run. The proposal is for Alex to approve; Claude cost per candidate comes afterwards from scripts/parity-cost.sh on the run transcript.',
+  description: 'Parity research run: every candidate (vendor x model x effort) climbs a private task suite band by band (B1 mechanical to B4 danger/judgment), each build task graded by a nested triage-compare bake-off, rubric tasks by two blind judges, review tasks by seeded-defect recall/precision. Returns a ranking, plateau clusters and flags; never writes tiers.json or anything outside outDir. Tier-change proposals are not made here: the orchestrator saves the result, runs scripts/parity-report.sh ingest-parity, then report (the ONE owner of the ledger and the decision rule).',
+  whenToUse: 'Re-rank models and efforts when a model ships or on request: /triage-parity with args = {suite:"/abs task suite dir", outDir:"/abs fresh dir outside any source repo", candidates:[{vendor:claude|codex, level:quick|builder|deep|top, model?, effort?, label?}] (agy was retired 2026-09-24 and is refused, as a candidate and as a judge), bands?:[1,2,3,4], reps?:1, stopAfterFailedBands?:2, bandPassRate?:0.5, judges?:[{vendor,level,label?}], taskFilter?:[ids], desk?:true}. Adaptive: a candidate stops after stopAfterFailedBands consecutive failed bands. unavailable/denied/invalid/unresolved never count as pass or fail; a compare LEAK aborts the run. Every task with a git source (build, rubric, review) is fingerprinted (parity-suite.sh fingerprint) before its candidates run and after grading: a change voids that task (invalid, flag SOURCE_CHANGED <repo>: HEAD moved|tree changed) and the run continues. Rubric judges get only the staged patch + key. Afterwards: parity-report.sh ingest-parity --result <saved result> then parity-report.sh report proposes any tiers.json change (min-n + margin rule; Alex approves); Claude cost per candidate comes from scripts/parity-cost.sh on the run transcript.',
   phases: [
     { title: 'Load' },
     { title: 'Desk' },
@@ -16,22 +16,18 @@ export const meta = {
 // A parity run is a measurement that can spend a lot, so everything that could
 // make it unfair or unsafe is rejected in plain JS before any spawn.
 const LEVELS = ['quick', 'builder', 'deep', 'top']
-const VENDORS = ['claude', 'codex', 'agy']
+const VENDORS = ['claude', 'codex']
+// agy was retired 2026-09-24 (its headless mode let the model bypass its sandbox; a
+// parity review run wrote into a real repo): refused by name for candidates and judges.
+const RETIRED_VENDORS = { agy: 'agy was retired 2026-09-24 (it bypassed its own sandbox and wrote into a real repo) — use codex or claude' }
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 // The Claude agent serving each level — the SAME map as triage-exec.js and
 // triage-compare.js; test/lint.sh checks it against config/tiers.json.
 const CLAUDE_AGENT = { quick: 'triage-quick-task', builder: 'triage-builder', deep: 'triage-deep-reasoner', top: 'triage-fable-architect' }
 const PARITY_SUITE = '~/.claude/scripts/parity-suite.sh'
-// level <-> band: the band a level's work lives at.
-const LEVEL_BAND = { quick: 1, builder: 2, deep: 3, top: 4 }
-// Cheapness, cheapest first, per vendor; then effort (EFFORTS order). A candidate
-// with no (or an unrecognised) model is ranked by its level's default model, and
-// one with no effort by its level's default effort — the same defaults as
-// config/tiers.json today (quick haiku/luna low, builder sonnet/sol medium, deep
-// opus/astra high, top fable/astra xhigh); the run flags every such inference.
-const MODEL_ORDER = { claude: ['haiku', 'sonnet', 'opus', 'fable'], codex: ['gpt-6-luna', 'gpt-6-sol', 'gpt-6-astra'], agy: ['flash', 'pro'] }
-const LEVEL_MODEL_PROXY = { claude: { quick: 0, builder: 1, deep: 2, top: 3 }, codex: { quick: 0, builder: 1, deep: 2, top: 2 }, agy: { quick: 1, builder: 1, deep: 1, top: 1 } }
-const LEVEL_EFFORT_PROXY = { quick: 0, builder: 1, deep: 2, top: 3 }
+// The ledger + tier-change decision rule (min-n, Wilson bound, margins, the
+// cheapness order) live ONLY in scripts/parity-report.sh; this run measures.
+const PARITY_REPORT = '~/.claude/scripts/parity-report.sh'
 // Grading thresholds.
 const REVIEW_RECALL = 0.6
 const REVIEW_PRECISION = 0.5
@@ -45,7 +41,7 @@ const USAGE = 'Expected args = {\n' +
   `  candidates: [{ vendor: ${VENDORS.join('|')}, level: ${LEVELS.join('|')}, model?, effort?: ${EFFORTS.join('|')}, label? }]\n` +
   '  bands?: [1,2,3,4], reps?: 1, stopAfterFailedBands?: 2, bandPassRate?: 0.5,\n' +
   '  judges?: [{vendor:"claude",level:"deep"},{vendor:"codex",level:"deep"}], taskFilter?: [ids],\n' +
-  '  incumbents?: { <level>: { <vendor>: <candidate label> } }, desk?: true\n}'
+  '  desk?: true\n}'
 
 function bad(msg) {
   throw new Error(`triage-parity: ${msg}\n${USAGE}`)
@@ -82,6 +78,7 @@ const passRate = args.bandPassRate || 0.5
 
 function checkAgentSpec(raw, what, i) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) bad(`${what}[${i}] must be an object (got ${typeName(raw)}).`)
+  if (typeof raw.vendor === 'string' && Object.prototype.hasOwnProperty.call(RETIRED_VENDORS, raw.vendor)) bad(`${what}[${i}].vendor ${JSON.stringify(raw.vendor)}: ${RETIRED_VENDORS[raw.vendor]}.`)
   if (!VENDORS.includes(raw.vendor)) bad(`${what}[${i}].vendor must be one of ${VENDORS.join('|')} (got ${JSON.stringify(raw.vendor)}).`)
   if (!LEVELS.includes(raw.level)) bad(`${what}[${i}].level must be one of ${LEVELS.join('|')} (got ${JSON.stringify(raw.level)}).`)
   if (raw.effort != null && !EFFORTS.includes(raw.effort)) bad(`${what}[${i}].effort must be one of ${EFFORTS.join('|')} (got ${JSON.stringify(raw.effort)}).`)
@@ -96,11 +93,7 @@ function checkAgentSpec(raw, what, i) {
   return { label, vendor: raw.vendor, level: raw.level, model: raw.model || null, effort: raw.effort || null }
 }
 
-const candidates = args.candidates.map((raw, i) => {
-  const c = checkAgentSpec(raw, 'candidates', i)
-  if (c.vendor === 'agy' && c.level !== 'builder') bad(`candidates[${i}]: vendor agy serves the builder level only (got level ${c.level}).`)
-  return c
-})
+const candidates = args.candidates.map((raw, i) => checkAgentSpec(raw, 'candidates', i))
 {
   const seen = new Set()
   for (const c of candidates) {
@@ -108,22 +101,12 @@ const candidates = args.candidates.map((raw, i) => {
     seen.add(c.label)
   }
 }
-const byLabel = new Map(candidates.map(c => [c.label, c]))
 if (args.judges != null && !(Array.isArray(args.judges) && args.judges.length > 0)) bad('args.judges must be a non-empty array when given.')
 const judges = (args.judges || [{ vendor: 'claude', level: 'deep' }, { vendor: 'codex', level: 'deep' }]).map((raw, i) => checkAgentSpec(raw, 'judges', i))
 if (new Set(judges.map(j => j.label)).size !== judges.length) bad('judge labels must be unique.')
-const incumbents = args.incumbents || {}
-if (typeof incumbents !== 'object' || Array.isArray(incumbents)) bad('args.incumbents must be an object {level: {vendor: label}}.')
-for (const [lvl, m] of Object.entries(incumbents)) {
-  if (!LEVELS.includes(lvl)) bad(`args.incumbents: unknown level ${JSON.stringify(lvl)}.`)
-  if (!m || typeof m !== 'object' || Array.isArray(m)) bad(`args.incumbents.${lvl} must be an object {vendor: label}.`)
-  for (const [v, l] of Object.entries(m)) {
-    if (!VENDORS.includes(v)) bad(`args.incumbents.${lvl}: unknown vendor ${JSON.stringify(v)}.`)
-    const c = byLabel.get(l)
-    if (!c) bad(`args.incumbents.${lvl}.${v} = ${JSON.stringify(l)} is not a candidate label.`)
-    if (c.vendor !== v) bad(`args.incumbents.${lvl}.${v} = ${JSON.stringify(l)} is a ${c.vendor} candidate.`)
-  }
-}
+// Proposals moved to scripts/parity-report.sh (incumbents = config/tiers.json
+// levels there): an incumbents arg would silently do nothing, so it is refused.
+if (args.incumbents != null) bad('args.incumbents is no longer accepted: the incumbents are config/tiers.json levels, and tier-change proposals come from scripts/parity-report.sh report after ingest-parity.')
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 const shq = s => `'${String(s).replace(/'/g, `'\\''`)}'`
@@ -155,25 +138,6 @@ function parseJsonObject(text) {
 const taskDirOf = t => stripSlash(t.taskDir)
 const bandDir = (b, t) => `${outDir}/${b}/${t.id}`
 
-// cheapKey() — SINGLE OWNER of the cheapness order used by the proposal.
-function cheapKey(c) {
-  const order = MODEL_ORDER[c.vendor]
-  let m = c.model ? order.findIndex(k => c.model.includes(k)) : -1
-  if (m < 0) m = LEVEL_MODEL_PROXY[c.vendor][c.level]
-  const e = c.effort ? EFFORTS.indexOf(c.effort) : LEVEL_EFFORT_PROXY[c.level]
-  return [m, e]
-}
-const cheaper = (a, b) => {
-  const ka = cheapKey(a)
-  const kb = cheapKey(b)
-  return ka[0] - kb[0] || ka[1] - kb[1] || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0)
-}
-for (const c of candidates) {
-  const known = c.model && MODEL_ORDER[c.vendor].some(k => c.model.includes(k))
-  if (!known || (!c.effort && c.vendor !== 'agy')) {
-    flags.push(`cheapness of ${c.label} inferred from its level (${!known ? `model ${c.model || 'unset'}` : ''}${!known && !c.effort ? ', ' : ''}${!c.effort ? 'effort unset' : ''})`)
-  }
-}
 
 // ─── Load ───────────────────────────────────────────────────────────────────
 phase('Load')
@@ -185,7 +149,8 @@ const TASK_ITEM = {
     acceptance: { type: 'string' }, checks: { type: 'array', items: { type: 'string' } },
     overlay: { type: ['string', 'null'] }, grading: { type: 'string', enum: ['check', 'rubric', 'seeded'] },
     key: { type: ['string', 'null'] }, vendors: { type: 'array', items: { type: 'string' } },
-    timeoutMin: { type: ['number', 'null'] },
+    timeoutMin: { type: ['number', 'null'] }, selfCheckEnv: { type: ['boolean', 'null'] },
+    source: { type: 'object', properties: { type: { type: 'string' } } },
   },
   required: ['id', 'band', 'kind', 'taskDir', 'brief', 'files', 'acceptance', 'grading', 'vendors'],
 }
@@ -226,18 +191,26 @@ const deskModels = [...new Set(candidates.map(c => `${c.vendor}:${c.model || `${
 const deskPrompt = vendor => `VENDOR=${vendor}\nMODE=verify\n` +
   'The data boundary has been checked by the orchestrator: this question contains only public model names, no repository or private material.\n\n' +
   `Question: for each of these models, what are the current published benchmark results (coding / agentic / reasoning), list pricing per million input and output tokens, and the meaning of their reasoning-effort settings? Models: ${deskModels.join(', ')}. Cite each source with its date; say "unknown" rather than guessing.`
-const deskRun = args.desk === false ? Promise.resolve(null) : parallel(['codex', 'agy'].map(v => () =>
+const deskRun = args.desk === false ? Promise.resolve(null) : parallel(['codex'].map(v => () =>
   agent(deskPrompt(v), { phase: 'Desk', agentType: 'triage-cross-reviewer', label: `desk:${v}` })))
 
 // ─── Per-task work ──────────────────────────────────────────────────────────
+// A source fingerprint (parity-suite.sh fingerprint): git sources carry name,
+// head and tree; a generator source has nothing to guard.
+const FP_SCHEMA = {
+  type: 'object',
+  properties: { id: { type: 'string' }, source: { type: 'string', enum: ['git', 'generator'] }, name: { type: 'string' }, head: { type: 'string' }, tree: { type: 'string' }, rc: { type: ['integer', 'null'] } },
+  required: ['source'],
+}
 const MAT_SCHEMA = {
   type: 'object',
   properties: {
+    fingerprint: FP_SCHEMA,
     repo: { type: 'string' }, sha: { type: 'string' },
-    denied: { type: 'object', properties: { agy: { type: 'boolean' }, codex: { type: 'boolean' } }, required: ['agy', 'codex'] },
+    denied: { type: 'object', properties: { codex: { type: 'boolean' } }, required: ['codex'] },
     rc: { type: ['integer', 'null'] },
   },
-  required: ['repo', 'sha', 'denied'],
+  required: ['fingerprint', 'repo', 'sha', 'denied'],
 }
 const FINDINGS_SCHEMA = {
   type: 'object',
@@ -258,22 +231,63 @@ const fableLog = (who, label) => log(`⚠ Escalating to Fable: parity ${who} ${l
 // One result row per (task, candidate run).
 const row = (c, runLabel, status, extra) => Object.assign({ label: c.label, runLabel, vendor: c.vendor, status, reason: null, totalTokens: null, seconds: null }, extra || {})
 
+// ─── Source-repo leak guard (every task kind) ───────────────────────────────
+// Staging and deny markers only control what a candidate is HANDED, not what it
+// can reach: each git source.repo is fingerprinted before the task's candidates
+// run (in the materialize spawn, BEFORE materializing) and again after grading.
+const fpCmd = t => `${PARITY_SUITE} fingerprint --task ${shq(taskDirOf(t))}`
+const FP_HASH = /^[0-9a-f]{40}([0-9a-f]{24})?$/
+function fpOk(fp, t) {
+  if (!fp || typeof fp !== 'object') return false
+  // The loaded task says which kind of source it has; a reply may not downgrade it.
+  if (t.source && isStr(t.source.type) && t.source.type !== fp.source) return false
+  if (fp.source === 'generator') return true
+  return fp.source === 'git' && isStr(fp.name) && typeof fp.head === 'string' && (fp.head === '' || SHA_RE.test(fp.head)) && FP_HASH.test(String(fp.tree || ''))
+}
+
 async function materialize(t, b) {
   const out = `${bandDir(b, t)}/mat`
   const cmd = `${PARITY_SUITE} materialize --task ${shq(taskDirOf(t))} --out ${shq(out)}`
   let r = null
   try {
-    r = await agent(`Run this one command exactly as written and return its stdout JSON object field for field, plus rc = its exit status. Do not run anything else, and do not interpret or fix anything.\n${cmd}`,
+    r = await agent('Run these two commands in order, each exactly as written. Do not run anything else, and do not interpret or fix anything. ' +
+      'Return fingerprint = the FIRST command\'s stdout JSON object field for field; then repo, sha and denied field for field from the SECOND command\'s stdout JSON object, plus rc = the second command\'s exit status.\n' +
+      `${fpCmd(t)}\n${cmd}`,
       { phase: `Band ${b}`, agentType: 'triage-quick-task', label: `materialize:${t.id}`, schema: MAT_SCHEMA })
   } catch (e) {
     return { error: errText(e) }
   }
   // The path used is always the computed one; the reply only proves it was made.
   if (!r || stripSlash(String(r.repo || '')) !== `${out}/repo` || !SHA_RE.test(String(r.sha || '').trim()) || !r.denied ||
-      typeof r.denied.agy !== 'boolean' || typeof r.denied.codex !== 'boolean') {
+      typeof r.denied.codex !== 'boolean') {
     return { error: `materialize returned ${JSON.stringify(r).slice(0, 200)}` }
   }
-  return { repo: `${out}/repo`, sha: r.sha.trim(), denied: r.denied }
+  if (!fpOk(r.fingerprint, t)) return { error: `no valid source fingerprint before the run (${JSON.stringify(r.fingerprint || null).slice(0, 160)})` }
+  return { repo: `${out}/repo`, sha: r.sha.trim(), denied: r.denied, fp: r.fingerprint }
+}
+
+// sourceGuard(t, b, rows) — SINGLE OWNER of the source-change verdict. Re-
+// fingerprints t's git source after grading (one retry); any difference, or no
+// usable fingerprint, voids every row of the task (invalid, never pass or fail)
+// and flags it — the run continues (a concurrent human commit is possible: the
+// flag tells the orchestrator to investigate).
+async function sourceGuard(t, b, rows) {
+  const before = t.mat.fp
+  let after = null
+  for (let attempt = 1; attempt <= 2 && !after; attempt++) {
+    try {
+      const r = await agent(`Run this one command exactly as written and return its stdout JSON object field for field, plus rc = its exit status. Do not run anything else, and do not interpret or fix anything.\n${fpCmd(t)}`,
+        { phase: `Band ${b}`, agentType: 'triage-quick-task', label: attempt === 1 ? `source:after@${t.id}` : `source:after@${t.id}#retry`, schema: FP_SCHEMA })
+      if (fpOk(r, t) && r.source === 'git') after = r
+    } catch (e) {
+      after = null
+    }
+  }
+  const what = after ? [after.head !== before.head ? 'HEAD moved' : null, after.tree !== before.tree ? 'tree changed' : null].filter(Boolean).join(', ') : null
+  if (after && !what) return rows
+  const reason = after ? `SOURCE_CHANGED ${before.name}: ${what}` : `SOURCE_UNVERIFIED ${before.name}: could not re-fingerprint the source repo after grading`
+  flag(`${reason} (task ${t.id}) — every result of the task is invalid; investigate the source repo before trusting anything from it`)
+  return rows.map(r => (['skipped', 'denied'].includes(r.status) ? r : Object.assign({}, r, { status: 'invalid', reason })))
 }
 
 async function judgeTask(t, b, rows) {
@@ -285,7 +299,13 @@ async function judgeTask(t, b, rows) {
   const jd = `${bandDir(b, t)}/judge`
   const order = graded.slice().sort((x, y) => hashStr(`${t.id}:${x.runLabel}`) - hashStr(`${t.id}:${y.runLabel}`) || (x.runLabel < y.runLabel ? -1 : 1))
   order.forEach((r, i) => { r.anon = `s${i + 1}` })
-  const copyCmd = `mkdir -p ${shq(jd)} && ` + order.map(r => `cp ${shq(r.patch)} ${shq(`${jd}/${r.anon}.patch`)}`).join(' && ')
+  // JUDGES GET ONLY THE PATCH AND THE KEY: each anonymized patch gets a fresh dir
+  // under outDir holding exactly <anon>.patch and a copy of the key — no repo, no
+  // task dir, no other patch is ever named to a judge.
+  const keyName = `key${(String(t.key).match(/\.[A-Za-z0-9]+$/) || [''])[0]}`
+  const staged = r => ({ patch: `${jd}/${r.anon}/${r.anon}.patch`, key: `${jd}/${r.anon}/${keyName}` })
+  const copyCmd = `mkdir -p ${order.map(r => shq(`${jd}/${r.anon}`)).join(' ')} && ` +
+    order.map(r => `cp ${shq(r.patch)} ${shq(staged(r).patch)} && cp ${shq(`${taskDirOf(t)}/${t.key}`)} ${shq(staged(r).key)}`).join(' && ')
   let copied = null
   try {
     copied = await agent(`Run this one command exactly as written and return ok = true if it exited 0, and rc = its exit status. Do not run anything else.\n${copyCmd}`,
@@ -298,22 +318,22 @@ async function judgeTask(t, b, rows) {
     flag(`${t.id}: judges not run (patch staging failed) — ${graded.length} candidate(s) unresolved`)
     return
   }
-  const keyPath = `${taskDirOf(t)}/${t.key}`
   const spec = `Task brief given to the candidates:\n${t.brief}\n\nAcceptance criteria:\n${t.acceptance}\n\n` +
     `Grade how fully and correctly the patch meets the brief, against the grading key (the ground truth). Score 0..1: 1 = fully correct and complete, 0.7 = acceptable with minor gaps, below 0.5 = wrong or incomplete. You do not know who wrote the patch; do not guess.`
+  const ONLY_TWO = 'Read only these two files; do not cd anywhere or read, list or search any other path. You have no repository access: grade from the patch and the key alone.'
   const jobs = []
   for (const j of judges) {
     for (const r of order) {
-      const patchPath = `${jd}/${r.anon}.patch`
+      const { patch: patchPath, key: keyPath } = staged(r)
       jobs.push({ j, r, run: () => {
         if (j.vendor === 'claude') {
-          return agent(`${spec}\n\nRead these two files (read-only; change nothing):\n  patch: ${patchPath}\n  key:   ${keyPath}\n\nReturn score (0..1) and a one-paragraph rationale.`,
+          return agent(`${spec}\n\nYour two files (read-only; change nothing):\n  patch: ${patchPath}\n  key:   ${keyPath}\n${ONLY_TWO}\n\nReturn score (0..1) and a one-paragraph rationale.`,
             Object.assign({ phase: `Band ${b}`, agentType: CLAUDE_AGENT[j.level], label: `judge:${j.label}@${t.id}:${r.anon}`, schema: JUDGE_SCHEMA },
               j.model ? { model: j.model } : {}, j.effort ? { effort: j.effort } : {}))
         }
         return agent(`VENDOR=${j.vendor}\nMODE=review\n` +
           'The data boundary has been checked by the orchestrator for this material (a synthetic or cleared parity task).\n' +
-          `Pass exactly these two files to ext-run.sh: --input ${patchPath} --input ${keyPath}\n\n${spec}\n\n` +
+          `Pass exactly these two files to ext-run.sh, and nothing else: --input ${patchPath} --input ${keyPath}\n${ONLY_TWO}\n\n${spec}\n\n` +
           'Output ONLY one JSON object: {"score": <number 0..1>, "rationale": "<one paragraph>"} — no other text.',
           { phase: `Band ${b}`, agentType: 'triage-cross-reviewer', label: `judge:${j.label}@${t.id}:${r.anon}` })
       } })
@@ -362,6 +382,8 @@ async function buildTask(t, b, runnable) {
       x.c.model ? { model: x.c.model } : {}, x.c.effort ? { effort: x.c.effort } : {})),
   }
   if (t.overlay) cmpArgs.overlay = `${taskDirOf(t)}/${stripSlash(t.overlay)}`
+  // Only an opted-in task's candidates get <mat repo>/.parity-env (tool paths).
+  if (t.selfCheckEnv === true) cmpArgs.selfCheckEnv = true
   let res = null
   try {
     res = await workflow('triage-compare', cmpArgs)
@@ -401,6 +423,7 @@ async function reviewTask(t, b, runnable) {
       return agent(`${t.brief}\n\nFiles to review (paths relative to the repository root): ${t.files.join(', ')}\nAcceptance: ${t.acceptance}\n\n` +
         `--- Review protocol (you are one reviewer; others get the same brief) ---\n` +
         `The repository is ${repo}. This is READ-ONLY work: never edit, create, stage or commit anything.\n` +
+        `Work only inside ${repo}. Do not read, list or search any other directory on this machine (including other copies of this project); the review is graded only from what you report on these files.\n` +
         `Read only the files themselves. Never inspect git history or run any git command — the repository carries no history to read, and its objects are not part of the review.\n` +
         `Your shell's working directory is reset between commands, so EVERY shell command you run MUST start with \`${cdPrefix}\` — for example \`${cdPrefix}cat ${t.files[0]}\`.\n` +
         'Return findings = every defect you find, each {file: path relative to the repository root, line: the 1-based line number, desc: one line}. Report each defect once.',
@@ -491,6 +514,8 @@ async function runTask(t, b, active) {
   const tm = Object.assign({}, t, { mat })
   let rows = []
   if (runnable.length) rows = t.kind === 'build' ? await buildTask(tm, b, runnable) : await reviewTask(tm, b, runnable)
+  // Every task kind — build, rubric AND review — is re-fingerprinted after grading.
+  if (mat.fp.source === 'git' && rows.length && !leakAbort) rows = await sourceGuard(tm, b, rows)
   return { t, sha: mat.sha, rows: skipped.concat(denied.map(c => row(c, c.label, 'denied', { reason: `source deny-marked for ${c.vendor}` })), rows) }
 }
 
@@ -551,7 +576,9 @@ const overall = s => {
   return p + f ? p / (p + f) : -1
 }
 const states = candidates.map(c => st.get(c.label))
-states.sort((x, y) => y.highest - x.highest || overall(y) - overall(x) || cheaper(x.c, y.c))
+// Strongest first; ties by label (deterministic). No cheapness here: comparing
+// cost is parity-report.sh's job.
+states.sort((x, y) => y.highest - x.highest || overall(y) - overall(x) || (x.c.label < y.c.label ? -1 : x.c.label > y.c.label ? 1 : 0))
 const ranking = states.map(s => ({
   label: s.c.label, vendor: s.c.vendor, level: s.c.level, model: s.model, effort: s.c.effort,
   highestBandCleared: s.highest, perBand: s.perBand, externalTokens: s.externalTokens, seconds: s.seconds, stoppedAfterBand: s.stoppedAfter,
@@ -559,32 +586,10 @@ const ranking = states.map(s => ({
 const plateaus = {}
 for (const s of states) (plateaus[s.highest] = plateaus[s.highest] || []).push(s.c.label)
 
-// proposal — per level and vendor, the CHEAPEST candidate that clears the
-// level's band at >= bandPassRate AND >= the incumbent's pass rate there.
-const proposal = {}
-for (const L of LEVELS) {
-  const b = LEVEL_BAND[L]
-  if (!bands.includes(b)) continue
-  for (const V of VENDORS) {
-    if (V === 'agy' && L !== 'builder') continue   // agy serves the builder level only
-    const incLabel = incumbents[L] && incumbents[L][V] ? incumbents[L][V] : null
-    const incPb = incLabel ? st.get(incLabel).perBand[b] : null
-    const incRate = incPb && incPb.rate != null ? incPb.rate : null
-    if (incLabel && incRate == null) flags.push(`incumbent ${incLabel} not measured at band ${b} — bar dropped`)
-    const eligible = states.filter(s => s.c.vendor === V && s.perBand[b] && s.perBand[b].rate != null &&
-      s.perBand[b].rate >= passRate && (incRate == null || s.perBand[b].rate >= incRate))
-    if (!states.some(s => s.c.vendor === V)) continue
-    if (!eligible.length) { flags.push(`proposal: no ${V} candidate cleared band ${b} for level ${L}${incLabel ? ` at the incumbent ${incLabel}'s rate` : ''}`); continue }
-    const pick = eligible.slice().sort((x, y) => cheaper(x.c, y.c))[0]
-    proposal[L] = proposal[L] || {}
-    proposal[L][V] = { label: pick.c.label, model: pick.model, effort: pick.c.effort, basis: 'parity-run', passRate: pick.perBand[b].rate, incumbent: incLabel, incumbentRate: incRate }
-  }
-}
-
 let desk = null
 if (args.desk !== false) {
   const d = await deskRun
-  desk = { note: 'signal only, never scored', codex: d && d[0] != null ? String(d[0]) : null, agy: d && d[1] != null ? String(d[1]) : null }
+  desk = { note: 'signal only, never scored', codex: d && d[0] != null ? String(d[0]) : null }
 }
 
 const cell = pb => (pb ? `${pb.pass}/${pb.fail}/${pb.other}` : '—')
@@ -593,13 +598,15 @@ const md = [
   `|---|---|---|---|---|${bands.map(() => '---').join('|')}|---|---|`,
   ...ranking.map(r => `| ${r.label} | ${r.vendor} | ${r.model || '—'} | ${r.effort || '—'} | B${r.highestBandCleared} | ${bands.map(b => cell(r.perBand[b])).join(' | ')} | ${r.externalTokens == null ? '—' : r.externalTokens} | ${r.stoppedAfterBand == null ? '—' : `after B${r.stoppedAfterBand}`} |`),
   '',
-  '| Level | Vendor | Proposed | Pass rate | Incumbent |',
-  '|---|---|---|---|---|',
-  ...Object.entries(proposal).flatMap(([L, m]) => Object.entries(m).map(([V, p]) =>
-    `| ${L} | ${V} | ${p.label} (${p.model || 'default'}${p.effort ? ` · ${p.effort}` : ''}) | ${p.passRate.toFixed(2)} | ${p.incumbent ? `${p.incumbent} (${p.incumbentRate == null ? 'n/a' : p.incumbentRate.toFixed(2)})` : '—'} |`)),
-  '',
-  'Proposal only: Alex approves any config/tiers.json change. Claude cost per candidate: scripts/parity-cost.sh on this run\'s transcript dir.',
+  'No tier proposal here. Save this result as JSON, then run parity-report.sh ingest-parity --result <file> and parity-report.sh report (min-n + margin rule; Alex approves any config/tiers.json change). Claude cost per candidate: scripts/parity-cost.sh on this run\'s transcript dir.',
 ].join('\n')
 
 log(`Parity run done: ${ranking.length} candidate(s), ${matrix.length} task run(s), ${flags.length} flag(s). Nothing outside ${outDir} was written; tiers.json untouched.`)
-return { outDir, bands, ranking, plateaus, proposal, flags, desk, tasks: matrix, markdown: md }
+// next — what the orchestrator does with this value: the ledger + decision rule
+// have ONE owner, scripts/parity-report.sh.
+const next = [
+  'Save this return value as JSON (e.g. <outDir>/result.json), then:',
+  `${PARITY_REPORT} ingest-parity --result <that file>   # one ledger line per graded (task, candidate run)`,
+  `${PARITY_REPORT} report                               # per level x vendor: n, rate, Wilson LB; proposals only past min-n + margin`,
+]
+return { outDir, bands, ranking, plateaus, flags, desk, tasks: matrix, markdown: md, next }
