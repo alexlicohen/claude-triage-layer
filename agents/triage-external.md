@@ -64,6 +64,6 @@ Protocol, in order:
    - Third line: the `DONE exit=` line if present, else `NO SENTINEL`
    - Bake-off mode only, fourth line: the `CHECK rc=<n>` line from stderr verbatim, else `NO CHECK`.
    - Then the external worker's output unedited.
-   - If `ext-run.sh` printed its `ext-run: N tokens (...)` accounting line on stderr (it may end in ` out=<M>`), append it verbatim as the last line; the external spend is invisible to the usage tally otherwise.
+   - If `ext-run.sh` printed its `ext-run: N tokens (...)` accounting line on stderr (it may end in ` out=<M> effort=<E>`), append it verbatim as the last line; the external spend is invisible to the usage tally otherwise.
 
    Do not summarize, filter, or re-rank it, and do not add your own assessment of whether the change is correct: the orchestrator's objective checks decide that, and this tier's output is an input to them, not a verdict.

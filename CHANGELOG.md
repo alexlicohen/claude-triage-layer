@@ -4,6 +4,122 @@ Reverse-chronological. Each entry cites the commit(s) it corresponds to and,
 where known, the test-count delta. See `test/roundtrip.sh` and `test/lint.sh`
 for the current check catalog.
 
+## Wave 16 — deep-review fixes: bake-off/grading correctness, ledger integrity, install safety (branch wave16)
+
+Triggered by a deep multi-agent + codex review of Waves 10–15 (2026-09-25). Threat model
+decision: codex is a trusted collaborator that can err, not an adversary — the fixes below
+target accidents to working trees and wrong measurements; anti-escape hardening is
+deliberately out of scope. Danger floor by model family (claude opus|fable, codex
+gpt-6-astra). `.claude/agent-memory` untracked from this public repo (`b8dbc9f`).
+
+### 16A — bake-off / grading correctness + danger floor (`b438cb5`)
+
+- Inline bake-offs (`triage-exec`): an empty or out-of-scope diff never counts as the
+  passing choice; an applied reply needs `applied` + `plain|3way` + our patch path. An
+  unknown leak state, a failed compare, or an unknown/tree-modifying apply WITHHOLDS the
+  subtask (never run in place; `withheld`, incomplete). Same-repo guard (repo-mismatch).
+  Apply via `stage-worktree.sh apply --require-clean`. Redo after an applied challenger
+  keeps the plan's effort; a level climb drops a lower plan effort; `runFable` takes the
+  step's effort. A rejected external spawn falls back to the same level on Claude.
+  `weeklyPct` missing pauses (`weekly-unknown`). No Fable bake-off candidate (top is
+  claude-only). High-bit challenger pick; truthful `ranExternally`; `modelFrom` in ingest;
+  untruncated ingest run id (hash-suffixed when long).
+- Danger floor by model family: `DANGER_FAMILIES {claude: opus|fable, codex: astra}` (+
+  codex effort ≥ high) on challengers and the planned candidate; lint 6c checks
+  `tiers.json` `levels.deep`/`levels.top`.
+- Grading (`triage-compare`): several checks each in their own `bash -c`; `patch-check
+  --summary` (one `PATCHCHECK` line, tails to files) and `leakcheck --line` (`LEAKCHECK`)
+  are parsed and cross-checked (sha, patch order, status/rc); missing or garbled is
+  invalid. The grader is told the Bash timeout (file + wait); `changedFiles`/`outOfScope`
+  are surfaced; `selfCheckEnv` is Claude-only (recorded); a model/effort mismatch against
+  ext-run's line (now with `effort=`) is invalid; a `patch-check.sh` harness fault is
+  `error:"harness"`; `ignoredNew`/`gitlinks` are surfaced; only non-empty errors count.
+- Staging: the leak fingerprint covers ignored paths too (bounded; `.claude/` and
+  `PROJECT_MEMORY*.md` excluded — agents write them by design); `apply` reports
+  `treeModified` (measured after a failed write, not assumed); `ext-run.sh` locks its
+  build worktree so a parallel prune can't remove it.
+- Review: hard excludes now match `**/x` against a top-level `x` and `a/**/b` against
+  `a/b`, defaults case-insensitive; `extend` refuses a changed include/exclude/context/
+  hard-exclude; deny carry-over asks `ext-run.sh deny-query` instead of re-deriving the
+  rule (fail closed on `CODEX_DENY_REPOS` or an error); an all-malformed reviewer round is
+  `unavailable`; finding paths are cut at the first `/snap/`.
+- Deferred: mutations for several already-covered guards; a deny refresh before codex in
+  a review `extend` (the prior snapshot's marker is trusted, not re-asked); anti-escape
+  items (out of scope by the threat model above).
+
+### 16B — parity ledger integrity (`3373f72`)
+
+- `parity-report.sh`: every new line carries `runHash` (a hash of the canonical result plus
+  the ingest options that shape it). Re-ingesting a run with the same hash appends only its
+  missing observations (idempotent; recovers an interrupted multi-line ingest); a run id
+  already present with a *different* hash is refused (exit 2). `ingest-compare` now
+  requires `--run`; `ingest-parity` takes `--run` (default: outDir basename). Pre-runHash
+  lines keep the old skip-by-run-id behaviour.
+- One ledger lock (`<real ledger>.lock`, pid, stale takeover, `PARITY_LOCK_TRIES`) held by
+  every writer across read-check-append and snapshot-validate-replace; `backfill-modelid`
+  writes through a symlinked ledger to its target.
+- Reps collapse per (run, task, config) by majority, ties excluded: `n` is the effective
+  count; `observations`/`ties` are the raw counts.
+- Only current configured model ids are challengers (superseded versions stay in
+  `history` only); a new optional `tuning.rejected [{level, vendor, model, effort,
+  until?}]` turns a would-be proposal into verdict `rejected` and frees its level from
+  `explore`.
+- Review revisions: an extended result, or a `--resolved` re-ingest, appends a new line at
+  revision n+1; `report` reads only the latest revision per run; `superseded` is its own
+  reviewer status/column.
+- `ts` is stored as UTC (offsets honored, also on read); a result's own `ts` is used, a
+  disagreeing `--ts` is refused; `opus[1m]`-style models are accepted; `PARITY_TODAY`
+  overrides "today" for tests.
+- `parity-suite.sh fingerprint` adds `ignored` (capped, shallowest first,
+  `PARITY_FP_IGNORED_CAP`) and `refs` (branches/tags/stash/config/hooks), plus `guarded`
+  (`false` for generator tasks); `triage-parity.js` requires and compares both, exposes
+  `tasks[].guarded`, and forwards `modelFrom` on build rows.
+- `triage-tiers.sh`: `tuning.rejected` validation, with one failing-input test per
+  TUNING_ERRORS/ALIAS_ERRORS branch. `parity-cost.sh`: a corrupt transcript line is
+  skipped and counted (`skippedLines`).
+- Deferred: no-pid lock takeover (~5s) untested; mtime-based ignored-file hashing misses a
+  same-second, same-size rewrite; concurrent user writes to ignored files in a source repo
+  void the task.
+
+### 16C — install/uninstall safety + documentation accuracy (`b8192e9`)
+
+- Uninstall never destroys bytes the repo can't reproduce: an installed file is deleted
+  only while byte-identical to the clone's copy; a forked `triage.md`, a tuned statusline,
+  leftovers of older installs, and every `agent-memory/triage-*` dir are moved to
+  `$CLAUDE_DIR/triage-uninstall-backup-<UTC>/`. The settings rewrite is computed before any
+  file is touched: a `jq` failure is rc 1 with nothing changed.
+- Install backups are timestamped (`<file>.bak-triage-<UTC>[-N]`, newest 5 kept per file;
+  single owner `backup_path`/`prune_backups`).
+- Retired files behind checksums: `retire_renamed` deletes `agy-run.sh`/
+  `triage-overflow.md` only when the bytes match a shipped revision
+  (`SHIPPED_AGY_RUN_SHA256`, `SHIPPED_OVERFLOW_AGENT_SHA256`), else moves them aside.
+- Subagent default now comes from `config/tiers.json` (`levels.deep.claude.model`; install
+  refuses without one) and its ownership is recorded: install writes
+  `env.TRIAGE_LAYER_OWNS_SUBAGENT_MODEL` next to the model; upgrade/removal only while the
+  value matches the marker, and a stale marker is dropped. Pre-marker values
+  (`claude-opus-5`, `claude-opus-5-5`; list frozen) are upgraded, never removed by
+  uninstall (it says so).
+- `drift.sh` warns "settings migration pending" (warn-only) via the new read-only
+  `install.sh --settings-status`.
+- Failures fail: install/uninstall `jq` or write errors exit 1, never print
+  `Installed.`/`Uninstalled.`; a wrong-shaped `settings.json` is refused upfront;
+  `.driftignore` entries are normalized (CR/whitespace) in `install.sh` and `drift.sh`;
+  `tiers-sync --root` without a value exits 2, and an unclosed frontmatter fails.
+- Docs: `README.md` "Security and data flow"; `scripts/README.md` ext-run threat model;
+  `triage.md` rule refs 7/7(b), `ingest-compare`/`ingest-parity` hand-offs, bake-off
+  `outDir` shape, danger work restricted to Opus/Fable or `gpt-6-astra`, the second-opinion
+  bar aligned with `AGENTS.md`, runtime bake-off challengers; `triage-external`
+  description; the manual install/uninstall lists now point at `install.sh`; "the user" in
+  shipped text.
+- Deferred: `make verify` → drift against the live install (merge-base or verify-live
+  split); `drift.sh`'s fork-base sha for `triage.md`; the TTL key is still owned by value
+  equality; uninstall moves shipped legacy files aside rather than checksum-deleting them.
+
+**Checks**: `make verify` green — roundtrip 191, usage 25, ext-run 229, patch-check 44,
+stage-worktree 54, review-stage 61, workflow-scenarios 369, compare-scenarios 339,
+parity-suite 114, parity-scenarios 125, parity-report 204; strict `make mutate` 144 killed /
+0 survived (catalog 85 → 144: 91–109 16A, 110–129 16B, 130–149 16C).
+
 ## Wave 15 — model-version tracking: pinned Claude ids, modelId in the ledger, history (branch wave15-modelids)
 
 - **Pinned ids.** Verified first (CC 2.1.282): code.claude.com/docs/en/sub-agents
