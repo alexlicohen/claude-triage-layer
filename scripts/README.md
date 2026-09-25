@@ -715,7 +715,8 @@ ext-run.sh's. `qc/mutate.sh` #67 proves the hard exclude holds for tracked paths
 
 `Workflow({name:'triage-compare', args:{kind:'review', repo, repoName, base, head?, include,
 exclude?, context?, extras?:[{src,dest}], hardExclude?, groundTruth, accepted?, conventions?,
-outDir, reviewers:[{vendor, level, model?, effort?, label?}], adjudicators?, batchSize?:10}}`:
+outDir, reviewers:[{vendor, level, model?, effort?, label?}], adjudicators?, batchSize?:10,
+reviewerTimeout?:'30m', adjudicatorTimeout?:'15m', extend?, supersedes?}}`:
 
 1. one quick task runs `review-stage.sh snapshot` and `fingerprint` (to
    `<outDir>/fingerprint-before.json`); a failed snapshot throws before any reviewer;
@@ -724,11 +725,19 @@ outDir, reviewers:[{vendor, level, model?, effort?, label?}], adjudicators?, bat
    prefix every command with `cd <snap> && `, never to run git, and that it may view images;
    codex: `triage-cross-reviewer` with `VENDOR=codex MODE=read MODEL= EFFORT= INPUT_DIR=<snap>`
    and `--input range.diff` (codex reviewers must pin model **and** effort: read mode's default
-   model is the read-mode one, not the level's). Findings: `{file, line, severity:
+   model is the read-mode one, not the level's). Every codex spawn (reviewer or adjudicator) also
+   carries `TIMEOUT=` (reviewers `30m`, adjudicators `15m`, overridable; N|Ns|Nm|Nh up to 3h —
+   ext-run's read default of 5m killed a 144 MB snapshot review) and `PROMPT_BYTES=` = the UTF-8
+   byte length of the prompt-file body (the text after the `…goes into the prompt file ---`
+   marker, plus one final newline): `triage-cross-reviewer` writes the body into a private
+   `mktemp -d` dir, normalizes the relay's two-space indent, checks `wc -c`, rewrites once and
+   otherwise returns `REFUSED: prompt not verbatim` — an LLM wrapper is never trusted to carry a
+   brief verbatim. Findings: `{file, line, severity:
    blocker|major|minor, category, claim, evidence (a ground-truth path/page), suggestedFix}`.
    Every prompt carries groundTruth, conventions and accepted deviations verbatim ("do not flag
    these unless you cite NEW ground-truth evidence"; a summary or replacement text is never
-   ground truth). The live repo path and repo name appear in no reviewer, merge or adjudicator
+   ground truth), and the same note for both vendors that image links in the markdown are
+   URL-encoded (`%5B` = `[` …) and must be decoded before opening. The live repo path and repo name appear in no reviewer, merge or adjudicator
    prompt. A reviewer that fails or returns no valid findings JSON is **unavailable** — never
    scored as zero; malformed single findings are dropped and flagged;
 3. one deep merge agent clusters duplicates over opaque finding ids (it sees no reviewer label or
@@ -756,6 +765,30 @@ adjudicator unavailable without a spawn. Nothing is applied, nothing written out
 Known limit: an adjudicator of the same model as a reviewer judges its own kind of finding blind,
 not independently. `test/compare-scenarios.mjs` RV* covers it; `qc/mutate.sh` #68 (provenance
 reaching an adjudicator) and #69 (a disputed item scored as real) prove the blind + scoring rules.
+
+**Extending a review** (`extend: '/abs/prior-result.json'`, outside repo; `supersedes?:
+[labels]`): re-pass the prior run's args (same groundTruth/conventions/accepted, `outDir` = the
+prior outDir, `base`/`head` resolving to the prior shas — pass the shas) with **only the new
+reviewers**. Instead of a snapshot, one quick task runs one `jq` command over the prior result,
+`<outDir>/manifest.json`, `snap/`, `range.diff` and `git rev-parse` of base/head, and relays its
+JSON; the workflow recomputes the command's digest (UTF-8 bytes of every string + sum of every
+number in items and reviewers) and refuses — after one retry, before any reviewer — a relay that
+is not verbatim, a base/head or outDir/repoName that is not the prior's, or a snapshot that is
+gone or not the prior's. Also refused: a new label colliding with a prior one, `supersedes`
+naming no prior reviewer, and adjudicators other than the prior panel. The merge agent sees the
+prior items (ids + text, never verdicts or provenance) and the new findings: each new finding
+**attaches** to a prior item (its reviewer joins `foundBy`; text, verdict and adjudication stay —
+never re-adjudicated) or joins a **new item** numbered after the prior ids (`M31…`). Only new
+items are adjudicated (same blind panel). Every reviewer not superseded — prior ones included — is
+rescored over the combined items (a new real item lowers everyone's recall who missed it);
+superseded runs stay in `reviewers` with `status: 'superseded'`, `priorStatus`, no scores, and
+their findings stay in the items. The re-fingerprint goes to `fingerprint-extend.json`. Returns the
+normal shape plus `extendedFrom`, `newItems`, `superseded`; prior flags are carried as `prior
+run: …`; the markdown is regenerated for the combined set with an "Extended with" line. EX* covers
+it (EX10 runs the loader's real `jq`/`git` command on a synthetic prior); #72 (attached items
+re-adjudicated), #73 (a superseded reviewer scored) and #74 (a codex spawn without TIMEOUT) prove
+it. `ingest-review` counts a superseded row as unavailable, and derives the run id from the
+outDir basename — pass `--run` when ingesting an extension of an already-ingested review.
 
 ## `parity-suite.sh` — the task suite of a parity run
 

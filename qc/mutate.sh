@@ -65,7 +65,10 @@ done
 # paths too, adjudicators blind to provenance, disputed items never scored, and
 # --input-dir refusing a symlink out of the staged tree.
 # 71 covers the codex --output-schema normalization to OpenAI-strict form.
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71"
+# 72-74 cover the review bake-off fixes: an extension never re-adjudicates an item a
+# new finding attached to, a superseded reviewer is never scored, and every codex
+# reviewer/adjudicator carries an explicit TIMEOUT for ext-run's watchdog.
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -144,7 +147,7 @@ mut_file() {
     63|66) echo "scripts/patch-check.sh" ;;
     64|65) echo "workflows/triage-parity.js" ;;
     67) echo "scripts/review-stage.sh" ;;
-    68|69) echo "workflows/triage-compare.js" ;;
+    68|69|72|73|74) echo "workflows/triage-compare.js" ;;
     70|71) echo "scripts/ext-run.sh" ;;
     *) echo "" ;;
   esac
@@ -218,6 +221,9 @@ mut_desc() {
     69) echo "triage-compare.js (review): a disputed item is counted as real in the reviewer scores" ;;
     70) echo "ext-run.sh: --input-dir follows a symlink out of the staged tree (whatever it names is copied to codex)" ;;
     71) echo "ext-run.sh: the --schema is passed to codex un-normalized (a non-strict schema is rejected by the API: every schema'd codex run is UNAVAILABLE)" ;;
+    72) echo "triage-compare.js (review extend): prior items a new finding attached to are re-adjudicated (their verdicts can flip)" ;;
+    73) echo "triage-compare.js (review extend): a superseded prior reviewer is still scored" ;;
+    74) echo "triage-compare.js (review): a codex reviewer/adjudicator is spawned without TIMEOUT (ext-run's 5m read default kills a large review)" ;;
     *) echo "" ;;
   esac
 }
@@ -233,7 +239,7 @@ mut_suite() {
     1|2|3|4|5|6|10|12|18|19|20|21|33) echo "roundtrip" ;;
     7|8|9|11|16|17|22|23|28|29) echo "scenarios" ;;
     15|24|25|26|40|49|50|51|56|57|58|59|60|61|62|70|71) echo "extrun" ;;
-    31|34|36|37|38|47|68|69) echo "compare" ;;
+    31|34|36|37|38|47|68|69|72|73|74) echo "compare" ;;
     32|48|63|66) echo "patchcheck" ;;
     39|55) echo "stagewt" ;;
     41|42|46|64|65) echo "parity" ;;
@@ -881,6 +887,27 @@ MUT70
 MUT71
       mut_replace_block "$target" '  jq -c "$STRICT_SCHEMA_JQ" "$SCHEMA_ORIG" > "$SCHEMA_FILE"' 1 "$rep"
       ;;
+    72)
+      # triage-compare.js: an extension adjudicates every item, prior ones included.
+      cat > "$rep" <<'MUT72'
+  const toJudge = items // MUTATED: extend re-adjudicates attached items
+MUT72
+      mut_replace_block "$target" '  const toJudge = prior ? items.filter(it => newIds.has(it.id)) : items' 1 "$rep"
+      ;;
+    73)
+      # triage-compare.js: supersedes is ignored — the prior row keeps its status.
+      cat > "$rep" <<'MUT73'
+    status: p.status, // MUTATED: superseded reviewer still scored
+MUT73
+      mut_replace_block "$target" "    status: supersededSet.has(p.label) || p.status === 'superseded' ? 'superseded' : p.status," 1 "$rep"
+      ;;
+    74)
+      # triage-compare.js: the codex header loses its TIMEOUT line.
+      cat > "$rep" <<'MUT74'
+    return `VENDOR=${c.vendor}\nMODE=read\nMODEL=${c.model}\nEFFORT=${c.effort}\nINPUT_DIR=${dir}\nPROMPT_BYTES=${promptBytes}\n` + // MUTATED: codex spawned without TIMEOUT
+MUT74
+      mut_replace_block "$target" '    return `VENDOR=${c.vendor}\nMODE=read\nMODEL=${c.model}\nEFFORT=${c.effort}\nINPUT_DIR=${dir}\nTIMEOUT=${timeout}' 1 "$rep"
+      ;;
     *)
       return 1
       ;;
@@ -963,6 +990,9 @@ verify_mutation() {
     69) grep -qF 'MUTATED: disputed counted as real' "$target" && ! grep -qxF "  const isReal = it => it.verdict === 'real'" "$target" ;;
     70) grep -qF 'MUTATED: input-dir follows an outside symlink' "$target" && ! grep -qF 'holds a symlink that leaves it' "$target" ;;
     71) grep -qF 'MUTATED: schema passed to codex un-normalized' "$target" && ! grep -qF 'jq -c "$STRICT_SCHEMA_JQ"' "$target" ;;
+    72) grep -qF 'MUTATED: extend re-adjudicates attached items' "$target" && ! grep -qF 'const toJudge = prior ? items.filter' "$target" ;;
+    73) grep -qF 'MUTATED: superseded reviewer still scored' "$target" && ! grep -qF "status: supersededSet.has(p.label)" "$target" ;;
+    74) grep -qF 'MUTATED: codex spawned without TIMEOUT' "$target" && ! grep -qF 'TIMEOUT=${timeout}' "$target" ;;
     *) return 1 ;;
   esac
 }

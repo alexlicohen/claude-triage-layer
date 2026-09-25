@@ -1,7 +1,7 @@
 export const meta = {
   name: 'triage-compare',
   description: 'Bake-off. kind build (default): run one brief on several candidates (Claude levels, codex), each in its own staged worktree outside the repo, then grade every worktree diff independently with patch-check.sh. kind review: the same pinned snapshot + range diff to N reviewers in parallel, merge duplicate findings, blind cross-vendor adjudication, per-reviewer precision/recall. Never applies anything; the real repo is never a candidate or reviewer workdir.',
-  whenToUse: 'Compare vendors/levels/models on the SAME well-specified task: /triage-compare with args = {repo, base?, brief, files, acceptance, checks:[cmd...], outDir, overlay?, selfCheckEnv?, candidates:[{vendor:claude|codex, level:quick|builder|deep|top, model?, effort?, label?}]} (agy was retired 2026-09-24 and is refused). repo is any absolute git repo path (not necessarily the session repo) and may be dirty: base (default HEAD) is resolved to ONE sha up front and each candidate works in its own detached worktree at that sha under <outDir>/stage (scripts/stage-worktree.sh), never in repo. outDir/overlay must be OUTSIDE repo and <outDir>/stage must not already exist. External (non-claude) candidates require args.files. Checks may name tools only as $PARITY_<NAME> variables (exported at grading by patch-check.sh from the parity env map; candidates see them unexpanded); selfCheckEnv:true copies <repo>/.parity-env into each worktree and tells candidates to source it. Candidates run one at a time (parallel:true runs them concurrently; Claude outTokens is then null); the grade is scripts/patch-check.sh on each worktree diff at the sha (plus the hidden overlay), never the candidate self-report; a leakcheck then proves repo did not change (only leak:false lets a grade stand: leak true OR unknown => every candidate invalid, graded:false; a patch patch-check could not grade, e.g. overlay-failed, is invalid). Returns sha/leak/baseMoved and per-candidate status/applies/rc/diffstat/patch/tokens; the orchestrator picks and applies. REVIEW bake-off: args = {kind:"review", repo, repoName, base, head?, include:[globs], exclude?, context?, extras?:[{src,dest}], hardExclude?, groundTruth, accepted?, conventions?, outDir (fresh, outside repo), reviewers:[{vendor:claude|codex, level, model?, effort?, label?}] (codex needs model+effort), adjudicators? (default claude deep opus·high + codex deep gpt-6-astra·high), batchSize?:10}. scripts/review-stage.sh snapshots commit head (never the live tree; context/ and PROJECT_MEMORY*.md always hard-excluded) + the base..head range diff under outDir; reviewers read ONLY those (Claude: cd <snap> on every command; codex: INPUT_DIR, OS-confined); one deep agent merges duplicates (provenance kept here, anonymized); every merged item is judged by each adjudicator BLIND to reviewers and provenance: all real = real, all not-real/accepted-deviation = rejected, else disputed (for Alex). precision/recall per reviewer over non-disputed items; a failed or invalid reviewer is unavailable, never zero. Returns {kind, base, head, reviewers, items, disputed, sourceChanged, flags, markdown}; ingest with scripts/parity-report.sh ingest-review.',
+  whenToUse: 'Compare vendors/levels/models on the SAME well-specified task: /triage-compare with args = {repo, base?, brief, files, acceptance, checks:[cmd...], outDir, overlay?, selfCheckEnv?, candidates:[{vendor:claude|codex, level:quick|builder|deep|top, model?, effort?, label?}]} (agy was retired 2026-09-24 and is refused). repo is any absolute git repo path (not necessarily the session repo) and may be dirty: base (default HEAD) is resolved to ONE sha up front and each candidate works in its own detached worktree at that sha under <outDir>/stage (scripts/stage-worktree.sh), never in repo. outDir/overlay must be OUTSIDE repo and <outDir>/stage must not already exist. External (non-claude) candidates require args.files. Checks may name tools only as $PARITY_<NAME> variables (exported at grading by patch-check.sh from the parity env map; candidates see them unexpanded); selfCheckEnv:true copies <repo>/.parity-env into each worktree and tells candidates to source it. Candidates run one at a time (parallel:true runs them concurrently; Claude outTokens is then null); the grade is scripts/patch-check.sh on each worktree diff at the sha (plus the hidden overlay), never the candidate self-report; a leakcheck then proves repo did not change (only leak:false lets a grade stand: leak true OR unknown => every candidate invalid, graded:false; a patch patch-check could not grade, e.g. overlay-failed, is invalid). Returns sha/leak/baseMoved and per-candidate status/applies/rc/diffstat/patch/tokens; the orchestrator picks and applies. REVIEW bake-off: args = {kind:"review", repo, repoName, base, head?, include:[globs], exclude?, context?, extras?:[{src,dest}], hardExclude?, groundTruth, accepted?, conventions?, outDir (fresh, outside repo), reviewers:[{vendor:claude|codex, level, model?, effort?, label?}] (codex needs model+effort), adjudicators? (default claude deep opus·high + codex deep gpt-6-astra·high), batchSize?:10, reviewerTimeout?:"30m", adjudicatorTimeout?:"15m" (codex spawns only: passed as TIMEOUT= to the ext-run.sh watchdog), extend?:"/abs/prior-result.json", supersedes?:[labels]}. scripts/review-stage.sh snapshots commit head (never the live tree; context/ and PROJECT_MEMORY*.md always hard-excluded) + the base..head range diff under outDir; reviewers read ONLY those (Claude: cd <snap> on every command; codex: INPUT_DIR, OS-confined); one deep agent merges duplicates (provenance kept here, anonymized); every merged item is judged by each adjudicator BLIND to reviewers and provenance: all real = real, all not-real/accepted-deviation = rejected, else disputed (for Alex). precision/recall per reviewer over non-disputed items; a failed or invalid reviewer is unavailable, never zero. Every codex prompt carries PROMPT_BYTES (the UTF-8 byte length of its prompt-file body) and the wrapper refuses a prompt file that is not verbatim. EXTEND (extend = a prior result of this workflow, outside repo; re-pass the args of the prior run with ONLY the new reviewers, base/head resolving to the prior shas, the prior outDir): one quick task relays the prior result (digest-checked) and proves its snapshot still exists; only the new reviewers run (labels must not collide with prior ones); the merge attaches each new finding to an existing item (provenance only, never re-adjudicated) or makes a new item (next id); only new items are adjudicated, blind, by the same panel; every non-superseded reviewer is rescored over the combined set (supersedes:[labels] keeps those prior runs as status superseded, unscored, their findings intact). Returns {kind, base, head, reviewers, items, disputed, sourceChanged, flags, markdown} (+ extendedFrom, newItems, superseded when extending); ingest with scripts/parity-report.sh ingest-review.',
   phases: [
     { title: 'Stage' },
     { title: 'Candidates' },
@@ -83,7 +83,10 @@ const REVIEW_USAGE = 'Expected args (kind:"review") = {\n' +
   '  groundTruth: "text", accepted?: "text", conventions?: "text",\n' +
   '  outDir: "/abs/dir"                                          // fresh, outside repo: snap/, range.diff, manifest.json\n' +
   `  reviewers: [{ vendor: ${VENDORS.join('|')}, level: ${LEVELS.join('|')}, model?, effort?, label? }]   // codex: model + effort required\n` +
-  '  adjudicators?: [>= 2, default claude deep opus·high + codex deep gpt-6-astra·high], batchSize?: 10\n}'
+  '  adjudicators?: [>= 2, default claude deep opus·high + codex deep gpt-6-astra·high], batchSize?: 10,\n' +
+  '  reviewerTimeout?: "30m", adjudicatorTimeout?: "15m",            // codex only: N | Ns | Nm | Nh, at most 3h\n' +
+  '  extend?: "/abs/prior-result.json", supersedes?: ["prior label"]  // add reviewers to a prior review of the SAME snapshot:\n' +
+  '                                // re-pass its args (outDir = its outDir; base/head resolving to its shas) with only the NEW reviewers\n}'
 
 if (args.kind === 'review') return await runReview()
 if (!isAbsPath(args.repo)) bad('args.repo must be an absolute path with no whitespace or quotes.')
@@ -517,6 +520,31 @@ async function runReview() {
   })
   if (a.batchSize != null && !(Number.isInteger(a.batchSize) && a.batchSize >= 1 && a.batchSize <= 50)) badR('args.batchSize must be an integer 1..50.')
   const batchSize = a.batchSize || 10
+  // A codex review of a large snapshot outlasts ext-run's read-mode default (5m):
+  // every codex reviewer / adjudicator gets an explicit TIMEOUT= for the watchdog.
+  // Claude spawns are unaffected.
+  const durSecs = v => {
+    const m = /^([1-9][0-9]{0,5})([smh]?)$/.exec(v)
+    return m ? Number(m[1]) * { '': 1, s: 1, m: 60, h: 3600 }[m[2]] : null
+  }
+  const timeoutOf = (name, dflt) => {
+    const v = a[name]
+    if (v == null) return dflt
+    const s = isStr(v) ? durSecs(v.trim()) : null
+    if (s == null || s > 3 * 3600) badR(`args.${name} must be a duration N, Ns, Nm or Nh of at most 3h, e.g. "${dflt}" (got ${JSON.stringify(v)}).`)
+    return v.trim()
+  }
+  const reviewerTimeout = timeoutOf('reviewerTimeout', '30m')
+  const adjudicatorTimeout = timeoutOf('adjudicatorTimeout', '15m')
+  // EXTEND: a prior result of this workflow, read by a quick task — never from the repo.
+  if (a.extend != null && !isAbsPath(a.extend)) badR('args.extend must be the absolute path (no whitespace or quotes) of a prior kind:"review" result JSON.')
+  const extendPath = a.extend != null ? stripSlash(a.extend.trim()) : null
+  if (extendPath && within(extendPath, repo)) badR('args.extend must lie outside args.repo.')
+  if (a.supersedes != null) {
+    if (!extendPath) badR('args.supersedes marks reviewers of a PRIOR result: it needs args.extend.')
+    if (!(Array.isArray(a.supersedes) && a.supersedes.every(l => isStr(l) && SAFE_TOKEN.test(l.trim())))) badR('args.supersedes must be an array of prior reviewer labels.')
+  }
+  const supersedes = [...new Set((a.supersedes || []).map(l => l.trim()))]
 
   function spec(raw, what, i) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) badR(`${what}[${i}] must be an object (got ${typeName(raw)}).`)
@@ -555,7 +583,8 @@ async function runReview() {
   const snap = `${outDir}/snap`
   const diffPath = `${outDir}/range.diff`
   const fpBefore = `${outDir}/fingerprint-before.json`
-  const fpAfter = `${outDir}/fingerprint-after.json`
+  // An extension keeps the prior run's after-fingerprint and writes its own.
+  const fpAfter = extendPath ? `${outDir}/fingerprint-extend.json` : `${outDir}/fingerprint-after.json`
   const flags = []
   const flag = m => { flags.push(m); log(`⚠ ${m}`) }
   // Label-blind deterministic order (FNV-1a) — the DSL has no Math.random.
@@ -565,6 +594,135 @@ async function runReview() {
     return h
   }
   const q = xs => xs.map(shq).join(' ')
+  // UTF-8 byte length in pure JS (no Buffer in the DSL); a lone surrogate counts 3,
+  // as an encoder writes it (U+FFFD).
+  const utf8Bytes = str => {
+    let n = 0
+    for (const ch of String(str)) {
+      const cp = ch.codePointAt(0)
+      n += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4
+    }
+    return n
+  }
+
+  // ─── extend: ONE quick task relays the prior result; it is checked HERE ─────
+  // The DSL cannot read files, so a quick task runs ONE jq command and relays the JSON
+  // object it prints. A relay is an LLM copying text, never trusted verbatim: the
+  // command also prints a digest (the UTF-8 bytes of every string and the sum of every
+  // number in the items and reviewers) that is recomputed here. Any problem — a digest
+  // mismatch, base/head not resolving to the prior shas, another outDir or repoName, a
+  // snapshot (snap/ + range.diff + manifest base/head) gone or not the prior's — is
+  // retried once, then refused before any reviewer runs.
+  const EXTEND_JQ = '. as $p | (($man[0] // {})) as $m' +
+    ' | [($p.reviewers // [])[] | {label, vendor, level, model, effort, status, findings, tokens, seconds, reason}] as $revs' +
+    ' | [($p.items // [])[] | {id, file, line, severity, category, claim, evidence, suggestedFix, verdict,' +
+    ' adjudication: [(.adjudication // [])[] | {adjudicator, vendor, verdict, evidence}], foundBy: (.foundBy // [])}] as $items' +
+    ' | {ok: true, kind: $p.kind, repoName: $p.repoName, base: $p.base, head: $p.head, outDir: $p.outDir,' +
+    ' resolvedBase: $rb, resolvedHead: $rh, manifestBase: $m.base, manifestHead: $m.head,' +
+    ' snapshotExists: ($snap == "yes"), snapshotOk: ($snap == "yes" and $m.base == $p.base and $m.head == $p.head),' +
+    ' fingerprintExists: ($fp == "yes"), codexDenied: ($m.codexDenied == true),' +
+    ' files: (($m.files // []) | length), extras: (($m.extras // []) | length),' +
+    ' diffBytes: ($db | tonumber? // null), snapKB: ($kb | tonumber? // null),' +
+    ' mergeFallback: ($p.mergeFallback == true), sourceChanged: $p.sourceChanged, flags: ($p.flags // []),' +
+    ' reviewers: $revs, items: $items,' +
+    ' digest: {bytes: ([($items, $revs) | .. | strings | utf8bytelength] | add // 0), nums: ([($items, $revs) | .. | numbers] | add // 0)}}'
+  const extendCmd = () => `jq -c --arg snap "$([ -d ${shq(snap)} ] && [ -f ${shq(diffPath)} ] && echo yes)"` +
+    ` --arg fp "$([ -f ${shq(fpBefore)} ] && echo yes)"` +
+    ` --arg rb "$(git -C ${shq(repo)} rev-parse --verify --quiet ${shq(`${base}^{commit}`)})"` +
+    ` --arg rh "$(git -C ${shq(repo)} rev-parse --verify --quiet ${shq(`${headRef}^{commit}`)})"` +
+    ` --arg db "$(wc -c < ${shq(diffPath)} 2>/dev/null | tr -d ' ')" --arg kb "$(du -sk ${shq(snap)} 2>/dev/null | cut -f1)"` +
+    ` --slurpfile man ${shq(`${outDir}/manifest.json`)} ${shq(EXTEND_JQ)} ${shq(extendPath)}`
+  const STR = { type: 'string' }
+  const STR_N = { type: ['string', 'null'] }
+  const LOAD_SCHEMA = {
+    type: 'object',
+    properties: {
+      ok: { type: 'boolean' }, error: STR, kind: STR_N, repoName: STR_N, base: STR_N, head: STR_N, outDir: STR_N,
+      resolvedBase: STR, resolvedHead: STR, manifestBase: STR_N, manifestHead: STR_N,
+      snapshotExists: { type: 'boolean' }, snapshotOk: { type: 'boolean' }, fingerprintExists: { type: 'boolean' }, codexDenied: { type: 'boolean' },
+      files: { type: ['integer', 'null'] }, extras: { type: ['integer', 'null'] }, diffBytes: { type: ['integer', 'null'] }, snapKB: { type: ['integer', 'null'] },
+      mergeFallback: { type: 'boolean' }, sourceChanged: { type: ['boolean', 'null'] }, flags: { type: 'array', items: STR },
+      reviewers: {
+        type: 'array',
+        items: { type: 'object', properties: { label: STR, vendor: STR, level: STR, model: STR_N, effort: STR_N, status: STR, findings: { type: ['integer', 'null'] }, tokens: { type: ['number', 'null'] }, seconds: { type: ['number', 'null'] }, reason: STR_N }, required: ['label', 'vendor', 'level', 'status'] },
+      },
+      items: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            id: STR, file: STR, line: { type: 'integer' }, severity: STR, category: STR, claim: STR, evidence: STR, suggestedFix: STR, verdict: STR,
+            adjudication: { type: 'array', items: { type: 'object', properties: { adjudicator: STR, vendor: STR, verdict: STR_N, evidence: STR_N }, required: ['adjudicator', 'vendor', 'verdict', 'evidence'] } },
+            foundBy: { type: 'array', items: STR },
+          },
+          required: ['id', 'file', 'line', 'severity', 'category', 'claim', 'evidence', 'suggestedFix', 'verdict', 'adjudication', 'foundBy'],
+        },
+      },
+      digest: { type: 'object', properties: { bytes: { type: 'integer' }, nums: { type: 'number' } }, required: ['bytes', 'nums'] },
+    },
+    required: ['ok'],
+  }
+  const digestOf = (...vals) => {
+    let bytes = 0
+    let nums = 0
+    const walk = v => {
+      if (typeof v === 'string') bytes += utf8Bytes(v)
+      else if (typeof v === 'number') nums += v
+      else if (Array.isArray(v)) v.forEach(walk)
+      else if (v && typeof v === 'object') Object.values(v).forEach(walk)
+    }
+    vals.forEach(walk)
+    return { bytes, nums }
+  }
+  const short = v => String(v || '?').slice(0, 12)
+  function priorProblem(p) {
+    if (!p || typeof p !== 'object') return 'the loader returned nothing'
+    if (p.ok !== true) return `the prior result could not be read (${String(p.error || 'the command printed no JSON').slice(0, 200)})`
+    if (p.kind !== 'review') return `${extendPath} is not a kind:"review" result`
+    if (!(isStr(p.base) && SHA_RE.test(p.base) && isStr(p.head) && SHA_RE.test(p.head))) return 'the prior result carries no base/head shas'
+    if (!Array.isArray(p.items) || !Array.isArray(p.reviewers) || !p.digest || typeof p.digest !== 'object') return 'the relay held no items, reviewers or digest'
+    const d = digestOf(p.items, p.reviewers)
+    if (d.bytes !== p.digest.bytes || !(Math.abs(d.nums - Number(p.digest.nums)) <= 1e-6 * Math.max(1, Math.abs(d.nums)))) {
+      return `the prior result was not relayed verbatim (digest ${d.bytes} bytes / ${d.nums}, the command printed ${p.digest.bytes} / ${p.digest.nums})`
+    }
+    if (p.repoName !== a.repoName.trim()) return `the prior result is for repoName ${JSON.stringify(p.repoName)}, not ${JSON.stringify(a.repoName.trim())}`
+    if (stripSlash(String(p.outDir || '')) !== outDir) return `the prior outDir is ${p.outDir}, not args.outDir ${outDir} — an extension reads the prior snapshot: pass its outDir`
+    if (p.resolvedBase !== p.base || p.resolvedHead !== p.head) {
+      return `base/head mismatch: args.base ${base} / args.head ${headRef} resolve to ${short(p.resolvedBase)}..${short(p.resolvedHead)}, the prior result is ${short(p.base)}..${short(p.head)} — pass the prior shas`
+    }
+    if (!(p.snapshotExists === true && p.snapshotOk === true && p.manifestBase === p.base && p.manifestHead === p.head)) {
+      return `the prior snapshot is gone or is not the prior result's (${snap}, ${diffPath} and manifest.json base/head must all match)`
+    }
+    if (!p.items.every(it => it && isStr(it.file) && Number.isInteger(it.line) && ['real', 'rejected', 'disputed'].includes(it.verdict) &&
+      Array.isArray(it.adjudication) && it.adjudication.every(x => x && isStr(x.adjudicator)) && Array.isArray(it.foundBy))) return 'a prior item is malformed (file, line, verdict, adjudication or foundBy)'
+    if (p.flags != null && !(Array.isArray(p.flags) && p.flags.every(f => typeof f === 'string'))) return 'the prior flags are not a list of strings'
+    const ids = p.items.map(it => it && it.id)
+    if (!ids.every(id => isStr(id) && /^M[1-9][0-9]*$/.test(id)) || new Set(ids).size !== ids.length) return 'the prior item ids are not unique M<n> ids'
+    const labels = p.reviewers.map(r => r && r.label)
+    if (!labels.every(l => isStr(l) && SAFE_TOKEN.test(l)) || new Set(labels).size !== labels.length) return 'the prior reviewer labels are not unique file-safe labels'
+    if (!p.reviewers.every(r => ['ok', 'unavailable', 'superseded'].includes(r.status))) return 'a prior reviewer has an unknown status'
+    const stray = p.items.flatMap(it => it.foundBy.filter(l => !labels.includes(l)).map(l => `${it.id}:${l}`))
+    if (stray.length) return `prior items name reviewers that are not in the prior result (${stray.slice(0, 5).join(', ')})`
+    return null
+  }
+  async function loadPrior() {
+    let why = null
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      let p = null
+      try {
+        p = await agent('Run this one command exactly as written and return the JSON object it prints, field for field — every item and every reviewer, and every string in them character for character (a digest checks them). ' +
+          'If it printed no JSON object, return ok false and error = the last line of its stderr. Do not run anything else, and do not interpret or fix anything.\n' + extendCmd(),
+          { phase: 'Snapshot', agentType: 'triage-quick-task', label: attempt === 1 ? 'review:extend-load' : 'review:extend-load#retry', schema: LOAD_SCHEMA })
+      } catch (e) {
+        why = `the loader spawn failed (${errText(e)})`
+        continue
+      }
+      why = priorProblem(p)
+      if (!why) return p
+    }
+    throw new Error(`triage-compare (kind:"review", extend): refused — ${why}. No reviewer ran.`)
+  }
+  const refuseExtend = msg => { throw new Error(`triage-compare (kind:"review", extend): refused — ${msg}. No reviewer ran.`) }
 
   // ─── (a) Snapshot + fingerprint: ONE quick task ─────────────────────────────
   phase('Snapshot')
@@ -586,26 +744,53 @@ async function runReview() {
     },
     required: ['snapshot', 'fingerprint'],
   }
-  let st = null
-  let stErr = null
-  try {
-    st = await agent('Run these two commands in order, each exactly as written; run the second only if the first exited 0. Do not run anything else, and do not interpret or fix anything.\n' +
-      `${snapCmd}\n${fpCmd(fpBefore)}\n\n` +
-      'Each prints one JSON line on stdout. Return snapshot = the first one\'s fields, field for field (if it printed no JSON line: ok false and error = the last line of its stderr), and fingerprint = rc (the second command\'s exit status, null if it did not run) and head from its JSON line.',
-      { phase: 'Snapshot', agentType: 'triage-quick-task', label: 'review:snapshot', schema: SNAP_SCHEMA })
-  } catch (e) {
-    stErr = errText(e)
+  // sn = {files, extras, diffBytes, bytes} of the snapshot the reviewers read.
+  let sn = null
+  let baseSha = null
+  let headSha = null
+  let fpOk = false
+  let prior = null
+  if (!extendPath) {
+    let st = null
+    let stErr = null
+    try {
+      st = await agent('Run these two commands in order, each exactly as written; run the second only if the first exited 0. Do not run anything else, and do not interpret or fix anything.\n' +
+        `${snapCmd}\n${fpCmd(fpBefore)}\n\n` +
+        'Each prints one JSON line on stdout. Return snapshot = the first one\'s fields, field for field (if it printed no JSON line: ok false and error = the last line of its stderr), and fingerprint = rc (the second command\'s exit status, null if it did not run) and head from its JSON line.',
+        { phase: 'Snapshot', agentType: 'triage-quick-task', label: 'review:snapshot', schema: SNAP_SCHEMA })
+    } catch (e) {
+      stErr = errText(e)
+    }
+    sn = st && st.snapshot
+    if (!(sn && sn.ok === true && isStr(sn.base) && SHA_RE.test(sn.base.trim()) && isStr(sn.head) && SHA_RE.test(sn.head.trim()))) {
+      throw new Error(`triage-compare (kind:"review"): the snapshot failed — no reviewer ran (${stErr || (sn && sn.error) || JSON.stringify(st).slice(0, 300)}). ` +
+        `review-stage.sh removes a failed snapshot itself; ${outDir} must be empty (or absent) before a re-run.`)
+    }
+    baseSha = sn.base.trim()
+    headSha = sn.head.trim()
+    fpOk = !!(st.fingerprint && st.fingerprint.rc === 0)
+    if (!fpOk) flag(`source fingerprint failed (rc ${st.fingerprint && st.fingerprint.rc}) — SOURCE_CHANGED cannot be checked for this review`)
+    if (sn.diffBytes === 0) flag(`the range diff ${base}..${headRef} is EMPTY under the include globs — reviewers see the snapshot only`)
+  } else {
+    prior = await loadPrior()
+    // Caller errors against the prior result — refused before any reviewer spawns.
+    const priorLabels = prior.reviewers.map(r => r.label)
+    const clash = reviewers.filter(r => priorLabels.includes(r.label)).map(r => r.label)
+    if (clash.length) refuseExtend(`new reviewer label(s) ${clash.join(', ')} collide with the prior result's reviewers — give the new runs new labels (and supersede the old ones if they are re-runs)`)
+    const unknown = supersedes.filter(l => !priorLabels.includes(l))
+    if (unknown.length) refuseExtend(`supersedes names ${unknown.join(', ')}, which the prior result has no reviewer for`)
+    // New items are judged by the panel that judged the prior ones, or the scores mix panels.
+    const priorPanel = [...new Set(prior.items.flatMap(it => it.adjudication.map(x => x.adjudicator)))].sort()
+    const panel = adjudicators.map(j => j.label).sort()
+    if (prior.items.length && priorPanel.join() !== panel.join()) {
+      refuseExtend(`the prior items were adjudicated by ${priorPanel.join(', ')}; new items must be judged by the same panel (got ${panel.join(', ')}) — pass the prior run's adjudicators`)
+    }
+    sn = { files: prior.files, extras: prior.extras, diffBytes: prior.diffBytes, bytes: Number.isInteger(prior.snapKB) ? prior.snapKB * 1024 : null, codexDenied: prior.codexDenied === true }
+    baseSha = prior.base
+    headSha = prior.head
+    fpOk = prior.fingerprintExists === true
+    if (!fpOk) flag(`${fpBefore} is missing — SOURCE_CHANGED cannot be checked for this extension`)
   }
-  const sn = st && st.snapshot
-  if (!(sn && sn.ok === true && isStr(sn.base) && SHA_RE.test(sn.base.trim()) && isStr(sn.head) && SHA_RE.test(sn.head.trim()))) {
-    throw new Error(`triage-compare (kind:"review"): the snapshot failed — no reviewer ran (${stErr || (sn && sn.error) || JSON.stringify(st).slice(0, 300)}). ` +
-      `review-stage.sh removes a failed snapshot itself; ${outDir} must be empty (or absent) before a re-run.`)
-  }
-  const baseSha = sn.base.trim()
-  const headSha = sn.head.trim()
-  const fpOk = !!(st.fingerprint && st.fingerprint.rc === 0)
-  if (!fpOk) flag(`source fingerprint failed (rc ${st.fingerprint && st.fingerprint.rc}) — SOURCE_CHANGED cannot be checked for this review`)
-  if (sn.diffBytes === 0) flag(`the range diff ${base}..${headRef} is EMPTY under the include globs — reviewers see the snapshot only`)
   const codexDenied = sn.codexDenied === true
   if (codexDenied) flag('the repo (or an extra) is off-limits to codex (.codex-deny / deny-list): codex reviewers and adjudicators are unavailable for this review')
   // ext-run.sh refuses an --input-dir over its size cap (default 200 MB): say so now,
@@ -633,9 +818,12 @@ async function runReview() {
     required: ['findings'],
   }
   // Ground truth, conventions and accepted deviations — verbatim, for every
-  // reviewer and adjudicator alike.
+  // reviewer and adjudicator alike, both vendors (so is the image-link note: codex's
+  // image viewer failed on the markdown's URL-encoded paths).
+  const IMAGE_NOTE = 'Image links in the markdown are URL-encoded (%5B = [, %5D = ], %20 = space, etc.): decode the path before opening the file.'
   const RULES = `--- Ground truth (in order of authority) ---\n${groundTruth}\n\n` +
-    'A summary or replacement text — a reviewer\'s, the change author\'s, or yours — is NEVER ground truth. Evidence must cite a ground-truth source in the snapshot: its path relative to the snapshot root (extras are under _extra/), and a page, line or item where it has one.\n\n' +
+    'A summary or replacement text — a reviewer\'s, the change author\'s, or yours — is NEVER ground truth. Evidence must cite a ground-truth source in the snapshot: its path relative to the snapshot root (extras are under _extra/), and a page, line or item where it has one.\n' +
+    `${IMAGE_NOTE}\n\n` +
     (conventions ? `--- Conventions to check ---\n${conventions}\n\n` : '') +
     (accepted ? `--- Accepted deviations (accepted by Alex): do not flag these unless you cite NEW ground-truth evidence ---\n${accepted}\n\n` : '')
   const REVIEW_TASK = 'You are one of several independent reviewers of the SAME change; the others get the same inputs, and you will not see their findings.\n' +
@@ -653,21 +841,42 @@ async function runReview() {
       readOnly(snap) +
       'Return findings = every finding, each once.'
   }
-  function codexHeader(c, dir) {
-    return `VENDOR=${c.vendor}\nMODE=read\nMODEL=${c.model}\nEFFORT=${c.effort}\nINPUT_DIR=${dir}\n` +
+  // Every codex spawn: TIMEOUT= for ext-run.sh's watchdog, and PROMPT_BYTES = the
+  // UTF-8 byte length of the prompt file the wrapper must write — the body after the
+  // marker line plus ONE final newline. The wrapper (an LLM) checks it with wc -c and
+  // refuses a prompt it did not carry verbatim (a paraphrased brief is a different
+  // review). The body itself never ends in a newline, so no relay shows a stray line.
+  function codexHeader(c, dir, timeout, promptBytes) {
+    return `VENDOR=${c.vendor}\nMODE=read\nMODEL=${c.model}\nEFFORT=${c.effort}\nINPUT_DIR=${dir}\nTIMEOUT=${timeout}\nPROMPT_BYTES=${promptBytes}\n` +
       'The data boundary has been checked by the orchestrator for this material.\n'
   }
-  const schemaLine = sch => 'Write this exact JSON Schema to a file and pass it to ext-run.sh as --schema (read mode enforces it; the answer is JSON matching it):\n' +
+  // The wrapper protocol travels IN the brief as well as in agents/triage-cross-reviewer.md:
+  // agent definitions appear to be cached when a session starts, so a wrapper spawned
+  // after `make sync` can still run its old definition — one that drops TIMEOUT and
+  // writes the prompt its own way. The two commands are the agent file's, verbatim
+  // (compare-scenarios checks that they match).
+  const PB_CHECK = 'P=<run dir>/prompt.txt; awk \'length($0) && !/^  / {x=1} END {exit x}\' "$P" && { sed \'s/^  //\' "$P" > "$P.u" && mv "$P.u" "$P"; }; [ -z "$(tail -c1 "$P")" ] || echo >> "$P"; wc -c < "$P" | tr -d \' \''
+  const RC_WAIT = 'for i in $(seq 1 100); do [ -s <run dir>/rc ] && break; sleep 5; done; cat <run dir>/rc 2>/dev/null || echo RUNNING'
+  const wrapperSteps = timeout => 'Wrapper steps for this run (they hold even if your standing instructions predate them):\n' +
+    '1. Make a private run directory with mktemp -d "<your scratchpad directory, else ${TMPDIR:-/tmp}>/cross.XXXXXX" and write its path out literally in every later command (shell variables do not persist between commands). ' +
+    'Put every file of this run in it, never at a fixed or shared path: other wrappers run at the same time.\n' +
+    '2. Write the text after the marker line at the end of this brief into <run dir>/prompt.txt VERBATIM (no summarizing, shortening or rewording), ending with a newline, then run exactly:\n' +
+    `   ${PB_CHECK}\n` +
+    '   If the number it prints is not PROMPT_BYTES, write the file once more and run it again; if it still differs, reply REFUSED: prompt not verbatim, and stop.\n' +
+    `3. Run ext-run.sh with --timeout ${timeout} (from the TIMEOUT line — the orchestrator's, not a flag of your own), its stdout to <run dir>/out and its stderr to <run dir>/err, followed by ; echo $? > <run dir>/rc — as ONE Bash call with timeout 600000. ` +
+    'If Bash moves it to the background, repeat this until it prints a number, and never reply before it does (a background command dies with your reply):\n' +
+    `   ${RC_WAIT}\n`
+  const codexPrompt = (c, timeout, who, pre, body) => codexHeader(c, snap, timeout, utf8Bytes(`${body}\n`)) + wrapperSteps(timeout) + pre +
+    `--- Brief for the external ${who}: all of what follows goes into the prompt file ---\n${body}`
+  const schemaLine = sch => 'Write this exact JSON Schema to <run dir>/schema.json and pass it to ext-run.sh as --schema (read mode enforces it; the answer is JSON matching it):\n' +
     `${JSON.stringify(sch)}\n\n`
   function codexReviewPrompt(c) {
-    return codexHeader(c, snap) +
-      `Pass exactly these inputs to ext-run.sh and nothing else: --input-dir ${snap} (from INPUT_DIR) and --input ${diffPath}\n` +
-      schemaLine(FINDINGS_SCHEMA) +
-      '--- Brief for the external reviewer: all of what follows goes into the prompt file ---\n' +
+    return codexPrompt(c, reviewerTimeout, 'reviewer',
+      `Pass exactly these inputs to ext-run.sh and nothing else: --input-dir ${snap} (from INPUT_DIR) and --input ${diffPath}\n` + schemaLine(FINDINGS_SCHEMA),
       REVIEW_TASK + RULES +
       `Your inputs are staged in your workspace: the snapshot directory "snap" (the reviewed files at commit ${headSha}, their context files, extras under snap/_extra/) and range.diff. ` +
       'Paths in your findings are relative to the snapshot root. Read only the staged files; never run git.\n' +
-      'Output ONLY one JSON object {"findings": [...]} matching the schema — no other text.'
+      'Output ONLY one JSON object {"findings": [...]} matching the schema — no other text.')
   }
   const cleanPath = f => String(f).trim().replace(/^\.\//, '').split(`${snap}/`).join('').replace(/^\/.*\/inputs\/snap\//, '')
   function cleanFindings(list) {
@@ -733,49 +942,91 @@ async function runReview() {
     if (x.status !== 'ok') log(`⚠ reviewer ${x.r.label} unavailable (${x.reason}) — reported, never scored as zero.`)
     else if (x.dropped) flag(`reviewer ${x.r.label}: ${x.dropped} malformed finding(s) dropped (missing file/line/severity/claim/evidence)`)
   }
-  // Anonymized reviewer ids R1..Rn, in a label-blind hash order. The map stays here.
-  const anonOrder = runs.slice().sort((x, y) => hashStr(`r:${x.r.label}`) - hashStr(`r:${y.r.label}`) || (x.r.label < y.r.label ? -1 : 1))
+  // EXTEND: the prior reviewer runs join as rows of their own — rescored over the
+  // combined items unless superseded (kept, status superseded, never scored; their
+  // findings stay in the items with provenance intact).
+  const supersededSet = new Set(supersedes)
+  const priorRows = prior ? prior.reviewers.map(p => ({
+    r: { label: p.label, vendor: p.vendor, level: p.level, model: p.model == null ? null : p.model, effort: p.effort == null ? null : p.effort },
+    status: supersededSet.has(p.label) || p.status === 'superseded' ? 'superseded' : p.status,
+    priorStatus: p.status, reason: p.reason == null ? null : p.reason, count: Number.isInteger(p.findings) ? p.findings : null,
+    tokens: p.tokens == null ? null : p.tokens, seconds: p.seconds == null ? null : p.seconds, prior: true,
+  })) : []
+  const rows = priorRows.concat(runs)
+  // Anonymized reviewer ids R1..Rn over every row, in a label-blind hash order. The map stays here.
+  const anonOrder = rows.slice().sort((x, y) => hashStr(`r:${x.r.label}`) - hashStr(`r:${y.r.label}`) || (x.r.label < y.r.label ? -1 : 1))
   anonOrder.forEach((x, i) => { x.rid = `R${i + 1}` })
+  const ridOfLabel = new Map(rows.map(x => [x.r.label, x.rid]))
+  const labelOfRid = new Map(rows.map(x => [x.rid, x.r.label]))
 
   // ─── (c) Merge duplicates: ONE deep agent, opaque finding ids ───────────────
   // Findings get opaque ids F1..Fm (sorted by location + a content hash, never by
-  // reviewer), so the merge agent sees neither labels nor reviewer ids.
+  // reviewer), so the merge agent sees neither labels nor reviewer ids. An extension
+  // shows the prior items too (ids, text — never verdicts or provenance): each new
+  // finding attaches to one of them or joins a new item.
   const flat = []
   for (const x of runs) if (x.status === 'ok') for (const f of x.findings) flat.push(Object.assign({ rid: x.rid }, f))
   flat.sort((x, y) => (x.file < y.file ? -1 : x.file > y.file ? 1 : 0) || x.line - y.line || hashStr(x.claim) - hashStr(y.claim))
   flat.forEach((f, i) => { f.fid = `F${i + 1}` })
   const byFid = new Map(flat.map(f => [f.fid, f]))
   const pub = f => ({ id: f.fid, file: f.file, line: f.line, severity: f.severity, category: f.category, claim: f.claim, evidence: f.evidence, suggestedFix: f.suggestedFix })
+  const pubItem = it => ({ id: it.id, file: it.file, line: it.line, severity: it.severity, category: it.category, claim: it.claim, evidence: it.evidence, suggestedFix: it.suggestedFix })
   const sevRank = s => SEVERITIES.length - SEVERITIES.indexOf(s)
   const topSev = list => list.map(f => f.severity).sort((x, y) => sevRank(y) - sevRank(x))[0]
+  // The prior items: ids, text, verdict and adjudication fixed; provenance from foundBy.
+  const priorItems = prior ? prior.items.map(p => Object.assign(pubItem(p), {
+    verdict: p.verdict, adjudication: p.adjudication, prov: [...new Set(p.foundBy.map(l => ridOfLabel.get(l)))].sort(),
+  })) : []
+  const priorById = new Map(priorItems.map(it => [it.id, it]))
+  // A cluster of findings -> a NEW item, with the merge agent's text where it gave one.
+  const groupOf = (members, it) => {
+    const fs = members.map(id => byFid.get(id))
+    return {
+      members, file: isStr(it.file) ? cleanPath(it.file) : fs[0].file, line: Number.isInteger(it.line) && it.line >= 0 ? it.line : fs[0].line,
+      severity: SEVERITIES.includes(it.severity) ? it.severity : topSev(fs), category: typeof it.category === 'string' ? it.category.trim() : fs[0].category,
+      claim: isStr(it.claim) ? it.claim.trim() : fs[0].claim, evidence: isStr(it.evidence) ? it.evidence.trim() : fs.map(f => f.evidence).join(' | '),
+      suggestedFix: typeof it.suggestedFix === 'string' ? it.suggestedFix.trim() : fs[0].suggestedFix,
+    }
+  }
+  const attached = new Map()   // extend: finding id -> the prior item it reports
   let groups = null
   let mergeFallback = false
-  if (flat.length > 1) {
+  if (prior ? flat.length > 0 && (priorItems.length > 0 || flat.length > 1) : flat.length > 1) {
     phase('Merge')
+    const fieldProps = {
+      file: { type: 'string' }, line: { type: 'integer' }, severity: { type: 'string', enum: SEVERITIES },
+      category: { type: 'string' }, claim: { type: 'string' }, evidence: { type: 'string' }, suggestedFix: { type: 'string' },
+    }
     const MERGE_SCHEMA = {
       type: 'object',
       properties: {
         items: {
           type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              members: { type: 'array', items: { type: 'string' } }, file: { type: 'string' }, line: { type: 'integer' }, severity: { type: 'string', enum: SEVERITIES },
-              category: { type: 'string' }, claim: { type: 'string' }, evidence: { type: 'string' }, suggestedFix: { type: 'string' },
-            },
-            required: ['members', 'file', 'line', 'severity', 'category', 'claim', 'evidence', 'suggestedFix'],
-          },
+          items: prior
+            ? { type: 'object', properties: Object.assign({ members: { type: 'array', items: { type: 'string' } }, existing: { type: 'string' } }, fieldProps), required: ['members', 'existing'] }
+            : { type: 'object', properties: Object.assign({ members: { type: 'array', items: { type: 'string' } } }, fieldProps),
+              required: ['members', 'file', 'line', 'severity', 'category', 'claim', 'evidence', 'suggestedFix'] },
         },
       },
       required: ['items'],
     }
-    const mergePrompt = 'Merge DUPLICATE review findings. Below are findings from several independent reviewers of one change (anonymous; ids are opaque).\n' +
-      'Cluster findings that report the SAME defect — the same location or the same underlying problem, however worded. Do not merge findings that are merely similar, or different defects in the same file. ' +
-      'Do not judge whether any finding is correct, and do not drop any: every input id goes into exactly one item (a finding with no duplicate is an item of its own).\n' +
-      'For each item return members = the ids it merges, file and line (of the clearest member), severity = the highest among its members, category, ' +
-      'claim = a faithful consolidation of the members\' claims (add nothing of your own), evidence = the members\' cited evidence combined, suggestedFix.\n' +
-      'Work only from the list below; do not read any file.\n\n' +
-      `${flat.map(f => JSON.stringify(pub(f))).join('\n')}`
+    const mergePrompt = prior
+      ? 'Merge NEW review findings into an EXISTING list of merged items. The EXISTING items (ids M…) were merged earlier from independent reviewers of one change; the NEW findings (ids F…) come from further independent reviewers of the same change (anonymous; ids are opaque).\n' +
+        'For each NEW finding: if it reports the SAME defect as an EXISTING item — the same location or the same underlying problem, however worded — attach it to that item. Otherwise it belongs to a new item: cluster NEW findings that report the same defect as each other into one new item. ' +
+        'Do not merge findings that are merely similar, or different defects in the same file.\n' +
+        'Do not judge whether any finding is correct, do not change any EXISTING item, and do not drop any NEW finding: every F id goes into exactly one entry.\n' +
+        'For each entry return members = its F ids and existing = the id of the EXISTING item they attach to, or "" for a new item. For a new item also return file and line (of the clearest member), severity = the highest among its members, category, ' +
+        'claim = a faithful consolidation of the members\' claims (add nothing of your own), evidence = the members\' cited evidence combined, suggestedFix.\n' +
+        'Work only from the lists below; do not read any file.\n\n' +
+        `--- EXISTING items (${priorItems.length}) ---\n${priorItems.map(it => JSON.stringify(pubItem(it))).join('\n')}\n\n` +
+        `--- NEW findings (${flat.length}) ---\n${flat.map(f => JSON.stringify(pub(f))).join('\n')}`
+      : 'Merge DUPLICATE review findings. Below are findings from several independent reviewers of one change (anonymous; ids are opaque).\n' +
+        'Cluster findings that report the SAME defect — the same location or the same underlying problem, however worded. Do not merge findings that are merely similar, or different defects in the same file. ' +
+        'Do not judge whether any finding is correct, and do not drop any: every input id goes into exactly one item (a finding with no duplicate is an item of its own).\n' +
+        'For each item return members = the ids it merges, file and line (of the clearest member), severity = the highest among its members, category, ' +
+        'claim = a faithful consolidation of the members\' claims (add nothing of your own), evidence = the members\' cited evidence combined, suggestedFix.\n' +
+        'Work only from the list below; do not read any file.\n\n' +
+        `${flat.map(f => JSON.stringify(pub(f))).join('\n')}`
     let mr = null
     for (let attempt = 1; attempt <= 2 && !(mr && Array.isArray(mr.items)); attempt++) {
       try {
@@ -787,36 +1038,51 @@ async function runReview() {
     if (mr && Array.isArray(mr.items)) {
       // The merge agent proposes clusters; membership is enforced HERE: unknown ids
       // are ignored, an id already placed stays in its first item, and a finding
-      // the agent left out becomes an item of its own.
+      // the agent left out becomes an item of its own. Only a real prior item id can
+      // be attached to.
       const placed = new Set()
       groups = []
       for (const it of mr.items) {
         const members = [...new Set(Array.isArray(it.members) ? it.members : [])].filter(id => byFid.has(id) && !placed.has(id))
         if (!members.length) continue
         members.forEach(id => placed.add(id))
-        const fs = members.map(id => byFid.get(id))
-        groups.push({
-          members, file: isStr(it.file) ? cleanPath(it.file) : fs[0].file, line: Number.isInteger(it.line) && it.line >= 0 ? it.line : fs[0].line,
-          severity: SEVERITIES.includes(it.severity) ? it.severity : topSev(fs), category: typeof it.category === 'string' ? it.category.trim() : fs[0].category,
-          claim: isStr(it.claim) ? it.claim.trim() : fs[0].claim, evidence: isStr(it.evidence) ? it.evidence.trim() : fs.map(f => f.evidence).join(' | '),
-          suggestedFix: typeof it.suggestedFix === 'string' ? it.suggestedFix.trim() : fs[0].suggestedFix,
-        })
+        const target = prior && isStr(it.existing) && priorById.has(it.existing.trim()) ? it.existing.trim() : null
+        if (target) {
+          members.forEach(id => attached.set(id, target))
+          continue
+        }
+        if (prior && isStr(it.existing)) flag(`the merge attached finding(s) to ${JSON.stringify(it.existing.trim().slice(0, 20))}, which is no prior item — kept as a new item`)
+        groups.push(groupOf(members, it))
       }
       const left = flat.filter(f => !placed.has(f.fid))
       if (left.length) flag(`the merge left ${left.length} finding(s) unplaced — each kept as an item of its own`)
       for (const f of left) groups.push(Object.assign({ members: [f.fid] }, pub(f)))
     } else {
       mergeFallback = true
-      flag('the merge agent returned nothing twice — every finding is its own item (duplicates NOT merged: recall is understated)')
+      flag(prior ? 'the merge agent returned nothing twice — every new finding is a new item of its own (none attached to a prior item; duplicates NOT merged: recall is understated)'
+        : 'the merge agent returned nothing twice — every finding is its own item (duplicates NOT merged: recall is understated)')
     }
   }
   if (!groups) groups = flat.map(f => Object.assign({ members: [f.fid] }, pub(f)))
   // Item ids in location order (never merge or reviewer order); provenance from members.
+  // An extension numbers its new items after the prior ones and never renumbers those.
   groups.sort((x, y) => (x.file < y.file ? -1 : x.file > y.file ? 1 : 0) || x.line - y.line || hashStr(x.claim) - hashStr(y.claim))
-  const items = groups.map((g, i) => ({
-    id: `M${i + 1}`, file: g.file, line: g.line, severity: g.severity, category: g.category, claim: g.claim, evidence: g.evidence, suggestedFix: g.suggestedFix,
+  const firstNew = 1 + priorItems.reduce((m, it) => Math.max(m, Number(it.id.slice(1))), 0)
+  const newItems = groups.map((g, i) => ({
+    id: `M${firstNew + i}`, file: g.file, line: g.line, severity: g.severity, category: g.category, claim: g.claim, evidence: g.evidence, suggestedFix: g.suggestedFix,
     prov: [...new Set(g.members.map(id => byFid.get(id).rid))].sort(),
   }))
+  // A new finding attached to a prior item adds its reviewer to that item's provenance
+  // and nothing else: the item's text, verdict and adjudication stay as they were.
+  for (const [fid, mid] of attached) {
+    const it = priorById.get(mid)
+    const rid = byFid.get(fid).rid
+    if (!it.prov.includes(rid)) it.prov = it.prov.concat(rid).sort()
+  }
+  const items = priorItems.concat(newItems)
+  const newIds = new Set(newItems.map(it => it.id))
+  // Only NEW items are adjudicated in an extension — an attached prior item keeps its verdict.
+  const toJudge = prior ? items.filter(it => newIds.has(it.id)) : items
 
   // ─── (d) Blind adjudication, in batches ──────────────────────────────────────
   // An adjudicator sees an item's location, severity, category, claim, evidence and
@@ -842,18 +1108,16 @@ async function runReview() {
     `Your ONLY input is the snapshot directory ${snap} (files at commit ${headSha}, context files, extras under ${snap}/_extra/). ` +
     'Read nothing else: do not read, list or search any other directory on this machine.\n' +
     readOnly(snap) + `\n--- Items (${batch.length}) ---\n${batch.map(blindItem).join('\n')}`
-  const adjCodexPrompt = (j, batch) => codexHeader(j, snap) +
-    `Pass exactly this input to ext-run.sh and nothing else: --input-dir ${snap} (from INPUT_DIR)\n` +
-    schemaLine(ADJ_SCHEMA) +
-    '--- Brief for the external adjudicator: all of what follows goes into the prompt file ---\n' +
+  const adjCodexPrompt = (j, batch) => codexPrompt(j, adjudicatorTimeout, 'adjudicator',
+    `Pass exactly this input to ext-run.sh and nothing else: --input-dir ${snap} (from INPUT_DIR)\n` + schemaLine(ADJ_SCHEMA),
     ADJ_TASK + RULES +
     `Your input is staged in your workspace: the snapshot directory "snap" (files at commit ${headSha}, context files, extras under snap/_extra/); paths are relative to it. Read only the staged files; never run git.\n` +
     `--- Items (${batch.length}) ---\n${batch.map(blindItem).join('\n')}\n` +
-    'Output ONLY one JSON object {"verdicts": [...]} matching the schema — no other text.'
+    'Output ONLY one JSON object {"verdicts": [...]} matching the schema — no other text.')
   const batches = []
-  for (let i = 0; i < items.length; i += batchSize) batches.push(items.slice(i, i + batchSize))
-  const verdictOf = new Map(items.map(it => [it.id, {}]))
-  if (items.length) {
+  for (let i = 0; i < toJudge.length; i += batchSize) batches.push(toJudge.slice(i, i + batchSize))
+  const verdictOf = new Map(toJudge.map(it => [it.id, {}]))
+  if (toJudge.length) {
     phase('Adjudicate')
     for (const j of adjudicators) {
       fable('adjudicator', j)
@@ -901,29 +1165,32 @@ async function runReview() {
     if (vs.every(v => v === 'not-real' || v === 'accepted-deviation')) return 'rejected'
     return 'disputed'
   }
-  const labelOfRid = new Map(runs.map(x => [x.rid, x.r.label]))
-  for (const it of items) {
+  for (const it of toJudge) {
     const m = verdictOf.get(it.id)
     it.adjudication = adjudicators.map(j => ({ adjudicator: j.label, vendor: j.vendor, verdict: m[j.label] ? m[j.label].verdict : null, evidence: m[j.label] ? m[j.label].evidence : null }))
     it.verdict = combine(it.adjudication.map(x => x.verdict))
-    it.foundBy = it.prov.map(rid => labelOfRid.get(rid)).sort()
   }
+  for (const it of items) it.foundBy = it.prov.map(rid => labelOfRid.get(rid)).sort()
 
   // ─── (e) Scores: only items the adjudicators agree on count ─────────────────
+  // Every reviewer that is not superseded — an extension's prior ones included — over
+  // the COMBINED items: a new real item lowers the recall of everyone who missed it.
   const isReal = it => it.verdict === 'real'
   const isJudged = it => isReal(it) || it.verdict === 'rejected'
   const allReal = items.filter(isReal).length
   const ratio = (n, d) => (d ? n / d : null)
-  const scored = runs.map(x => {
+  const scored = rows.map(x => {
     const row = { label: x.r.label, vendor: x.r.vendor, level: x.r.level, model: x.r.model, effort: x.r.effort, status: x.status }
+    const count = x.prior ? x.count : x.findings.length
     if (x.status !== 'ok') {
-      return Object.assign(row, { precision: null, recall: null, findings: null, real: null, rejected: null, disputed: null, tokens: x.tokens, seconds: x.seconds, reason: x.reason })
+      return Object.assign(row, { precision: null, recall: null, findings: x.status === 'superseded' ? count : null, real: null, rejected: null, disputed: null, tokens: x.tokens, seconds: x.seconds, reason: x.reason },
+        x.status === 'superseded' ? { priorStatus: x.priorStatus } : {})
     }
     const mine = items.filter(it => it.prov.includes(x.rid))
     const real = mine.filter(isReal).length
     return Object.assign(row, {
       precision: ratio(real, mine.filter(isJudged).length), recall: ratio(real, allReal),
-      findings: x.findings.length, real, rejected: mine.filter(it => it.verdict === 'rejected').length, disputed: mine.filter(it => it.verdict === 'disputed').length,
+      findings: count, real, rejected: mine.filter(it => it.verdict === 'rejected').length, disputed: mine.filter(it => it.verdict === 'disputed').length,
       tokens: x.tokens, seconds: x.seconds,
     })
   })
@@ -951,13 +1218,20 @@ async function runReview() {
   const outItems = items.map(it => ({
     id: it.id, file: it.file, line: it.line, severity: it.severity, category: it.category, claim: it.claim, evidence: it.evidence, suggestedFix: it.suggestedFix,
     verdict: it.verdict, adjudication: it.adjudication, foundBy: it.foundBy,
-  }))
+  })).sort((x, y) => Number(x.id.slice(1)) - Number(y.id.slice(1)))
   const disputed = outItems.filter(it => it.verdict === 'disputed').map(it => it.id)
+  const superseded = scored.filter(x => x.status === 'superseded').map(x => x.label)
+  const unavailable = scored.filter(x => x.status === 'unavailable').length
+  const allFlags = (prior ? (prior.flags || []).map(f => `prior run: ${f}`) : []).concat(flags)
   const f3 = v => (v == null ? '—' : String(Math.round(v * 1000) / 1000))
   const md = [`# Review bake-off — ${a.repoName.trim()} ${baseSha.slice(0, 12)}..${headSha.slice(0, 12)}`, '',
-    `Snapshot: ${sn.files == null ? '?' : sn.files} file(s)${sn.extras ? ` + ${sn.extras} extra(s)` : ''}, range diff ${sn.diffBytes == null ? '?' : sn.diffBytes} bytes. Reviewers: ${scored.length} (${scored.filter(x => x.status !== 'ok').length} unavailable). ` +
+    `Snapshot: ${sn.files == null ? '?' : sn.files} file(s)${sn.extras ? ` + ${sn.extras} extra(s)` : ''}, range diff ${sn.diffBytes == null ? '?' : sn.diffBytes} bytes. Reviewers: ${scored.length} (${unavailable} unavailable${superseded.length ? `, ${superseded.length} superseded` : ''}). ` +
     `Items: ${outItems.length} merged — ${outItems.filter(isReal).length} real, ${outItems.filter(it => it.verdict === 'rejected').length} rejected, ${disputed.length} disputed.`]
-  if (flags.length) md.push('', ...flags.map(f => `- ⚠ ${f}`))
+  if (prior) {
+    md.push('', `Extended with ${reviewers.map(r => r.label).join(', ')} (from ${extendPath}): ${flat.length} new finding(s) — ${attached.size} attached to prior items (not re-adjudicated), ` +
+      `${newItems.length} new item(s)${newItems.length ? ` (${newItems.map(it => it.id).join(', ')})` : ''}. Superseded: ${superseded.length ? superseded.join(', ') : 'none'}.`)
+  }
+  if (allFlags.length) md.push('', ...allFlags.map(f => `- ⚠ ${f}`))
   const real = outItems.filter(isReal)
   md.push('', `## Real findings (${real.length})`)
   const files = [...new Set(real.map(it => it.file))]
@@ -983,9 +1257,10 @@ async function runReview() {
     '|---|---|---|---|---|---|---|---|---|---|---|---|---|',
     ...scored.map(x => `| ${x.label} | ${x.vendor} | ${x.model || 'default'} | ${x.effort || 'default'} | ${x.status} | ${x.findings == null ? '—' : x.findings} | ${x.real == null ? '—' : x.real} | ${x.rejected == null ? '—' : x.rejected} | ${x.disputed == null ? '—' : x.disputed} | ${f3(x.precision)} | ${f3(x.recall)} | ${x.tokens == null ? '—' : x.tokens} | ${x.seconds == null ? '—' : x.seconds} |`),
     '', 'Nothing was applied. Ingest the scores (after resolving the disputed ids) with scripts/parity-report.sh ingest-review.')
-  log(`Review bake-off at ${headSha.slice(0, 12)}: ${outItems.length} item(s) — ${real.length} real, ${rej.length} rejected, ${disp.length} disputed; ${scored.filter(x => x.status !== 'ok').length} reviewer(s) unavailable.`)
-  return {
+  log(`Review bake-off at ${headSha.slice(0, 12)}: ${outItems.length} item(s) — ${real.length} real, ${rej.length} rejected, ${disp.length} disputed; ${unavailable} reviewer(s) unavailable` +
+    (prior ? `; extended from ${extendPath} with ${newItems.length} new item(s), ${superseded.length} superseded.` : '.'))
+  return Object.assign({
     kind: 'review', repoName: a.repoName.trim(), base: baseSha, head: headSha, outDir,
-    reviewers: scored, items: outItems, disputed, sourceChanged, mergeFallback, flags, markdown: md.join('\n'),
-  }
+    reviewers: scored, items: outItems, disputed, sourceChanged, mergeFallback: mergeFallback || !!(prior && prior.mergeFallback), flags: allFlags, markdown: md.join('\n'),
+  }, prior ? { extendedFrom: extendPath, newItems: newItems.map(it => it.id), superseded } : {})
 }
