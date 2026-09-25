@@ -73,10 +73,15 @@
 #              exit 0 when ok, 1 when not.
 # fingerprint  SOURCE-REPO LEAK GUARD (triage-parity runs it before a task's
 #              candidates and after grading). A git source prints
-#              {"id","source":"git","name":<repo dir name>,"head":<HEAD sha>,
-#               "tree":<hash of `status --porcelain=v1 -uall` + the content of
-#               every modified/untracked non-ignored file>}; a generator source
-#              prints {"id","source":"generator"} (nothing to guard). Read-only
+#              {"id","source":"git","guarded":true,"name":<repo dir name>,
+#               "head":<HEAD sha>, "tree":<hash of `status --porcelain=v1 -uall`
+#               + the content of every modified/untracked non-ignored file>,
+#               "ignored":<hash of the IGNORED files: their count + size/mtime of
+#               the first PARITY_FP_IGNORED_CAP (5000), shallowest first>,
+#               "refs":<hash of refs/heads, refs/tags, refs/stash, the repo
+#               config and non-sample hooks>}; a generator source prints
+#              {"id","source":"generator","guarded":false} (no source repo: the
+#              task is UNGUARDED, and says so). Read-only
 #              (--no-optional-locks: not even the index is refreshed). A missing
 #              or non-git source.repo => exit 1; clip-creator => exit 3.
 # score-review deterministic: key = [{file,line,id,desc}] (or {"seeds":[...]}),
@@ -483,13 +488,58 @@ source_tree() {
     done
   } | git -C "$top" hash-object --stdin
 }
+# stat_lines — "<size> <mtime> <path>" per NUL-separated path on stdin (relative
+# to the cwd): BSD stat on macOS, GNU stat elsewhere; mtime with sub-second
+# precision where the platform gives it.
+stat_lines() {
+  if stat --version >/dev/null 2>&1; then xargs -0 stat -c '%s %y %n' 2>/dev/null
+  else xargs -0 stat -f '%z %Fm %N' 2>/dev/null
+  fi
+}
+# ignored_tree TOP — one hash over TOP's IGNORED files (the cache-refresh class: a
+# candidate or a grader regenerating a gitignored cache in the real repo): their
+# count, plus size + mtime (not content: a venv is large) of the first
+# PARITY_FP_IGNORED_CAP (default 5000) in shallow-first order, so small top-level
+# caches are always covered and a huge deep tree (.venv, node_modules) only
+# shifts the count. .DS_Store (Finder) is left out.
+ignored_tree() {
+  local top="$1" cap="${PARITY_FP_IGNORED_CAP:-5000}" list
+  case "$cap" in ''|*[!0-9]*) die "PARITY_FP_IGNORED_CAP must be a whole number" 2 ;; esac
+  list=$(git -C "$top" --no-optional-locks ls-files -o -i --exclude-standard) || return 1
+  list=$(printf '%s\n' "$list" | grep -v -E -e '^$' -e '(^|/)\.DS_Store$' | awk -F/ '{ print NF "\t" $0 }' | sort -t "$(printf '\t')" -k1,1n -k2 | cut -f2-)
+  { printf 'ignored %s\n' "$(printf '%s\n' "$list" | grep -c .)"
+    [ -z "$list" ] || ( cd "$top" && printf '%s\n' "$list" | head -n "$cap" | tr '\n' '\0' | stat_lines )
+  } | git -C "$top" hash-object --stdin
+}
+# refs_tree TOP — one hash over TOP's local refs (branches, tags, the stash), its
+# repo config and its hooks (every non-.sample file): what a stray git command
+# can change without touching HEAD or the work tree. Remote-tracking refs are
+# left out (a background fetch is not the candidate's doing).
+refs_tree() {
+  local top="$1" cfg hooks
+  cfg=$(cd "$top" && git rev-parse --git-path config 2>/dev/null) || cfg=""
+  hooks=$(cd "$top" && git rev-parse --git-path hooks 2>/dev/null) || hooks=""
+  case "$cfg" in ""|/*) ;; *) cfg="$top/$cfg" ;; esac
+  case "$hooks" in ""|/*) ;; *) hooks="$top/$hooks" ;; esac
+  { git -C "$top" --no-optional-locks for-each-ref --format='%(objectname) %(refname)' refs/heads refs/tags refs/stash || return 1
+    if [ -n "$cfg" ] && [ -f "$cfg" ]; then printf 'config %s\n' "$(git hash-object --no-filters -- "$cfg")"; fi
+    if [ -n "$hooks" ] && [ -d "$hooks" ]; then
+      for h in "$hooks"/*; do
+        [ -f "$h" ] || continue
+        case "$h" in *.sample) continue ;; esac
+        printf 'hook %s %s\n' "$(git hash-object --no-filters -- "$h")" "$(basename "$h")"
+      done
+    fi
+  } | git -C "$top" hash-object --stdin
+}
 do_fingerprint() {
   [ -n "$TASK" ] || usage "fingerprint needs --task"
-  local tj id src top head tree
+  local tj id src top head tree ign refs
   tj=$(validate_task "$TASK") || die "invalid task: $TASK" 2
   id=$(printf '%s' "$tj" | jq -r .id)
   if [ "$(printf '%s' "$tj" | jq -r .source.type)" != git ]; then
-    jq -nc --arg id "$id" '{id: $id, source: "generator"}'
+    # Nothing to guard: say so, so a report can mark the task unguarded.
+    jq -nc --arg id "$id" '{id: $id, source: "generator", guarded: false}'
     return 0
   fi
   src=$(printf '%s' "$tj" | jq -r .source.repo)
@@ -500,9 +550,11 @@ do_fingerprint() {
   has_hard_deny "$top" && die "REFUSED: source $top is under a hard-denied repo ($HARD_DENY_REPOS)" 3
   head=$(git -C "$top" --no-optional-locks rev-parse --verify --quiet HEAD) || head=""
   tree=$(source_tree "$top") || die "could not read the status of $top"
-  [ -n "$tree" ] || die "could not fingerprint $top"
-  jq -nc --arg id "$id" --arg name "$(basename "$top")" --arg head "$head" --arg tree "$tree" \
-    '{id: $id, source: "git", name: $name, head: $head, tree: $tree}'
+  ign=$(ignored_tree "$top") || die "could not list the ignored files of $top"
+  refs=$(refs_tree "$top") || die "could not read the refs of $top"
+  [ -n "$tree" ] && [ -n "$ign" ] && [ -n "$refs" ] || die "could not fingerprint $top"
+  jq -nc --arg id "$id" --arg name "$(basename "$top")" --arg head "$head" --arg tree "$tree" --arg ign "$ign" --arg refs "$refs" \
+    '{id: $id, source: "git", guarded: true, name: $name, head: $head, tree: $tree, ignored: $ign, refs: $refs}'
 }
 
 # ---------------------------------------------------------------------------

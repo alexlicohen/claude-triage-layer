@@ -86,7 +86,14 @@ done
 # the tiers.json-derived subagent default and its ownership marker, jq failures and
 # settings shape, .driftignore normalization (install + drift), tiers-sync's --root
 # and unclosed-frontmatter guards, drift's settings-migration warning and file list.
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149"
+# 110-129 cover parity ledger integrity (Wave 16B): per-observation dedupe, the
+# run-id collision refusal, UTC offsets, the one ledger lock and its stale takeover,
+# backfill through a symlink, current-id challengers only, tuning.rejected, reps
+# collapsed per (run, task), parity-cost skipping a corrupt line, review revisions
+# (latest only, superseded status, the revision append), modelFrom through
+# ingest-parity and triage-parity, the ignored/refs source fingerprint and its
+# guard, and triage-tiers.sh's aliasHistory and challengerMix-sum checks.
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -139,6 +146,11 @@ mut_file() {
     29) echo "workflows/triage-exec.js" ;;
     75|76|77|78|79|80|81|85|86) echo "workflows/triage-exec.js" ;;
     82|83|84|87|88|89|90) echo "scripts/parity-report.sh" ;;
+    110|111|112|113|114|115|116|117|118|120|121|122|123) echo "scripts/parity-report.sh" ;;
+    119) echo "scripts/parity-cost.sh" ;;
+    124|127) echo "workflows/triage-parity.js" ;;
+    125|126) echo "scripts/parity-suite.sh" ;;
+    128|129) echo "scripts/triage-tiers.sh" ;;
     31) echo "workflows/triage-compare.js" ;;
     32) echo "scripts/patch-check.sh" ;;
     33) echo "install.sh" ;;
@@ -300,6 +312,26 @@ mut_desc() {
     148) echo "uninstall.sh: scripts/parity-report.sh dropped from the removal list (a file left behind)" ;;
     149) echo "drift.sh: scripts/triage-stats.sh dropped from the checked list (an installed file drift never sees)" ;;
     74) echo "triage-compare.js (review): a codex reviewer/adjudicator is spawned without TIMEOUT (ext-run's 5m read default kills a large review)" ;;
+    110) echo "parity-report.sh: the per-observation dedupe is dropped (a same-content re-ingest appends every line again: double counts, no partial recovery)" ;;
+    111) echo "parity-report.sh: a run id already in the ledger with DIFFERENT content is silently skipped instead of refused" ;;
+    112) echo "parity-report.sh: utc ignores the UTC offset (a -05:00 ts is stored at the local wall time; aliases resolve on the wrong date)" ;;
+    113) echo "parity-report.sh: the ledger lock is never taken (a held lock blocks nothing; check + append race)" ;;
+    114) echo "parity-report.sh: a stale lock (its pid gone) is never taken over (every writer waits out its tries and fails)" ;;
+    115) echo "parity-report.sh: backfill-modelid renames over the symlink path, replacing a symlinked ledger with a regular file" ;;
+    116) echo "parity-report.sh: superseded / unconfigured model ids are challengers again (a proposal back to claude-opus-5)" ;;
+    117) echo "parity-report.sh: tuning.rejected is ignored (a rejected challenger is proposed, pinning its level to explore)" ;;
+    118) echo "parity-report.sh: reps are counted as independent trials (no collapse per (run, task))" ;;
+    119) echo "parity-cost.sh: a corrupt transcript line is no longer skipped and counted" ;;
+    120) echo "parity-report.sh: every review revision is counted, not only the latest of each run" ;;
+    121) echo "parity-report.sh: ingest-review records a superseded reviewer as unavailable" ;;
+    122) echo "parity-report.sh: a --resolved or extended review re-ingest gets no new revision (refused as a collision)" ;;
+    123) echo "parity-report.sh: ingest-parity drops modelFrom (a runner-reported model is ledgered pinned, not observed)" ;;
+    124) echo "triage-parity.js: build rows drop modelFrom (observed models reach the ledger as pinned)" ;;
+    125) echo "parity-suite.sh: gitignored files are counted but not stat-ed (a refreshed cache file goes unseen)" ;;
+    126) echo "parity-suite.sh: refs/heads, tags and the stash are left out of the refs hash" ;;
+    127) echo "triage-parity.js: sourceGuard compares head and tree only (ignored-file and refs changes never void a task)" ;;
+    128) echo "triage-tiers.sh: --bakeoff-json no longer validates aliasHistory (ALIAS_ERRORS not evaluated)" ;;
+    129) echo "triage-tiers.sh: the challengerMix shares-sum-to-1 check is dropped" ;;
     *) echo "" ;;
   esac
 }
@@ -322,6 +354,9 @@ mut_suite() {
     41|42|46|64|65) echo "parity" ;;
     44|45) echo "paritysuite" ;;
     43|52|53|54|82|83|84|87|88|89|90) echo "parityreport" ;;
+    110|111|112|113|114|115|116|117|118|120|121|122|123|128|129) echo "parityreport" ;;
+    119|125|126) echo "paritysuite" ;;
+    124|127) echo "parity" ;;
     67) echo "reviewstage" ;;
     *) echo "" ;;
   esac
@@ -1173,6 +1208,146 @@ MUT136
     149)
       mut_delete_block "$target" 'check_file "scripts/triage-stats.sh"' 1
       ;;
+    110)
+      # parity-report.sh COMMIT: a same-content re-ingest appends all its lines.
+      cat > "$rep" <<'MUT110'
+      | $new as $miss # MUTATED: dedupe dropped
+MUT110
+      mut_replace_block "$target" '      | [$new[] | select(okey as $k | any($have[]; . == $k) | not)] as $miss' 1 "$rep"
+      ;;
+    111)
+      # parity-report.sh COMMIT: a run-id collision is skipped, not refused.
+      cat > "$rep" <<'MUT111'
+  else {action: "skip", lines: [], reason: "collision"} # MUTATED: collision skipped
+MUT111
+      mut_replace_block "$target" '  else {action: "refuse", lines: []' 1 "$rep"
+      ;;
+    112)
+      # parity-report.sh utc: the offset is dropped.
+      cat > "$rep" <<'MUT112'
+      | 0 as $off # MUTATED: UTC offset ignored
+MUT112
+      mut_replace_block "$target" '      | (if $c.sg == null then 0 else' 1 "$rep"
+      ;;
+    113)
+      # parity-report.sh lock_ledger: never waits for, nor takes, the lock dir.
+      cat > "$rep" <<'MUT113'
+  while false; do # MUTATED: lock not taken
+MUT113
+      mut_replace_block "$target" '  while ! mkdir "$lock" 2>/dev/null; do' 1 "$rep"
+      ;;
+    114)
+      # parity-report.sh lock_ledger: a dead holder's lock is waited on like a live one.
+      cat > "$rep" <<'MUT114'
+    if false; then # MUTATED: stale lock never taken over
+MUT114
+      mut_replace_block "$target" '    if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then' 1 "$rep"
+      ;;
+    115)
+      # parity-report.sh backfill: the rename goes over the (symlink) path given.
+      cat > "$rep" <<'MUT115'
+    cp -p "$LEDGER" "$LEDGER.bf.$$" && cat "$TMP/new" > "$LEDGER.bf.$$" && mv "$LEDGER.bf.$$" "$LEDGER" || # MUTATED: symlink clobbered
+MUT115
+      mut_replace_block "$target" '    cp -p "$REAL_LEDGER" "$REAL_LEDGER.backfill.$$"' 1 "$rep"
+      ;;
+    116)
+      # parity-report.sh decisions: every other group is a challenger again.
+      cat > "$rep" <<'MUT116'
+    | . # MUTATED: superseded versions are challengers
+MUT116
+      mut_replace_block "$target" '    | select(. as $g | any($current[]; .vendor == $g.vendor and .modelId == $g.modelId))' 1 "$rep"
+      ;;
+    117)
+      # parity-report.sh decisions: tuning.rejected never turns a propose into rejected.
+      cat > "$rep" <<'MUT117'
+    | if false # MUTATED: tuning.rejected ignored
+MUT117
+      mut_replace_block "$target" '    | if .verdict == "propose" and $r != null' 1 "$rep"
+      ;;
+    118)
+      # parity-report.sh rows: every graded row is its own outcome.
+      cat > "$rep" <<'MUT118'
+      unit: "line:\($li)|\(.label)"} # MUTATED: reps counted as independent
+MUT118
+      mut_replace_block "$target" '      unit: (if $l.run == null' 3 "$rep"
+      ;;
+    119)
+      # parity-cost.sh: fromjson without ?, so a corrupt line is an error, not a skip.
+      cat > "$rep" <<'MUT119'
+    'select(test("\\S")) | [fromjson] as $o # MUTATED: corrupt line not skipped
+MUT119
+      mut_replace_block "$target" "    'select(test(\"\\\\S\")) | [fromjson?] as \$o" 1 "$rep"
+      ;;
+    120)
+      # parity-report.sh reviews: all revisions of a run count.
+      cat > "$rep" <<'MUT120'
+| $rvAll as $rv # MUTATED: every revision counted
+MUT120
+      mut_replace_block "$target" '| ([$rvi[] | select(.run == null)]' 1 "$rep"
+      ;;
+    121)
+      # parity-report.sh ingest-review: superseded collapses into unavailable.
+      cat > "$rep" <<'MUT121'
+           status: (if $r.status == "ok" then "ok" else "unavailable" end), # MUTATED: superseded recorded as unavailable
+MUT121
+      mut_replace_block "$target" '           status: (if $r.status == "ok" or $r.status == "superseded"' 1 "$rep"
+      ;;
+    122)
+      # parity-report.sh COMMIT: the review revision branch never fires.
+      cat > "$rep" <<'MUT122'
+  elif false then # MUTATED: no review revisions
+MUT122
+      mut_replace_block "$target" '  elif $mode == "review" and $revisable then' 1 "$rep"
+      ;;
+    123)
+      # parity-report.sh ingest-parity: modelFrom is not forwarded to cand().
+      cat > "$rep" <<'MUT123'
+        model: ($row.model // $rk.model), modelFrom: null, # MUTATED: ingest-parity modelFrom dropped
+MUT123
+      mut_replace_block "$target" '        model: ($row.model // $rk.model), modelFrom: (if $row.model' 1 "$rep"
+      ;;
+    124)
+      # triage-parity.js buildTask: rows carry no modelFrom.
+      cat > "$rep" <<'MUT124'
+      modelFrom: null }) // MUTATED: row modelFrom dropped
+MUT124
+      mut_replace_block "$target" "      modelFrom: g.model ? (g.modelFrom || null) : (x.c.model ? 'candidate' : null) })" 1 "$rep"
+      ;;
+    125)
+      # parity-suite.sh ignored_tree: only the count is hashed.
+      cat > "$rep" <<'MUT125'
+    : # MUTATED: ignored files not stat-ed
+MUT125
+      mut_replace_block "$target" '    [ -z "$list" ] || ( cd "$top"' 1 "$rep"
+      ;;
+    126)
+      # parity-suite.sh refs_tree: branches, tags and the stash are not listed.
+      cat > "$rep" <<'MUT126'
+  { : # MUTATED: refs not hashed
+MUT126
+      mut_replace_block "$target" '  { git -C "$top" --no-optional-locks for-each-ref' 1 "$rep"
+      ;;
+    127)
+      # triage-parity.js sourceGuard: ignored/refs differences are not named (nor acted on).
+      cat > "$rep" <<'MUT127'
+    null].filter(Boolean).join(', ') : null // MUTATED: ignored/refs not compared
+MUT127
+      mut_replace_block "$target" "    after.ignored !== before.ignored ? 'ignored files changed'" 1 "$rep"
+      ;;
+    128)
+      # triage-tiers.sh --bakeoff-json: ALIAS_ERRORS is not evaluated.
+      cat > "$rep" <<'MUT128'
+  ERRS=$(jq -r "$TUNING_ERRORS" "$TIERS") || { # MUTATED: aliasHistory not validated
+MUT128
+      mut_replace_block "$target" '  ERRS=$(jq -r "$TUNING_ERRORS, ($ALIAS_ERRORS)" "$TIERS") || {' 1 "$rep"
+      ;;
+    129)
+      # triage-tiers.sh TUNING_ERRORS: the shares may sum to anything.
+      cat > "$rep" <<'MUT129'
+           | empty) # MUTATED: mix-sum check dropped
+MUT129
+      mut_replace_block "$target" '           | if ($sum - 1 | fabs) < 1e-9 then empty' 1 "$rep"
+      ;;
     *)
       return 1
       ;;
@@ -1293,6 +1468,26 @@ verify_mutation() {
     147) grep -qF 'MUTATED: settings status not checked' "$target" && ! grep -qF -- '--settings-status 2>&1' "$target" ;;
     148) ! grep -qF 'parity-cost.sh parity-report.sh' "$target" ;;
     149) ! grep -qF 'check_file "scripts/triage-stats.sh"' "$target" ;;
+    110) grep -qF 'MUTATED: dedupe dropped' "$target" && ! grep -qF 'select(okey as $k | any($have[]; . == $k) | not)] as $miss' "$target" ;;
+    111) grep -qF 'MUTATED: collision skipped' "$target" && ! grep -qF 'else {action: "refuse", lines: []' "$target" ;;
+    112) grep -qF 'MUTATED: UTC offset ignored' "$target" && ! grep -qF '(if $c.sg == null then 0 else' "$target" ;;
+    113) grep -qF 'MUTATED: lock not taken' "$target" && ! grep -qF 'while ! mkdir "$lock" 2>/dev/null; do' "$target" ;;
+    114) grep -qF 'MUTATED: stale lock never taken over' "$target" && ! grep -qF 'if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then' "$target" ;;
+    115) grep -qF 'MUTATED: symlink clobbered' "$target" && ! grep -qF 'cp -p "$REAL_LEDGER" "$REAL_LEDGER.backfill.$$"' "$target" ;;
+    116) grep -qF 'MUTATED: superseded versions are challengers' "$target" && ! grep -qF 'any($current[]; .vendor == $g.vendor and .modelId == $g.modelId))' "$target" ;;
+    117) grep -qF 'MUTATED: tuning.rejected ignored' "$target" && ! grep -qF 'if .verdict == "propose" and $r != null' "$target" ;;
+    118) grep -qF 'MUTATED: reps counted as independent' "$target" && ! grep -qF 'unit: (if $l.run == null' "$target" ;;
+    119) grep -qF 'MUTATED: corrupt line not skipped' "$target" && ! grep -qF '[fromjson?] as $o' "$target" ;;
+    120) grep -qF 'MUTATED: every revision counted' "$target" && ! grep -qF '| ([$rvi[] | select(.run == null)]' "$target" ;;
+    121) grep -qF 'MUTATED: superseded recorded as unavailable' "$target" && ! grep -qF 'if $r.status == "ok" or $r.status == "superseded"' "$target" ;;
+    122) grep -qF 'MUTATED: no review revisions' "$target" && ! grep -qF 'elif $mode == "review" and $revisable then' "$target" ;;
+    123) grep -qF 'MUTATED: ingest-parity modelFrom dropped' "$target" && ! grep -qF 'modelFrom: (if $row.model != null then $row.modelFrom else null end),' "$target" ;;
+    124) grep -qF 'MUTATED: row modelFrom dropped' "$target" && ! grep -qF "modelFrom: g.model ? (g.modelFrom || null)" "$target" ;;
+    125) grep -qF 'MUTATED: ignored files not stat-ed' "$target" && ! grep -qF 'head -n "$cap" | tr' "$target" ;;
+    126) grep -qF 'MUTATED: refs not hashed' "$target" && ! grep -qF "for-each-ref --format='%(objectname) %(refname)' refs/heads refs/tags refs/stash" "$target" ;;
+    127) grep -qF 'MUTATED: ignored/refs not compared' "$target" && ! grep -qF "after.ignored !== before.ignored ? 'ignored files changed'" "$target" ;;
+    128) grep -qF 'MUTATED: aliasHistory not validated' "$target" && ! grep -qF '"$TUNING_ERRORS, ($ALIAS_ERRORS)"' "$target" ;;
+    129) grep -qF 'MUTATED: mix-sum check dropped' "$target" && ! grep -qF '| if ($sum - 1 | fabs) < 1e-9 then empty' "$target" ;;
     *) return 1 ;;
   esac
 }

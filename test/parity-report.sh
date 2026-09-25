@@ -37,6 +37,9 @@ trap 'rm -rf "$T"' EXIT
 export HOME="$T/home"
 mkdir -p "$HOME"
 unset TRIAGE_TIERS
+# The alias-resolution date is pinned (MV6b/LI13 depend on it); LI13 varies it.
+export PARITY_TODAY=2026-09-25
+unset PARITY_LOCK_TRIES
 
 OUT=""; ERR=""; RC=0
 chk() {
@@ -64,13 +67,13 @@ cat > "$T/compare.json" <<'EOF'
   {"label":"agy-pro","vendor":"agy","level":"builder","model":null,"effort":null,"status":"unavailable","applies":null,"rc":null,
    "diffstat":null,"patch":null,"outTokens":null,"totalTokens":null,"seconds":null,"tail":"UNAVAILABLE SECRET"}]}
 EOF
-run_pr ingest-compare --tiers "$TIERS" --result "$T/compare.json" --repo-name myrepo --level builder --source inline \
+run_pr ingest-compare --tiers "$TIERS" --result "$T/compare.json" --repo-name myrepo --level builder --source inline --run cmp-r1 \
   --task sub-1 --applied claude-builder --ts 2026-09-24T10:00:00Z
 L1=$(head -n 1 "$DEFAULT_LEDGER" 2>/dev/null)
 chk "R1 ingest-compare appends ONE line to the tiers file's tuning.ledger (~ = HOME) and says so" \
   '[ "$RC" -eq 0 ] && [ "$(nlines "$DEFAULT_LEDGER")" = 1 ] && [ "$(j .ledger)" = "$DEFAULT_LEDGER" ] && [ "$(j .graded)" = 2 ]'
 chk "R1b the line has exactly the schema keys, with the passed ts/source/repoName/level/task/applied" \
-  '[ "$(printf "%s" "$L1" | jq -c "keys")" = "[\"applied\",\"candidates\",\"level\",\"repoName\",\"run\",\"source\",\"task\",\"ts\",\"v\"]" ] &&
+  '[ "$(printf "%s" "$L1" | jq -c "keys")" = "[\"applied\",\"candidates\",\"level\",\"repoName\",\"run\",\"runHash\",\"source\",\"task\",\"ts\",\"v\"]" ] &&
    [ "$(printf "%s" "$L1" | jq -r "[.v,.ts,.source,.repoName,.level,.task,.applied] | map(tostring) | join(\" \")")" = "1 2026-09-24T10:00:00Z inline myrepo builder sub-1 claude-builder" ]'
 chk "R1c each candidate has exactly label/vendor/model/effort/status/totalTokens/seconds + modelId/modelIdSource" \
   '[ "$(printf "%s" "$L1" | jq -c "[.candidates[] | keys] | unique")" = "[[\"effort\",\"label\",\"model\",\"modelId\",\"modelIdSource\",\"seconds\",\"status\",\"totalTokens\",\"vendor\"]]" ]'
@@ -84,18 +87,18 @@ chk "R1f no target-repo content: no patch path, diffstat, tail or brief text rea
 LEDGER="$T/l-refuse.jsonl"
 for bad in "--repo-name /work/SECRETREPO" "--repo-name a/b" "--task a/b/c.py" "--source nightly" "--level expert" "--applied nobody" "--ts yesterday"; do
   # shellcheck disable=SC2086  # $bad is deliberately split into flag + value
-  run_pr ingest-compare --tiers "$TIERS" --ledger "$LEDGER" --result "$T/compare.json" --repo-name myrepo --level builder --source inline $bad
+  run_pr ingest-compare --tiers "$TIERS" --ledger "$LEDGER" --result "$T/compare.json" --repo-name myrepo --level builder --source inline --run cmp-r2 $bad
   chk "R2 ingest-compare refuses [$bad] with exit 2 and writes nothing" '[ "$RC" -eq 2 ] && [ ! -e "$LEDGER" ]'
 done
-run_pr ingest-compare --tiers "$TIERS" --ledger "$LEDGER" --result "$T/compare.json" --repo-name myrepo --level builder --source inline --task "brief text with spaces"
+run_pr ingest-compare --tiers "$TIERS" --ledger "$LEDGER" --result "$T/compare.json" --repo-name myrepo --level builder --source inline --run cmp-r2 --task "brief text with spaces"
 chk "R2a a --task that is text, not an id token, is refused (exit 2), nothing written" '[ "$RC" -eq 2 ] && [ ! -e "$LEDGER" ] && printf "%s" "$ERR" | grep -q "id token"'
 printf '{"ranking":[],"tasks":[]}\n' > "$T/notcompare.json"
-run_pr ingest-compare --tiers "$TIERS" --ledger "$LEDGER" --result "$T/notcompare.json" --repo-name myrepo --level builder --source inline
+run_pr ingest-compare --tiers "$TIERS" --ledger "$LEDGER" --result "$T/notcompare.json" --repo-name myrepo --level builder --source inline --run cmp-r2
 chk "R2b a result with no candidates array is refused (exit 2), nothing written" '[ "$RC" -eq 2 ] && [ ! -e "$LEDGER" ]'
 jq '.candidates[0].label = "has space"' "$T/compare.json" > "$T/badlabel.json"
-run_pr ingest-compare --tiers "$TIERS" --ledger "$LEDGER" --result "$T/badlabel.json" --repo-name myrepo --level builder --source inline
+run_pr ingest-compare --tiers "$TIERS" --ledger "$LEDGER" --result "$T/badlabel.json" --repo-name myrepo --level builder --source inline --run cmp-r2
 chk "R2c a candidate label that is not an id token is refused (exit 2), nothing written" '[ "$RC" -eq 2 ] && [ ! -e "$LEDGER" ]'
-run_pr ingest-compare --tiers "$TIERS" --ledger "$LEDGER" --result "$T/compare.json" --repo-name myrepo --level builder --source inline
+run_pr ingest-compare --tiers "$TIERS" --ledger "$LEDGER" --result "$T/compare.json" --repo-name myrepo --level builder --source inline --run cmp-r2
 chk "R2d without --ts the line still gets an ISO UTC timestamp" \
   '[ "$RC" -eq 0 ] && jq -r .ts "$LEDGER" | grep -Eq "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"'
 
@@ -180,8 +183,14 @@ gen deep codex gpt-6-sol medium pass 5; gen deep codex gpt-6-sol medium fail 5
 gen deep codex gpt-6-luna low fail 10
 printf 'not json at all\n' >> "$RL"
 RL_SUM=$(cksum < "$RL")
+# The rule fixtures above use challengers the shipped tiers do not configure; only
+# CURRENT (configured) ids are challengers (M26), so this tiers copy configures them.
+TIERS_RULE="$T/tiers-rule.json"
+jq '.tuning.challengers.builder.claude += [{"model": "claude-haiku-4-5-20251001", "effort": "low"}]
+  | .tuning.challengers.builder.codex += [{"model": "gpt-6-luna", "effort": "low"}]
+  | .tuning.challengers.deep.codex += [{"model": "gpt-7-x", "effort": "high"}, {"model": "gpt-6-luna", "effort": "low"}]' "$TIERS" > "$TIERS_RULE"
 
-run_pr report --tiers "$TIERS" --ledger "$RL" --json
+run_pr report --tiers "$TIERS_RULE" --ledger "$RL" --json
 REP="$OUT"
 g() { printf '%s' "$REP" | jq -r --arg l "$1" --arg v "$2" --arg m "$3" --arg e "$4" \
   ".groups[] | select(.level == \$l and .vendor == \$v and .modelId == \$m and .effort == \$e) | $5"; }
@@ -221,13 +230,13 @@ gen deep codex gpt-6-astra high pass 20; gen deep codex gpt-6-astra high fail 20
 gen deep codex gpt-6-sol low pass 40
 gen deep codex gpt-6-astra xhigh pass 40
 RL="$RL_SAVE"
-run_pr report --tiers "$TIERS" --ledger "$T/l-both.jsonl" --json
+run_pr report --tiers "$TIERS_RULE" --ledger "$T/l-both.jsonl" --json
 chk "R6i with a qualifying cheaper AND pricier challenger at one level x vendor, ONE proposal: the pricier (quality first)" \
   '[ "$(printf "%s" "$OUT" | jq -r "[.decisions[] | select(.level == \"deep\" and .vendor == \"codex\" and .verdict == \"propose\") | .direction] | sort | join(\",\")")" = "cheaper,pricier" ] &&
    [ "$(printf "%s" "$OUT" | jq -r "[.proposals[] | select(.level == \"deep\" and .vendor == \"codex\")] | length")" = 1 ] &&
    [ "$(printf "%s" "$OUT" | jq -r ".proposals[] | select(.level == \"deep\" and .vendor == \"codex\") | .to.model + \"·\" + .to.effort")" = "gpt-6-astra·xhigh" ]'
 
-run_pr report --tiers "$TIERS" --ledger "$RL"
+run_pr report --tiers "$TIERS_RULE" --ledger "$RL"
 chk "R7 markdown: a table per level, the incumbent marked, decisions with reasons, the proposals, and the never-writes line" \
   '[ "$RC" -eq 0 ] && printf "%s" "$OUT" | grep -q "^## builder" && printf "%s" "$OUT" | grep -q "| claude | claude-sonnet-5 | medium | 40 | 36 | 0.9 | .* | 9 | .* | incumbent |" &&
    printf "%s" "$OUT" | grep -q "insufficient data: needs 5 more" && printf "%s" "$OUT" | grep -q "^- builder/claude: claude-sonnet-5 · medium -> claude-haiku-4-5-20251001 · low (cheaper" &&
@@ -238,7 +247,7 @@ chk "R7b an absent ledger reports no data (exit 0, no proposals)" '[ "$RC" -eq 0
 # --- R8: tiers.json is never written; invalid tuning is refused ---------------
 run_pr report --tiers "$TIERS" --ledger "$TIERS"
 chk "R8 a --ledger that IS the tiers file is refused (exit 2)" '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q "is the tiers file"'
-run_pr ingest-compare --tiers "$TIERS" --ledger "$TIERS" --result "$T/compare.json" --repo-name r --level builder --source inline
+run_pr ingest-compare --tiers "$TIERS" --ledger "$TIERS" --result "$T/compare.json" --repo-name r --level builder --source inline --run cmp-r8
 chk "R8b ...also for an ingest (nothing appended to tiers.json)" '[ "$RC" -eq 2 ]'
 chk "R8c after every subcommand above, the tiers file and the report's ledger are byte-identical" \
   '[ "$(cksum < "$TIERS")" = "$TIERS_SUM" ] && [ "$(cksum < "$RL")" = "$RL_SUM" ]'
@@ -274,7 +283,7 @@ run_pr ingest-review --tiers "$TIERS" --ledger "$VL" --result "$T/review.json" -
 V1=$(head -n 1 "$VL" 2>/dev/null)
 rv() { printf '%s' "$V1" | jq -r --arg l "$1" ".reviewers[] | select(.label == \$l) | $2"; }
 chk "RV1 ingest-review appends ONE inline-review line with exactly the review schema keys (no candidates: never a build row)" \
-  '[ "$RC" -eq 0 ] && [ "$(nlines "$VL")" = 1 ] && [ "$(printf "%s" "$V1" | jq -c "keys")" = "[\"disputed\",\"items\",\"real\",\"repoName\",\"resolved\",\"reviewers\",\"run\",\"source\",\"ts\",\"v\"]" ] &&
+  '[ "$RC" -eq 0 ] && [ "$(nlines "$VL")" = 1 ] && [ "$(printf "%s" "$V1" | jq -c "keys")" = "[\"disputed\",\"items\",\"real\",\"repoName\",\"resolved\",\"reviewers\",\"revision\",\"run\",\"runHash\",\"source\",\"ts\",\"v\"]" ] &&
    [ "$(printf "%s" "$V1" | jq -r "[.source,.repoName,.run,.items,.real,.disputed,.resolved] | map(tostring) | join(\" \")")" = "inline-review voron rv-run-1 7 2 2 0" ]'
 chk "RV1b each reviewer has exactly label/vendor/level/model/effort/status/precision/recall/n/real/rejected/disputed/findings/totalTokens/seconds" \
   '[ "$(printf "%s" "$V1" | jq -c "[.reviewers[] | keys] | unique")" = "[[\"disputed\",\"effort\",\"findings\",\"label\",\"level\",\"model\",\"modelId\",\"modelIdSource\",\"n\",\"precision\",\"real\",\"recall\",\"rejected\",\"seconds\",\"status\",\"totalTokens\",\"vendor\"]]" ]'
@@ -331,7 +340,7 @@ chk "RV5d the JSON says review metrics do not drive tier proposals yet" 'printf 
 run_pr report --tiers "$TIERS" --ledger "$T/l-mixed.jsonl"
 chk "RV6 markdown: its own Reviews section with the table, the not-a-proposal-input line, after the build proposals" \
   '[ "$RC" -eq 0 ] && printf "%s" "$OUT" | grep -q "^## Reviews (inline-review) — separate from build pass rates" &&
-   printf "%s" "$OUT" | grep -q "^| claude | claude-opus-5-5 | high | 2 | 1 (2) | 0.833 (2) | 0 |$" &&
+   printf "%s" "$OUT" | grep -q "^| claude | claude-opus-5-5 | high | 2 | 1 (2) | 0.833 (2) | 0 | 0 |$" &&
    printf "%s" "$OUT" | grep -q "Review metrics do not drive tier proposals yet" &&
    [ "$(printf "%s" "$OUT" | grep -n "^## Proposals" | cut -d: -f1)" -lt "$(printf "%s" "$OUT" | grep -n "^## Reviews" | cut -d: -f1)" ]'
 run_pr report --tiers "$TIERS" --ledger "$RL"
@@ -358,6 +367,53 @@ tt_bad "maintain.maxWidth above 1" '.tuning.maintain.maxWidth = 1.5' "tuning.mai
 jq '.tuning.maintain.maxWidth = 0' "$TIERS" > "$T/rt-pr.json"
 run_pr rates --tiers "$T/rt-pr.json" --ledger "$T/none.jsonl"
 chk "RT parity-report rates refuses an invalid maintain block via the one validator (exit 2)" '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q "no valid tuning block"'
+# TT (M31): one failing input per remaining TUNING_ERRORS / ALIAS_ERRORS branch.
+tt_bad "tuning missing" 'del(.tuning)' "tuning: missing or not an object"
+tt_bad "sampleRate 0" '.tuning.sampleRate = 0' "tuning.sampleRate must be a number in (0, 1]"
+tt_bad "challengerMix empty" '.tuning.challengerMix = {}' "tuning.challengerMix must be a non-empty object"
+tt_bad "challengerMix unknown vendor" '.tuning.challengerMix = {"agy": 0.2, "codex": 0.8}' "tuning.challengerMix: unknown vendor agy"
+tt_bad "challengerMix share above 1" '.tuning.challengerMix = {"codex": 1.5, "claude": -0.5}' "tuning.challengerMix.codex must be a number in [0, 1]"
+tt_bad "challengerMix shares not summing to 1" '.tuning.challengerMix = {"codex": 0.7, "claude": 0.2}' "tuning.challengerMix shares must sum to 1 (got 0."
+tt_bad "challengers not an object" '.tuning.challengers = []' "tuning.challengers must be an object"
+tt_bad "challengers unknown level" '.tuning.challengers.expert = {}' "tuning.challengers: unknown level expert"
+tt_bad "challengers level not an object" '.tuning.challengers.builder = []' "tuning.challengers.builder must be an object"
+tt_bad "challengers unknown vendor" '.tuning.challengers.builder.gemini = []' "tuning.challengers.builder: unknown vendor gemini"
+tt_bad "challengers list not an array" '.tuning.challengers.builder.codex = {}' "tuning.challengers.builder.codex must be an array"
+tt_bad "challenger entry not an object" '.tuning.challengers.builder.codex = ["gpt-6-sol"]' "tuning.challengers.builder.codex[0] must be an object"
+tt_bad "challenger model not an id" '.tuning.challengers.builder.codex[0].model = "gpt 6"' "tuning.challengers.builder.codex[0].model must be a model id"
+tt_bad "challenger effort unknown" '.tuning.challengers.builder.codex[0].effort = "ultra"' "tuning.challengers.builder.codex[0].effort must be one of"
+tt_bad "rule not an object" '.tuning.rule = 8' "tuning.rule must be an object"
+tt_bad "minN fractional" '.tuning.rule.minN = 2.5' "tuning.rule.minN must be an integer >= 1"
+tt_bad "cheaperTolerance 1" '.tuning.rule.cheaperTolerance = 1' "tuning.rule.cheaperTolerance must be a number in [0, 1)"
+tt_bad "pricierMargin 0" '.tuning.rule.pricierMargin = 0' "tuning.rule.pricierMargin must be a number in (0, 1]"
+tt_bad "confidence not wilson95" '.tuning.rule.confidence = "normal"' "tuning.rule.confidence must be \"wilson95\""
+tt_bad "ledger empty" '.tuning.ledger = ""' "tuning.ledger must be a non-empty path"
+tt_bad "pauseAtWeeklyPct 0" '.tuning.pauseAtWeeklyPct = 0' "tuning.pauseAtWeeklyPct must be a number in (0, 100]"
+tt_bad "rejected not an array" '.tuning.rejected = {}' "tuning.rejected must be an array"
+tt_bad "rejected entry not an object" '.tuning.rejected = ["x"]' "tuning.rejected[0] must be an object"
+tt_bad "rejected unknown level" '.tuning.rejected = [{"level":"expert","vendor":"claude","model":"claude-sonnet-5","effort":"high"}]' "tuning.rejected[0].level must be one of"
+tt_bad "rejected unknown vendor" '.tuning.rejected = [{"level":"deep","vendor":"agy","model":"pro","effort":"high"}]' "tuning.rejected[0].vendor must be one of"
+tt_bad "rejected model not an id" '.tuning.rejected = [{"level":"deep","vendor":"claude","model":"a b","effort":"high"}]' "tuning.rejected[0].model must be a model id"
+tt_bad "rejected effort unknown" '.tuning.rejected = [{"level":"deep","vendor":"claude","model":"claude-sonnet-5","effort":"ultra"}]' "tuning.rejected[0].effort must be one of"
+tt_bad "rejected until not a date" '.tuning.rejected = [{"level":"deep","vendor":"claude","model":"claude-sonnet-5","effort":"high","until":"soon"}]' "tuning.rejected[0].until must be a YYYY-MM-DD date"
+tt_bad "aliasHistory not an object" '.aliasHistory = []' "aliasHistory must be an object"
+tt_bad "aliasHistory unknown vendor" '.aliasHistory.agy = {}' "aliasHistory: unknown vendor agy"
+tt_bad "aliasHistory vendor not an object" '.aliasHistory.codex = []' "aliasHistory.codex must be an object"
+tt_bad "aliasHistory alias not a token" '.aliasHistory.claude["op us"] = [{"id":"x","from":"2026-01-01"}]' "must be a model-id token"
+tt_bad "aliasHistory empty list" '.aliasHistory.claude.opus = []' "aliasHistory.claude.opus must be a non-empty array"
+tt_bad "aliasHistory entry not an object" '.aliasHistory.claude.opus = ["claude-opus-5"]' "aliasHistory.claude.opus[0] must be an object"
+tt_bad "aliasHistory id not a token" '.aliasHistory.claude.opus[0].id = "claude opus"' "aliasHistory.claude.opus[0].id must be a model-id token"
+tt_bad "aliasHistory id is itself an alias" '.aliasHistory.claude.opus[0].id = "sonnet"' "is itself an alias, not a concrete id"
+tt_bad "aliasHistory from not a date" '.aliasHistory.claude.opus[0].from = "Sept 22"' "aliasHistory.claude.opus[0].from must be a YYYY-MM-DD date"
+tt_bad "aliasHistory from not increasing" '.aliasHistory.claude.opus[1].from = "2026-08-29"' "aliasHistory.claude.opus: from dates must be strictly increasing"
+jq '.tuning.rejected = [{"level":"deep","vendor":"claude","model":"claude-sonnet-5","effort":"high","until":"2026-10-01"}]' "$TIERS" > "$T/rt.json"
+OUT=$(TRIAGE_TIERS="$T/rt.json" "$TT" --bakeoff-json 2>&1); RC=$?; ERR=""
+chk "TT a valid tuning.rejected passes and is printed with the tuning" '[ "$RC" -eq 0 ] && [ "$(printf "%s" "$OUT" | jq -r ".tuning.rejected[0].until")" = 2026-10-01 ]'
+printf '{"levels": [1]}\n' > "$T/rt.json"
+OUT=$(TRIAGE_TIERS="$T/rt.json" "$TT" --bakeoff-json 2>&1); RC=$?
+chk "TT a file that is not tiers JSON (no levels/modes objects) is exit 2" '[ "$RC" -eq 2 ] && printf "%s" "$OUT" | grep -q "not valid tiers JSON"'
+OUT=$(TRIAGE_TIERS="$TIERS" "$TT" --frobnicate 2>&1); RC=$?
+chk "TT an unknown argument is exit 2" '[ "$RC" -eq 2 ] && printf "%s" "$OUT" | grep -q "unknown argument"'
 
 rstate() { printf '%s' "$OUT" | jq -r --arg l "$1" '.levels[$l] | .state + ":" + (.rate | tostring)'; }
 rwhy() { printf '%s' "$OUT" | jq -r --arg l "$1" '.levels[$l].reason'; }
@@ -458,7 +514,7 @@ cat > "$T/mv-compare.json" <<'EOF'
  {"label":"x-cand","vendor":"codex","level":"builder","model":"gpt-6-sol","effort":"medium","modelFrom":"candidate","status":"fail"},
  {"label":"x-run","vendor":"codex","level":"deep","model":"gpt-6-astra","effort":"high","modelFrom":"runner","status":"pass"}]}
 EOF
-mvc() { run_pr ingest-compare --tiers "$TIERS" --ledger "$1" --result "$T/mv-compare.json" --repo-name r --level deep --source inline --ts "$2"; }
+mvc() { run_pr ingest-compare --tiers "$TIERS" --ledger "$1" --result "$T/mv-compare.json" --repo-name r --level deep --source inline --run mv --ts "$2"; }
 mc() { jq -r --arg l "$2" '.candidates[] | select(.label == $l) | "\(.modelId)/\(.modelIdSource)"' "$1"; }
 mvc "$T/mv-a.jsonl" 2026-09-24T09:00:00Z
 chk "MV1 ingest fills modelId + modelIdSource per case: tiers default -> pinned, alias -> inferred-by-date, candidate id -> pinned, runner-reported -> observed" \
@@ -586,12 +642,231 @@ fl() { # VENDOR MODEL EFFORT PASSES FAILS
 fl claude claude-opus-5-5 high 10 0; fl claude claude-sonnet-5 high 10 0; fl claude claude-fable-5-1 high 10 0
 fl claude claude-opus-5 high 10 0; fl claude claude-opus-5 medium 10 0
 fl codex gpt-6-astra high 10 0; fl codex gpt-7-sol medium 10 0; fl codex gpt-7-x high 10 0
-run_pr report --json --tiers "$TIERS" --ledger "$FL"
+# Ranking needs the ids to be challengers at all: configure them (M26 current ids).
+jq '.tuning.challengers.deep.claude += [{"model": "claude-opus-5", "effort": "medium"}]
+  | .tuning.challengers.deep.codex += [{"model": "gpt-7-sol", "effort": "medium"}, {"model": "gpt-7-x", "effort": "high"}]' "$TIERS" > "$T/tiers-family.json"
+run_pr report --json --tiers "$T/tiers-family.json" --ledger "$FL"
 dir() { printf '%s' "$OUT" | jq -r --arg v "$1" --arg m "$2" --arg e "$3" '.decisions[] | select(.level == "deep" and .vendor == $v and .challenger.modelId == $m and .challenger.effort == $e) | .direction'; }
 chk "MV9 family cheapness with versioned ids: sonnet-5 cheaper, fable-5-1 pricier, opus-5@medium cheaper than opus-5-5@high; same family + effort (opus-5@high) unranked" \
   '[ "$(dir claude claude-sonnet-5 high)" = cheaper ] && [ "$(dir claude claude-fable-5-1 high)" = pricier ] && [ "$(dir claude claude-opus-5 medium)" = cheaper ] && [ "$(dir claude claude-opus-5 high)" = unranked ]'
 chk "MV9b a NEW codex version still ranks by family (gpt-7-sol cheaper than gpt-6-astra); an id with no family token is unranked" \
   '[ "$(dir codex gpt-7-sol medium)" = cheaper ] && [ "$(dir codex gpt-7-x high)" = unranked ]'
+
+# --- LI: ledger integrity (Wave 16B) — run ids, content hashes, the lock ----------
+LL="$T/li.jsonl"
+run_pr ingest-compare --tiers "$TIERS" --ledger "$LL" --result "$T/compare.json" --repo-name myrepo --level builder --source inline
+chk "LI1 ingest-compare without --run is refused (exit 2), nothing written" '[ "$RC" -eq 2 ] && [ ! -e "$LL" ] && printf "%s" "$ERR" | grep -q "needs --run"'
+run_pr ingest-compare --tiers "$TIERS" --ledger "$LL" --result "$T/compare.json" --repo-name myrepo --level builder --source inline --run li-1 --ts 2026-09-24T10:00:00Z
+LL_SUM=$(cksum < "$LL")
+run_pr ingest-compare --tiers "$TIERS" --ledger "$LL" --result "$T/compare.json" --repo-name myrepo --level builder --source inline --run li-1 --ts 2026-09-25T10:00:00Z
+chk "LI2 the same --run + the same result again (even at another --ts) is skipped: lines 0, ledger byte-identical — never a double count" \
+  '[ "$RC" -eq 0 ] && [ "$(j .lines)" = 0 ] && [ "$(cksum < "$LL")" = "$LL_SUM" ] && j .skipped | grep -q "same content"'
+jq '.candidates[1].status = "pass"' "$T/compare.json" > "$T/compare2.json"
+run_pr ingest-compare --tiers "$TIERS" --ledger "$LL" --result "$T/compare2.json" --repo-name myrepo --level builder --source inline --run li-1
+chk "LI3 the same --run with DIFFERENT content is a collision: refused (exit 2), nothing appended" \
+  '[ "$RC" -eq 2 ] && [ "$(cksum < "$LL")" = "$LL_SUM" ] && printf "%s" "$ERR" | grep -q "DIFFERENT content"'
+run_pr ingest-compare --tiers "$TIERS" --ledger "$LL" --result "$T/compare.json" --repo-name myrepo --level builder --source inline --run li-1 --applied claude-builder
+chk "LI3b ...and so is the same result under other line-shaping options (--applied)" '[ "$RC" -eq 2 ] && [ "$(cksum < "$LL")" = "$LL_SUM" ]'
+run_pr ingest-compare --tiers "$TIERS" --ledger "$LL" --result "$T/compare2.json" --repo-name myrepo --level builder --source inline --run li-2
+chk "LI3c a unique --run ingests it (runHash stored on the line)" \
+  '[ "$RC" -eq 0 ] && [ "$(nlines "$LL")" = 2 ] && [ "$(jq -r .runHash "$LL" | sort -u | grep -c .)" = 2 ]'
+
+jq '.tasks[0].results[1].status = "pass"' "$T/parity.json" > "$T/parity2.json"
+PL_SUM=$(cksum < "$PL")
+run_pr ingest-parity --tiers "$TIERS" --ledger "$PL" --result "$T/parity2.json"
+chk "LI4 ingest-parity: another result whose outDir basename is an ingested run id is refused (exit 2), never silently skipped" \
+  '[ "$RC" -eq 2 ] && [ "$(cksum < "$PL")" = "$PL_SUM" ] && printf "%s" "$ERR" | grep -q "run id par-1 is already in the ledger with DIFFERENT content"'
+run_pr ingest-parity --tiers "$TIERS" --ledger "$PL" --result "$T/parity2.json" --run par-1-b --ts 2026-09-24T11:00:00Z
+chk "LI4b ingest-parity --run gives it its own id: its 3 graded lines are appended under par-1-b" \
+  '[ "$RC" -eq 0 ] && [ "$(j .lines)" = 3 ] && [ "$(j .run)" = par-1-b ] && [ "$(jq -r "select(.run == \"par-1-b\") | .run" "$PL" | wc -l | tr -d " ")" = 3 ]'
+
+PA="$T/li-partial.jsonl"
+run_pr ingest-parity --tiers "$TIERS" --ledger "$PA" --result "$T/parity.json" --ts 2026-09-24T11:00:00Z
+PA_FULL=$(cat "$PA")
+head -n 1 "$PA" > "$PA.tmp" && cat "$PA.tmp" > "$PA" && rm -f "$PA.tmp"   # an ingest cut after its first line
+run_pr ingest-parity --tiers "$TIERS" --ledger "$PA" --result "$T/parity.json" --ts 2026-09-24T11:00:00Z
+chk "LI5 an interrupted multi-line ingest is recoverable: the same run again appends ONLY the 2 missing observations; the ledger equals a whole ingest" \
+  '[ "$RC" -eq 0 ] && [ "$(j .lines)" = 2 ] && j .note | grep -q "missing observation" && [ "$(cat "$PA")" = "$PA_FULL" ]'
+run_pr ingest-parity --tiers "$TIERS" --ledger "$PA" --result "$T/parity.json"
+chk "LI5b ...and once complete, again is a no-op" '[ "$RC" -eq 0 ] && [ "$(j .lines)" = 0 ] && [ "$(cat "$PA")" = "$PA_FULL" ]'
+
+LG="$T/li-legacy.jsonl"
+jq -nc '{v:1, ts:"2026-09-20T00:00:00Z", source:"suite", run:"par-1", repoName:"parity-suite", level:"quick", band:1, task:"t1",
+  candidates:[{label:"a", vendor:"claude", model:"claude-sonnet-5", effort:"medium", status:"pass"}], applied:null}' > "$LG"
+run_pr ingest-parity --tiers "$TIERS" --ledger "$LG" --result "$T/parity.json"
+chk "LI6 a run id already there from before content hashes (no runHash) is skipped as before — never refused, never doubled" \
+  '[ "$RC" -eq 0 ] && [ "$(j .lines)" = 0 ] && [ "$(nlines "$LG")" = 1 ] && j .skipped | grep -q "before content hashes"'
+
+LK="$T/li-lock.jsonl"
+mkdir "$LK.lock"; echo "$$" > "$LK.lock/pid"
+export PARITY_LOCK_TRIES=3
+run_pr ingest-compare --tiers "$TIERS" --ledger "$LK" --result "$T/compare.json" --repo-name myrepo --level builder --source inline --run lk-1
+chk "LI7 a live holder's lock blocks an ingest: still locked after PARITY_LOCK_TRIES -> exit 1, nothing written, the holder's lock untouched" \
+  '[ "$RC" -eq 1 ] && [ ! -e "$LK" ] && [ "$(cat "$LK.lock/pid")" = "$$" ] && printf "%s" "$ERR" | grep -q "locked by pid $$"'
+cp "$BL" "$LK"; LK_SUM=$(cksum < "$LK")
+run_pr backfill-modelid --tiers "$TIERS" --ledger "$LK"
+RC_BF=$RC
+run_pr migrate --tiers "$TIERS" --ledger "$LK" --from "$T/legacy.jsonl"
+chk "LI7b backfill-modelid and migrate take the same lock (both exit 1, the ledger unchanged)" '[ "$RC_BF" -eq 1 ] && [ "$RC" -eq 1 ] && [ "$(cksum < "$LK")" = "$LK_SUM" ]'
+unset PARITY_LOCK_TRIES
+rm -f "$LK"
+sh -c 'exit 0' & DEAD=$!; wait "$DEAD"
+echo "$DEAD" > "$LK.lock/pid"
+run_pr ingest-compare --tiers "$TIERS" --ledger "$LK" --result "$T/compare.json" --repo-name myrepo --level builder --source inline --run lk-1
+chk "LI7c a lock whose holder is gone is stale: taken over, the ingest lands, the lock is released" '[ "$RC" -eq 0 ] && [ "$(nlines "$LK")" = 1 ] && [ ! -e "$LK.lock" ]'
+CC="$T/li-conc.jsonl"
+for i in 1 2 3 4 5 6; do
+  "$PR" ingest-compare --tiers "$TIERS" --ledger "$CC" --result "$T/compare.json" --repo-name myrepo --level builder --source inline --run conc-1 --ts 2026-09-24T10:00:00Z >/dev/null 2>&1 &
+done
+wait
+chk "LI7d six concurrent ingests of one run leave exactly ONE line (check + append is one locked step), no lock left behind" '[ "$(nlines "$CC")" = 1 ] && [ ! -e "$CC.lock" ]'
+
+SLT="$T/li-target.jsonl"; SLN="$T/li-link.jsonl"
+head -n 3 "$BL" | jq -c 'del(.candidates[].modelId, .candidates[].modelIdSource)' > "$SLT"
+ln -s "$SLT" "$SLN"
+run_pr backfill-modelid --tiers "$TIERS" --ledger "$SLN"
+chk "LI8 backfill through a symlinked ledger rewrites the TARGET and keeps the link" \
+  '[ "$RC" -eq 0 ] && [ "$(j .updatedLines)" = 3 ] && [ -L "$SLN" ] && [ "$(readlink "$SLN")" = "$SLT" ] && [ "$(jq -r ".candidates[0].modelIdSource" "$SLT" | sort -u)" != null ] && [ ! -e "$SLT.lock" ]'
+
+TSL="$T/li-ts.jsonl"
+run_pr ingest-compare --tiers "$TIERS" --ledger "$TSL" --result "$T/mv-compare.json" --repo-name r --level deep --source inline --run ts-1 --ts 2026-09-21T23:30:00-05:00
+chk "LI9 a --ts with an offset is stored as UTC (2026-09-22T04:30:00Z) and the alias resolves at the UTC date (opus -> claude-opus-5-5, not claude-opus-5)" \
+  '[ "$RC" -eq 0 ] && [ "$(jq -r .ts "$TSL")" = 2026-09-22T04:30:00Z ] && [ "$(mc "$TSL" c-alias)" = "claude-opus-5-5/inferred-by-date" ]'
+jq -nc '{v:1, ts:"2026-09-21T23:30:00-05:00", source:"inline", run:"old-offset", repoName:"r", level:"deep", task:null,
+  candidates:[{label:"c", vendor:"claude", model:"opus", effort:"high", status:"pass"}], applied:null}' > "$T/li-ts2.jsonl"
+run_pr history --json --tiers "$TIERS" --ledger "$T/li-ts2.jsonl"
+chk "LI9b an old line with an offset ts is read as UTC too (resolved at 2026-09-22 -> claude-opus-5-5; firstTs normalized)" \
+  '[ "$(printf "%s" "$OUT" | jq -r ".history[] | select(.level == \"deep\" and .vendor == \"claude\") | .entries[0] | .modelId + \" \" + .firstTs")" = "claude-opus-5-5 2026-09-22T04:30:00Z" ]'
+jq '. + {ts: "2026-09-21T10:00:00Z"}' "$T/mv-compare.json" > "$T/mv-ts.json"
+run_pr ingest-compare --tiers "$TIERS" --ledger "$T/li-ts3.jsonl" --result "$T/mv-ts.json" --repo-name r --level deep --source inline --run ts-2
+chk "LI10 a result carrying its own ts is ledgered at it, not at ingest time (opus as of 2026-09-21 -> claude-opus-5)" \
+  '[ "$RC" -eq 0 ] && [ "$(jq -r .ts "$T/li-ts3.jsonl")" = 2026-09-21T10:00:00Z ] && [ "$(mc "$T/li-ts3.jsonl" c-alias)" = "claude-opus-5/inferred-by-date" ]'
+run_pr ingest-compare --tiers "$TIERS" --ledger "$T/li-ts4.jsonl" --result "$T/mv-ts.json" --repo-name r --level deep --source inline --run ts-3 --ts 2026-09-24T00:00:00Z
+chk "LI10b a --ts that disagrees with the result's own ts is refused (exit 2), nothing written" '[ "$RC" -eq 2 ] && [ ! -e "$T/li-ts4.jsonl" ] && printf "%s" "$ERR" | grep -q "disagrees"'
+
+jq '.candidates[1].model = "opus[1m]"' "$T/mv-compare.json" > "$T/mv-1m.json"
+run_pr ingest-compare --tiers "$TIERS" --ledger "$T/li-1m.jsonl" --result "$T/mv-1m.json" --repo-name r --level deep --source inline --run m1 --ts 2026-09-24T09:00:00Z
+chk "LI11 a model with a context suffix (opus[1m]) is accepted: model kept, modelId the resolved version" \
+  '[ "$RC" -eq 0 ] && [ "$(jq -r ".candidates[1] | .model + \" \" + .modelId" "$T/li-1m.jsonl")" = "opus[1m] claude-opus-5-5" ]'
+jq '.candidates[1].model = "opus[the brief text]"' "$T/mv-compare.json" > "$T/mv-1mbad.json"
+run_pr ingest-compare --tiers "$TIERS" --ledger "$T/li-1mbad.jsonl" --result "$T/mv-1mbad.json" --repo-name r --level deep --source inline --run m2
+chk "LI11b ...but a bracketed suffix that is free text is refused (exit 2)" '[ "$RC" -eq 2 ] && [ ! -e "$T/li-1mbad.jsonl" ]'
+
+export PARITY_TODAY=2026-09-24
+run_pr rates --json --tiers "$T/tiers-moved.json" --ledger "$GL"
+chk "LI12 PARITY_TODAY pins the alias date: on 2026-09-24 the moved alias (from 2026-09-25) still means claude-opus-5-5" \
+  '[ "$RC" -eq 0 ] && ! rwhy deep | grep -q "claude-opus-6" && rwhy deep | grep -q "claude-opus-5-5@high"'
+export PARITY_TODAY=tomorrow
+run_pr rates --json --tiers "$TIERS" --ledger "$GL"
+chk "LI12b a PARITY_TODAY that is not YYYY-MM-DD is a usage error" '[ "$RC" -eq 2 ]'
+export PARITY_TODAY=2026-09-25
+
+cat > "$T/parity-mf.json" <<'EOF'
+{"outDir":"/o/runs/par-mf","bands":[3],
+ "ranking":[{"label":"x","vendor":"codex","level":"deep","model":null,"effort":"high"},{"label":"y","vendor":"codex","level":"deep","model":"gpt-6-astra","effort":"high"}],
+ "tasks":[{"band":3,"id":"t3","kind":"build","results":[
+   {"label":"x","runLabel":"x","vendor":"codex","status":"pass","model":"gpt-6-astra","modelFrom":"runner"},
+   {"label":"y","runLabel":"y","vendor":"codex","status":"fail","model":"gpt-6-astra","modelFrom":"candidate"}]}]}
+EOF
+run_pr ingest-parity --tiers "$TIERS" --ledger "$T/li-mf.jsonl" --result "$T/parity-mf.json" --ts 2026-09-24T00:00:00Z
+chk "LI13 ingest-parity forwards modelFrom: a runner-reported model is ledgered observed, a candidate one pinned (M7)" \
+  '[ "$RC" -eq 0 ] && [ "$(jq -r ".candidates[0] | .label + \"=\" + .modelIdSource" "$T/li-mf.jsonl" | paste -sd, -)" = "x=observed,y=pinned" ]'
+
+# --- RC: reps are not i.i.d. — one outcome per (run, task, candidate) (M28) --------
+CL="$T/rc.jsonl"; : > "$CL"
+rcl() { # RUN TASK LABEL STATUS
+  jq -nc --arg r "$1" --arg t "$2" --arg l "$3" --arg s "$4" '{v:1, ts:"2026-09-24T00:00:00Z", source:"suite", run:$r, repoName:"parity-suite", level:"builder", band:2, task:$t,
+    candidates:[{label:$l, vendor:"claude", model:"claude-sonnet-5", effort:"high", status:$s, modelId:"claude-sonnet-5", modelIdSource:"pinned"}], applied:null}' >> "$CL"
+}
+for tk in t1 t2 t3; do for lb in a a-r2 a-r3; do rcl p1 "$tk" "$lb" pass; done; done
+rcl p1 t4 a pass; rcl p1 t4 a-r2 pass; rcl p1 t4 a-r3 fail
+rcl p1 t5 a pass; rcl p1 t5 a-r2 fail; rcl p1 t5 a-r3 fail
+rcl p1 t6 a pass; rcl p1 t6 a-r2 fail; rcl p1 t6 a-r3 unavailable
+rcl p2 t1 a fail
+run_pr report --json --tiers "$TIERS" --ledger "$CL"
+REP="$OUT"
+chk "RC1 reps collapse per (run, task) by majority: 18 graded observations -> n 6, 4 passes (t1-t3, t4); t5 and p2/t1 fail; the t6 tie is excluded" \
+  '[ "$RC" -eq 0 ] && [ "$(g builder claude claude-sonnet-5 high "[.n, .passes, .observations, .ties, .excluded] | map(tostring) | join(\",\")")" = "6,4,18,1,1" ]'
+run_pr rates --json --tiers "$TIERS" --ledger "$CL"
+chk "RC2 minN counts effective outcomes (9 all-pass reps of 3 tasks are 3, not 9): the reason says n=6" 'rwhy builder | grep -q "claude claude-sonnet-5@high n=6 < 8"'
+jq -nc '{v:1, ts:"2026-09-24T00:00:00Z", source:"inline", run:"dup", repoName:"r", level:"builder", task:"s1",
+  candidates:[{label:"c", vendor:"claude", model:"claude-sonnet-5", effort:"high", status:"pass"}], applied:null}' > "$T/rc-dup.jsonl"
+cat "$T/rc-dup.jsonl" "$T/rc-dup.jsonl" >> "$T/rc-dup.jsonl.2"; mv "$T/rc-dup.jsonl.2" "$T/rc-dup.jsonl"
+run_pr report --json --tiers "$TIERS" --ledger "$T/rc-dup.jsonl"
+REP="$OUT"
+chk "RC3 a run double-ingested before idempotence existed counts once (n 1 of 2 observations)" '[ "$(g builder claude claude-sonnet-5 high "[.n, .observations] | map(tostring) | join(\",\")")" = "1,2" ]'
+jq -c '.candidates[0].totalTokens = 7' "$T/rc-dup.jsonl" | head -n 1 >> "$T/rc-dup.jsonl"
+run_pr report --json --tiers "$TIERS" --ledger "$T/rc-dup.jsonl"
+REP="$OUT"
+chk "RC3b ...but a pre-runHash inline line with the same run id and DIFFERENT content (another session reused the id) is its own outcome (n 2)" \
+  '[ "$(g builder claude claude-sonnet-5 high "[.n, .observations] | map(tostring) | join(\",\")")" = "2,3" ]'
+run_pr report --tiers "$TIERS" --ledger "$CL"
+chk "RC4 markdown says n is effective and shows Obs. (ties)" 'printf "%s" "$OUT" | grep -q "^n = effective outcomes" && printf "%s" "$OUT" | grep -q "| claude | claude-sonnet-5 | high | 6 | 4 | .* | 1 | 18 (1) |"'
+
+# --- RS: superseded versions are never proposed (M26) --------------------------------
+SV="$T/rs.jsonl"; : > "$SV"
+svl() { # MODELID EFFORT PASSES FAILS
+  local i=0
+  while [ "$i" -lt $(($3 + $4)) ]; do
+    jq -nc --arg m "$1" --arg e "$2" --arg s "$(if [ "$i" -lt "$3" ]; then echo pass; else echo fail; fi)" \
+      '{v:1, ts:"2026-09-24T00:00:00Z", source:"inline", run:null, repoName:"r", level:"deep", task:null,
+        candidates:[{label:"c", vendor:"claude", model:$m, effort:$e, status:$s, modelId:$m, modelIdSource:"pinned"}], applied:null}' >> "$SV"
+    i=$((i + 1))
+  done
+}
+svl claude-opus-5-5 high 10 10; svl claude-opus-5 medium 20 0; svl claude-opus-5-5 medium 20 0
+run_pr report --json --tiers "$TIERS" --ledger "$SV"
+chk "RS1 an older version (claude-opus-5@medium, 20/20, cheaper) is never a challenger: no decision, no proposal back to it" \
+  '[ "$RC" -eq 0 ] && [ "$(printf "%s" "$OUT" | jq "[.decisions[] | select(.challenger.modelId == \"claude-opus-5\")] | length")" = 0 ] &&
+   [ "$(printf "%s" "$OUT" | jq -r "[.proposals[] | select(.level == \"deep\" and .vendor == \"claude\") | .to.model + \"·\" + .to.effort] | join(\",\")")" = "claude-opus-5-5·medium" ]'
+run_pr history --json --tiers "$TIERS" --ledger "$SV"
+chk "RS1b ...it stays in history" '[ "$(printf "%s" "$OUT" | jq -r "[.history[] | select(.level == \"deep\" and .vendor == \"claude\") | .entries[].modelId] | unique | join(\",\")")" = "claude-opus-5,claude-opus-5-5" ]'
+
+# --- RJ: tuning.rejected (M27) ---------------------------------------------------------
+jq '.tuning.rejected = [{"level":"builder","vendor":"claude","model":"claude-haiku-4-5-20251001","effort":"low"}]' "$TIERS_RULE" > "$T/tiers-rej.json"
+run_pr report --json --tiers "$T/tiers-rej.json" --ledger "$RL_SAVE"
+chk "RJ1 a rejected challenger that would qualify gets verdict rejected (why names it), and no proposal; other levels unaffected" \
+  '[ "$RC" -eq 0 ] && [ "$(printf "%s" "$OUT" | jq -r ".decisions[] | select(.level == \"builder\" and .vendor == \"claude\" and .challenger.modelId == \"claude-haiku-4-5-20251001\") | .verdict")" = rejected ] &&
+   printf "%s" "$OUT" | jq -r ".decisions[] | select(.verdict == \"rejected\") | .why" | grep -q "rejected by Alex (tuning.rejected); would propose: cheaper" &&
+   [ "$(printf "%s" "$OUT" | jq -r "[.proposals[] | .level + \"/\" + .vendor] | join(\",\")")" = "quick/claude" ]'
+jq '.tuning.rejected = [{"level":"builder","vendor":"claude","model":"claude-haiku-4-5-20251001","effort":"low","until":"2026-09-25"}]' "$TIERS_RULE" > "$T/tiers-rej2.json"
+run_pr report --json --tiers "$T/tiers-rej2.json" --ledger "$RL_SAVE"
+RJ_TODAY=$(printf '%s' "$OUT" | jq -r '[.proposals[] | .level + "/" + .vendor] | join(",")')
+export PARITY_TODAY=2026-09-26
+run_pr report --json --tiers "$T/tiers-rej2.json" --ledger "$RL_SAVE"
+export PARITY_TODAY=2026-09-25
+chk "RJ2 until is inclusive: still rejected on its date, proposed again the day after" \
+  '[ "$RJ_TODAY" = "quick/claude" ] && [ "$(printf "%s" "$OUT" | jq -r "[.proposals[] | .level + \"/\" + .vendor] | join(\",\")")" = "builder/claude,quick/claude" ]'
+jq '.tuning.rejected = [{"level":"builder","vendor":"claude","model":"claude-sonnet-5","effort":"high"}]' "$TIERS" > "$T/tiers-rej3.json"
+run_pr rates --json --tiers "$T/tiers-rej3.json" --ledger "$T/l-proposal.jsonl"
+chk "RJ3 a rejected proposal no longer pins its level to explore: the RA3 ledger drops to maintain" '[ "$RC" -eq 0 ] && [ "$(rstate builder)" = "maintain:0.05" ]'
+
+# --- RR: review revisions (M15) --------------------------------------------------------
+RVL="$T/rr.jsonl"
+run_pr ingest-review --tiers "$TIERS" --ledger "$RVL" --result "$T/review.json" --repo-name voron --ts 2026-09-24T12:00:00Z
+run_pr ingest-review --tiers "$TIERS" --ledger "$RVL" --result "$T/review.json" --repo-name voron --resolved "$T/resolved.json" --ts 2026-09-25T12:00:00Z
+chk "RR1 --resolved on an ingested review appends revision 2 of the same run (run = outDir basename, no --run needed)" \
+  '[ "$RC" -eq 0 ] && [ "$(j .lines)" = 1 ] && [ "$(j .revision)" = 2 ] && [ "$(jq -r "[.run, .revision] | map(tostring) | join(\":\")" "$RVL" | paste -sd, -)" = "rv-run-1:1,rv-run-1:2" ]'
+run_pr ingest-review --tiers "$TIERS" --ledger "$RVL" --result "$T/review.json" --repo-name voron --resolved "$T/resolved.json"
+chk "RR1b the same resolved content again is skipped" '[ "$RC" -eq 0 ] && [ "$(j .lines)" = 0 ] && [ "$(nlines "$RVL")" = 2 ]'
+run_pr report --json --tiers "$TIERS" --ledger "$RVL"
+chk "RR2 report reads only the latest revision: 1 review run, sonnet precision 0.667 (revision 2, not the mean with revision 1's 0.5), 1 superseded revision" \
+  '[ "$RC" -eq 0 ] && [ "$(printf "%s" "$OUT" | jq -r "[.reviews.lines, .reviews.supersededRevisions] | map(tostring) | join(\",\")")" = "1,1" ] &&
+   [ "$(printf "%s" "$OUT" | jq -r ".reviews.groups[] | select(.modelId == \"claude-sonnet-5\") | [.reviews, (.meanPrecision * 1000 | round)] | map(tostring) | join(\",\")")" = "1,667" ]'
+jq '. + {extendedFrom: {base: .base, head: .head, outDir: .outDir, reviewers: [.reviewers[].label], items: 7}, newItems: [], superseded: ["rv-astra"]}
+  | .reviewers |= map(if .label == "rv-astra" then .status = "superseded" | .findings = 0 else . end)
+  | .reviewers += [{"label":"rv-astra-2","vendor":"codex","level":"deep","model":"gpt-6-astra","effort":"high","status":"ok","findings":1,"tokens":10,"seconds":1}]
+  | .items[3].foundBy += ["rv-astra-2"]' "$T/review.json" > "$T/review-ext.json"
+run_pr ingest-review --tiers "$TIERS" --ledger "$RVL" --result "$T/review-ext.json" --repo-name voron
+chk "RR3 an extended result (extendedFrom, same outDir) is revision 3; the superseded reviewer keeps status superseded with null scores" \
+  '[ "$RC" -eq 0 ] && [ "$(j .revision)" = 3 ] && [ "$(tail -n 1 "$RVL" | jq -r ".reviewers[] | select(.label == \"rv-astra\") | [.status, (.precision|tostring)] | join(\",\")")" = "superseded,null" ]'
+run_pr report --json --tiers "$TIERS" --ledger "$RVL"
+chk "RR3b report: superseded is its own count, never unavailable (astra: 1 review ok, 0 unavailable, 1 superseded)" \
+  '[ "$(printf "%s" "$OUT" | jq -r ".reviews.groups[] | select(.modelId == \"gpt-6-astra\") | [.reviews, .unavailable, .superseded] | map(tostring) | join(\",\")")" = "1,0,1" ]'
+jq '.items[1].verdict = "real"' "$T/review.json" > "$T/review-other.json"
+RVL_SUM=$(cksum < "$RVL")
+run_pr ingest-review --tiers "$TIERS" --ledger "$RVL" --result "$T/review-other.json" --repo-name voron
+chk "RR4 a different review result under an ingested run id, neither extended nor --resolved, is refused (exit 2)" '[ "$RC" -eq 2 ] && [ "$(cksum < "$RVL")" = "$RVL_SUM" ]'
 
 echo ""
 echo "RESULT: $PASS_COUNT passed, $FAIL_COUNT failed"

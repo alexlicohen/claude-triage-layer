@@ -8,9 +8,9 @@
 #
 # Usage:
 #   parity-report.sh ingest-compare --result FILE --repo-name NAME --level L
-#                    --source inline|suite [--task ID] [--applied LABEL]
-#                    [--run ID] [--ts ISO] [--ledger F] [--tiers F]
-#   parity-report.sh ingest-parity  --result FILE [--ts ISO] [--ledger F] [--tiers F]
+#                    --source inline|suite --run ID [--task ID] [--applied LABEL]
+#                    [--ts ISO] [--ledger F] [--tiers F]
+#   parity-report.sh ingest-parity  --result FILE [--run ID] [--ts ISO] [--ledger F] [--tiers F]
 #   parity-report.sh ingest-review  --result FILE --repo-name NAME [--resolved FILE]
 #                    [--run ID] [--ts ISO] [--ledger F] [--tiers F]
 #   parity-report.sh migrate        [--from F] [--ledger F] [--tiers F]
@@ -21,11 +21,32 @@
 #
 # ingest-compare  FILE = a triage-compare return value (JSON). Appends ONE ledger
 #                 line for the compare. --level is the level the work was planned
-#                 at; --applied names the candidate whose patch was applied.
+#                 at; --applied names the candidate whose patch was applied. --run
+#                 is REQUIRED (the run id is the idempotence key; see Run ids).
 # ingest-parity   FILE = a triage-parity return value. Appends one line per GRADED
 #                 (task, candidate run), source "suite", level = the task's band's
-#                 level (B1 quick, B2 builder, B3 deep, B4 top), run = basename of
-#                 its outDir. A run already in the ledger is skipped (idempotent).
+#                 level (B1 quick, B2 builder, B3 deep, B4 top), run = --run, else
+#                 the basename of its outDir.
+# Run ids (every ingest): a run id must be globally unique (e.g. carry the session
+#                 id). Each new line stores runHash = a hash of the canonical result
+#                 JSON + the options that shape its lines. Re-ingesting a run whose
+#                 lines carry the SAME runHash appends only the observations (run,
+#                 task, candidate labels) still missing — a no-op normally, the
+#                 recovery after an interrupted multi-line ingest; a run id already
+#                 there with a DIFFERENT runHash is refused (exit 2: a collision,
+#                 never silently skipped or double-counted); lines written before
+#                 runHash existed are skipped as before. The run's time: --ts, else
+#                 the result's own top-level ts, else now (a --ts that disagrees with
+#                 the result's ts is refused); every ts is stored as UTC
+#                 (YYYY-MM-DDTHH:MM:SSZ; an offset is honored, no zone = UTC, a bare
+#                 date = midnight UTC, fractions dropped).
+# Lock: every ledger writer (ingest-*, migrate, backfill-modelid) holds ONE lock,
+#                 <real ledger>.lock (a mkdir lock with the holder's pid; a lock
+#                 whose pid is gone, or that never got a pid within ~5 s, is stale
+#                 and taken over), across its read-check-append or snapshot-validate-
+#                 replace. A symlinked ledger is written through to its target (the
+#                 link stays). PARITY_LOCK_TRIES (default 300 x 0.1 s) bounds the wait;
+#                 still locked => exit 1, nothing written.
 # ingest-review   FILE = a triage-compare kind:"review" result. Appends ONE ledger line
 #                 (source "inline-review") with per-reviewer precision/recall/n,
 #                 recomputed here AFTER applying --resolved (Alex's verdicts for
@@ -34,8 +55,14 @@
 #                 precision = its real items / its adjudicated (real + rejected)
 #                 items (n = that denominator), recall = its real items / all real
 #                 items; null when the denominator is 0; an unavailable reviewer is
-#                 recorded with null scores, never 0. Run id = --run, else the
-#                 result's outDir basename; a run already in the ledger is skipped.
+#                 recorded with null scores, never 0; a superseded one (an extension
+#                 re-ran it) keeps status superseded, null scores. Run id = --run,
+#                 else the result's outDir basename. REVISIONS: an extended result
+#                 (it has extendedFrom) or an ingest with --resolved, for a run
+#                 already in the ledger, appends a new line with revision = the
+#                 highest so far + 1 (the first line is revision 1); `report` reads
+#                 only the LATEST revision of each review run. The same content again
+#                 is skipped; different content that is neither is refused (Run ids).
 # migrate         converts the legacy ~/.agents/evidence/vendor-parity.jsonl (the
 #                 default --from) best-effort: a compare line -> one ledger line; a
 #                 parity aggregate -> one line per counted pass/fail per band (no
@@ -47,8 +74,9 @@
 #                 pass rates, and they do not drive tier proposals (yet).
 # backfill-modelid gives every ledger candidate/reviewer WITHOUT a modelId key one
 #                 (Model ids, below; never "observed": nothing reported it then).
-#                 Rewrites --ledger in place (same dir + mode, one rename; refused
-#                 if the ledger changed meanwhile). Idempotent: a row that has the
+#                 Rewrites the ledger in place under the lock (same dir + mode as
+#                 the real file behind any symlink, one rename; refused if the
+#                 ledger changed meanwhile). Idempotent: a row that has the
 #                 key (even null) is left alone; lines with nothing to fill and
 #                 malformed lines stay byte-identical. --dry-run writes nothing.
 # history         per level x vendor, EVERY modelId x effort ever graded there (old
@@ -72,13 +100,16 @@
 #    "level":"quick|builder|deep|top", "band":<1-4, suite only>, "task":<id|null>,
 #    "candidates":[{"label","vendor","model","effort","status","totalTokens","seconds",
 #                   "modelId","modelIdSource"}],
-#    "applied":<label|null>, "migrated":<"vendor-parity.jsonl", migrated lines only>}
+#    "applied":<label|null>, "migrated":<"vendor-parity.jsonl", migrated lines only>,
+#    "runHash":<hex, Wave 16B+>}
 #   Review line (ingest-review; no candidates, so it never enters the build rule):
 #   {"v":1, "ts", "source":"inline-review", "run":<id|null>, "repoName",
-#    "reviewers":[{"label","vendor","level","model","effort","status":"ok|unavailable",
+#    "reviewers":[{"label","vendor","level","model","effort","status":"ok|unavailable|superseded",
 #      "precision","recall","n","real","rejected","disputed","findings","totalTokens","seconds",
 #      "modelId","modelIdSource"}],
-#    "items":<merged items>, "real":<real items>, "disputed":<still disputed>, "resolved":<by Alex>}
+#    "items":<merged items>, "real":<real items>, "disputed":<still disputed>, "resolved":<by Alex>,
+#    "revision":<1, 2, ...>, "runHash"}
+#   Schema stays v 1: runHash/revision/superseded are additive (older lines lack them).
 #   status: pass | fail (GRADED) | unavailable | invalid | denied | unresolved |
 #   ungraded | skipped | unknown — only pass/fail ever count. A candidate's null
 #   model/effort is filled at ingest from the tiers file's levels.<its level>.<vendor>
@@ -95,10 +126,27 @@
 # have no modelId: `report` resolves them the same way at read time, and
 # backfill-modelid writes it into them. Schema stays v 1 (both keys optional).
 #
+# Outcomes (M28: reps are not independent trials): within a group, the graded
+# observations of one (run, task) — the reps of one candidate on one task, or the
+# same inline run ingested twice — collapse to ONE outcome by majority; a tie
+# (e.g. 1 pass + 1 fail) is EXCLUDED (counted in `ties`, never a pass or a fail).
+# A line with no run id, or a migrated legacy line, is its own outcome; an inline
+# line from before runHash collapses only with an IDENTICAL line of its run id
+# (a double ingest), never with a different run that reused the id. n (what
+# minN, Wilson and the rule use) is that EFFECTIVE count; `observations` is the
+# raw graded count.
+#
 # Rule (tuning.rule, validated by triage-tiers.sh --bakeoff-json): per level x vendor,
 # the incumbent is levels.<level>.<vendor> {model, effort}; every other (model,
-# effort) of that vendor at that level is a challenger — all keyed by CONCRETE id
-# (modelId; a tiers alias resolves as of today). Cheapness by FAMILY, a whole token
+# effort) of that vendor at that level whose model is a CURRENT id — one the tiers
+# file configures today for that vendor (any levels entry or tuning.challengers
+# entry, resolved as of today) — is a challenger, all keyed by CONCRETE id (modelId).
+# A superseded version (claude-opus-5 once opus means claude-opus-5-5) or a model
+# the tiers file does not name is never a challenger: it shows in `history` only.
+# tuning.rejected [{level, vendor, model, effort, until?}] (Alex turned the proposal
+# down; until = YYYY-MM-DD, inclusive, UTC; absent = no end): a qualifying rejected
+# challenger gets verdict "rejected" instead of "propose", so it is never proposed
+# and never holds its level at the explore rate. Cheapness by FAMILY, a whole token
 # of the id, so every version ranks: claude haiku < sonnet < opus < fable; codex
 # luna < sol < astra; agy flash < pro; then effort low < medium < high < xhigh <
 # max. Two versions of one family at one effort are unranked (never proposed): a
@@ -120,14 +168,18 @@
 #             n >= minN, each Wilson 95% interval (UB - LB) is <= maxWidth, and there
 #             is no proposal for that level x vendor -> maintain.rate
 #   explore   otherwise, the reason naming every gap -> sampleRate
+# (A rejected challenger is no proposal, so it is no gap either.)
+# TODAY = the UTC date (PARITY_TODAY=YYYY-MM-DD overrides it, for tests): a tiers
+# alias resolves, and tuning.rejected until-dates expire, as of TODAY.
 # Counts are keyed by the CURRENT (vendor, modelId, effort) of the tiers file, so a
 # model or effort change there starts at n=0 -> explore again (no separate reset),
 # and so does an alias that moves (a new aliasHistory entry): old versions keep
 # their counts and stay visible in `history`. Only build lines count (review lines
 # never do).
 #
-# Exit codes: 0 ok; 1 ledger write failed (or it changed during a backfill); 2 usage / invalid input / invalid
-# tiers file (nothing written). bash-3.2-safe.
+# Exit codes: 0 ok; 1 ledger write failed (or it changed during a backfill, or it
+# stayed locked); 2 usage / invalid input / invalid tiers file / run-id collision
+# (nothing written). bash-3.2-safe.
 set -uo pipefail
 export LC_ALL=C
 
@@ -183,15 +235,34 @@ if [ -z "$LEDGER" ]; then
   case "$LEDGER" in \~/*) LEDGER="$HOME/${LEDGER#\~/}" ;; esac
 fi
 case "$LEDGER" in /*) ;; *) usage "--ledger must be an absolute path (got '$LEDGER')" ;; esac
+# real_path P — P with every symlink of the file itself followed and its directory
+# made physical: writers lock and replace THIS file, so a symlinked ledger keeps
+# its link (backfill's rename replaces the target, never the link).
+real_path() {
+  local p="$1" t n=0
+  while [ -L "$p" ] && [ "$n" -lt 40 ]; do
+    t=$(readlink "$p") || break
+    case "$t" in /*) p="$t" ;; *) p="$(dirname "$p")/$t" ;; esac
+    n=$((n + 1))
+  done
+  if [ -d "$(dirname "$p")" ]; then printf '%s/%s\n' "$(cd "$(dirname "$p")" && pwd -P)" "$(basename "$p")"; else printf '%s\n' "$p"; fi
+}
+REAL_LEDGER=$(real_path "$LEDGER")
 # The ledger is appended to; the tiers file must never be that target.
-if [ -e "$LEDGER" ] && [ "$(cd "$(dirname "$LEDGER")" && pwd -P)/$(basename "$LEDGER")" = "$(cd "$(dirname "$TIERS")" && pwd -P)/$(basename "$TIERS")" ]; then
+if [ -e "$LEDGER" ] && [ "$REAL_LEDGER" = "$(real_path "$TIERS")" ]; then
   usage "refusing: --ledger is the tiers file"
 fi
 # aliasHistory (validated above by the same triage-tiers.sh call): resolves a bare
 # alias to the concrete id it pointed at on a date. TODAY = the date a tiers entry
-# that is still an alias is resolved at (UTC, like every ledger ts).
+# that is still an alias is resolved at (UTC, like every ledger ts); PARITY_TODAY
+# overrides it (date-independent tests).
 AH=$(jq -c '.aliasHistory // {}' "$TIERS") || usage "could not read aliasHistory from $TIERS"
-TODAY=$(date -u +%Y-%m-%d)
+if [ -n "${PARITY_TODAY:-}" ]; then
+  printf '%s' "$PARITY_TODAY" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' || usage "PARITY_TODAY must be YYYY-MM-DD (got '$PARITY_TODAY')"
+  TODAY="$PARITY_TODAY"
+else
+  TODAY=$(date -u +%Y-%m-%d)
+fi
 if [ -n "$FMODEL$FSINCE" ]; then
   case "$SUB" in report|history) ;; *) usage "--model/--since filter report and history only" ;; esac
   [ -z "$FMODEL" ] || printf '%s' "$FMODEL" | grep -Eq '^[A-Za-z0-9._+-]{1,80}$' || usage "--model must be a model id or family token (got '$FMODEL')"
@@ -230,8 +301,20 @@ def model_id($ah; $v; $m; $date; $obs):
   else {modelId: ($m | id_base), modelIdSource: (if $obs then "observed" else "pinned" end)} end;
 # current_id — a TIERS entry (incumbent or challenger) as a concrete id today.
 def current_id($ah; $v; $m; $today): if is_alias($ah; $v; $m) then (alias_at($ah; $v; $m; $today) // $m) elif ($m | type) == "string" then ($m | id_base) else $m end;
-def date_of: (if type == "string" then .[0:10] else "" end);
+# utc — an ISO date/time as UTC "YYYY-MM-DDTHH:MM:SSZ": an offset is honored, no
+# zone means UTC, a bare date is midnight UTC, a fraction is dropped; null when
+# the value is not an ISO date/time. THE one ts normalization (ingest and report).
+def utc: if type != "string" then null else
+  (capture("^(?<y>[0-9]{4})-(?<mo>[0-9]{2})-(?<d>[0-9]{2})(T(?<h>[0-9]{2}):(?<mi>[0-9]{2})(:(?<s>[0-9]{2})(\\.[0-9]+)?)?(Z|(?<sg>[+-])(?<oh>[0-9]{2}):?(?<om>[0-9]{2}))?)?$") // null) as $c
+  | if $c == null then null else
+      ([($c.y | tonumber), ($c.mo | tonumber) - 1, ($c.d | tonumber), (($c.h // "0") | tonumber), (($c.mi // "0") | tonumber), (($c.s // "0") | tonumber), 0, 0] | mktime) as $e
+      | (if $c.sg == null then 0 else (($c.oh | tonumber) * 3600 + ($c.om | tonumber) * 60) * (if $c.sg == "-" then -1 else 1 end) end) as $off
+      | ($e - $off) | todate end end;
+def date_of: ((utc // (if type == "string" then . else "" end)) | .[0:10]);
 def safe: type == "string" and test("^[A-Za-z0-9._:+-]{1,80}$");
+# model_ok — a model id token, optionally with a short context suffix (opus[1m]);
+# the suffix is not a version (id_base strips it) and is never free text.
+def model_ok: type == "string" and test("^[A-Za-z0-9._:+-]{1,80}(\\[[A-Za-z0-9]{1,8}\\])?$");
 def GRADED: ["pass","fail"];
 def KNOWN: ["unavailable","invalid","denied","unresolved","ungraded","skipped"];
 # norm — the ONLY status mapping: pass/fail are graded; every other status keeps
@@ -254,7 +337,7 @@ def cand($levels; $ah; $date; $lvl):
      status: (.status | norm), totalTokens: (.totalTokens | num_or_null), seconds: (.seconds | num_or_null)}
   | . + model_id($ah; .vendor; .model; $date; $obs);
 def cand_ok: (.label | safe) and ((.vendor as $x | VENDORS | index($x)) != null)
-  and (.model == null or (.model | safe)) and (.effort == null or ((.effort as $x | EFFORTS | index($x)) != null))
+  and (.model == null or (.model | model_ok)) and (.effort == null or ((.effort as $x | EFFORTS | index($x)) != null))
   and (.modelId == null or (.modelId | safe));
 '
 
@@ -264,18 +347,125 @@ check_ts() {
     usage "--ts must be an ISO date/time (got '$1')"
 }
 is_token() { printf '%s' "$1" | grep -Eq '^[A-Za-z0-9._:+-]{1,80}$'; }
+# utc_of TS — TS (already check_ts-valid) normalized by the one jq utc.
+utc_of() { jq -rn --arg t "$1" "$DEFS"' $t | utc // empty'; }
+# run_ts FILE — sets TS: --ts, else FILE's own top-level ts, else now; always UTC.
+# A --ts that disagrees with the result's own ts is refused.
+run_ts() {
+  local own
+  own=$(jq -r 'if (.ts | type) == "string" then .ts else empty end' "$1" 2>/dev/null)
+  if [ -n "$own" ]; then
+    check_ts "$own"
+    own=$(utc_of "$own")
+  fi
+  if [ -n "$TS" ]; then
+    check_ts "$TS"
+    TS=$(utc_of "$TS")
+    [ -z "$own" ] || [ "$own" = "$TS" ] || usage "--ts $TS disagrees with the result's own ts $own (omit --ts to use the result's)"
+  elif [ -n "$own" ]; then
+    TS="$own"
+  else
+    TS=$(now_ts)
+  fi
+  [ -n "$TS" ] || usage "could not normalize the timestamp to UTC"
+}
+# hash_of — a hex content hash of stdin (sha256 where available; cksum otherwise).
+hash_of() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -c1-32
+  elif command -v shasum >/dev/null 2>&1; then shasum -a 256 | cut -c1-32
+  else cksum | tr -s ' ' '-' | cut -d- -f1,2
+  fi
+}
+# run_hash FILE OPTS... — runHash: FILE's canonical JSON (sorted keys, compact)
+# plus the ingest options that shape its lines (never --ts: the same run ingested
+# at another time is the same run).
+run_hash() {
+  local f="$1"; shift
+  { jq -S -c . "$f" && printf '%s\n' "$@"; } | hash_of
+}
 
-append() { # $1 file of JSON lines to append
-  mkdir -p "$(dirname "$LEDGER")" 2>/dev/null || { echo "parity-report: could not create $(dirname "$LEDGER")" >&2; exit 1; }
-  cat "$1" >> "$LEDGER" || { echo "parity-report: could not append to $LEDGER" >&2; exit 1; }
+# --- the ONE ledger lock (every writer) --------------------------------------
+LOCK_HELD=""
+lock_ledger() {
+  local lock="$REAL_LEDGER.lock" tries=0 nopid=0 max="${PARITY_LOCK_TRIES:-300}" pid seen
+  case "$max" in ''|*[!0-9]*) usage "PARITY_LOCK_TRIES must be a whole number (got '$max')" ;; esac
+  mkdir -p "$(dirname "$REAL_LEDGER")" 2>/dev/null || { echo "parity-report: could not create $(dirname "$REAL_LEDGER")" >&2; exit 1; }
+  while ! mkdir "$lock" 2>/dev/null; do
+    pid=$(cat "$lock/pid" 2>/dev/null || true)
+    if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+      # Stale: its holder is gone. Take it over only if it is still that holder's.
+      seen=$(cat "$lock/pid" 2>/dev/null || true)
+      [ "$seen" = "$pid" ] && rm -rf "$lock"
+      continue
+    fi
+    if [ -z "$pid" ]; then
+      nopid=$((nopid + 1))
+      # A holder killed between its mkdir and its pid write never releases it.
+      if [ "$nopid" -ge 50 ]; then rm -rf "$lock"; nopid=0; continue; fi
+    else
+      nopid=0
+    fi
+    tries=$((tries + 1))
+    if [ "$tries" -ge "$max" ]; then
+      echo "parity-report: the ledger is locked by pid ${pid:-?} ($lock) — nothing written; run it again (remove $lock only if no parity-report is running)" >&2
+      exit 1
+    fi
+    sleep 0.1
+  done
+  printf '%s\n' "$$" > "$lock/pid"
+  LOCK_HELD="$lock"
+}
+unlock_ledger() { if [ -n "$LOCK_HELD" ]; then rm -rf "$LOCK_HELD"; LOCK_HELD=""; fi; }
+
+append() { # $1 file of JSON lines to append (the caller holds the lock)
+  [ -n "$LOCK_HELD" ] || { echo "parity-report: internal: append without the ledger lock" >&2; exit 1; }
+  cat "$1" >> "$REAL_LEDGER" || { echo "parity-report: could not append to $LEDGER" >&2; exit 1; }
 }
 ledger_runs() { # distinct run ids already in the ledger, one per line
-  [ -f "$LEDGER" ] || return 0
-  jq -R -r 'fromjson? | .run? // empty | strings' "$LEDGER" | sort -u
+  [ -f "$REAL_LEDGER" ] || return 0
+  jq -R -r 'fromjson? | .run? // empty | strings' "$REAL_LEDGER" | sort -u
+}
+
+# commit_lines MODE FILE REVISABLE — THE idempotence / collision decision, taken
+# and applied under the lock. FILE = the new lines of ONE run (same run, same
+# runHash). MODE build|review. Prints {action, appended, reason}; exit 2 on a
+# collision (nothing written).
+COMMIT='
+def okey: [.run, (.task // null), ([(.candidates // [])[]? | objects | .label] | join(","))];
+($new[0].run) as $run | ($new[0].runHash) as $h
+| [$old[] | select($run != null and .run == $run)] as $same
+| if $run == null or ($same | length) == 0 then {action: "append", lines: $new, reason: null}
+  elif any($same[]; .runHash == $h) then
+    if $mode == "review" then {action: "skip", lines: [], reason: "run already in the ledger with the same content"}
+    else [$same[] | select(.runHash == $h) | okey] as $have
+      | [$new[] | select(okey as $k | any($have[]; . == $k) | not)] as $miss
+      | if ($miss | length) == 0 then {action: "skip", lines: [], reason: "run already in the ledger with the same content"}
+        else {action: "append", lines: $miss, reason: "completed an interrupted ingest: \($miss | length) missing observation(s) appended"} end
+    end
+  elif $mode == "review" and $revisable then
+    {action: "append", lines: [$new[] | .revision = (([$same[] | .revision // 1] | max) + 1)],
+     reason: "new revision of review run \($run) (the earlier revision(s) are superseded in report)"}
+  elif all($same[]; .runHash == null) then {action: "skip", lines: [], reason: "run already in the ledger (written before content hashes)"}
+  else {action: "refuse", lines: [], reason: "run id \($run) is already in the ledger with DIFFERENT content (runHash \([$same[] | .runHash // empty] | unique | join(",")) vs \($h)) — nothing written; pass a globally unique --run"}
+  end'
+commit_lines() {
+  local mode="$1" file="$2" revisable="${3:-false}"
+  lock_ledger
+  if [ -f "$REAL_LEDGER" ]; then jq -R -c 'fromjson? | objects' "$REAL_LEDGER" > "$TMP/old" 2>/dev/null || : > "$TMP/old"; else : > "$TMP/old"; fi
+  jq -n -c --arg mode "$mode" --argjson revisable "$revisable" --slurpfile new "$file" --slurpfile old "$TMP/old" "$COMMIT" > "$TMP/decision" 2>"$TMP/err" ||
+    { unlock_ledger; echo "parity-report: could not check the ledger: $(head -c 300 "$TMP/err")" >&2; exit 1; }
+  if [ "$(jq -r .action "$TMP/decision")" = refuse ]; then
+    unlock_ledger
+    usage "$(jq -r .reason "$TMP/decision")"
+  fi
+  jq -c '.lines[]' "$TMP/decision" > "$TMP/commit"
+  [ -s "$TMP/commit" ] && append "$TMP/commit"
+  unlock_ledger
+  jq -c '{action, appended: (.lines | length), reason}' "$TMP/decision"
 }
 
 TMP=$(mktemp -d) || { echo "parity-report: mktemp failed" >&2; exit 1; }
-trap 'rm -rf "$TMP"' EXIT
+trap 'unlock_ledger; rm -rf "$TMP"' EXIT
 
 # ---------------------------------------------------------------------------
 do_ingest_compare() {
@@ -286,38 +476,44 @@ do_ingest_compare() {
   case "$LEVEL" in quick|builder|deep|top) ;; *) usage "--level must be quick|builder|deep|top" ;; esac
   case "$SOURCE" in inline|suite) ;; *) usage "--source must be inline|suite" ;; esac
   [ -z "$TASK" ] || is_token "$TASK" || usage "--task must be an id token (letters, digits, . _ : + -), not text from the repo"
-  [ -z "$RUN" ] || is_token "$RUN" || usage "--run must be an id token"
-  if [ -n "$TS" ]; then check_ts "$TS"; else TS=$(now_ts); fi
+  [ -n "$RUN" ] || usage "ingest-compare needs --run (a globally unique run id: the idempotence key)"
+  is_token "$RUN" || usage "--run must be an id token"
   jq -e 'type == "object" and (.candidates | type == "array" and length > 0)' "$RESULT" >/dev/null 2>&1 ||
     usage "--result is not a triage-compare result (no candidates array): $RESULT"
+  run_ts "$RESULT"
+  local h
+  h=$(run_hash "$RESULT" compare "$REPO_NAME" "$LEVEL" "$SOURCE" "$TASK" "$APPLIED")
   jq -c --argjson cfg "$CFG" --argjson ah "$AH" --arg ts "$TS" --arg src "$SOURCE" --arg repo "$REPO_NAME" --arg lvl "$LEVEL" \
-     --arg task "$TASK" --arg applied "$APPLIED" --arg run "$RUN" "$DEFS"'
+     --arg task "$TASK" --arg applied "$APPLIED" --arg run "$RUN" --arg h "$h" "$DEFS"'
     [.candidates[] | cand($cfg.levels; $ah; ($ts | date_of); $lvl)] as $c
     | if ($c | all(cand_ok)) | not then error("a candidate has an invalid label/vendor/model/effort")
       elif $applied != "" and ([$c[].label] | index($applied)) == null then error("--applied \($applied) is not a candidate label")
-      else {v: 1, ts: $ts, source: $src, run: (if $run == "" then null else $run end), repoName: $repo, level: $lvl,
+      else {v: 1, ts: $ts, source: $src, run: $run, repoName: $repo, level: $lvl,
             task: (if $task == "" then null else $task end), candidates: $c,
-            applied: (if $applied == "" then null else $applied end)} end' "$RESULT" > "$TMP/line" 2>"$TMP/err" ||
+            applied: (if $applied == "" then null else $applied end), runHash: $h} end' "$RESULT" > "$TMP/line" 2>"$TMP/err" ||
     usage "could not ingest $RESULT: $(sed 's/^jq: error[^:]*: //' "$TMP/err" | head -c 300)"
-  append "$TMP/line"
-  jq -c '{step:"ingest-compare", ledger:$l, lines:1, candidates:(.candidates | length), graded:([.candidates[] | select(.status == "pass" or .status == "fail")] | length)}' --arg l "$LEDGER" "$TMP/line"
+  commit_lines build "$TMP/line" > "$TMP/c" || exit $?
+  jq -c --slurpfile c "$TMP/c" '{step:"ingest-compare", ledger:$l, run, lines:$c[0].appended, candidates:(.candidates | length),
+     graded:([.candidates[] | select(.status == "pass" or .status == "fail")] | length)}
+     + (if $c[0].appended == 0 then {skipped: $c[0].reason} elif $c[0].reason != null then {note: $c[0].reason} else {} end)' --arg l "$LEDGER" "$TMP/line"
 }
 
 # ---------------------------------------------------------------------------
 do_ingest_parity() {
   [ -n "$RESULT" ] || usage "ingest-parity needs --result"
   [ -f "$RESULT" ] || usage "--result is not a file: $RESULT"
-  if [ -n "$TS" ]; then check_ts "$TS"; else TS=$(now_ts); fi
   jq -e 'type == "object" and (.tasks | type == "array") and (.ranking | type == "array")' "$RESULT" >/dev/null 2>&1 ||
     usage "--result is not a triage-parity result (needs tasks and ranking): $RESULT"
-  local run
-  run=$(jq -r '(.outDir // "") | tostring | sub("/+$"; "") | split("/") | last // ""' "$RESULT")
-  is_token "$run" || usage "the parity result's outDir basename is not an id token: '$run'"
-  if ledger_runs | grep -qxF "$run"; then
-    jq -nc --arg l "$LEDGER" --arg r "$run" '{step:"ingest-parity", ledger:$l, run:$r, lines:0, skipped:"run already in the ledger"}'
-    return 0
+  run_ts "$RESULT"
+  local run="$RUN" h
+  if [ -n "$run" ]; then
+    is_token "$run" || usage "--run must be an id token"
+  else
+    run=$(jq -r '(.outDir // "") | tostring | sub("/+$"; "") | split("/") | last // ""' "$RESULT")
+    is_token "$run" || usage "the parity result's outDir basename is not an id token: '$run' (pass --run)"
   fi
-  jq -c --argjson cfg "$CFG" --argjson ah "$AH" --arg ts "$TS" --arg run "$run" "$DEFS"'
+  h=$(run_hash "$RESULT" parity)
+  jq -c --argjson cfg "$CFG" --argjson ah "$AH" --arg ts "$TS" --arg run "$run" --arg h "$h" "$DEFS"'
     (reduce .ranking[] as $r ({}; .[$r.label] = $r)) as $rank
     | .tasks[] as $t
     | (BAND_LEVEL[($t.band | tostring)]) as $lvl
@@ -326,15 +522,22 @@ do_ingest_parity() {
     | select(.label != null and $rank[.label] != null)
     | . as $row | $rank[.label] as $rk
     | ({label: ($row.runLabel // $row.label), vendor: ($row.vendor // $rk.vendor), level: $rk.level,
-        model: ($row.model // $rk.model), effort: $rk.effort, status: $row.status,
+        model: ($row.model // $rk.model), modelFrom: (if $row.model != null then $row.modelFrom else null end),
+        effort: $rk.effort, status: $row.status,
         totalTokens: $row.totalTokens, seconds: $row.seconds} | cand($cfg.levels; $ah; ($ts | date_of); $rk.level)) as $c
     | select(GRADED | index($c.status) != null)
     | if ($c | cand_ok) | not then error("candidate \($row.label) has an invalid label/vendor/model/effort")
       else {v: 1, ts: $ts, source: "suite", run: $run, repoName: "parity-suite", level: $lvl, band: $t.band,
-            task: (if ($t.id | safe) then $t.id else null end), candidates: [$c], applied: null} end' "$RESULT" > "$TMP/lines" 2>"$TMP/err" ||
+            task: (if ($t.id | safe) then $t.id else null end), candidates: [$c], applied: null, runHash: $h} end' "$RESULT" > "$TMP/lines" 2>"$TMP/err" ||
     usage "could not ingest $RESULT: $(sed 's/^jq: error[^:]*: //' "$TMP/err" | head -c 300)"
-  [ -s "$TMP/lines" ] && append "$TMP/lines"
-  jq -nc --arg l "$LEDGER" --arg r "$run" --argjson n "$(wc -l < "$TMP/lines" | tr -d ' ')" '{step:"ingest-parity", ledger:$l, run:$r, lines:$n}'
+  if [ ! -s "$TMP/lines" ]; then
+    jq -nc --arg l "$LEDGER" --arg r "$run" '{step:"ingest-parity", ledger:$l, run:$r, lines:0, graded:0}'
+    return 0
+  fi
+  commit_lines build "$TMP/lines" > "$TMP/c" || exit $?
+  jq -c --arg l "$LEDGER" --arg r "$run" --argjson n "$(wc -l < "$TMP/lines" | tr -d ' ')" \
+    '{step:"ingest-parity", ledger:$l, run:$r, lines:.appended, graded:$n}
+     + (if .appended == 0 then {skipped: .reason} elif .reason != null then {note: .reason} else {} end)' "$TMP/c"
 }
 
 # ---------------------------------------------------------------------------
@@ -343,9 +546,9 @@ do_ingest_review() {
   [ -f "$RESULT" ] || usage "--result is not a file: $RESULT"
   printf '%s' "$REPO_NAME" | grep -Eq '^[A-Za-z0-9._-]{1,64}$' || usage "--repo-name must be a bare name (letters, digits, . _ -), never a path"
   [ -z "$RUN" ] || is_token "$RUN" || usage "--run must be an id token"
-  if [ -n "$TS" ]; then check_ts "$TS"; else TS=$(now_ts); fi
   jq -e 'type == "object" and .kind == "review" and (.reviewers | type == "array" and length > 0) and (.items | type == "array")' "$RESULT" >/dev/null 2>&1 ||
     usage "--result is not a triage-compare review result (kind \"review\" with reviewers and items): $RESULT"
+  run_ts "$RESULT"
   local res='{}'
   if [ -n "$RESOLVED" ]; then
     [ -f "$RESOLVED" ] || usage "--resolved is not a file: $RESOLVED"
@@ -361,11 +564,11 @@ do_ingest_review() {
     run=$(jq -r '(.outDir // "") | tostring | sub("/+$"; "") | split("/") | last // ""' "$RESULT")
     is_token "$run" || run=""
   fi
-  if [ -n "$run" ] && ledger_runs | grep -qxF "$run"; then
-    jq -nc --arg l "$LEDGER" --arg r "$run" '{step:"ingest-review", ledger:$l, run:$r, lines:0, skipped:"run already in the ledger"}'
-    return 0
-  fi
-  jq -c --argjson cfg "$CFG" --argjson ah "$AH" --argjson res "$res" --arg ts "$TS" --arg run "$run" --arg repo "$REPO_NAME" "$DEFS"'
+  local h revisable=false
+  h=$(run_hash "$RESULT" review "$REPO_NAME" "$res")
+  # An extension (extendedFrom) or Alex's --resolved verdicts may revise a run.
+  if [ -n "$RESOLVED" ] || jq -e '.extendedFrom | type == "object"' "$RESULT" >/dev/null 2>&1; then revisable=true; fi
+  jq -c --argjson cfg "$CFG" --argjson ah "$AH" --argjson res "$res" --arg ts "$TS" --arg run "$run" --arg repo "$REPO_NAME" --arg h "$h" "$DEFS"'
     ([.items[] | if .verdict == "disputed" and $res[.id] != null
                  then .verdict = (if $res[.id] == "real" then "real" else "rejected" end) | .resolved = true else . end]) as $items
     | ([$items[] | select(.verdict == "real")] | length) as $allReal
@@ -374,7 +577,7 @@ do_ingest_review() {
         | {label, vendor, level: (if (LEVELS | index($r.level)) != null then $r.level else null end),
            model: (if $r.model == null then ($def.model // null) else $r.model end),
            effort: (if $r.effort == null then ($def.effort // null) else $r.effort end),
-           status: (if $r.status == "ok" then "ok" else "unavailable" end),
+           status: (if $r.status == "ok" or $r.status == "superseded" then $r.status else "unavailable" end),
            totalTokens: ($r.tokens | num_or_null), seconds: ($r.seconds | num_or_null)}
         | . + model_id($ah; .vendor; .model; ($ts | date_of); false)
         | if .status != "ok" then . + {precision: null, recall: null, n: 0, real: null, rejected: null, disputed: null, findings: null}
@@ -390,16 +593,22 @@ do_ingest_review() {
       else {v: 1, ts: $ts, source: "inline-review", run: (if $run == "" then null else $run end), repoName: $repo,
             reviewers: $revs, items: ($items | length), real: $allReal,
             disputed: ([$items[] | select(.verdict == "disputed")] | length),
-            resolved: ([$items[] | select(.resolved == true)] | length)} end' "$RESULT" > "$TMP/line" 2>"$TMP/err" ||
+            resolved: ([$items[] | select(.resolved == true)] | length), revision: 1, runHash: $h} end' "$RESULT" > "$TMP/line" 2>"$TMP/err" ||
     usage "could not ingest $RESULT: $(sed 's/^jq: error[^:]*: //' "$TMP/err" | head -c 300)"
-  append "$TMP/line"
-  jq -c --arg l "$LEDGER" '{step:"ingest-review", ledger:$l, run, lines:1, reviewers:(.reviewers | length), scored:([.reviewers[] | select(.precision != null)] | length), disputed, resolved}' "$TMP/line"
+  commit_lines review "$TMP/line" "$revisable" > "$TMP/c" || exit $?
+  # The line as committed (a revision number may have been set).
+  jq -c '.lines[0] // empty' "$TMP/decision" > "$TMP/committed"
+  [ -s "$TMP/committed" ] || cp "$TMP/line" "$TMP/committed"
+  jq -c --arg l "$LEDGER" --slurpfile c "$TMP/c" '{step:"ingest-review", ledger:$l, run, revision, lines:$c[0].appended, reviewers:(.reviewers | length),
+     scored:([.reviewers[] | select(.precision != null)] | length), disputed, resolved}
+     + (if $c[0].appended == 0 then {skipped: $c[0].reason} elif $c[0].reason != null then {note: $c[0].reason} else {} end)' "$TMP/committed"
 }
 
 # ---------------------------------------------------------------------------
 do_migrate() {
   [ -n "$FROM" ] || FROM="$HOME/.agents/evidence/vendor-parity.jsonl"
   [ -f "$FROM" ] || usage "--from is not a file: $FROM"
+  lock_ledger   # held across the run-id read and the append (released on exit)
   ledger_runs > "$TMP/runs"
   # Each legacy line -> its run id, then its ledger lines. Legacy labels are
   # <vendor>-<model token>-<effort> (parity) or <vendor>-<level> (compare).
@@ -441,6 +650,7 @@ do_migrate() {
   migrated=$(jq -r '.run' "$TMP/lines" | sort -u | grep -c . || true)
   nlines=$(wc -l < "$TMP/lines" | tr -d ' ')
   [ -s "$TMP/lines" ] && append "$TMP/lines"
+  unlock_ledger
   jq -nc --arg l "$LEDGER" --arg f "$FROM" --argjson legacy "$legacy" --argjson m "$migrated" --argjson n "$nlines" \
     '{step:"migrate", from:$f, ledger:$l, legacyLines:$legacy, migrated:$m, skipped:($legacy - $m), lines:$n}'
 }
@@ -451,9 +661,12 @@ do_migrate() {
 # Idempotent (a row with the key, even null, is left alone); lines with nothing
 # to fill, and malformed lines, are kept byte-identical; line order is kept.
 do_backfill() {
-  [ -f "$LEDGER" ] || usage "the ledger does not exist: $LEDGER"
+  [ -f "$REAL_LEDGER" ] || usage "the ledger does not exist: $LEDGER"
   local before
-  before=$(cksum < "$LEDGER")
+  # The lock is held from the snapshot to the replace (released on exit); the
+  # checksum still guards against a writer that does not take it.
+  [ "$DRY" -eq 1 ] || lock_ledger
+  before=$(cksum < "$REAL_LEDGER")
   jq -R -c --argjson ah "$AH" "$DEFS"'
     . as $raw
     | (try fromjson catch null) as $o
@@ -466,7 +679,7 @@ do_backfill() {
           else {line: ($o | with_entries(if (.key == "candidates" or .key == "reviewers") and (.value | type) == "array"
                   then .value |= map(if unfilled then . + model_id($ah; .vendor; .model; $d; false) else . end)
                   else . end) | tojson), filled: $filled} end
-      end' "$LEDGER" > "$TMP/bf" 2>"$TMP/err" || usage "could not read the ledger $LEDGER: $(head -c 300 "$TMP/err")"
+      end' "$REAL_LEDGER" > "$TMP/bf" 2>"$TMP/err" || usage "could not read the ledger $LEDGER: $(head -c 300 "$TMP/err")"
   jq -r '.line' "$TMP/bf" > "$TMP/new"
   local summary
   summary=$(jq -s -c --arg l "$LEDGER" --argjson dry "$DRY" '
@@ -474,11 +687,13 @@ do_backfill() {
      updatedLines: ([.[] | select(.filled | length > 0)] | length),
      filled: ([.[].filled[]] | group_by(.) | map({key: .[0], value: length}) | from_entries)}' "$TMP/bf")
   if [ "$DRY" -eq 0 ] && [ "$(printf '%s' "$summary" | jq .updatedLines)" -gt 0 ]; then
-    [ "$(cksum < "$LEDGER")" = "$before" ] || { echo "parity-report: $LEDGER changed during the backfill — nothing written, run it again" >&2; exit 1; }
-    # Same directory, same mode (cp -p), then one rename: a reader never sees half a ledger.
-    cp -p "$LEDGER" "$LEDGER.backfill.$$" && cat "$TMP/new" > "$LEDGER.backfill.$$" && mv "$LEDGER.backfill.$$" "$LEDGER" ||
-      { rm -f "$LEDGER.backfill.$$"; echo "parity-report: could not rewrite $LEDGER" >&2; exit 1; }
+    [ "$(cksum < "$REAL_LEDGER")" = "$before" ] || { echo "parity-report: $LEDGER changed during the backfill — nothing written, run it again" >&2; exit 1; }
+    # Same directory, same mode (cp -p) as the REAL file, then one rename over it: a
+    # reader never sees half a ledger, and a symlinked ledger keeps its link.
+    cp -p "$REAL_LEDGER" "$REAL_LEDGER.backfill.$$" && cat "$TMP/new" > "$REAL_LEDGER.backfill.$$" && mv "$REAL_LEDGER.backfill.$$" "$REAL_LEDGER" ||
+      { rm -f "$REAL_LEDGER.backfill.$$"; echo "parity-report: could not rewrite $LEDGER" >&2; exit 1; }
   fi
+  unlock_ledger
   printf '%s\n' "$summary"
 }
 
@@ -506,32 +721,51 @@ def need($n): if $n >= $minN then 0 else $minN - $n end;
 def rid($d): if (.modelId | type) == "string" then .modelId
   else (model_id($ah; .vendor; .model; $d; false).modelId // .model) end;
 def keep_model: $fModel == "" or . == $fModel or ((. // "") | id_tokens | index($fModel | ascii_downcase)) != null;
-def keep_ts: $fSince == "" or ((. // "") | tostring) >= $fSince;
+def keep_ts: $fSince == "" or ((utc // (. // "" | tostring))) >= $fSince;
+# outcome — the ONE collapse of a unit'"'"'s graded observations (the reps of one
+# candidate on one (run, task)): majority pass/fail, a tie is "tie" (excluded).
+def outcome: ([.[] | select(.status == "pass")] | length) as $p | (length - $p) as $f
+  | if $p > $f then "pass" elif $f > $p then "fail" else "tie" end;
 
 ($lines | map(fromjson? | select(type == "object"))) as $objs
 | ($objs | map(select((.candidates | type) == "array" and .source != "inline-review"))) as $ok
 # Review lines are their own section: never a build row, never a proposal input.
-| ($objs | map(select(.source == "inline-review" and (.reviewers | type) == "array"))) as $rv
+| ($objs | map(select(.source == "inline-review" and (.reviewers | type) == "array"))) as $rvAll
+# Only the LATEST revision of each review run counts (a --resolved or extended
+# re-ingest supersedes the earlier line(s)); a review line with no run id stands alone.
+| ([$rvAll | to_entries[] | .value + {_i: .key}]) as $rvi
+| ([$rvi[] | select(.run == null)] + ([$rvi[] | select(.run != null)] | group_by(.run) | map(max_by([(.revision // 1), ._i]))) | sort_by(._i) | map(del(._i))) as $rv
 | ($lines | length) as $total
-| [$ok[] | . as $l | select($l.ts | keep_ts) | .candidates[] | select(type == "object")
+| [$ok | to_entries[] | .key as $li | .value as $l | select($l.ts | keep_ts) | $l.candidates[] | select(type == "object")
    | {level: $l.level, vendor, model, modelId: rid($l.ts | date_of), effort, status: (.status | norm),
-      totalTokens: (.totalTokens | num_or_null), seconds: (.seconds | num_or_null), ts: $l.ts}
+      totalTokens: (.totalTokens | num_or_null), seconds: (.seconds | num_or_null), ts: ($l.ts | utc // $l.ts),
+      unit: (if $l.run == null or $l.migrated != null then "line:\($li)"
+             elif $l.runHash == null and $l.source == "inline" then "run:\($l.run | tostring)|\($l.task // "" | tostring)|\($l.candidates | tojson)"
+             else "run:\($l.run | tostring)|\($l.task // "" | tostring)" end)}
    | select(.modelId | keep_model)] as $rows
 # Incumbents and configured challengers, as concrete ids (a tiers alias resolves as of today).
 | [ $levels | to_entries[] | .key as $L | .value | to_entries[] | select(.value | type == "object")
     | {level: $L, vendor: .key, modelId: current_id($ah; .key; (.value.model // null); $today), effort: (.value.effort // null)} ] as $incs
 | [ ($challengers // {}) | to_entries[] | .key as $L | .value | to_entries[] | .key as $V | .value[]?
     | {level: $L, vendor: $V, modelId: current_id($ah; $V; .model; $today), effort} ] as $chcfg
+# CURRENT ids per vendor: every model the tiers file configures today (M26: an older
+# version or an unconfigured model is never a challenger, only history).
+| ([$incs[], $chcfg[] | {vendor, modelId}] | unique) as $current
+# tuning.rejected, resolved to current ids; an entry past its until date is dropped.
+| [ ($rejected // [])[] | select(.until == null or .until >= $today)
+    | {level, vendor, modelId: current_id($ah; .vendor; .model; $today), effort, until: (.until // null)} ] as $rej
 | def role($g): if any($incs[]; .level == $g.level and .vendor == $g.vendor and .modelId == $g.modelId and .effort == $g.effort) then "incumbent"
     elif any($chcfg[]; .level == $g.level and .vendor == $g.vendor and .modelId == $g.modelId and .effort == $g.effort) then "challenger"
     else null end;
   [$rows | group_by([.level, .vendor, .modelId, .effort])[]
    | . as $g | ([$g[] | select(.status as $x | GRADED | index($x) != null)]) as $gr
-   | ($gr | length) as $n | ([$gr[] | select(.status == "pass")] | length) as $s
+   | ([$gr | group_by(.unit)[] | outcome]) as $units
+   | ([$units[] | select(. != "tie")] | length) as $n | ([$units[] | select(. == "pass")] | length) as $s
    | {level: $g[0].level, vendor: $g[0].vendor, modelId: $g[0].modelId, effort: $g[0].effort,
       models: ([$g[] | .model] | unique),
       n: $n, passes: $s, rate: (if $n == 0 then null else $s / $n end), wilsonLB: wilson($s; $n), wilsonUB: wilsonUB($s; $n),
-      excluded: (($g | length) - $n),
+      observations: ($gr | length), ties: ([$units[] | select(. == "tie")] | length),
+      excluded: (($g | length) - ($gr | length)),
       meanTokens: ([$g[] | .totalTokens | numbers] | mean), meanSeconds: ([$g[] | .seconds | numbers] | mean),
       firstTs: ([$g[] | .ts | strings] | min), lastTs: ([$g[] | .ts | strings] | max)}
    | .role = role(.)] as $groups
@@ -539,6 +773,7 @@ def keep_ts: $fSince == "" or ((. // "") | tostring) >= $fSince;
     | ([$groups[] | select(.level == $i.level and .vendor == $i.vendor and .modelId == $i.modelId and .effort == $i.effort)] | first
        // {level: $i.level, vendor: $i.vendor, modelId: $i.modelId, effort: $i.effort, n: 0, passes: 0, rate: null, wilsonLB: null}) as $inc
     | $groups[] | select(.level == $i.level and .vendor == $i.vendor and ((.modelId == $i.modelId and .effort == $i.effort) | not))
+    | select(. as $g | any($current[]; .vendor == $g.vendor and .modelId == $g.modelId))
     | . as $ch | direction($ch; $inc) as $dir
     | need($inc.n) as $ni | need($ch.n) as $nc
     | {level: $i.level, vendor: $i.vendor, incumbent: $inc, challenger: $ch, direction: $dir, needIncumbent: $ni, needChallenger: $nc}
@@ -551,7 +786,11 @@ def keep_ts: $fSince == "" or ((. // "") | tostring) >= $fSince;
       else
         (if $ch.rate - $inc.rate >= $margin - 1e-12 then .verdict = "propose" else .verdict = "keep" end)
         | .why = "pricier: rate \($ch.rate * 1000 | round / 1000) - incumbent \($inc.rate * 1000 | round / 1000) vs margin \($margin)"
-      end ] as $decisions
+      end
+    | ([$rej[] | select(.level == $i.level and .vendor == $i.vendor and .modelId == $ch.modelId and .effort == $ch.effort)] | first) as $r
+    | if .verdict == "propose" and $r != null
+      then .verdict = "rejected" | .why = "rejected by Alex (tuning.rejected\(if $r.until then ", until \($r.until)" else "" end)); would propose: \(.why)"
+      else . end ] as $decisions
 | [ $decisions | map(select(.verdict == "propose")) | group_by([.level, .vendor])[]
     | (map(select(.direction == "pricier")) | sort_by([-(.challenger.rate), cheap_key(.challenger.vendor; .challenger.modelId; .challenger.effort)]) | first) as $up
     | (map(select(.direction == "cheaper")) | sort_by([cheap_key(.challenger.vendor; .challenger.modelId; .challenger.effort), -(.challenger.wilsonLB)]) | first) as $down
@@ -592,24 +831,25 @@ def keep_ts: $fSince == "" or ((. // "") | tostring) >= $fSince;
        current: (if $cur == null then null else {modelId: $cur.modelId, effort: $cur.effort,
                  seen: any($ents[]; .modelId == $cur.modelId and .effort == $cur.effort)} end),
        entries: [$ents | sort_by([.firstTs, .modelId, .effort])[]
-         | {modelId, effort, models, n, passes, rate, wilsonLB, wilsonUB, excluded, firstTs, lastTs, role}]} ]
+         | {modelId, effort, models, n, passes, rate, wilsonLB, wilsonUB, observations, ties, excluded, firstTs, lastTs, role}]} ]
   | sort_by([(.level as $x | LEVELS | index($x) // 9), .vendor]) as $history
 | [ $rv[] | . as $l | select($l.ts | keep_ts) | .reviewers[] | select(type == "object")
     | {vendor, model, modelId: rid($l.ts | date_of), effort, status, precision: (.precision | num_or_null), recall: (.recall | num_or_null)}
     | select(.modelId | keep_model) ]
   | group_by([.vendor, .modelId, .effort])
   | map(. as $g | {vendor: $g[0].vendor, modelId: $g[0].modelId, effort: $g[0].effort, models: ([$g[] | .model] | unique),
-        reviews: ([$g[] | select(.status == "ok")] | length), unavailable: ([$g[] | select(.status != "ok")] | length),
+        reviews: ([$g[] | select(.status == "ok")] | length), unavailable: ([$g[] | select(.status != "ok" and .status != "superseded")] | length),
+        superseded: ([$g[] | select(.status == "superseded")] | length),
         meanPrecision: ([$g[] | .precision | numbers] | mean), nPrecision: ([$g[] | .precision | numbers] | length),
         meanRecall: ([$g[] | .recall | numbers] | mean), nRecall: ([$g[] | .recall | numbers] | length)}) as $rgroups
-| {ledger: $ledger, tiers: $tiersPath, lines: $total, malformed: ($total - ($ok | length) - ($rv | length)),
+| {ledger: $ledger, tiers: $tiersPath, lines: $total, malformed: ($total - ($ok | length) - ($rvAll | length)),
    filters: {model: (if $fModel == "" then null else $fModel end), since: (if $fSince == "" then null else $fSince end)},
    rule: {minN: $minN, cheaperTolerance: $tol, pricierMargin: $margin, confidence: "wilson95"},
    groups: $groups, decisions: $decisions, proposals: $proposals,
    sampling: {asOf: $asOf, params: {explore: $exploreRate, maintain: $maintainRate, maxWidth: $maxWidth, minN: $minN},
               levels: $rateLevels, rates: ($rateLevels | map_values(.rate))},
    history: $history,
-   reviews: {lines: ($rv | length), groups: $rgroups,
+   reviews: {lines: ($rv | length), supersededRevisions: (($rvAll | length) - ($rv | length)), groups: $rgroups,
              note: "review bake-offs (source inline-review) are reported separately from build pass rates and do not drive tier proposals yet"},
    note: "proposal only: parity-report.sh never writes tiers.json; Alex approves every change"}
 '
@@ -622,13 +862,14 @@ def me: (.modelId // .model // "default") + (if .effort then " · " + .effort el
 | ["# Parity report", "",
    "ledger: \(.ledger) (\(.lines) line(s)\(if .malformed > 0 then ", \(.malformed) malformed skipped" else "" end)) · tiers: \(.tiers)",
    "rule: minN \(.rule.minN) · cheaper: Wilson 95% LB >= incumbent rate - \(.rule.cheaperTolerance) · pricier: rate - incumbent rate >= \(.rule.pricierMargin)",
-   "Only pass/fail count; unavailable/invalid/denied/unresolved/ungraded/skipped are excluded (Excl.). Rows are keyed by the concrete model id."]
+   "Only pass/fail count; unavailable/invalid/denied/unresolved/ungraded/skipped are excluded (Excl.). Rows are keyed by the concrete model id.",
+   "n = effective outcomes: the reps of one candidate on one (run, task) collapse to one by majority; a tie is excluded (Obs. = raw graded observations)."]
   + (if .filters.model != null or .filters.since != null then ["filters: model \(.filters.model // "any") · since \(.filters.since // "any")"] else [] end)
   + ([ "quick","builder","deep","top" ] | map(. as $L | ($R.groups | map(select(.level == $L))) as $g
       | if ($g | length) == 0 then empty else
-        ["", "## \($L)", "", "| Vendor | Model id | Effort | n | Pass | Rate | Wilson LB | Excl. | Mean tokens | Mean s | |",
-         "|---|---|---|---|---|---|---|---|---|---|---|"]
-        + ($g | sort_by([.vendor, .modelId, .effort]) | map("| \(.vendor) | \(.modelId // "—") | \(.effort // "—") | \(.n) | \(.passes) | \(.rate | f3) | \(.wilsonLB | f3) | \(.excluded) | \(.meanTokens | fi) | \(.meanSeconds | fi) | \(if .role == "incumbent" then "incumbent" else "" end) |"))
+        ["", "## \($L)", "", "| Vendor | Model id | Effort | n | Pass | Rate | Wilson LB | Excl. | Obs. (ties) | Mean tokens | Mean s | |",
+         "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+        + ($g | sort_by([.vendor, .modelId, .effort]) | map("| \(.vendor) | \(.modelId // "—") | \(.effort // "—") | \(.n) | \(.passes) | \(.rate | f3) | \(.wilsonLB | f3) | \(.excluded) | \(.observations) (\(.ties)) | \(.meanTokens | fi) | \(.meanSeconds | fi) | \(if .role == "incumbent" then "incumbent" else "" end) |"))
       end) | add // [])
   + ["", "## Decisions", ""]
   + (if (.decisions | length) == 0 then ["No challenger measured against an incumbent yet."] else
@@ -643,8 +884,9 @@ def me: (.modelId // .model // "default") + (if .effort then " · " + .effort el
   + (.sampling.levels | to_entries | map("| \(.key) | \(.value.state) | \(.value.rate) | \(.value.reason) |"))
   + ["", "## Reviews (inline-review) — separate from build pass rates", ""]
   + (if (.reviews.groups | length) == 0 then ["No review bake-offs ingested yet."] else
-      ["| Vendor | Model id | Effort | Reviews | Mean precision (n) | Mean recall (n) | Unavailable |", "|---|---|---|---|---|---|---|"]
-      + (.reviews.groups | sort_by([.vendor, .modelId, .effort]) | map("| \(.vendor) | \(.modelId // "—") | \(.effort // "—") | \(.reviews) | \(.meanPrecision | f3) (\(.nPrecision)) | \(.meanRecall | f3) (\(.nRecall)) | \(.unavailable) |")) end)
+      ["| Vendor | Model id | Effort | Reviews | Mean precision (n) | Mean recall (n) | Unavailable | Superseded |", "|---|---|---|---|---|---|---|---|"]
+      + (.reviews.groups | sort_by([.vendor, .modelId, .effort]) | map("| \(.vendor) | \(.modelId // "—") | \(.effort // "—") | \(.reviews) | \(.meanPrecision | f3) (\(.nPrecision)) | \(.meanRecall | f3) (\(.nRecall)) | \(.unavailable) | \(.superseded) |")) end)
+  + (if .reviews.supersededRevisions > 0 then ["\(.reviews.supersededRevisions) earlier review revision(s) superseded (only the latest revision of a run counts)."] else [] end)
   + ["Review metrics do not drive tier proposals yet: the proposals above come from build pass rates only."]
   + ["", "Proposal only: parity-report.sh never writes tiers.json. Alex approves every change (edit config/tiers.json, make tiers, make verify)."]
 | .[]
@@ -675,7 +917,7 @@ compute_report() { # -> $TMP/report.json
      --slurpfile lines "$TMP/lines.json" --arg ledger "$LEDGER" --arg tiersPath "$TIERS" "$DEFS"'
     $cfg.levels as $levels | $cfg.tuning.rule.minN as $minN | $cfg.tuning.rule.cheaperTolerance as $tol
     | $cfg.tuning.rule.pricierMargin as $margin | $lines[0] as $lines
-    | $cfg.tuning.challengers as $challengers | $cfg.tuning.sampleRate as $exploreRate
+    | $cfg.tuning.challengers as $challengers | ($cfg.tuning.rejected // []) as $rejected | $cfg.tuning.sampleRate as $exploreRate
     | $cfg.tuning.maintain.rate as $maintainRate | $cfg.tuning.maintain.maxWidth as $maxWidth | ($cfg.asOf // null) as $asOf
     | '"$REPORT" > "$TMP/report.json" 2>"$TMP/err" || { echo "parity-report: report failed: $(head -c 400 "$TMP/err")" >&2; exit 2; }
 }

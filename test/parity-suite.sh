@@ -16,8 +16,9 @@
 # verify-task (ok, pre-solved base, broken solution, non-applying solution,
 # review keys); the $HOME-path lint; the PARITY_ env map (verify-task export,
 # unmapped => exit 2, .parity-env only with selfCheckEnv and never in a diff);
-# fingerprint (HEAD move, tree/content change, generator, refusals);
-# score-review math; parity-cost.sh on a synthetic transcript.
+# fingerprint (HEAD move, tree/content change, ignored files incl. the cap,
+# refs/stash/config/hooks, generator marked unguarded, refusals);
+# score-review math; parity-cost.sh on a synthetic transcript (a corrupt line skipped).
 # shellcheck disable=SC2034  # values are read inside chk's eval'd conditions
 set -u
 
@@ -390,12 +391,56 @@ git -C "$FS" add -A; git -C "$FS" commit -qm "a concurrent commit"
 run_ps fingerprint --task "$FPS/1/g-fix"
 chk "F6: a commit moves head (HEAD moved)" '[ "$(j .head)" = "$(git -C "$FS" rev-parse HEAD)" ] && [ "$(j .head)" != "$(printf "%s" "$FP0" | jq -r .head)" ]'
 run_ps fingerprint --task "$FPS/2/gen-fix"
-chk "F7: a generator source prints {id, source:generator} and nothing to compare" '[ "$RC" -eq 0 ] && [ "$OUT" = "{\"id\":\"gen-fix\",\"source\":\"generator\"}" ]'
+chk "F7: a generator source prints {id, source:generator, guarded:false}: nothing to compare, marked unguarded" '[ "$RC" -eq 0 ] && [ "$OUT" = "{\"id\":\"gen-fix\",\"source\":\"generator\",\"guarded\":false}" ]'
 run_ps fingerprint --task "$CCS/1/g-fix"
 chk "F8: a clip-creator source is REFUSED (exit 3)" '[ "$RC" -eq 3 ]'
 GONE="$T/gonesuite"; mksuite "$GONE" "$SRC"; edit_task "$GONE/1/g-fix/task.json" '.source.repo = "'"$T"'/no/such/repo"'
 run_ps fingerprint --task "$GONE/1/g-fix"
 chk "F9: a missing source repo => exit 1 (the guard reports unverified, never clean)" '[ "$RC" -eq 1 ] && [ -z "$OUT" ]'
+# M30: ignored files (the cache-refresh class), refs/stash/config/hooks.
+FI="$T/fisrc"; mksrc "$FI"; FIS="$T/fisuite"; mksuite "$FIS" "$FI"
+printf 'cache/\n*.log\n' > "$FI/.gitignore"; git -C "$FI" add .gitignore; git -C "$FI" commit -qm ignore
+mkdir -p "$FI/cache/deep/er" "$FI/.venv/lib"; printf 'v1\n' > "$FI/cache/data.csv"; printf 'x\n' > "$FI/cache/deep/er/y.bin"; printf 'l\n' > "$FI/run.log"
+for i in 1 2 3 4 5; do printf '%s\n' "$i" > "$FI/.venv/lib/m$i.py"; done
+printf '.venv/\n.DS_Store\n' >> "$FI/.git/info/exclude"
+fpf() { run_ps fingerprint --task "$FIS/1/g-fix"; }
+fpf; FI0="$OUT"
+chk "F10: a git source prints guarded:true plus ignored and refs hashes" \
+  '[ "$RC" -eq 0 ] && [ "$(j .guarded)" = true ] && printf "%s" "$(j .ignored)" | grep -Eq "^[0-9a-f]{40}$" && printf "%s" "$(j .refs)" | grep -Eq "^[0-9a-f]{40}$"'
+fpf; chk "F10b: an unchanged source (ignored files included) fingerprints identically" '[ "$OUT" = "$FI0" ]'
+printf 'v2-refreshed\n' > "$FI/cache/data.csv"
+fpf; FI1="$OUT"
+chk "F11: rewriting a gitignored cache file changes ignored — and neither tree nor head" \
+  '[ "$(j .ignored)" != "$(printf "%s" "$FI0" | jq -r .ignored)" ] && [ "$(j .tree)" = "$(printf "%s" "$FI0" | jq -r .tree)" ] && [ "$(j .head)" = "$(printf "%s" "$FI0" | jq -r .head)" ]'
+printf 'new\n' > "$FI/cache/new.csv"
+fpf; FI2="$OUT"
+chk "F11b: a new ignored file changes ignored" '[ "$(j .ignored)" != "$(printf "%s" "$FI1" | jq -r .ignored)" ]'
+: > "$FI/.DS_Store"
+fpf; chk "F11c: a (gitignored) Finder .DS_Store is not a change" '[ "$OUT" = "$FI2" ]'
+export PARITY_FP_IGNORED_CAP=3
+fpf; FIC="$OUT"
+printf 'x2\n' > "$FI/.venv/lib/m5.py"
+fpf; chk "F11d: past PARITY_FP_IGNORED_CAP (3, shallowest first) a deep file edit is not seen..." '[ "$OUT" = "$FIC" ]'
+printf 'v3\n' > "$FI/run.log"
+fpf; chk "F11e: ...but a shallow cache file still is (it sorts before the deep ones)" '[ "$(j .ignored)" != "$(printf "%s" "$FIC" | jq -r .ignored)" ]'
+FIC="$OUT"; printf 'n\n' > "$FI/.venv/lib/m6.py"
+fpf; chk "F11f: ...and a new file anywhere changes the count" '[ "$(j .ignored)" != "$(printf "%s" "$FIC" | jq -r .ignored)" ]'
+unset PARITY_FP_IGNORED_CAP
+fpf; FR0="$OUT"
+git -C "$FI" branch side
+fpf; FR1="$OUT"
+chk "F12: a new branch changes refs (not head, not tree)" \
+  '[ "$(j .refs)" != "$(printf "%s" "$FR0" | jq -r .refs)" ] && [ "$(j .head)" = "$(printf "%s" "$FR0" | jq -r .head)" ] && [ "$(j .tree)" = "$(printf "%s" "$FR0" | jq -r .tree)" ]'
+printf 'dirty\n' >> "$FI/calc.sh"; git -C "$FI" stash -q
+fpf; FR2="$OUT"
+chk "F12b: a stash changes refs" '[ "$(j .refs)" != "$(printf "%s" "$FR1" | jq -r .refs)" ] && [ "$(j .tree)" = "$(printf "%s" "$FR1" | jq -r .tree)" ]'
+git -C "$FI" config core.hooksPath /nowhere
+fpf; FR3="$OUT"
+chk "F12c: a repo config change changes refs" '[ "$(j .refs)" != "$(printf "%s" "$FR2" | jq -r .refs)" ]'
+git -C "$FI" config --unset core.hooksPath
+printf '#!/bin/sh\nexit 0\n' > "$FI/.git/hooks/pre-commit"; chmod +x "$FI/.git/hooks/pre-commit"
+fpf
+chk "F12d: a new hook changes refs" '[ "$(j .refs)" != "$(printf "%s" "$FR2" | jq -r .refs)" ] && [ "$(j .refs)" != "$(printf "%s" "$FR3" | jq -r .refs)" ]'
 
 # ---- score-review -------------------------------------------------------------
 KEY="$FIX/3/rev-seed/key.json"   # S1 app.py:3, S2 app.py:9, S3 app.py:13
@@ -443,6 +488,15 @@ OUT=$("$PC" "$T/nousage-wf" 2>"$T/err"); RC=$?
 chk "C7: transcripts without usage => INCOMPLETE exit 5" '[ "$RC" -eq 5 ]'
 OUT=$("$PC" "$T/nope" 2>"$T/err"); RC=$?
 chk "C8: a missing dir is a usage error (exit 2)" '[ "$RC" -eq 2 ]'
+mkdir -p "$T/badline-wf"
+{ printf '%s\n' '{"type":"assistant","message":{"id":"b1","model":"claude-sonnet-5","usage":{"input_tokens":1,"output_tokens":2}}}'
+  printf '%s\n' '{"type":"assistant","message":{"id":"b2","model":"claude-sonn'
+  printf '%s\n' '{"type":"assistant","message":{"id":"b3","model":"claude-sonnet-5","usage":{"input_tokens":4,"output_tokens":8}}}'
+} > "$T/badline-wf/agent-b.jsonl"
+OUT=$("$PC" "$T/badline-wf" 2>"$T/err"); RC=$?
+chk "C9: a corrupt line mid-transcript is skipped and counted (skippedLines 1); the lines AFTER it still count" \
+  '[ "$RC" -eq 0 ] && [ "$(j .skippedLines)" = 1 ] && [ "$(j ".total | [.input,.output,.messages] | join(\",\")")" = "5,10,2" ]'
+chk "C9b: the fixture's partial last line is counted as skipped too" '[ "$("$PC" "$COST" 2>/dev/null | jq .skippedLines)" = 1 ]'
 
 echo ""
 echo "parity-suite: $PASS_COUNT passed, $FAIL_COUNT failed"

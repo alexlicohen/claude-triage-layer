@@ -11,7 +11,9 @@
 // the Fable warning; reps; the desk leg; that nothing outside outDir (never
 // tiers.json) is ever written; the source-repo fingerprint guard on every task
 // kind (SOURCE_CHANGED/UNVERIFIED => invalid, run continues); judges given only
-// patch + key; selfCheckEnv passed through only on opt-in.
+// patch + key; selfCheckEnv passed through only on opt-in; the ignored-files and
+// refs fingerprint fields, generator tasks marked guarded:false, and modelFrom
+// forwarded on every build row.
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -38,7 +40,7 @@ const task = (id, band, over = {}) => Object.assign({
 const LADDER = [task('t1', 1), task('t2', 2), task('t3', 3), task('t4', 4)]
 // The source fingerprint parity-suite.sh fingerprint prints for a git source
 // (materialize's first command, and source:after@<id> after grading).
-const FP = (id, over = {}) => Object.assign({ id, source: 'git', name: 'srcrepo', head: 'c'.repeat(40), tree: 'd'.repeat(40) }, over)
+const FP = (id, over = {}) => Object.assign({ id, source: 'git', guarded: true, name: 'srcrepo', head: 'c'.repeat(40), tree: 'd'.repeat(40), ignored: 'e'.repeat(40), refs: 'f'.repeat(40) }, over)
 const fpId = p => (p.match(/fingerprint --task '[^']*\/([^/']+)'/) || [])[1]
 
 // run(args, opts) — opts.tasks: the loader's list; opts.denied: {taskId: {codex}};
@@ -94,7 +96,7 @@ async function run(args, opts = {}) {
       candidates: a.candidates.map(c => {
         const status = outcome(id, c.label, a)
         const ext = c.vendor !== 'claude'
-        return { label: c.label, vendor: c.vendor, level: c.level, model: c.model || (ext ? 'gpt-6-sol' : null), effort: c.effort || null, status,
+        return { label: c.label, vendor: c.vendor, level: c.level, model: c.model || (ext ? 'gpt-6-sol' : null), modelFrom: c.model ? 'candidate' : (ext ? 'runner' : null), effort: c.effort || null, status,
           patch: ['pass', 'fail'].includes(status) ? `${a.outDir}/${c.label}.patch` : null, outTokens: null,
           totalTokens: ext ? 1000 : null, seconds: ext ? 10 : null, tail: `tail ${c.label}` }
       }),
@@ -518,6 +520,36 @@ const cellOf = (result, id, l) => ((result.tasks.find(t => t.id === id) || { res
   chk('P13: a before-fingerprint claiming "generator" for a git task => unavailable, no compare', lie.wf.length === 0 && cellOf(lie.result, 't1', 'a').status === 'unavailable')
 }
 
+
+// ---- P15: Wave 16B — ignored/refs in the source guard, unguarded generator tasks, modelFrom (M30, M7)
+{
+  const t1 = task('t1', 1)
+  const ign = await run(A({ bands: [1], candidates: [C('claude', 'builder', 'a')] }), { tasks: [t1], script: { 'source:': [p => FP(fpId(p), { ignored: '1'.repeat(40) })] } })
+  chk('P15: a changed gitignored file in the source (the cache-refresh class) voids the task: SOURCE_CHANGED ... ignored files changed',
+    cellOf(ign.result, 't1', 'a').status === 'invalid' && ign.result.flags.some(f => /^SOURCE_CHANGED srcrepo: ignored files changed \(task t1\)/.test(f)))
+  const refs = await run(A({ bands: [1], candidates: [C('claude', 'builder', 'a')] }), { tasks: [t1], script: { 'source:': [p => FP(fpId(p), { refs: '2'.repeat(40) })] } })
+  chk('P15: a changed ref/stash/config/hook voids the task: SOURCE_CHANGED ... refs/config/hooks changed',
+    cellOf(refs.result, 't1', 'a').status === 'invalid' && refs.result.flags.some(f => /^SOURCE_CHANGED srcrepo: refs\/config\/hooks changed/.test(f)))
+  const noIgn = await run(A({ bands: [1], candidates: [C('claude', 'builder', 'a')] }), {
+    tasks: [t1],
+    script: { 'materialize:': [p => ({ fingerprint: FP('t1', { ignored: undefined }), repo: `${OUT}/1/t1/mat/repo`, sha: SHA, denied: { codex: false } })] },
+  })
+  chk('P15: a before-fingerprint without the ignored hash is not usable => unavailable, no compare', noIgn.wf.length === 0 && cellOf(noIgn.result, 't1', 'a').status === 'unavailable')
+  const mix = await run(A({ bands: [1], candidates: [C('claude', 'builder', 'a')] }), {
+    tasks: [t1, task('g1', 1, { source: { type: 'generator' } })],
+    script: { 'materialize:': [p => {
+      const id = (p.match(/--task '[^']*\/([^/']+)'/) || [])[1]
+      const out = (p.match(/--out '([^']+)'/) || [])[1]
+      return { fingerprint: id === 'g1' ? { id, source: 'generator', guarded: false } : FP(id), repo: `${out}/repo`, sha: SHA, denied: { codex: false } }
+    }] },
+  })
+  const guardedOf = id => (mix.result.tasks.find(x => x.id === id) || {}).guarded
+  chk('P15: tasks[] marks a git-source task guarded:true and a generator task guarded:false (unguarded, said so)', guardedOf('t1') === true && guardedOf('g1') === false)
+  const mf = await run(A({ bands: [1], candidates: [C('claude', 'builder', 'a'), C('codex', 'builder', 'x'), C('codex', 'builder', 'y', { model: 'gpt-6-sol', effort: 'medium' })] }), { tasks: [t1] })
+  chk('P15: each build row forwards modelFrom (M7): a runner-reported model is runner, a candidate model candidate, none null',
+    cellOf(mf.result, 't1', 'x').modelFrom === 'runner' && cellOf(mf.result, 't1', 'x').model === 'gpt-6-sol' &&
+    cellOf(mf.result, 't1', 'y').modelFrom === 'candidate' && cellOf(mf.result, 't1', 'a').modelFrom === null)
+}
 // ---- P14: selfCheckEnv reaches triage-compare only when the task opts in -------
 {
   const tasks = [task('t1', 1, { checks: ['"$PARITY_PY" -m pytest'], selfCheckEnv: true }), task('t2', 1, { checks: ['"$PARITY_PY" -m pytest'] })]
