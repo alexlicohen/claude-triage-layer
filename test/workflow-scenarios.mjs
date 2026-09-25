@@ -7,6 +7,7 @@
 // Fail-loud runner: accumulates all failures, prints RESULT line, exits non-zero
 // on any failure.
 import { readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -37,10 +38,14 @@ const NO_BUDGET = { total: null, remaining: () => Infinity, spent: () => 0 }
 // simulating the DSL's hard budget ceiling. `budget` overrides the mocked DSL budget
 // global (default: none). Returns {result, logs, calls, events}; `events` interleaves
 // logs and spawns in order ('log:<msg>' / 'agent:<label>') for announce-before-spawn checks.
-async function run(plan, script, budget = NO_BUDGET) {
+// `wf(name, args, n)` scripts the nested workflow() global (inline bake-offs call
+// triage-compare): its return value is returned, an Error it returns is thrown; absent,
+// any workflow() call throws. `workflows` records every call ({name, args}).
+async function run(plan, script, budget = NO_BUDGET, wf = null) {
   const logs = []
   const calls = [] // { label, prompt, opts }
   const events = []
+  const workflows = []
   const queues = new Map(Object.entries(script).map(([k, v]) => [k, [...v]]))
 
   function scripted(key) {
@@ -76,18 +81,26 @@ async function run(plan, script, budget = NO_BUDGET) {
   }
   const log = m => { logs.push(String(m)); events.push(`log:${m}`) }
   const phase = () => {}
+  async function workflow(name, a) {
+    workflows.push({ name, args: a })
+    events.push(`workflow:${name}:${a && a.outDir}`)
+    if (!wf) throw new Error(`unscripted workflow call: ${name}`)
+    const v = await wf(name, a, workflows.length)
+    if (v instanceof Error) throw v
+    return v
+  }
 
-  const fn = new AsyncFunction('args', 'log', 'phase', 'agent', 'parallel', 'pipeline', 'budget', src)
+  const fn = new AsyncFunction('args', 'log', 'phase', 'agent', 'parallel', 'pipeline', 'budget', 'workflow', src)
   let result
   try {
-    result = await fn(plan, log, phase, agent, parallel, pipeline, budget)
+    result = await fn(plan, log, phase, agent, parallel, pipeline, budget, workflow)
   } catch (e) {
     // Attach the call log to the throw so a validation test can assert that NOTHING
     // was spawned before it fired (an empty list built by the catch would be vacuous).
     if (e && typeof e === 'object') e.calls = calls
     throw e
   }
-  return { result, logs, calls, events }
+  return { result, logs, calls, events, workflows }
 }
 
 // Capture the throw from a malformed-args run (validation must fire BEFORE any spawn).
@@ -1086,6 +1099,371 @@ const GREEN = { 'verify:objective-check': ['ok\nPASS'] }
     { subtasks: [LV('k', 'quick', ['k.js'])], checks: ['make test'], review: 'never' },
     { 'quick:': ['did k'], ...GREEN })
   chk('S39: an all-Claude plan has neither external nor overflow', r2.external === undefined && r2.overflow === undefined)
+}
+
+// ════ Wave 13B: inline build bake-offs (args.bakeoff) ═══════════════════════
+// The config is the REAL `triage-tiers.sh --bakeoff-json` output (what the orchestrator
+// passes verbatim); each scenario overrides the tuning fields it depends on, so a later
+// retune of config/tiers.json cannot silently change what these assert.
+const BO_REAL = JSON.parse(execFileSync(join(here, '..', 'scripts', 'triage-tiers.sh'), ['--bakeoff-json'],
+  { env: Object.assign({}, process.env, { TRIAGE_TIERS: join(here, '..', 'config', 'tiers.json') }), encoding: 'utf8' }))
+const clone = o => JSON.parse(JSON.stringify(o))
+function BO(tuning = {}, extra = {}) {
+  const config = clone(BO_REAL)
+  Object.assign(config.tuning, { sampleRate: 1, challengerMix: { codex: 1, claude: 0 }, pauseAtWeeklyPct: 80 }, tuning)
+  return Object.assign({ config, seed: 'seed-1', repo: '/r/repo', outDir: '/o/bake' }, extra)
+}
+// The sampling hash, restated: FNV-1a 32-bit over seed \0 id \0 brief (unit interval).
+function fnvT(s) { let h = 0x811c9dc5; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0 } return h >>> 0 }
+const drawT = s => fnvT(s) / 4294967296
+function seedWhere(pred, id, brief) {
+  for (let i = 0; i < 10000; i++) if (pred(drawT(`sd${i}\0${id}\0${brief}`))) return `sd${i}`
+  throw new Error('no seed found')
+}
+// A scripted triage-compare: statuses per label, plus overrides per candidate/result.
+const DIFF = '1 file changed, 2 insertions(+)'
+function CMP(statuses, over = {}) {
+  return (name, a) => Object.assign({
+    base: 'HEAD', sha: 'a'.repeat(40), leak: false, baseMoved: false, graded: true,
+    candidates: a.candidates.map(c => Object.assign({
+      label: c.label, vendor: c.vendor, level: c.level, model: c.model || null, effort: c.effort || null,
+      status: statuses[c.label], applies: ['pass', 'fail'].includes(statuses[c.label]) ? true : null,
+      rc: statuses[c.label] === 'pass' ? 0 : statuses[c.label] === 'fail' ? 1 : null,
+      diffstat: ['pass', 'fail'].includes(statuses[c.label]) ? DIFF : null,
+      patch: ['pass', 'fail'].includes(statuses[c.label]) ? `${a.outDir}/${c.label}.patch` : null,
+      outTokens: null, totalTokens: c.vendor === 'codex' ? 1234 : null, seconds: c.vendor === 'codex' ? 56 : null, selfRc: 0, tail: 'x',
+    }, (over.cand || {})[c.label] || {})),
+  }, over.result || {})
+}
+const CLEAN = { 'bakeoff:dirty:': [{ porcelain: '', rc: 0 }], 'bakeoff:apply:': [{ ok: true, applied: true, method: 'plain', rc: 0 }] }
+const OWN = ['node test/t1.mjs']
+const BST = (id, level, extra = {}) => LV(id, level, [`src/${id}.js`], Object.assign({ checks: [`node test/${id}.mjs`] }, extra))
+
+// ---- Scenario 40: bakeoff absent → no compare, no bake-off fields (subtask checks
+// accepted and otherwise inert); present → the fields always come back.
+{
+  const { result, workflows, calls } = await run(
+    { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never' },
+    { 'builder:': ['did t1'], ...GREEN })
+  chk('S40: no bakeoff → no triage-compare call', workflows.length === 0)
+  chk('S40: no bakeoff → no bake-off agent', !calls.some(c => c.label.startsWith('bakeoff:')))
+  chk('S40: no bakeoff → no bakeoffs/bakeoffSkipped/ingest fields',
+    !('bakeoffs' in result) && !('bakeoffSkipped' in result) && !('ingest' in result))
+  chk('S40: the subtask ran in place as before', countCalls(calls, 'builder:t1') === 1 && statusOf(result, 't1') === 'ok')
+}
+
+// ---- Scenario 41: the bakeoff entry contract throws before any spawn.
+{
+  const base = { subtasks: [BST('t1', 'builder')], checks: ['make test'] }
+  const cases = [
+    ['bakeoff not an object', { bakeoff: 'yes' }, 'args.bakeoff must be an object'],
+    ['config missing', { bakeoff: Object.assign(BO(), { config: undefined }) }, 'args.bakeoff.config must be'],
+    ['sampleRate 0', { bakeoff: BO({ sampleRate: 0 }) }, 'sampleRate'],
+    ['sampleRate > 1', { bakeoff: BO({ sampleRate: 1.5 }) }, 'sampleRate'],
+    ['challengerMix unknown vendor', { bakeoff: BO({ challengerMix: { agy: 1 } }) }, 'challengerMix'],
+    ['challenger without effort', { bakeoff: BO({ challengers: { builder: { codex: [{ model: 'gpt-6-sol' }] } } }) }, 'challengers'],
+    ['pauseAtWeeklyPct missing', { bakeoff: BO({ pauseAtWeeklyPct: undefined }) }, 'pauseAtWeeklyPct'],
+    ['seed missing', { bakeoff: BO({}, { seed: '' }) }, 'args.bakeoff.seed'],
+    ['relative repo', { bakeoff: BO({}, { repo: 'repo' }) }, 'args.bakeoff.repo'],
+    ['outDir with a space', { bakeoff: BO({}, { outDir: '/o/b ake' }) }, 'args.bakeoff.outDir must be an absolute'],
+    ['outDir inside repo', { bakeoff: BO({}, { outDir: '/r/repo/bake/' }) }, 'must be outside'],
+    ['outDir == repo', { bakeoff: BO({}, { outDir: '/r/repo/' }) }, 'must be outside'],
+    ['outDir contains repo', { bakeoff: BO({}, { outDir: '/r' }) }, 'must be outside'],
+    ['weeklyPct a string', { bakeoff: BO({}, { weeklyPct: '81' }) }, 'weeklyPct'],
+  ]
+  for (const [name, extra, needle] of cases) {
+    const r = await runExpectingThrow(Object.assign({}, base, extra))
+    chk(`S41: ${name} → throws before any spawn`, r.threw && r.message.includes(needle) && r.calls.length === 0)
+  }
+  const r = await runExpectingThrow({ subtasks: [LV('t1', 'builder', ['a.js'], { checks: 'make test' })] })
+  chk('S41: subtask checks not an array → throws', r.threw && r.message.includes('subtasks[0].checks') && r.calls.length === 0)
+  const r2 = await runExpectingThrow({ subtasks: [LV('t1', 'builder', ['a.js'], { checks: ['ok', ' '] })] })
+  chk('S41: subtask checks with an empty command → throws', r2.threw && r2.message.includes('subtasks[0].checks'))
+}
+
+// ---- Scenario 42: paused at weeklyPct >= pauseAtWeeklyPct (no sampling, logged).
+{
+  const { result, workflows, calls, logs } = await run(
+    { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO({}, { weeklyPct: 80 }) },
+    { ...CLEAN, 'builder:': ['did t1'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
+  chk('S42: weekly 80% at a pause of 80% → no compare', workflows.length === 0 && !calls.some(c => c.label.startsWith('bakeoff:')))
+  chk('S42: paused is logged', logs.some(l => l.startsWith('Bake-off paused: weekly usage 80%')))
+  chk('S42: bakeoffSkipped says paused; bakeoffs and ingest empty',
+    JSON.stringify(result.bakeoffSkipped) === JSON.stringify([{ id: 't1', reason: 'paused' }]) && result.bakeoffs.length === 0 && result.ingest.length === 0)
+  chk('S42: the subtask ran in place', countCalls(calls, 'builder:t1') === 1)
+  const { workflows: w2 } = await run(
+    { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO({}, { weeklyPct: 79.9 }) },
+    { ...CLEAN, ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
+  chk('S42: weekly 79.9% → sampled', w2.length === 1)
+}
+
+// ---- Scenario 43: deterministic sampling — same seed, same decision; the threshold holds.
+{
+  const brief = 'do t1'
+  const inS = seedWhere(u => u < 0.2, 't1', brief)
+  const outS = seedWhere(u => u >= 0.2, 't1', brief)
+  const plan = seed => ({ subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO({ sampleRate: 0.2 }, { seed }) })
+  const a = await run(plan(inS), { ...CLEAN, ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
+  const b = await run(plan(inS), { ...CLEAN, ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
+  chk('S43: a seed under the rate samples', a.workflows.length === 1 && a.result.bakeoffs.length === 1)
+  chk('S43: same seed → same decision and challenger',
+    b.workflows.length === 1 && JSON.stringify(a.workflows[0].args.candidates) === JSON.stringify(b.workflows[0].args.candidates))
+  const c = await run(plan(outS), { ...CLEAN, 'builder:': ['did t1'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
+  chk('S43: a seed at/over the rate does not sample', c.workflows.length === 0 &&
+    JSON.stringify(c.result.bakeoffSkipped) === JSON.stringify([{ id: 't1', reason: 'not-sampled' }]))
+  // Vendor: challengerMix decides; an empty pool falls to the other vendor.
+  const toClaude = await run(
+    { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO({ challengerMix: { codex: 0, claude: 1 } }) },
+    { ...CLEAN, ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
+  chk('S43: challengerMix claude:1 → a claude challenger (from tuning, not the incumbent)',
+    JSON.stringify(toClaude.workflows[0].args.candidates[1]) === JSON.stringify({ vendor: 'claude', level: 'builder', label: 'challenger', model: 'sonnet', effort: 'high' }))
+  const fallsOver = await run(
+    { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never',
+      bakeoff: BO({ challengerMix: { codex: 1, claude: 0 }, challengers: { builder: { codex: [], claude: [{ model: 'sonnet', effort: 'high' }] } } }) },
+    { ...CLEAN, ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
+  chk('S43: codex pool empty → the claude challenger', fallsOver.workflows.length === 1 && fallsOver.workflows[0].args.candidates[1].vendor === 'claude')
+  const cmpArgs = a.workflows[0].args
+  chk('S43: compare args — repo, HEAD, own checks, outDir/<id>, parallel, files, brief, acceptance',
+    cmpArgs.repo === '/r/repo' && cmpArgs.base === 'HEAD' && JSON.stringify(cmpArgs.checks) === JSON.stringify(OWN) &&
+    cmpArgs.outDir === '/o/bake/t1' && cmpArgs.parallel === true && JSON.stringify(cmpArgs.files) === '["src/t1.js"]' &&
+    cmpArgs.brief === 'do t1' && cmpArgs.acceptance === 'works')
+  chk('S43: planned candidate = what runSubtask would spawn (no model; plan effort only)',
+    JSON.stringify(cmpArgs.candidates[0]) === JSON.stringify({ vendor: 'claude', level: 'builder', label: 'planned' }))
+  chk('S43: codex challenger from tuning', JSON.stringify(cmpArgs.candidates[1]) === JSON.stringify({ vendor: 'codex', level: 'builder', label: 'challenger', model: 'gpt-6-sol', effort: 'medium' }))
+}
+
+// ---- Scenario 44: ineligible subtasks run normally, with the reason recorded.
+{
+  // Multi-subtask plan: only subtasks with their OWN checks are eligible.
+  const m = await run(
+    { subtasks: [LV('a', 'builder', ['a.js']), LV('b', 'builder', ['b.js'])], checks: ['make test'], review: 'never', bakeoff: BO() },
+    { 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
+  chk('S44: multi-subtask without own checks → no compare, reason no-own-checks', m.workflows.length === 0 &&
+    m.result.bakeoffSkipped.every(s => s.reason === 'no-own-checks') && m.result.bakeoffSkipped.length === 2)
+  // The only subtask: the plan's checks are its checks.
+  const only = await run(
+    { subtasks: [LV('a', 'builder', ['a.js'])], checks: ['make test'], review: 'never', bakeoff: BO() },
+    { ...CLEAN, ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
+  chk('S44: the only subtask uses the plan checks as its grade', only.workflows.length === 1 && JSON.stringify(only.workflows[0].args.checks) === '["make test"]')
+  const noChecks = await run(
+    { subtasks: [LV('a', 'builder', ['a.js'])], review: 'never', bakeoff: BO() },
+    { 'builder:': ['did it'], 'verify:reviewer': ['PASS'] }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
+  chk('S44: no checks anywhere → no-checks', noChecks.workflows.length === 0 && noChecks.result.bakeoffSkipped[0].reason === 'no-checks')
+  const noFiles = await run(
+    { subtasks: [LV('a', 'builder', [], { checks: ['t'] })], checks: ['make test'], review: 'never', bakeoff: BO() },
+    { 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
+  chk('S44: no files → no-files', noFiles.workflows.length === 0 && noFiles.result.bakeoffSkipped[0].reason === 'no-files')
+  const noCh = await run(
+    { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO({ challengers: { builder: { codex: [], claude: [] } } }) },
+    { 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
+  chk('S44: no challenger at the level → no-challenger', noCh.workflows.length === 0 && noCh.result.bakeoffSkipped[0].reason === 'no-challenger')
+  // A challenger identical to the planned rung (codex deep: gpt-6-astra@high) is not a challenger.
+  const same = await run(
+    { subtasks: [BST('t1', 'deep', { vendor: 'codex' })], checks: ['make test'], review: 'never',
+      bakeoff: BO({ challengers: { deep: { codex: [{ model: 'gpt-6-astra', effort: 'high' }], claude: [] } } }) },
+    { 'codex:deep:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
+  chk('S44: only challenger == planned (vendor, model, effort) → no-challenger', same.workflows.length === 0 && same.result.bakeoffSkipped[0].reason === 'no-challenger')
+  const badId = await run(
+    { subtasks: [BST('fix parser', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
+    { 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
+  chk('S44: an id that is not a path/ledger token → id-not-a-token', badId.workflows.length === 0 && badId.result.bakeoffSkipped[0].reason === 'id-not-a-token')
+  // Dirty files: sampled, but git status shows the files modified → no compare, run in place.
+  const dirty = await run(
+    { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
+    { ...CLEAN, 'bakeoff:dirty:': [{ porcelain: ' M src/t1.js\n', rc: 0 }], 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
+  const dcall = dirty.calls.find(c => c.label === 'bakeoff:dirty:t1')
+  chk('S44: dirty check runs git status --porcelain on exactly the subtask files',
+    dcall && dcall.prompt.includes(`git -C '/r/repo' status --porcelain -- 'src/t1.js'`) && dcall.opts.agentType === 'triage-quick-task')
+  chk('S44: dirty files → no compare, ran in place', dirty.workflows.length === 0 && countCalls(dirty.calls, 'builder:t1') === 1 && statusOf(dirty.result, 't1') === 'ok')
+  chk('S44: dirty → bakeoffs outcome skipped with the reason',
+    dirty.result.bakeoffs[0].outcome === 'skipped' && dirty.result.bakeoffs[0].reason === 'files modified in the tree' && dirty.result.bakeoffs[0].applied === null)
+  const unknown = await run(
+    { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
+    { ...CLEAN, 'bakeoff:dirty:': [null], 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
+  chk('S44: dirty check that returns nothing counts as dirty', unknown.workflows.length === 0 && unknown.result.bakeoffs[0].reason === 'dirty check failed')
+  const nonzero = await run(
+    { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
+    { ...CLEAN, 'bakeoff:dirty:': [{ porcelain: '', rc: 128 }], 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
+  chk('S44: dirty check with a non-zero rc counts as dirty', nonzero.workflows.length === 0)
+}
+
+// ---- Scenario 45: danger — a codex challenger must clear the codex danger floor
+// (effort >= high); a sub-floor one is excluded, never lifted.
+{
+  const subFloorOnly = BO({ challengers: { deep: { codex: [{ model: 'gpt-6-sol', effort: 'medium' }], claude: [] } } })
+  const r = await run(
+    { subtasks: [BST('core', 'deep', { danger: true })], checks: ['make test'], review: 'never', bakeoff: subFloorOnly },
+    { ...CLEAN, 'deep:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
+  chk('S45: danger + only sub-floor codex challengers → no-challenger, no compare',
+    r.workflows.length === 0 && r.result.bakeoffSkipped[0].reason === 'no-challenger')
+  const r2 = await run(
+    { subtasks: [BST('core', 'deep')], checks: ['make test'], review: 'never', bakeoff: subFloorOnly },
+    { ...CLEAN, ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
+  chk('S45: the same challenger is fine for non-danger work', r2.workflows.length === 1)
+  const mixed = BO({ challengers: { deep: { codex: [{ model: 'gpt-6-sol', effort: 'medium' }, { model: 'gpt-6-astra', effort: 'high' }], claude: [] } } })
+  let allAtFloor = true
+  for (let i = 0; i < 12; i++) {
+    const x = await run(
+      { subtasks: [BST('core', 'deep', { danger: true })], checks: ['make test'], review: 'never', bakeoff: Object.assign(clone(mixed), { seed: `s${i}` }) },
+      { ...CLEAN, ...GREEN, 'verify:reviewer': ['PASS'] }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
+    const ch = x.workflows[0] && x.workflows[0].args.candidates[1]
+    if (!ch || ch.model !== 'gpt-6-astra' || ch.effort !== 'high') allAtFloor = false
+  }
+  chk('S45: danger → only the at-floor codex challenger is ever picked (12 seeds)', allAtFloor)
+}
+
+// ---- Scenario 46: planned passes → the planned patch is applied; nothing runs in place.
+{
+  const { result, calls, workflows, events } = await run(
+    { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
+    { ...CLEAN, ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
+  const ap = calls.find(c => c.label === 'bakeoff:apply:t1')
+  chk('S46: one compare, then stage-worktree.sh apply of the planned patch',
+    workflows.length === 1 && ap && ap.prompt.includes(`~/.claude/scripts/stage-worktree.sh apply --repo '/r/repo' --patch '/o/bake/t1/planned.patch'`) &&
+    ap.opts.agentType === 'triage-quick-task')
+  chk('S46: apply comes after the compare', events.indexOf('agent:bakeoff:apply:t1') > events.findIndex(e => e.startsWith('workflow:triage-compare')))
+  chk('S46: no in-place worker spawn', countCalls(calls, 'builder:') === 0)
+  chk('S46: the applied result is verified like any other', countCalls(calls, 'verify:objective-check') === 1 && result.failed === false && result.incomplete === false)
+  chk('S46: subtask ok, planned rung, 1 attempt', JSON.stringify(result.subtasks[0]) === JSON.stringify({ id: 't1', tier: 'builder', level: 'builder', vendor: 'claude', status: 'ok', attempts: 1 }))
+  const b = result.bakeoffs[0]
+  chk('S46: bakeoffs record', JSON.stringify(b) === JSON.stringify({ id: 't1', challenger: { vendor: 'codex', model: 'gpt-6-sol', effort: 'medium' },
+    outcome: 'planned', compareOutDir: '/o/bake/t1', applied: 'planned', candidates: [{ label: 'planned', status: 'pass' }, { label: 'challenger', status: 'fail' }] }))
+  const ing = result.ingest[0]
+  chk('S46: one ingest entry: file under the compare outDir, ready-to-run cmd with --applied planned',
+    result.ingest.length === 1 && ing.id === 't1' && ing.file === '/o/bake/t1/compare-result.json' &&
+    ing.cmd === `~/.claude/scripts/parity-report.sh ingest-compare --result '/o/bake/t1/compare-result.json' --repo-name repo --level builder --source inline --task t1 --run bake:t1 --applied planned`)
+  chk('S46: ingest result is compact — scores and ids only (no patch, tail, diffstat)',
+    ing.result.candidates.length === 2 && ing.result.candidates.every(c => !('patch' in c) && !('tail' in c) && !('diffstat' in c)) &&
+    ing.result.candidates[1].totalTokens === 1234 && ing.result.leak === false && ing.result.sha === 'a'.repeat(40))
+}
+
+// ---- Scenario 47: planned fails, challenger passes → the challenger's patch (⚠ fallback);
+// if it then fails verification, redoStep() sends it to Claude at its level.
+{
+  const { result, calls, logs } = await run(
+    { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
+    { ...CLEAN, ...GREEN }, NO_BUDGET, CMP({ planned: 'fail', challenger: 'pass' }))
+  chk('S47: the ⚠ fallback line is logged', logs.includes(`⚠ Bake-off fallback: "t1" planned builder failed, challenger codex gpt-6-sol@medium passed — applying the challenger's patch`))
+  chk('S47: the challenger patch is applied', calls.some(c => c.label === 'bakeoff:apply:t1' && c.prompt.includes(`--patch '/o/bake/t1/challenger.patch'`)))
+  chk('S47: no in-place spawn; subtask reports the challenger rung',
+    countCalls(calls, 'builder:') === 0 && result.subtasks[0].tier === 'codex:builder' && result.subtasks[0].vendor === 'codex')
+  chk('S47: bakeoffs outcome challenger; ingest --applied challenger',
+    result.bakeoffs[0].outcome === 'challenger' && result.bakeoffs[0].applied === 'challenger' && result.ingest[0].cmd.endsWith(' --applied challenger'))
+  const { result: r2, calls: c2 } = await run(
+    { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
+    { ...CLEAN, 'verify:objective-check': ['src/t1.js broke\nFAIL'], 'verify:recheck': ['ok\nPASS'], 'redo:': ['fixed on claude'] },
+    NO_BUDGET, CMP({ planned: 'fail', challenger: 'pass' }))
+  const redo = c2.find(c => c.label.startsWith('redo:'))
+  chk('S47: an applied codex challenger that fails verification is redone on Claude at its level',
+    redo && redo.opts.agentType === 'triage-builder' && r2.escalations.some(e => e.id === 't1' && e.from === 'codex:builder' && e.to === 'builder') &&
+    r2.failed === false && r2.subtasks[0].tier === 'builder' && r2.subtasks[0].attempts === 2)
+}
+
+// ---- Scenario 48: both fail → the planned diff is applied and the normal remediation
+// runs on it; a planned diff that is empty is "nothing produced" → run in place.
+{
+  const { result, calls } = await run(
+    { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
+    { ...CLEAN, 'verify:objective-check': ['src/t1.js broke\nFAIL'], 'verify:recheck': ['ok\nPASS'], 'redo:': ['fixed'] },
+    NO_BUDGET, CMP({ planned: 'fail', challenger: 'fail' }))
+  chk('S48: both fail → the planned patch is applied', calls.some(c => c.label === 'bakeoff:apply:t1' && c.prompt.includes('/o/bake/t1/planned.patch')) &&
+    result.bakeoffs[0].outcome === 'planned')
+  chk('S48: … and the remediation ladder runs on it', countCalls(calls, 'redo:t1') === 1 && result.remediation && result.remediation.rounds === 1 && result.failed === false)
+  const empty = await run(
+    { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
+    { ...CLEAN, 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'fail', challenger: 'fail' }, { cand: { planned: { diffstat: '' } } }))
+  chk('S48: planned failed with an empty diff → no apply, run in place',
+    !empty.calls.some(c => c.label.startsWith('bakeoff:apply:')) && countCalls(empty.calls, 'builder:t1') === 1 && empty.result.bakeoffs[0].outcome === 'in-place')
+  const noApply = await run(
+    { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
+    { ...CLEAN, 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'fail', challenger: 'fail' }, { cand: { planned: { applies: false } } }))
+  chk('S48: planned diff that did not apply at the sha → run in place', countCalls(noApply.calls, 'builder:t1') === 1 && noApply.result.bakeoffs[0].outcome === 'in-place')
+}
+
+// ---- Scenario 49: planned produced nothing → in place (challenger fail / compare throws / no list).
+{
+  const { result, calls } = await run(
+    { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
+    { ...CLEAN, 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'unavailable', challenger: 'fail' }))
+  chk('S49: planned unavailable, challenger fail → no apply, run in place',
+    !calls.some(c => c.label.startsWith('bakeoff:apply:')) && countCalls(calls, 'builder:t1') === 1 && statusOf(result, 't1') === 'ok')
+  chk('S49: outcome in-place, candidates recorded, still ingested (leak false, one graded)',
+    result.bakeoffs[0].outcome === 'in-place' && result.bakeoffs[0].applied === null && result.bakeoffs[0].candidates[0].status === 'unavailable' &&
+    result.ingest.length === 1 && !result.ingest[0].cmd.includes('--applied'))
+  const thrown = await run(
+    { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
+    { ...CLEAN, 'builder:': ['did it'], ...GREEN }, NO_BUDGET, () => new Error('staging failed'))
+  chk('S49: a compare that throws → run in place, reason recorded, no ingest',
+    countCalls(thrown.calls, 'builder:t1') === 1 && thrown.result.bakeoffs[0].outcome === 'in-place' &&
+    thrown.result.bakeoffs[0].reason.includes('staging failed') && thrown.result.ingest.length === 0)
+  const nothing = await run(
+    { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
+    { ...CLEAN, 'builder:': ['did it'], ...GREEN }, NO_BUDGET, () => null)
+  chk('S49: a compare that returns nothing → run in place', countCalls(nothing.calls, 'builder:t1') === 1 && nothing.result.bakeoffs[0].outcome === 'in-place')
+  const unknownLeak = await run(
+    { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
+    { ...CLEAN, 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'invalid', challenger: 'invalid' }, { result: { leak: null, graded: false } }))
+  chk('S49: leak state unknown → no apply, run in place, not ingested',
+    !unknownLeak.calls.some(c => c.label.startsWith('bakeoff:apply:')) && countCalls(unknownLeak.calls, 'builder:t1') === 1 && unknownLeak.result.ingest.length === 0)
+}
+
+// ---- Scenario 50: LEAK → nothing applied, nothing further runs, the run aborts loudly.
+{
+  const { result, calls, logs } = await run(
+    { subtasks: [BST('t1', 'builder'), BST('t2', 'builder'), LV('t3', 'builder', ['c.js'])], checks: ['make test'], review: 'never', bakeoff: BO() },
+    { ...CLEAN, 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }, { result: { leak: true, graded: false } }))
+  chk('S50: leak true → no apply', !calls.some(c => c.label.startsWith('bakeoff:apply:')))
+  chk('S50: leak true → no further compare, no worker, no verification', calls.filter(c => c.label.startsWith('bakeoff:dirty:')).length === 1 &&
+    countCalls(calls, 'builder:') === 0 && countCalls(calls, 'verify:') === 0)
+  chk('S50: loud ⚠ LEAK log', logs.some(l => l.startsWith('⚠ LEAK in the bake-off for "t1"')))
+  chk('S50: result is an explicit error, incomplete', result.incomplete === true && /^LEAK/.test(result.error) &&
+    result.bakeoffs[0].outcome === 'skipped' && result.bakeoffs[0].reason === 'LEAK' && result.ingest.length === 0)
+}
+
+// ---- Scenario 51: stage-worktree.sh apply refuses (exit 6) or returns nothing → in place.
+{
+  const { result, calls, logs } = await run(
+    { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
+    { 'bakeoff:dirty:': [{ porcelain: '', rc: 0 }], 'bakeoff:apply:': [{ ok: false, applied: false, method: 'none', rc: 6 }], 'builder:': ['did it'], ...GREEN },
+    NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
+  chk('S51: apply exit 6 → run in place', countCalls(calls, 'builder:t1') === 1 && result.bakeoffs[0].outcome === 'in-place' &&
+    result.bakeoffs[0].applied === null && result.bakeoffs[0].reason.includes('exit 6'))
+  chk('S51: the result is the in-place one (no bakeoff marker needed), still ingested without --applied',
+    statusOf(result, 't1') === 'ok' && result.ingest.length === 1 && !result.ingest[0].cmd.includes('--applied') && logs.some(l => l.includes('was not applied')))
+  const lost = await run(
+    { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
+    { 'bakeoff:dirty:': [{ porcelain: '', rc: 0 }], 'bakeoff:apply:': [null], 'builder:': ['did it'], ...GREEN },
+    NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
+  chk('S51: apply returned nothing → in place, with a loud half-known-state warning',
+    countCalls(lost.calls, 'builder:t1') === 1 && lost.logs.some(l => l.includes('half-known state')))
+}
+
+// ---- Scenario 52: sampled subtasks run FIRST, one at a time, before the parallel rest.
+{
+  const order = []
+  const wf = (name, a) => { order.push(`cmp:${a.outDir}`); return CMP({ planned: 'pass', challenger: 'fail' })(name, a) }
+  const { result, events } = await run(
+    { subtasks: [LV('n1', 'builder', ['n.js']), BST('t1', 'builder'), BST('t2', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
+    { ...CLEAN, 'builder:': ['did it'], ...GREEN }, NO_BUDGET, wf)
+  const idx = p => events.findIndex(e => e.startsWith(p))
+  chk('S52: both sampled compares precede the unsampled subtask\'s worker',
+    idx('workflow:triage-compare:/o/bake/t1') >= 0 && idx('workflow:triage-compare:/o/bake/t2') >= 0 &&
+    idx('workflow:triage-compare:/o/bake/t2') < idx('agent:builder:n1'))
+  chk('S52: one at a time — t1 applied before t2\'s dirty check', idx('agent:bakeoff:apply:t1') < idx('agent:bakeoff:dirty:t2') &&
+    idx('agent:bakeoff:dirty:t2') < idx('workflow:triage-compare:/o/bake/t2'))
+  chk('S52: every subtask reported ok; the unsampled one ran in place',
+    ['n1', 't1', 't2'].every(id => statusOf(result, id) === 'ok') && JSON.stringify(result.bakeoffSkipped) === JSON.stringify([{ id: 'n1', reason: 'no-own-checks' }]))
+}
+
+// ---- Scenario 53: budget — a bake-off is WORK on the RESERVE floor via spawn().
+{
+  const lowBudget = { total: 100_000, remaining: () => 50_000, spent: () => 50_000 }
+  const { result, workflows, calls } = await run(
+    { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
+    { ...CLEAN, 'builder:': ['did it'], ...GREEN }, lowBudget, CMP({ planned: 'pass', challenger: 'pass' }))
+  chk('S53: under the reserve → no bake-off spawn, recorded as a Bakeoff skip',
+    workflows.length === 0 && !calls.some(c => c.label.startsWith('bakeoff:')) && result.budget.skipped.some(s => s.stage === 'Bakeoff:builder' && s.desc === 't1'))
+  chk('S53: the bakeoffs record says budget', result.bakeoffs[0].outcome === 'skipped' && result.bakeoffs[0].reason === 'budget')
 }
 
 console.log('')

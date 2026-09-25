@@ -1,7 +1,7 @@
 export const meta = {
   name: 'triage-exec',
   description: 'Execute a pre-built triage plan: delegate each subtask to its level agent (Claude, or an external vendor), run the objective checks, remediate and escalate',
-  whenToUse: 'Run a plan the orchestrator has ALREADY classified: /triage-exec with args = {subtasks:[{brief,level,vendor,files,acceptance,danger,effort}], checks:[shell commands], review, crossReview, overflow, vendor}. level is quick|builder|deep|top (tier is an alias; fable = top on Claude, overflow = builder on codex); vendor is claude|codex (agy was retired 2026-09-24 and is refused). It executes, verifies, re-runs only the implicated subtasks on failure (always on Claude), and escalates one rung up on ESCALATE (deep below max effort gets one deep@max attempt before Fable). It never classifies — a malformed plan throws before any spawn.',
+  whenToUse: 'Run a plan the orchestrator has ALREADY classified: /triage-exec with args = {subtasks:[{brief,level,vendor,files,acceptance,danger,effort}], checks:[shell commands], review, crossReview, overflow, vendor}. level is quick|builder|deep|top (tier is an alias; fable = top on Claude, overflow = builder on codex); vendor is claude|codex (agy was retired 2026-09-24 and is refused). It executes, verifies, re-runs only the implicated subtasks on failure (always on Claude), and escalates one rung up on ESCALATE (deep below max effort gets one deep@max attempt before Fable). It never classifies — a malformed plan throws before any spawn. A subtask may carry checks:[cmd] (its own objective checks: an inline bake-off\'s grade; the plan checks stay the verify gate). Opt-in INLINE BAKE-OFFS: bakeoff = {config: the `triage-tiers.sh --bakeoff-json` object, seed, repo (abs), outDir (abs, outside repo), weeklyPct?}. An eligible subtask (own checks, or the plan checks when it is the only subtask; non-empty files; a tuning challenger differing from its planned vendor/model/effort; codex challengers of danger work at effort >= high) is sampled deterministically (FNV-1a of seed+id+brief < sampleRate; none at weeklyPct >= pauseAtWeeklyPct) and runs FIRST, one at a time, as a planned-vs-challenger triage-compare, only if git status shows its files unmodified. Applied via stage-worktree.sh apply: the planned patch if it passed, else a passing challenger (logged as a fallback), else a failing planned diff (normal verify + remediation), else the subtask runs in place; a LEAK aborts the run. Returns bakeoffs, bakeoffSkipped and ingest: for each ingest entry the orchestrator writes result as JSON to file, then runs cmd (parity-report.sh ingest-compare).',
   phases: [
     { title: 'Execute' },
     { title: 'Verify' },
@@ -44,12 +44,15 @@ const CLAUDE_AGENT = { quick: 'triage-quick-task', builder: 'triage-builder', de
 
 const USAGE = 'Expected args = {\n' +
   `  subtasks: [{ id?, brief, level: ${LEVELS.join('|')} (alias tier; ${Object.keys(LEVEL_ALIASES).join('|')} also accepted), vendor?: ${VENDORS.join('|')},\n` +
-  `               files?: string[], acceptance, danger?: bool, effort?: ${EFFORTS.join('|')} }]  // at least one\n` +
+  `               files?: string[], acceptance, danger?: bool, effort?: ${EFFORTS.join('|')},\n` +
+  '               checks?: string[] }]  // at least one; checks = this subtask\'s own checks (an inline bake-off\'s grade)\n' +
   '  checks?:      string[]   // shell commands run as objective gates\n' +
   `  vendor?:      ${VENDORS.join('|')}   // default vendor for subtasks that omit one (default: claude)\n` +
   '  overflow?:    boolean    // default: false — builder-level subtasks without a vendor run on codex\n' +
   `  review?:      ${REVIEW_MODES.join('|')}   // default: auto\n` +
-  `  crossReview?: boolean|${Object.keys(CROSS_REVIEW_VENDORS).join('|')}   // default: false (true = codex)\n}`
+  `  crossReview?: boolean|${Object.keys(CROSS_REVIEW_VENDORS).join('|')}   // default: false (true = codex)\n` +
+  '  bakeoff?:     { config: <triage-tiers.sh --bakeoff-json object>, seed: string, repo: "/abs repo",\n' +
+  '                  outDir: "/abs dir outside repo", weeklyPct?: number }   // opt-in inline bake-offs\n}'
 
 function bad(msg) {
   throw new Error(`triage-exec: ${msg}\n${USAGE}`)
@@ -75,6 +78,42 @@ if (isRetired(args.vendor)) bad(`args.vendor ${JSON.stringify(args.vendor)}: ${R
 if (args.vendor != null && !VENDORS.includes(args.vendor)) bad(`args.vendor must be one of ${VENDORS.join('|')} (got ${JSON.stringify(args.vendor)}).`)
 const wantsOverflow = args.overflow === true
 const planVendor = args.vendor || null
+
+// args.bakeoff — opt-in inline build bake-offs (Wave 13B; see bakeoffPick() and
+// runBakeoff()). Absent → none of that code runs and the return has no bake-off
+// fields. config is `triage-tiers.sh --bakeoff-json` verbatim (that script owns the
+// full tuning schema; a workflow has no fs), so only the fields read here are checked.
+// Paths go into shell commands: absolute, no whitespace or quotes; outDir outside repo
+// (each subtask's compare stages worktrees and patches under it).
+const isAbsPath = v => isStr(v) && v.startsWith('/') && !/[\s'"`$\\]/.test(v)
+const stripSlash = v => String(v).trim().replace(/\/+$/, '')
+const isNum = v => typeof v === 'number' && Number.isFinite(v)
+const isObj = v => !!v && typeof v === 'object' && !Array.isArray(v)
+const bakeoffOn = args.bakeoff != null
+if (bakeoffOn) {
+  const b = args.bakeoff
+  if (!isObj(b)) bad(`args.bakeoff must be an object (got ${typeName(b)}).`)
+  const cfg = b.config
+  if (!isObj(cfg) || !isObj(cfg.levels) || !isObj(cfg.tuning)) bad('args.bakeoff.config must be the object `triage-tiers.sh --bakeoff-json` prints ({asOf, levels, tuning}).')
+  const t = cfg.tuning
+  if (!(isNum(t.sampleRate) && t.sampleRate > 0 && t.sampleRate <= 1)) bad('args.bakeoff.config.tuning.sampleRate must be a number in (0, 1].')
+  if (!isObj(t.challengerMix) || !Object.entries(t.challengerMix).every(([v, s]) => VENDORS.includes(v) && isNum(s) && s >= 0 && s <= 1)) {
+    bad(`args.bakeoff.config.tuning.challengerMix must be {vendor: share in [0, 1]} over ${VENDORS.join('|')}.`)
+  }
+  if (!isObj(t.challengers) || !Object.entries(t.challengers).every(([l, byV]) => LEVELS.includes(l) && isObj(byV) &&
+      Object.entries(byV).every(([v, list]) => VENDORS.includes(v) && Array.isArray(list) &&
+        list.every(c => isObj(c) && isStr(c.model) && /^[A-Za-z0-9._+-]+$/.test(c.model) && EFFORTS.includes(c.effort))))) {
+    bad('args.bakeoff.config.tuning.challengers must be {level: {vendor: [{model, effort}]}}.')
+  }
+  if (!isNum(t.pauseAtWeeklyPct)) bad('args.bakeoff.config.tuning.pauseAtWeeklyPct must be a number.')
+  if (!isStr(b.seed)) bad('args.bakeoff.seed must be a non-empty string (the orchestrator picks it; sampling is a pure function of it).')
+  if (!isAbsPath(b.repo)) bad('args.bakeoff.repo must be an absolute path with no whitespace or quotes.')
+  if (!isAbsPath(b.outDir)) bad('args.bakeoff.outDir must be an absolute path with no whitespace or quotes.')
+  const repoC = stripSlash(b.repo)
+  const outC = stripSlash(b.outDir)
+  if (outC === repoC || outC.startsWith(`${repoC}/`) || repoC.startsWith(`${outC}/`)) bad('args.bakeoff.outDir must be outside args.bakeoff.repo (and must not contain it) — the staged worktrees and patches would dirty the real tree.')
+  if (b.weeklyPct != null && !isNum(b.weeklyPct)) bad(`args.bakeoff.weeklyPct must be a number when given (got ${JSON.stringify(b.weeklyPct)}).`)
+}
 
 // codexDangerEffort() — the danger floor for codex: effort at least `high`. An unset
 // effort would otherwise fall to the tiers.json default, which is data and may drop;
@@ -106,6 +145,7 @@ const subtasks = args.subtasks.map((raw, i) => {
   const aliasVendor = (byLevel && byLevel.vendor) || (byTier && byTier.vendor) || null
   if (!isStr(raw.acceptance)) bad(`subtasks[${i}].acceptance must be a non-empty string — verification has nothing to check against without it.`)
   if (raw.files != null && !(Array.isArray(raw.files) && raw.files.every(isStr))) bad(`subtasks[${i}].files must be an array of path strings.`)
+  if (raw.checks != null && !(Array.isArray(raw.checks) && raw.checks.every(isStr))) bad(`subtasks[${i}].checks must be an array of non-empty shell-command strings.`)
   if (raw.danger != null && typeof raw.danger !== 'boolean') bad(`subtasks[${i}].danger must be a boolean.`)
   if (raw.effort != null && !EFFORTS.includes(raw.effort)) bad(`subtasks[${i}].effort must be one of ${EFFORTS.join('|')} (got ${JSON.stringify(raw.effort)}).`)
   if (isRetired(raw.vendor)) bad(`subtasks[${i}].vendor ${JSON.stringify(raw.vendor)}: ${RETIRED_VENDORS[raw.vendor]}.`)
@@ -157,6 +197,7 @@ const subtasks = args.subtasks.map((raw, i) => {
     acceptance: raw.acceptance.trim(),
     danger,
     effort,
+    checks: raw.checks ? raw.checks.map(c => c.trim()) : [],
   }
 })
 
@@ -342,7 +383,238 @@ async function runSubtask(st) {
   })
 }
 
-const results = (await parallel(subtasks.map(st => () => runSubtask(st)))).filter(Boolean)
+// ─── Inline bake-offs (Wave 13B, opt-in: args.bakeoff) ──────────────────────
+// A sampled subtask runs as a two-candidate triage-compare — its planned rung vs one
+// challenger from config.tuning.challengers — BEFORE the rest of the plan, one at a
+// time, so no compare's leakcheck ever overlaps a worker editing the tree. The winner's
+// patch is applied with stage-worktree.sh apply and joins `results` like any other
+// result, so verify()/assess()/remediation run unchanged on it. Reused, never
+// reimplemented: triage-compare (staging, grading, leakcheck), stage-worktree.sh apply
+// (the only writer of the real tree here), parity-report.sh ingest-compare (the only
+// ledger writer — the orchestrator runs it; this workflow never writes the ledger).
+const STAGE_WT = '~/.claude/scripts/stage-worktree.sh'
+const PARITY_REPORT = '~/.claude/scripts/parity-report.sh'
+const shq = s => `'${String(s).replace(/'/g, `'\\''`)}'`
+const errText = e => String((e && e.message) || e).slice(0, 200)
+// Subtask ids name the compare's outDir and the ledger's task token.
+const BAKEOFF_ID = /^[A-Za-z0-9._+-]{1,80}$/
+// Deterministic sampling (the DSL forbids Math.random/Date.now): FNV-1a 32-bit over
+// UTF-16 code units, as a unit-interval draw.
+function fnv1a32(s) {
+  let h = 0x811c9dc5
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0 }
+  return h >>> 0
+}
+const draw = s => fnv1a32(s) / 4294967296
+const bo = bakeoffOn ? {
+  cfg: args.bakeoff.config,
+  tuning: args.bakeoff.config.tuning,
+  seed: args.bakeoff.seed,
+  repo: stripSlash(args.bakeoff.repo),
+  outDir: stripSlash(args.bakeoff.outDir),
+  weeklyPct: args.bakeoff.weeklyPct != null ? args.bakeoff.weeklyPct : null,
+} : null
+const bakeoffPaused = !!bo && bo.weeklyPct != null && bo.weeklyPct >= bo.tuning.pauseAtWeeklyPct
+const bakeoffs = []        // one record per SAMPLED subtask (report().bakeoffs)
+const bakeoffSkipped = []  // {id, reason} for every subtask not sampled
+const ingest = []          // one ledger hand-off per compare that graded
+
+// A codex challenger for a danger subtask must clear the same floor the plan's own
+// codex danger work does (level >= deep, effort >= high): codexDangerEffort() is that
+// rule, so an effort it would lift fails the floor and the challenger is excluded.
+const meetsCodexDangerFloor = (level, effort) => atLeast(level, 'deep') === level && codexDangerEffort(level, effort) === effort
+
+// bakeoffPick(st) — SINGLE OWNER of the whole sampling decision: eligibility, the
+// deterministic sample, the challenger vendor and entry. → {planned, challenger, checks}
+// | {skip: reason}. Eligible: its own checks (or the plan's, when it is the only
+// subtask), non-empty files (compare needs them for an external candidate), an id
+// usable as a path/ledger token, and at least one challenger that differs from the
+// planned (vendor, model, effort) — planned model/effort = the subtask's effort, else
+// config.levels[level][vendor]. Sampled iff draw(seed, id, brief) < sampleRate; the
+// vendor from a second draw over challengerMix's cumulative shares (VENDORS order);
+// an empty vendor pool falls to the other; the entry from a third hash.
+function bakeoffPick(st) {
+  if (bakeoffPaused) return { skip: 'paused' }
+  const own = st.checks.length ? st.checks : (subtasks.length === 1 ? checks : [])
+  if (!own.length) return { skip: subtasks.length === 1 ? 'no-checks' : 'no-own-checks' }
+  if (!st.files.length) return { skip: 'no-files' }
+  if (!BAKEOFF_ID.test(st.id)) return { skip: 'id-not-a-token' }
+  const inc = (bo.cfg.levels[st.level] || {})[st.vendor]
+  if (!isObj(inc) || !isStr(inc.model)) return { skip: 'no-levels-entry' }
+  const planned = { vendor: st.vendor, level: st.level, model: inc.model, effort: st.effort || inc.effort || null }
+  const byVendor = bo.tuning.challengers[st.level] || {}
+  const pool = {}
+  for (const v of VENDORS) {
+    pool[v] = (byVendor[v] || []).filter(c =>
+      !(v === planned.vendor && c.model === planned.model && c.effort === planned.effort) &&
+      !(st.danger && v === 'codex' && !meetsCodexDangerFloor(st.level, c.effort)))
+  }
+  if (!VENDORS.some(v => pool[v].length)) return { skip: 'no-challenger' }
+  const key = `${bo.seed}\0${st.id}\0${st.brief}`
+  if (!(draw(key) < bo.tuning.sampleRate)) return { skip: 'not-sampled' }
+  const u = draw(`${key}\0vendor`)
+  let acc = 0
+  let vendor = null
+  for (const v of VENDORS) { acc += bo.tuning.challengerMix[v] || 0; if (u < acc) { vendor = v; break } }
+  if (!vendor || !pool[vendor].length) vendor = VENDORS.find(v => v !== vendor && pool[v].length) || VENDORS.find(v => pool[v].length)
+  const list = pool[vendor]
+  const c = list[fnv1a32(`${key}\0entry`) % list.length]
+  return { planned, challenger: { vendor, level: st.level, model: c.model, effort: c.effort }, checks: own }
+}
+
+// bakeoffChoice(res) — SINGLE OWNER of which patch (if any) an inline bake-off applies.
+//   planned pass                                 → planned
+//   planned not pass AND challenger pass         → challenger (the logged fallback)
+//   planned fail with a real diff that applied   → planned: the normal verify +
+//                                                  remediation ladder then runs on it,
+//                                                  as if it had run in place
+//   anything else (planned produced nothing: unavailable / ungraded / invalid / an
+//   empty or non-applying diff)                  → null: run the subtask in place
+function bakeoffChoice(res) {
+  const by = new Map(res.candidates.map(c => [c.label, c]))
+  const p = by.get('planned') || { status: 'missing' }
+  const ch = by.get('challenger') || { status: 'missing' }
+  if (p.status === 'pass') return { apply: 'planned', cand: p }
+  if (ch.status === 'pass') return { apply: 'challenger', cand: ch, planned: p }
+  if (p.status === 'fail' && p.applies === true && isStr(p.diffstat)) return { apply: 'planned', cand: p }
+  return { apply: null, why: `planned ${p.status}${p.status === 'fail' ? ' with no usable diff' : ''}, challenger ${ch.status}` }
+}
+
+// runBakeoff(st, pick) — one sampled subtask: dirty-files guard → triage-compare →
+// bakeoffChoice() → stage-worktree.sh apply. → {result} (applied; joins results),
+// {inPlace: true} (run it normally after the bake-offs) or {leak: true} (abort).
+async function runBakeoff(st, pick, rec, at) {
+  const files = st.files.map(shq).join(' ')
+  const dirty = await agent(`Run this one command exactly as written and return porcelain = its stdout verbatim ("" if it printed nothing) and rc = its exit status. Do not run anything else, and do not interpret or fix anything.\n` +
+    `git -C ${shq(bo.repo)} status --porcelain -- ${files}`,
+  { phase: 'Execute', agentType: 'triage-quick-task', label: `bakeoff:dirty:${st.id}`,
+    schema: { type: 'object', properties: { porcelain: { type: 'string' }, rc: { type: ['integer', 'null'] } }, required: ['porcelain', 'rc'] } })
+  // Unknown counts as dirty: a bake-off runs only on files proven unmodified.
+  if (!dirty || dirty.rc !== 0 || typeof dirty.porcelain !== 'string' || dirty.porcelain.trim() !== '') {
+    rec.reason = dirty && dirty.rc === 0 && typeof dirty.porcelain === 'string' ? 'files modified in the tree' : 'dirty check failed'
+    log(`Bake-off: "${st.id}" not run (${rec.reason}) — running it normally in place.`)
+    return { inPlace: true }
+  }
+  at.stage = 'compare'
+  const cand = (x, label) => Object.assign({ vendor: x.vendor, level: x.level, label }, x.model ? { model: x.model } : {}, x.effort ? { effort: x.effort } : {})
+  // The planned candidate is exactly what runSubtask() would spawn: the level's own
+  // agent / ext-run default model, the plan's effort when it set one.
+  const plannedCand = cand({ vendor: st.vendor, level: st.level, effort: st.effort }, 'planned')
+  if (isExternal(st.vendor) || isExternal(pick.challenger.vendor)) log(`⚠ Bake-off "${st.id}": an external candidate's workspace leaves this machine.`)
+  let res = null
+  let err = null
+  try {
+    res = await workflow('triage-compare', {
+      repo: bo.repo, base: 'HEAD', brief: st.brief, files: st.files, acceptance: st.acceptance, checks: pick.checks,
+      outDir: rec.compareOutDir, parallel: true, candidates: [plannedCand, cand(pick.challenger, 'challenger')],
+    })
+  } catch (e) {
+    err = errText(e)
+  }
+  if (res && res.leak === true) {
+    rec.outcome = 'skipped'
+    rec.reason = 'LEAK'
+    rec.candidates = Array.isArray(res.candidates) ? res.candidates.map(c => ({ label: c.label, status: c.status })) : []
+    log(`⚠ LEAK in the bake-off for "${st.id}": triage-compare reports ${bo.repo} changed during the run — nothing applied; aborting before any further work. Inspect the repo first.`)
+    return { leak: true }
+  }
+  if (!res || !Array.isArray(res.candidates)) {
+    rec.outcome = 'in-place'
+    rec.reason = err ? `triage-compare failed: ${err}` : 'triage-compare returned no candidate list'
+    log(`⚠ Bake-off "${st.id}": ${rec.reason} — its candidates are unavailable; running it normally in place.`)
+    return { inPlace: true }
+  }
+  rec.candidates = res.candidates.map(c => ({ label: c.label, status: c.status }))
+  if (res.leak == null) log(`⚠ Bake-off "${st.id}": triage-compare could not confirm ${bo.repo} is unchanged (leak check incomplete) — its grades are void.`)
+  if (res.leak === false && res.candidates.some(c => c.status === 'pass' || c.status === 'fail')) {
+    const file = `${rec.compareOutDir}/compare-result.json`
+    const repoName = bo.repo.split('/').pop().replace(/[^A-Za-z0-9._-]/g, '-').slice(0, 64) || 'repo'
+    const run = `${bo.outDir.split('/').pop().replace(/[^A-Za-z0-9._:+-]/g, '-')}:${st.id}`.slice(0, 80)
+    ingest.push({ id: st.id, file,
+      result: { base: res.base, sha: res.sha, leak: res.leak, baseMoved: res.baseMoved, graded: res.graded,
+        candidates: res.candidates.map(c => ({ label: c.label, vendor: c.vendor, level: c.level, model: c.model == null ? null : c.model,
+          effort: c.effort == null ? null : c.effort, status: c.status, totalTokens: c.totalTokens == null ? null : c.totalTokens,
+          seconds: c.seconds == null ? null : c.seconds })) },
+      cmd: `${PARITY_REPORT} ingest-compare --result ${shq(file)} --repo-name ${repoName} --level ${st.level} --source inline --task ${st.id} --run ${run}` })
+  }
+  const choice = res.leak === false ? bakeoffChoice(res) : { apply: null, why: 'leak state unknown — every grade void' }
+  if (!choice.apply) {
+    rec.outcome = 'in-place'
+    rec.reason = choice.why
+    log(`Bake-off "${st.id}": nothing to apply (${choice.why}) — running it normally in place.`)
+    return { inPlace: true }
+  }
+  const plannedRung = `${tierName(st.level, st.vendor)}${st.effort ? `@${st.effort}` : ''}`
+  const ch = pick.challenger
+  if (choice.apply === 'challenger') {
+    log(`⚠ Bake-off fallback: "${st.id}" planned ${plannedRung} ${choice.planned.status === 'fail' ? 'failed' : `was ${choice.planned.status}`}, challenger ${ch.vendor} ${ch.model}@${ch.effort} passed — applying the challenger's patch`)
+  }
+  at.stage = 'apply'
+  const patch = `${rec.compareOutDir}/${choice.apply}.patch`
+  const ap = await agent(`Run this one command exactly as written and return its stdout JSON line field for field, plus rc = its exit status. Do not run anything else, and do not interpret or fix anything.\n` +
+    `${STAGE_WT} apply --repo ${shq(bo.repo)} --patch ${shq(patch)}`,
+  { phase: 'Execute', agentType: 'triage-quick-task', label: `bakeoff:apply:${st.id}`,
+    schema: { type: 'object', properties: { ok: { type: 'boolean' }, applied: { type: 'boolean' }, method: { type: 'string' }, error: { type: 'string' }, rc: { type: ['integer', 'null'] } }, required: ['ok', 'rc'] } })
+  if (!ap || ap.rc !== 0 || ap.ok !== true) {
+    rec.outcome = 'in-place'
+    rec.reason = !ap ? 'apply result unknown' : ap.rc === 6 ? 'patch would not apply to the tree (exit 6, nothing written)' : `apply failed (rc ${ap.rc})`
+    log(`⚠ Bake-off "${st.id}": the ${choice.apply} patch was not applied (${rec.reason}) — running it normally in place.` +
+      (!ap ? ` The apply step returned nothing: check ${bo.repo} for a half-known state (stage-worktree.sh apply is atomic).` : ''))
+    return { inPlace: true }
+  }
+  rec.outcome = choice.apply
+  rec.applied = choice.apply
+  const who = choice.apply === 'planned' ? { level: st.level, vendor: st.vendor, effort: st.effort } : { level: st.level, vendor: ch.vendor, effort: ch.effort }
+  const c = choice.cand
+  log(`Bake-off "${st.id}": applied the ${choice.apply} patch (${c.vendor} ${c.model || 'default'}@${c.effort || 'default'}; patch-check ${c.status}${c.diffstat ? `, ${c.diffstat}` : ''}).`)
+  return { result: { subtask: st, level: who.level, vendor: who.vendor, effort: who.effort, attempts: 1, bakeoff: true,
+    output: `Inline bake-off: applied the ${choice.apply} candidate's patch (${c.vendor} ${c.model || 'default'}@${c.effort || 'default'}), ` +
+      `graded ${c.status} by patch-check at ${String(res.sha || '').slice(0, 12)}${c.diffstat ? ` (${c.diffstat})` : ''}. Nothing else ran in place.` } }
+}
+
+// runBakeoffs() — pick every subtask (logged), then run the sampled ones in plan
+// order, one at a time. Each is WORK: budget-gated on RESERVE via spawn(). A budget
+// skip leaves the subtask to run in place (where spawn() decides again).
+async function runBakeoffs() {
+  if (bakeoffPaused) log(`Bake-off paused: weekly usage ${bo.weeklyPct}% >= pauseAtWeeklyPct ${bo.tuning.pauseAtWeeklyPct}% — no subtask sampled.`)
+  const picks = subtasks.map(st => ({ st, pick: bakeoffPick(st) }))
+  for (const x of picks) if (x.pick.skip) bakeoffSkipped.push({ id: x.st.id, reason: x.pick.skip })
+  const chosen = picks.filter(x => !x.pick.skip)
+  log(`Bake-off: ${chosen.length ? `sampled ${chosen.map(x => `"${x.st.id}" (vs ${x.pick.challenger.vendor} ${x.pick.challenger.model}@${x.pick.challenger.effort})`).join(', ')}` : 'no subtask sampled'}` +
+    (bakeoffSkipped.length ? `; not sampled: ${bakeoffSkipped.map(s => `"${s.id}" (${s.reason})`).join(', ')}` : '') + '.')
+  const applied = []
+  for (const { st, pick } of chosen) {
+    const ch = pick.challenger
+    const rec = { id: st.id, challenger: { vendor: ch.vendor, model: ch.model, effort: ch.effort }, outcome: 'skipped',
+      compareOutDir: `${bo.outDir}/${st.id}`, applied: null, candidates: [] }
+    bakeoffs.push(rec)
+    const at = { stage: 'dirty' }
+    const out = await spawn(RESERVE, `Bakeoff:${tierName(st.level, st.vendor)}`, st.id, () => runBakeoff(st, pick, rec, at))
+    if (!out) {
+      rec.reason = rec.reason || 'budget'
+      if (at.stage === 'apply') log(`⚠ Bake-off "${st.id}" stopped during its apply step — check ${bo.repo} before trusting the in-place run.`)
+      continue
+    }
+    if (out.leak) return { leak: true, applied }
+    if (out.result) applied.push(out.result)
+  }
+  return { leak: false, applied }
+}
+
+const bake = bakeoffOn ? await runBakeoffs() : null
+const results = bake ? bake.applied.slice() : []
+if (bake && bake.leak) {
+  return report({
+    checks: checks.map(cmd => ({ cmd, pass: null })),
+    review: { ran: false, verdict: null, text: '' },
+    remediation: null,
+    incomplete: true,
+    failed: false,
+    error: 'LEAK: a bake-off\'s triage-compare reports the real repo changed during the run — aborted before any further work',
+  })
+}
+const appliedIds = new Set(results.map(r => r.subtask.id))
+results.push(...(await parallel(subtasks.filter(st => !appliedIds.has(st.id)).map(st => () => runSubtask(st)))).filter(Boolean))
 const dropped = subtasks.length - results.length
 if (dropped > 0) log(`⚠ ${dropped} of ${subtasks.length} subtask(s) failed or were dropped — results are incomplete`)
 
@@ -363,6 +635,23 @@ function externalReport() {
     }
   }
   return byVendor
+}
+
+// bakeoffReport() — the inline bake-off half of the distillate (report() stays its
+// single owner; present only when args.bakeoff was given). bakeoffs = one record per
+// sampled subtask; bakeoffSkipped = why every other subtask was not sampled; ingest =
+// one ledger hand-off per compare that graded. A workflow cannot write files, so each
+// ingest entry carries the compact compare result (scores and ids only — no patch,
+// tail or diffstat): the orchestrator writes `result` as JSON to `file`, then runs
+// `cmd` (parity-report.sh ingest-compare, the one ledger writer; --applied is added
+// here when a candidate's patch was applied, and left out when none was).
+function bakeoffReport() {
+  const appliedOf = new Map(bakeoffs.map(b => [b.id, b.applied]))
+  return {
+    bakeoffs: bakeoffs.map(b => Object.assign({}, b)),
+    bakeoffSkipped: bakeoffSkipped.slice(),
+    ingest: ingest.map(x => Object.assign({}, x, { cmd: x.cmd + (appliedOf.get(x.id) ? ` --applied ${appliedOf.get(x.id)}` : '') })),
+  }
 }
 
 // report() — the SINGLE place the compact return value is built. Only distillate
@@ -389,6 +678,7 @@ function report(extra) {
     escalations,
     budget: budgetReport(),
     ...(external ? { external } : {}),
+    ...(bakeoffOn ? bakeoffReport() : {}),
   }, extra)
 }
 

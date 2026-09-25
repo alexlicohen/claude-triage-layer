@@ -6,6 +6,50 @@ for the current check catalog.
 
 ## Wave 13 — agy retired; every codex run OS-confined and audited (uncommitted)
 
+- **13B — inline build bake-offs in `triage-exec` (opt-in `args.bakeoff`).**
+  `bakeoff = {config: <triage-tiers.sh --bakeoff-json>, seed, repo, outDir
+  (outside repo), weeklyPct?}`; absent → unchanged (no bake-off fields). New
+  optional subtask field `checks: string[]` (its own checks: the bake-off's
+  grade; the plan checks stay the verify gate). `bakeoffPick()` owns sampling:
+  eligible = own checks (or the plan's, when it is the only subtask), non-empty
+  `files`, an id usable as a path/ledger token, and a `tuning.challengers` entry
+  differing from the planned (vendor, model, effort); codex challengers of
+  danger work must clear `codexDangerEffort()`'s floor (excluded, never
+  lifted); none at `weeklyPct >= pauseAtWeeklyPct`. Deterministic: FNV-1a over
+  `seed\0id\0brief` < `sampleRate`, second/third hashes pick the vendor
+  (cumulative `challengerMix`, VENDORS order; empty pool → the other) and the
+  entry. Sampled subtasks run first, one at a time: `git status --porcelain`
+  on their files (any output or no answer → run in place), then a nested
+  two-candidate `triage-compare` (planned = exactly what `runSubtask()` would
+  spawn, vs the challenger; `parallel:true`, base HEAD, outDir `<outDir>/<id>`).
+  `bakeoffChoice()` owns the apply: planned pass → planned; else challenger
+  pass → challenger (`⚠ Bake-off fallback` log); else a failing planned diff
+  that applied at the sha → planned (verify + remediation run on it); else in
+  place. Applied via `stage-worktree.sh apply` (exit 6 / no answer → in place);
+  the applied result joins `results` (`bakeoff:true`, the candidate's
+  level/vendor/effort) so verify/assess/remediation are unchanged — an applied
+  codex challenger that fails verification is redone on Claude at its level by
+  `redoStep()` (no new path). A compare LEAK aborts the run (nothing applied,
+  nothing else runs, `error: LEAK…`, as triage-parity does); throw / no result /
+  unknown leak state → in place. Budget: each bake-off is WORK via `spawn()`
+  on `RESERVE`. `report()` gains `bakeoffs` (per sampled subtask),
+  `bakeoffSkipped` ({id, reason} for the rest) and `ingest`: a workflow cannot
+  write files, so each graded compare returns its compact result (scores and ids
+  only) plus a `file` path and a ready `parity-report.sh ingest-compare` command;
+  the orchestrator writes the file and runs it (`--run <outDir basename>:<id>`,
+  `--applied` only when a patch was applied). Test harness: `workflow()` mock.
+- **Checks (13B)**: workflow-scenarios 228 → 310 (S40–S53). Mutations 75–81
+  (pause, sample threshold, challenger fallback, LEAK abort, dirty-files guard,
+  codex danger floor on challengers, bake-off fields without `args.bakeoff`),
+  each KILLED by an assertion (`qc/mutate.sh --only`); catalog 69 → 76.
+- **Deferred (13B)**: no live run yet (the nested `workflow()` call from
+  triage-exec is exercised only by the mock); `triage.md`/README usage text and
+  AGENTS.md counts (approval); a sampled subtask is graded at HEAD without
+  other subtasks' changes (plans already assume independent subtasks); a Claude
+  challenger's redo keeps its effort but reverts to the level agent's model;
+  `external` in the report stays plan-derived (a codex challenger shows in
+  `bakeoffs`, and in `returnedToClaude` only if redone); the in-place run after
+  a failed bake-off is a second spend on the planned rung.
 - **agy retired (Alex, 2026-09-24).** A read-only parity review on agy set its
   model-settable `BypassSandbox` flag and copied a file into a real repo. agy
   is gone from `config/tiers.json` (`levels.builder.agy`, `modes.agy`),

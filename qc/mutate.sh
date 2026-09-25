@@ -68,7 +68,11 @@ done
 # 72-74 cover the review bake-off fixes: an extension never re-adjudicates an item a
 # new finding attached to, a superseded reviewer is never scored, and every codex
 # reviewer/adjudicator carries an explicit TIMEOUT for ext-run's watchdog.
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74"
+# 75-81 cover the inline build bake-offs in triage-exec (Wave 13B): the weekly
+# pause, the sample threshold, the challenger fallback, the LEAK abort, the
+# dirty-files guard, the codex danger floor on challengers, and no bake-off fields
+# when args.bakeoff is absent.
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -119,6 +123,7 @@ mut_file() {
     26) echo "scripts/ext-run.sh" ;;
     28) echo "workflows/triage-exec.js" ;;
     29) echo "workflows/triage-exec.js" ;;
+    75|76|77|78|79|80|81) echo "workflows/triage-exec.js" ;;
     31) echo "workflows/triage-compare.js" ;;
     32) echo "scripts/patch-check.sh" ;;
     33) echo "install.sh" ;;
@@ -223,6 +228,13 @@ mut_desc() {
     71) echo "ext-run.sh: the --schema is passed to codex un-normalized (a non-strict schema is rejected by the API: every schema'd codex run is UNAVAILABLE)" ;;
     72) echo "triage-compare.js (review extend): prior items a new finding attached to are re-adjudicated (their verdicts can flip)" ;;
     73) echo "triage-compare.js (review extend): a superseded prior reviewer is still scored" ;;
+    75) echo "triage-exec.js (bake-off): the weekly pause is ignored (bake-offs keep sampling at/over pauseAtWeeklyPct)" ;;
+    76) echo "triage-exec.js (bake-off): the sample threshold is dropped (every eligible subtask is sampled)" ;;
+    77) echo "triage-exec.js (bake-off): a passing challenger is never applied when the planned candidate failed (no fallback)" ;;
+    78) echo "triage-exec.js (bake-off): a compare LEAK does not abort the run (the rest of the plan runs on a tree someone else changed)" ;;
+    79) echo "triage-exec.js (bake-off): the dirty-files guard only checks that git status ran (a bake-off runs on files modified in the tree)" ;;
+    80) echo "triage-exec.js (bake-off): the codex danger floor is not applied to challengers (danger work graded against codex below effort high)" ;;
+    81) echo "triage-exec.js (bake-off): the return carries bake-off fields even when args.bakeoff is absent" ;;
     74) echo "triage-compare.js (review): a codex reviewer/adjudicator is spawned without TIMEOUT (ext-run's 5m read default kills a large review)" ;;
     *) echo "" ;;
   esac
@@ -237,7 +249,7 @@ mut_desc() {
 mut_suite() {
   case "$1" in
     1|2|3|4|5|6|10|12|18|19|20|21|33) echo "roundtrip" ;;
-    7|8|9|11|16|17|22|23|28|29) echo "scenarios" ;;
+    7|8|9|11|16|17|22|23|28|29|75|76|77|78|79|80|81) echo "scenarios" ;;
     15|24|25|26|40|49|50|51|56|57|58|59|60|61|62|70|71) echo "extrun" ;;
     31|34|36|37|38|47|68|69|72|73|74) echo "compare" ;;
     32|48|63|66) echo "patchcheck" ;;
@@ -908,6 +920,55 @@ MUT73
 MUT74
       mut_replace_block "$target" '    return `VENDOR=${c.vendor}\nMODE=read\nMODEL=${c.model}\nEFFORT=${c.effort}\nINPUT_DIR=${dir}\nTIMEOUT=${timeout}' 1 "$rep"
       ;;
+    75)
+      # triage-exec.js: the weekly pause never trips.
+      cat > "$rep" <<'MUT75'
+const bakeoffPaused = false // MUTATED: weekly pause ignored
+MUT75
+      mut_replace_block "$target" 'const bakeoffPaused = !!bo && bo.weeklyPct != null && bo.weeklyPct >= bo.tuning.pauseAtWeeklyPct' 1 "$rep"
+      ;;
+    76)
+      # triage-exec.js: bakeoffPick() loses its sample threshold.
+      cat > "$rep" <<'MUT76'
+  // MUTATED: sample threshold dropped
+MUT76
+      mut_replace_block "$target" "  if (!(draw(key) < bo.tuning.sampleRate)) return { skip: 'not-sampled' }" 1 "$rep"
+      ;;
+    77)
+      # triage-exec.js: bakeoffChoice() never falls back to a passing challenger.
+      cat > "$rep" <<'MUT77'
+  // MUTATED: challenger fallback dropped
+MUT77
+      mut_replace_block "$target" "  if (ch.status === 'pass') return { apply: 'challenger', cand: ch, planned: p }" 1 "$rep"
+      ;;
+    78)
+      # triage-exec.js: runBakeoff() no longer treats leak:true as an abort.
+      cat > "$rep" <<'MUT78'
+  if (false) { // MUTATED: LEAK abort dropped
+MUT78
+      mut_replace_block "$target" '  if (res && res.leak === true) {' 1 "$rep"
+      ;;
+    79)
+      # triage-exec.js: the dirty-files guard only checks that the agent replied.
+      cat > "$rep" <<'MUT79'
+  if (!dirty) { // MUTATED: dirty files not checked
+MUT79
+      mut_replace_block "$target" "  if (!dirty || dirty.rc !== 0 || typeof dirty.porcelain !== 'string' || dirty.porcelain.trim() !== '') {" 1 "$rep"
+      ;;
+    80)
+      # triage-exec.js: bakeoffPick()'s challenger pool drops the codex danger floor.
+      cat > "$rep" <<'MUT80'
+      true) // MUTATED: danger floor on challengers dropped
+MUT80
+      mut_replace_block "$target" "      !(st.danger && v === 'codex' && !meetsCodexDangerFloor(st.level, c.effort)))" 1 "$rep"
+      ;;
+    81)
+      # triage-exec.js: report() adds the bake-off fields unconditionally.
+      cat > "$rep" <<'MUT81'
+    ...bakeoffReport(), // MUTATED: bake-off fields without args.bakeoff
+MUT81
+      mut_replace_block "$target" '    ...(bakeoffOn ? bakeoffReport() : {}),' 1 "$rep"
+      ;;
     *)
       return 1
       ;;
@@ -993,6 +1054,13 @@ verify_mutation() {
     72) grep -qF 'MUTATED: extend re-adjudicates attached items' "$target" && ! grep -qF 'const toJudge = prior ? items.filter' "$target" ;;
     73) grep -qF 'MUTATED: superseded reviewer still scored' "$target" && ! grep -qF "status: supersededSet.has(p.label)" "$target" ;;
     74) grep -qF 'MUTATED: codex spawned without TIMEOUT' "$target" && ! grep -qF 'TIMEOUT=${timeout}' "$target" ;;
+    75) grep -qF 'MUTATED: weekly pause ignored' "$target" && ! grep -qF 'bo.weeklyPct >= bo.tuning.pauseAtWeeklyPct' "$target" ;;
+    76) grep -qF 'MUTATED: sample threshold dropped' "$target" && ! grep -qF "return { skip: 'not-sampled' }" "$target" ;;
+    77) grep -qF 'MUTATED: challenger fallback dropped' "$target" && ! grep -qF "return { apply: 'challenger'" "$target" ;;
+    78) grep -qF 'MUTATED: LEAK abort dropped' "$target" && ! grep -qF 'if (res && res.leak === true) {' "$target" ;;
+    79) grep -qF 'MUTATED: dirty files not checked' "$target" && ! grep -qF "dirty.porcelain.trim() !== ''" "$target" ;;
+    80) grep -qF 'MUTATED: danger floor on challengers dropped' "$target" && ! grep -qF '!meetsCodexDangerFloor(st.level, c.effort)' "$target" ;;
+    81) grep -qF 'MUTATED: bake-off fields without args.bakeoff' "$target" && ! grep -qF '...(bakeoffOn ? bakeoffReport() : {}),' "$target" ;;
     *) return 1 ;;
   esac
 }
