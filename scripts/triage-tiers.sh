@@ -45,7 +45,9 @@ jq -e 'type == "object" and (.levels | type == "object") and (.modes | type == "
 # the parity-report.sh decision rule). Emits one string per problem; none = valid.
 # sampleRate is the EXPLORE rate (and triage-exec's fallback); maintain {rate,
 # maxWidth} is the plateau rate and the Wilson-CI width that earns it (parity-report.sh
-# rates); maintain.rate is > 0 and <= sampleRate: sampling never stops.
+# rates); maintain.rate is > 0 and <= sampleRate: sampling never stops. rejected
+# (optional) = [{level, vendor, model, effort, until?: YYYY-MM-DD}]: challengers Alex
+# turned down; parity-report.sh never proposes one (until its until date passes).
 TUNING_ERRORS='def vendors: ["claude","codex"];
   def levels: ["quick","builder","deep","top"];
   def efforts: ["low","medium","high","xhigh","max"];
@@ -101,6 +103,18 @@ TUNING_ERRORS='def vendors: ["claude","codex"];
           else "tuning.rule.pricierMargin must be a number in (0, 1]" end),
          (if $t.rule.confidence == "wilson95" then empty
           else "tuning.rule.confidence must be \"wilson95\" (the only bound implemented)" end)
+       end),
+      (if $t.rejected == null then empty
+       elif ($t.rejected | type) != "array" then "tuning.rejected must be an array of {level, vendor, model, effort, until?}"
+       else
+         ($t.rejected | to_entries[] | .key as $i | .value
+           | if type != "object" then "tuning.rejected[\($i)] must be an object {level, vendor, model, effort, until?}"
+             elif (.level as $l | levels | index($l)) == null then "tuning.rejected[\($i)].level must be one of \(levels | join("|"))"
+             elif (.vendor as $v | vendors | index($v)) == null then "tuning.rejected[\($i)].vendor must be one of \(vendors | join("|"))"
+             elif ((.model | type) != "string") or ((.model | test("^[A-Za-z0-9._+-]+$")) | not) then "tuning.rejected[\($i)].model must be a model id"
+             elif (.effort as $e | efforts | index($e)) == null then "tuning.rejected[\($i)].effort must be one of \(efforts | join("|"))"
+             elif .until != null and (((.until | type) != "string") or ((.until | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")) | not)) then "tuning.rejected[\($i)].until must be a YYYY-MM-DD date"
+             else empty end)
        end),
       (if ($t.ledger | type) == "string" and ($t.ledger | length) > 0 then empty else "tuning.ledger must be a non-empty path" end),
       (if ($t.pauseAtWeeklyPct | num) and $t.pauseAtWeeklyPct > 0 and $t.pauseAtWeeklyPct <= 100 then empty

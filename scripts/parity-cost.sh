@@ -21,7 +21,8 @@
 # message id is counted ONCE with the max of each field.
 #
 # Output (one JSON object on stdout):
-#   {"agents":N, "total":{input,cacheRead,cacheWrite,output,messages},
+#   {"agents":N, "skippedLines":<non-JSON lines, never fatal>,
+#    "total":{input,cacheRead,cacheWrite,output,messages},
 #    "byModel":{"<model id>":{...}},
 #    "byLabel":{"<agent label>":{agentType, agents, ...sums, models:{"<id>":{...}}}},
 #    "byCandidate":{"<candidate label>":{...sums, models:{...}}},
@@ -55,22 +56,27 @@ while IFS= read -r f; do
     label=$(jq -r '.description // "(unlabelled)"' "$meta" 2>/dev/null || echo "(unlabelled)")
     atype=$(jq -r '.agentType // "unknown"' "$meta" 2>/dev/null || echo unknown)
   fi
-  # Streaming, 2>/dev/null: a live transcript's partial last line is dropped,
-  # every complete record before it is kept.
-  jq -c --arg label "$label" --arg atype "$atype" --arg file "$f" \
-    'select(.type == "assistant" and .message.usage != null) |
-     {file: $file, label: $label, atype: $atype, id: (.message.id // null),
-      model: (.message.model // "unknown"),
-      input: (.message.usage.input_tokens // 0), cacheRead: (.message.usage.cache_read_input_tokens // 0),
-      cacheWrite: (.message.usage.cache_creation_input_tokens // 0), output: (.message.usage.output_tokens // 0)}' \
+  # Line by line (-R, fromjson?): a line that is not JSON — a live transcript's
+  # partial last line, or a corrupt one mid-file — is counted as skipped, and
+  # every other line, before AND after it, is kept.
+  jq -R -c --arg label "$label" --arg atype "$atype" --arg file "$f" \
+    'select(test("\\S")) | [fromjson?] as $o
+     | if ($o | length) == 0 or ($o[0] | type) != "object" then {__skipped: true}
+       else $o[0] | select(.type == "assistant" and .message.usage != null)
+         | {file: $file, label: $label, atype: $atype, id: (.message.id // null),
+            model: (.message.model // "unknown"),
+            input: (.message.usage.input_tokens // 0), cacheRead: (.message.usage.cache_read_input_tokens // 0),
+            cacheWrite: (.message.usage.cache_creation_input_tokens // 0), output: (.message.usage.output_tokens // 0)} end' \
     "$f" 2>/dev/null >> "$RECORDS"
 done < <(find "$@" -name 'agent-*.jsonl' -type f | sort)
 
 [ "$n" -gt 0 ] || die "INCOMPLETE: no agent-*.jsonl transcripts under $*" 5
-[ -s "$RECORDS" ] || die "INCOMPLETE: $n transcript(s) under $* but none carried usage" 5
+[ "$(jq -s 'map(select(.__skipped != true)) | length' "$RECORDS")" -gt 0 ] || die "INCOMPLETE: $n transcript(s) under $* but none carried usage" 5
 
 # The per-label / per-candidate cut — the only place this attribution is computed.
 jq -s --argjson agents "$n" '
+  (map(select(.__skipped == true)) | length) as $skipped
+  | map(select(.__skipped != true)) |
   def sums: {input: (map(.input) | add // 0), cacheRead: (map(.cacheRead) | add // 0),
              cacheWrite: (map(.cacheWrite) | add // 0), output: (map(.output) | add // 0), messages: length};
   def bymodel: group_by(.model) | map({key: .[0].model, value: sums}) | from_entries;
@@ -82,7 +88,7 @@ jq -s --argjson agents "$n" '
      | map(.[0] + {input: (map(.input) | max), cacheRead: (map(.cacheRead) | max),
                    cacheWrite: (map(.cacheWrite) | max), output: (map(.output) | max)})))
   | map(. + {candidate: candidate}) as $m
-  | {agents: $agents,
+  | {agents: $agents, skippedLines: $skipped,
      total: ($m | sums),
      byModel: ($m | bymodel),
      byLabel: ($m | group_by(.label) | map({key: .[0].label,

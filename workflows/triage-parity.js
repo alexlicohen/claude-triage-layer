@@ -1,7 +1,7 @@
 export const meta = {
   name: 'triage-parity',
   description: 'Parity research run: every candidate (vendor x model x effort) climbs a private task suite band by band (B1 mechanical to B4 danger/judgment), each build task graded by a nested triage-compare bake-off, rubric tasks by two blind judges, review tasks by seeded-defect recall/precision. Returns a ranking, plateau clusters and flags; never writes tiers.json or anything outside outDir. Tier-change proposals are not made here: the orchestrator saves the result, runs scripts/parity-report.sh ingest-parity, then report (the ONE owner of the ledger and the decision rule).',
-  whenToUse: 'Re-rank models and efforts when a model ships or on request: /triage-parity with args = {suite:"/abs task suite dir", outDir:"/abs fresh dir outside any source repo", candidates:[{vendor:claude|codex, level:quick|builder|deep|top, model?, effort?, label?}] (agy was retired 2026-09-24 and is refused, as a candidate and as a judge), bands?:[1,2,3,4], reps?:1, stopAfterFailedBands?:2, bandPassRate?:0.5, judges?:[{vendor,level,label?}], taskFilter?:[ids], desk?:true}. Adaptive: a candidate stops after stopAfterFailedBands consecutive failed bands. unavailable/denied/invalid/unresolved never count as pass or fail; a compare LEAK aborts the run. Every task with a git source (build, rubric, review) is fingerprinted (parity-suite.sh fingerprint) before its candidates run and after grading: a change voids that task (invalid, flag SOURCE_CHANGED <repo>: HEAD moved|tree changed) and the run continues. Rubric judges get only the staged patch + key. Afterwards: parity-report.sh ingest-parity --result <saved result> then parity-report.sh report proposes any tiers.json change (min-n + margin rule; Alex approves); Claude cost per candidate comes from scripts/parity-cost.sh on the run transcript.',
+  whenToUse: 'Re-rank models and efforts when a model ships or on request: /triage-parity with args = {suite:"/abs task suite dir", outDir:"/abs fresh dir outside any source repo", candidates:[{vendor:claude|codex, level:quick|builder|deep|top, model?, effort?, label?}] (agy was retired 2026-09-24 and is refused, as a candidate and as a judge), bands?:[1,2,3,4], reps?:1, stopAfterFailedBands?:2, bandPassRate?:0.5, judges?:[{vendor,level,label?}], taskFilter?:[ids], desk?:true}. Adaptive: a candidate stops after stopAfterFailedBands consecutive failed bands. unavailable/denied/invalid/unresolved never count as pass or fail; a compare LEAK aborts the run. Every task with a git source (build, rubric, review) is fingerprinted (parity-suite.sh fingerprint) before its candidates run and after grading: a change voids that task (invalid, flag SOURCE_CHANGED <repo>: HEAD moved|tree changed|ignored files changed|refs/config/hooks changed) and the run continues; a generator task has no source repo and is marked guarded:false in tasks[]. Rubric judges get only the staged patch + key. Afterwards: parity-report.sh ingest-parity --result <saved result> then parity-report.sh report proposes any tiers.json change (min-n + margin rule; Alex approves); Claude cost per candidate comes from scripts/parity-cost.sh on the run transcript.',
   phases: [
     { title: 'Load' },
     { title: 'Desk' },
@@ -196,10 +196,11 @@ const deskRun = args.desk === false ? Promise.resolve(null) : parallel(['codex']
 
 // ─── Per-task work ──────────────────────────────────────────────────────────
 // A source fingerprint (parity-suite.sh fingerprint): git sources carry name,
-// head and tree; a generator source has nothing to guard.
+// head, tree, ignored (gitignored files) and refs (refs/stash/config/hooks); a
+// generator source has nothing to guard (guarded:false — the task is unguarded).
 const FP_SCHEMA = {
   type: 'object',
-  properties: { id: { type: 'string' }, source: { type: 'string', enum: ['git', 'generator'] }, name: { type: 'string' }, head: { type: 'string' }, tree: { type: 'string' }, rc: { type: ['integer', 'null'] } },
+  properties: { id: { type: 'string' }, source: { type: 'string', enum: ['git', 'generator'] }, guarded: { type: 'boolean' }, name: { type: 'string' }, head: { type: 'string' }, tree: { type: 'string' }, ignored: { type: 'string' }, refs: { type: 'string' }, rc: { type: ['integer', 'null'] } },
   required: ['source'],
 }
 const MAT_SCHEMA = {
@@ -242,7 +243,8 @@ function fpOk(fp, t) {
   // The loaded task says which kind of source it has; a reply may not downgrade it.
   if (t.source && isStr(t.source.type) && t.source.type !== fp.source) return false
   if (fp.source === 'generator') return true
-  return fp.source === 'git' && isStr(fp.name) && typeof fp.head === 'string' && (fp.head === '' || SHA_RE.test(fp.head)) && FP_HASH.test(String(fp.tree || ''))
+  return fp.source === 'git' && isStr(fp.name) && typeof fp.head === 'string' && (fp.head === '' || SHA_RE.test(fp.head)) &&
+    FP_HASH.test(String(fp.tree || '')) && FP_HASH.test(String(fp.ignored || '')) && FP_HASH.test(String(fp.refs || ''))
 }
 
 async function materialize(t, b) {
@@ -283,7 +285,8 @@ async function sourceGuard(t, b, rows) {
       after = null
     }
   }
-  const what = after ? [after.head !== before.head ? 'HEAD moved' : null, after.tree !== before.tree ? 'tree changed' : null].filter(Boolean).join(', ') : null
+  const what = after ? [after.head !== before.head ? 'HEAD moved' : null, after.tree !== before.tree ? 'tree changed' : null,
+    after.ignored !== before.ignored ? 'ignored files changed' : null, after.refs !== before.refs ? 'refs/config/hooks changed' : null].filter(Boolean).join(', ') : null
   if (after && !what) return rows
   const reason = after ? `SOURCE_CHANGED ${before.name}: ${what}` : `SOURCE_UNVERIFIED ${before.name}: could not re-fingerprint the source repo after grading`
   flag(`${reason} (task ${t.id}) — every result of the task is invalid; investigate the source repo before trusting anything from it`)
@@ -406,7 +409,10 @@ async function buildTask(t, b, runnable) {
     const g = got.get(x.runLabel)
     if (!g) return row(x.c, x.runLabel, 'unavailable', { reason: 'missing from the triage-compare result' })
     return row(x.c, x.runLabel, g.status, { reason: GRADED.includes(g.status) ? null : (g.tail || g.status), patch: g.patch || null,
-      totalTokens: g.totalTokens != null ? g.totalTokens : null, seconds: g.seconds != null ? g.seconds : null, model: g.model || x.c.model })
+      totalTokens: g.totalTokens != null ? g.totalTokens : null, seconds: g.seconds != null ? g.seconds : null, model: g.model || x.c.model,
+      // Where the model came from (triage-compare: candidate|runner|null) — parity-report.sh
+      // ledgers a runner-reported one as observed (M7).
+      modelFrom: g.model ? (g.modelFrom || null) : (x.c.model ? 'candidate' : null) })
   })
   if (t.grading === 'rubric') await judgeTask(t, b, rows)
   return rows
@@ -516,7 +522,7 @@ async function runTask(t, b, active) {
   if (runnable.length) rows = t.kind === 'build' ? await buildTask(tm, b, runnable) : await reviewTask(tm, b, runnable)
   // Every task kind — build, rubric AND review — is re-fingerprinted after grading.
   if (mat.fp.source === 'git' && rows.length && !leakAbort) rows = await sourceGuard(tm, b, rows)
-  return { t, sha: mat.sha, rows: skipped.concat(denied.map(c => row(c, c.label, 'denied', { reason: `source deny-marked for ${c.vendor}` })), rows) }
+  return { t, sha: mat.sha, guarded: mat.fp.source === 'git', rows: skipped.concat(denied.map(c => row(c, c.label, 'denied', { reason: `source deny-marked for ${c.vendor}` })), rows) }
 }
 
 // ─── Bands: adaptive climb ──────────────────────────────────────────────────
@@ -538,7 +544,7 @@ for (const b of bands) {
       matrix.push({ band: b, id: t.id, kind: t.kind, grading: t.grading, sha: null, results: active.map(c => row(c, c.label, 'unavailable', { reason: 'task run crashed' })) })
       return
     }
-    matrix.push({ band: b, id: t.id, kind: t.kind, grading: t.grading, sha: o.sha || null, results: o.rows })
+    matrix.push({ band: b, id: t.id, kind: t.kind, grading: t.grading, sha: o.sha || null, guarded: typeof o.guarded === 'boolean' ? o.guarded : null, results: o.rows })
   })
   // tally — pass and fail are graded; skipped (task not for that vendor) is not
   // counted at all; every other status counts as `other`, never as a fail.
