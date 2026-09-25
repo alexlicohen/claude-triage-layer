@@ -4,7 +4,9 @@
 # triage-compare.js and triage-parity.js, the scripts (incl. ext-run.sh, patch-check.sh, stage-worktree.sh, review-stage.sh,
 # parity-suite.sh, parity-cost.sh and parity-report.sh), config/tiers.json (installed as
 # scripts/triage-tiers.json), triage.md. Prints one of `same` / `MISSING (not installed)` / `FORKED` per
-# file (or `forked (expected)` for files listed in .driftignore).
+# file (or `forked (expected)` for files listed in .driftignore), then a warn-only
+# "settings migration pending" line for each settings.json change a bare install
+# would still make (install.sh --settings-status).
 #
 # Exit non-zero only on UNEXPECTED drift (FORKED on a file not in
 # .driftignore, or an unexpected MISSING — see below). If ~/.claude has no
@@ -22,9 +24,12 @@ if [ ! -f "$CLAUDE_DIR/agents/triage-quick-task.md" ]; then
   exit 0
 fi
 
+# Normalized exactly as install.sh's is_ignored (CR and surrounding whitespace
+# stripped), so the two always agree on what an expected fork is.
 is_ignored() { # $1 = repo-relative path
   [ -f "$DRIFTIGNORE" ] || return 1
-  grep -vE '^\s*#|^\s*$' "$DRIFTIGNORE" | grep -qxF "$1"
+  tr -d '\r' < "$DRIFTIGNORE" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+    | grep -v '^#' | grep -qxF "$1"
 }
 
 UNEXPECTED_DRIFT=0
@@ -85,6 +90,17 @@ check_file "triage.md" "$CLAUDE_DIR/triage.md"
 if [ -n "${CLAUDE_CODE_SUBAGENT_MODEL_FORCE:-}" ] || \
    { [ -f "$CLAUDE_DIR/settings.json" ] && grep -q 'CLAUDE_CODE_SUBAGENT_MODEL_FORCE' "$CLAUDE_DIR/settings.json"; }; then
   echo "⚠ CLAUDE_CODE_SUBAGENT_MODEL_FORCE is set — every tier collapses onto one model; per-tier routing is inert."
+fi
+
+# Warn-only: settings.json changes a bare ./install.sh would still make but `make sync`
+# (--files-only) never does, e.g. a subagent model left at an earlier installer default.
+# The decision is install.sh's (--settings-status, read-only); needs jq, like install.
+if [ -f "$CLAUDE_DIR/settings.json" ]; then
+  if command -v jq >/dev/null 2>&1; then
+    CLAUDE_DIR="$CLAUDE_DIR" "$REPO_DIR/install.sh" --settings-status 2>&1 | sed 's/^/⚠ /'
+  else
+    echo "settings check skipped (jq not installed)"
+  fi
 fi
 
 if [ "$UNEXPECTED_DRIFT" -ne 0 ]; then

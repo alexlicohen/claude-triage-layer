@@ -79,7 +79,14 @@ done
 # 87-90 cover model-version tracking (Wave 15) in parity-report.sh: grouping by
 # the concrete modelId, the inferred-by-date boundary (from <= date), family-based
 # cheapness (a new codex version still ranks) and backfill-modelid's idempotence.
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90"
+# 21 was re-anchored in Wave 16C: uninstall no longer keeps a legacy-value list; it
+# removes the subagent model only while it equals the install-written ownership marker.
+# 130-149 cover install/uninstall safety (Wave 16C): uninstall backups (fork, memory,
+# the leftover set), timestamped + pruned install backups, the retire checksum guard,
+# the tiers.json-derived subagent default and its ownership marker, jq failures and
+# settings shape, .driftignore normalization (install + drift), tiers-sync's --root
+# and unclosed-frontmatter guards, drift's settings-migration warning and file list.
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -162,6 +169,26 @@ mut_file() {
     67) echo "scripts/review-stage.sh" ;;
     68|69|72|73|74) echo "workflows/triage-compare.js" ;;
     70|71) echo "scripts/ext-run.sh" ;;
+    130) echo "uninstall.sh" ;;
+    131) echo "uninstall.sh" ;;
+    132) echo "install.sh" ;;
+    133) echo "install.sh" ;;
+    134) echo "install.sh" ;;
+    135) echo "install.sh" ;;
+    136) echo "install.sh" ;;
+    137) echo "install.sh" ;;
+    138) echo "install.sh" ;;
+    139) echo "install.sh" ;;
+    140) echo "install.sh" ;;
+    141) echo "uninstall.sh" ;;
+    142) echo "install.sh" ;;
+    143) echo "scripts/tiers-sync.sh" ;;
+    144) echo "scripts/tiers-sync.sh" ;;
+    145) echo "install.sh" ;;
+    146) echo "drift.sh" ;;
+    147) echo "drift.sh" ;;
+    148) echo "uninstall.sh" ;;
+    149) echo "drift.sh" ;;
     *) echo "" ;;
   esac
 }
@@ -186,7 +213,7 @@ mut_desc() {
     18) echo "install.sh: neuter check_force_override (the CLAUDE_CODE_SUBAGENT_MODEL_FORCE warning never prints)" ;;
     19) echo "install.sh: neuter is_legacy_subagent_model (a previous installer default is never upgraded, dry-run never says so)" ;;
     20) echo "install.sh: the settings merge reverts to set-only-when-unset (dry-run promises an upgrade the write never makes)" ;;
-    21) echo "uninstall.sh: drop LEGACY_SUBAGENT_MODELS from the removal set (an old install's subagent model is left behind)" ;;
+    21) echo "uninstall.sh: the subagent model is removed whenever the ownership marker exists, even after the user repointed it" ;;
     22) echo "triage-exec.js: remove the deep@max rung (an ESCALATE on a below-max deep attempt goes straight to Fable)" ;;
     23) echo "triage-exec.js: runFable() always takes the deep@max fallback (Fable unavailable after a failed deep@max re-runs it)" ;;
     24) echo "ext-run.sh: a level/mode missing from tiers.json falls back to a default model instead of refusing" ;;
@@ -252,6 +279,26 @@ mut_desc() {
     88) echo "parity-report.sh: the alias-history boundary is exclusive (from < date), so a line on an entry's own from date resolves to the previous version" ;;
     89) echo "parity-report.sh: the codex cheapness order is back to version-bound ids (gpt-6-*), so any other codex version is unranked" ;;
     90) echo "parity-report.sh: backfill-modelid refills rows that already have a modelId (an observed id is overwritten; a second run rewrites the ledger)" ;;
+    130) echo "uninstall.sh: an installed file is deleted even when it differs from the repo copy (a triage.md fork is lost)" ;;
+    131) echo "uninstall.sh: per-agent memory is rm -rf'd instead of moved to the backup dir" ;;
+    132) echo "install.sh: backups go to one fixed slot again (the next sync overwrites the previous backup)" ;;
+    133) echo "install.sh: timestamped backups are never pruned (unbounded .bak-triage-* growth)" ;;
+    134) echo "install.sh: a retired file with unknown bytes is deleted (the shipped-checksum guard is bypassed)" ;;
+    135) echo "install.sh: the subagent default is a hard-coded id again, not config/tiers.json levels.deep.claude.model" ;;
+    136) echo "install.sh: the subagent model is written without its ownership marker (uninstall then never removes it)" ;;
+    137) echo "install.sh: a value still equal to its ownership marker is treated as the user's (never upgraded)" ;;
+    138) echo "install.sh: a stale ownership marker (model repointed by the user) is kept" ;;
+    139) echo "install.sh: an unmarked value equal to the default is adopted as ours (value equality as ownership, codex#20)" ;;
+    140) echo "install.sh: a failing settings-merge jq is swallowed and install still prints Installed. with rc 0" ;;
+    141) echo "uninstall.sh: a failing settings-rewrite jq is swallowed (files removed, settings.json emptied, rc 0)" ;;
+    142) echo "install.sh: a settings.json of the wrong shape is not refused upfront (half-applied install)" ;;
+    143) echo "tiers-sync.sh: --root with no value loops forever" ;;
+    144) echo "tiers-sync.sh: an unclosed frontmatter is not detected (body model: lines rewritten)" ;;
+    145) echo "install.sh: .driftignore entries are not normalized (CRLF/trailing space disables fork protection)" ;;
+    146) echo "drift.sh: .driftignore entries are not normalized (a CRLF entry reports the fork as FORKED)" ;;
+    147) echo "drift.sh: the settings-migration check is dropped (a legacy subagent model goes unreported)" ;;
+    148) echo "uninstall.sh: scripts/parity-report.sh dropped from the removal list (a file left behind)" ;;
+    149) echo "drift.sh: scripts/triage-stats.sh dropped from the checked list (an installed file drift never sees)" ;;
     74) echo "triage-compare.js (review): a codex reviewer/adjudicator is spawned without TIMEOUT (ext-run's 5m read default kills a large review)" ;;
     *) echo "" ;;
   esac
@@ -266,6 +313,7 @@ mut_desc() {
 mut_suite() {
   case "$1" in
     1|2|3|4|5|6|10|12|18|19|20|21|33) echo "roundtrip" ;;
+    130|131|132|133|134|135|136|137|138|139|140|141|142|143|144|145|146|147|148|149) echo "roundtrip" ;;
     7|8|9|11|16|17|22|23|28|29|75|76|77|78|79|80|81|85|86) echo "scenarios" ;;
     15|24|25|26|40|49|50|51|56|57|58|59|60|61|62|70|71) echo "extrun" ;;
     31|34|36|37|38|47|68|69|72|73|74) echo "compare" ;;
@@ -528,13 +576,13 @@ MUT20
         '  (if (.env.CLAUDE_CODE_SUBAGENT_MODEL // null) == null or $up == "1" then' 1 "$rep"
       ;;
     21)
-      # uninstall.sh: the removal set shrinks to the CURRENT default only, so an
-      # install made by an older installer leaves its subagent model behind.
+      # uninstall.sh: the removal loses its "still equals the marker" half, so a
+      # model the user repointed after install is deleted with the marker.
       cat > "$rep" <<'MUT21'
-    | [$m] as $ours_sub
+    | (if $mark != null then del(.env.CLAUDE_CODE_SUBAGENT_MODEL) else . end)
 MUT21
       mut_replace_block "$target" \
-        '    | ([$m] + ($legacy | split(" ") | map(select(length > 0)))) as $ours_sub' 1 "$rep"
+        '    | (if $mark != null and (.env.CLAUDE_CODE_SUBAGENT_MODEL // null) == $mark then' 1 "$rep"
       ;;
     22)
       # triage-exec.js: delete redoStep()'s deep@max arm. An ESCALATE on a deep
@@ -1049,6 +1097,82 @@ MUT89
 MUT90
       mut_replace_block "$target" '    | def unfilled: type == "object" and (has("modelId") | not);' 1 "$rep"
       ;;
+    130)
+      printf '  if true; then # MUTATED: deleted without the repo-copy check\n' > "$rep"
+      mut_replace_block "$target" '  if [ -f "$REPO_DIR/$1" ] && cmp -s "$REPO_DIR/$1" "$2"; then' 1 "$rep"
+      ;;
+    131)
+      printf '  rm -rf "$CLAUDE_DIR/agent-memory/$a" # MUTATED: memory deleted, not backed up\n' > "$rep"
+      mut_replace_block "$target" '  if [ -e "$CLAUDE_DIR/agent-memory/$a" ]; then backup_move' 1 "$rep"
+      ;;
+    132)
+      printf '  b="$1.bak-triage-0"; printf "%%s" "$b"; return 0 # MUTATED: single-slot backup\n' > "$rep"
+      mut_replace_block "$target" '  b="$1.bak-triage-$STAMP"' 1 "$rep"
+      ;;
+    133)
+      printf 'prune_backups() { return 0 # MUTATED: backups never pruned\n' > "$rep"
+      mut_replace_block "$target" 'prune_backups() {' 1 "$rep"
+      ;;
+    134)
+      printf '  if true; then # MUTATED: retire deletes unknown bytes\n' > "$rep"
+      mut_replace_block "$target" '  if [ -n "$sha" ] && printf '"'"'%s'"'"' "$sums" | grep -qxF "$sha"; then' 1 "$rep"
+      ;;
+    135)
+      printf 'SUBAGENT_MODEL="claude-opus-5-5" # MUTATED: hard-coded subagent model\n' > "$rep"
+      mut_replace_block "$target" 'SUBAGENT_MODEL="$(jq -r' 1 "$rep"
+      ;;
+    136)
+      cat > "$rep" <<'MUT136'
+  (if (.env.CLAUDE_CODE_SUBAGENT_MODEL // null) == null or $up == "1" then .env.CLAUDE_CODE_SUBAGENT_MODEL = $m else . end)
+MUT136
+      mut_replace_block "$target" '  (if (.env.CLAUDE_CODE_SUBAGENT_MODEL // null) == null or $up == "1" then' 1 "$rep"
+      ;;
+    137)
+      printf '  elif false; then echo "upgrade-owned" # MUTATED: marker ownership ignored\n' > "$rep"
+      mut_replace_block "$target" '  elif [ "$1" = "$2" ]; then echo "upgrade-owned"' 1 "$rep"
+      ;;
+    138)
+      printf '  | . # MUTATED-138\n' > "$rep"
+      mut_replace_block "$target" '  | (if (.env[$k] // null) != null and .env[$k] != .env.CLAUDE_CODE_SUBAGENT_MODEL then del(.env[$k]) else . end)' 1 "$rep"
+      ;;
+    139)
+      printf '  elif [ "$1" = "$SUBAGENT_MODEL" ]; then echo "upgrade-owned" # MUTATED: unmarked current value adopted\n' > "$rep"
+      mut_replace_block "$target" '  elif [ "$1" = "$SUBAGENT_MODEL" ]; then echo "current"' 1 "$rep"
+      ;;
+    140)
+      printf "' \"\$SETTINGS\" > \"\$tmp\" && apply_settings \"\$tmp\" # MUTATED: merge failure swallowed\n" > "$rep"
+      mut_replace_block "$target" "' \"\$SETTINGS\" > \"\$tmp\" || die \"settings merge (jq) failed" 2 "$rep"
+      ;;
+    141)
+      printf "  ' \"\$SETTINGS\" > \"\$tmp\" || true # MUTATED: rewrite failure swallowed\n" > "$rep"
+      mut_replace_block "$target" "  ' \"\$SETTINGS\" > \"\$tmp\" || die \"settings rewrite (jq) failed" 1 "$rep"
+      ;;
+    142)
+      printf '  true # MUTATED: settings shape not validated\n' > "$rep"
+      mut_replace_block "$target" "  jq -e 'type == \"object\"" 6 "$rep"
+      ;;
+    143)
+      printf '    --root)  ROOT="${2:-}"; shift 2 ;; # MUTATED: --root value unchecked\n' > "$rep"
+      mut_replace_block "$target" '    --root)' 3 "$rep"
+      ;;
+    144)
+      mut_delete_block "$target" '    END { if (infm) exit 3 }' 1
+      ;;
+    145|146)
+      printf '  grep -vE '"'"'^\\s*#|^\\s*$'"'"' "$DRIFTIGNORE" | grep -qxF "$1" # MUTATED: entries not normalized\n' > "$rep"
+      mut_replace_block "$target" "  tr -d '\\r' < \"\$DRIFTIGNORE\"" 2 "$rep"
+      ;;
+    147)
+      printf '    : # MUTATED: settings status not checked\n' > "$rep"
+      mut_replace_block "$target" '"$REPO_DIR/install.sh" --settings-status' 1 "$rep"
+      ;;
+    148)
+      printf '         stage-worktree.sh review-stage.sh parity-suite.sh parity-cost.sh \\\n' > "$rep"
+      mut_replace_block "$target" '         stage-worktree.sh review-stage.sh parity-suite.sh parity-cost.sh parity-report.sh \' 1 "$rep"
+      ;;
+    149)
+      mut_delete_block "$target" 'check_file "scripts/triage-stats.sh"' 1
+      ;;
     *)
       return 1
       ;;
@@ -1083,7 +1207,7 @@ verify_mutation() {
     18) grep -qF 'MUTATED: FORCE warning suppressed' "$target" ;;
     19) grep -qF 'MUTATED: legacy upgrade disabled' "$target" ;;
     20) ! grep -qF 'or $up == "1"' "$target" && grep -qF '(if (.env.CLAUDE_CODE_SUBAGENT_MODEL // null) == null then .env.CLAUDE_CODE_SUBAGENT_MODEL = $m else . end)' "$target" ;;
-    21) grep -qF '| [$m] as $ours_sub' "$target" && ! grep -qF '($legacy | split(" ")' "$target" ;;
+    21) grep -qF '| (if $mark != null then del(.env.CLAUDE_CODE_SUBAGENT_MODEL) else . end)' "$target" && ! grep -qF '== $mark then' "$target" ;;
     22) ! grep -qF "effort: 'max', owesFable: true" "$target" && grep -qF 'function redoStep(r, isEscalate) {' "$target" ;;
     23) grep -qF 'MUTATED: deep@max fallback always taken' "$target" && ! grep -qF '  if (afterMax) {' "$target" ;;
     24) grep -qF 'MUTATED: default model fallback' "$target" && ! grep -qF 'an absent entry is a refusal, never a default model' "$target" ;;
@@ -1150,6 +1274,25 @@ verify_mutation() {
     88) grep -qF 'MUTATED: alias boundary exclusive' "$target" && ! grep -qF 'select(.from <= $date)' "$target" ;;
     89) grep -qF 'MUTATED: version-bound cheapness order' "$target" && ! grep -qF '"codex":["luna","sol","astra"]' "$target" ;;
     90) grep -qF 'MUTATED: backfill refills filled rows' "$target" && ! grep -qF 'def unfilled: type == "object" and (has("modelId") | not);' "$target" ;;
+    130) grep -qF 'MUTATED: deleted without the repo-copy check' "$target" ;;
+    131) grep -qF 'MUTATED: memory deleted, not backed up' "$target" && ! grep -qF 'then backup_move "$CLAUDE_DIR/agent-memory/$a"' "$target" ;;
+    132) grep -qF 'MUTATED: single-slot backup' "$target" ;;
+    133) grep -qF 'MUTATED: backups never pruned' "$target" ;;
+    134) grep -qF 'MUTATED: retire deletes unknown bytes' "$target" ;;
+    135) grep -qF 'MUTATED: hard-coded subagent model' "$target" && ! grep -qF '.levels.deep.claude.model // empty' "$target" ;;
+    136) ! grep -qF '.env[$k] = $m' "$target" ;;
+    137) grep -qF 'MUTATED: marker ownership ignored' "$target" ;;
+    138) grep -qF 'MUTATED-138' "$target" && ! grep -qF 'then del(.env[$k]) else . end)' "$target" ;;
+    139) grep -qF 'MUTATED: unmarked current value adopted' "$target" ;;
+    140) grep -qF 'MUTATED: merge failure swallowed' "$target" && ! grep -qF 'settings merge (jq) failed' "$target" ;;
+    141) grep -qF 'MUTATED: rewrite failure swallowed' "$target" ;;
+    142) grep -qF 'MUTATED: settings shape not validated' "$target" && ! grep -qF 'unexpected shape' "$target" ;;
+    143) grep -qF 'MUTATED: --root value unchecked' "$target" && ! grep -qF -- '--root needs a directory' "$target" ;;
+    144) ! grep -qF 'END { if (infm) exit 3 }' "$target" ;;
+    145|146) grep -qF 'MUTATED: entries not normalized' "$target" && ! grep -qF "tr -d '\r' < \"\$DRIFTIGNORE\"" "$target" ;;
+    147) grep -qF 'MUTATED: settings status not checked' "$target" && ! grep -qF -- '--settings-status 2>&1' "$target" ;;
+    148) ! grep -qF 'parity-cost.sh parity-report.sh' "$target" ;;
+    149) ! grep -qF 'check_file "scripts/triage-stats.sh"' "$target" ;;
     *) return 1 ;;
   esac
 }

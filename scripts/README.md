@@ -211,8 +211,18 @@ GNU-only flags, or associative arrays.
 Nothing else in this repo, and no agent, may call `codex` (OpenAI Codex CLI) directly. The
 adapter, the OS sandbox profile, the deny-list, the known-good flags, the timeouts, the build
 staging worktree, the command audit log and the exit-code contract all live in this one
-script. It was `agy-run.sh` until Wave 12; `install.sh` removes a leftover installed copy of
-the old name.
+script. It was `agy-run.sh` until Wave 12; `install.sh` retires a leftover installed copy of
+the old name (deleted when its bytes match a shipped version, otherwise moved to a timestamped
+backup).
+
+**Threat model.** codex is treated as a trusted collaborator that can make mistakes, not as an
+adversary. The confinement below, the deny-list and the bake-off leak checks exist to keep an
+accident away from real trees and to keep bake-off measurements honest (no candidate may read
+the answer); they are not built to contain a hostile model. Within that scope, what they do not
+cover: reads outside `$HOME` and the temp dirs (see **Reads** below), `~/.codex` stays writable,
+network egress is unrestricted (the workspace can reach OpenAI), `--check` and `patch-check.sh`
+run candidate code unsandboxed, and the boundary attestation (`AGY_BOUNDARY_CLEARED=1`) is the
+caller's statement, never verified.
 
 **agy (Google Antigravity) was retired on 2026-09-24**: its headless mode let the model set a
 per-command `BypassSandbox` flag, and a read-only parity review used it to copy a file into a
@@ -241,7 +251,10 @@ Every model id and effort is read from the tiers file: `$TRIAGE_TIERS`, else
 - `scripts/triage-tiers.sh` prints the level × vendor table and the latest parity note and
   flags `basis: "guess"` entries. `make tiers` (`scripts/tiers-sync.sh`) writes the Claude
   agents' `model:`/`effort:` frontmatter from the same file; `test/lint.sh` fails while the
-  two disagree.
+  two disagree. tiers-sync refuses (exit 1) an agent whose frontmatter is never closed —
+  its body would otherwise be rewritten as frontmatter — and `--root` without a value
+  (exit 2). `install.sh` reads the subagent default (`env.CLAUDE_CODE_SUBAGENT_MODEL`) from
+  `levels.deep.claude.model` too.
 
 ### Modes
 
