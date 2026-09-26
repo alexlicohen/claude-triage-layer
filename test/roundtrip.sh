@@ -21,7 +21,8 @@
 #   E - a Fable `ask` rule hand-converted to `deny` is still cleaned up
 #       by uninstall.
 #   F - install.sh --dry-run against a populated sandbox: no mutation at all.
-#   G - install.sh --files-only with a driftignored, differing triage.md:
+#   G - install.sh --files-only with a driftignored, differing fork (fixture
+#       .driftignore + repo copy, since the shipped .driftignore lists none):
 #       files copied, the fork is skipped (not clobbered), CLAUDE.md/settings
 #       untouched.
 #   H - version-compat warnings: stub `claude --version` on PATH (old/absent/
@@ -39,9 +40,10 @@
 #   O - the Wave 12 rename triage-overflow -> triage-external: install removes
 #       the legacy agent file and its Agent(triage-overflow) allow rule and adds
 #       triage-external; uninstall removes both names (agents + permissions).
-#   P - .driftignore'd forks (triage.md) are skipped by EVERY install mode when
-#       the installed copy exists (bare install, --dry-run), and written only by a
-#       first install (bare or --files-only) where no copy exists yet.
+#   P - .driftignore'd forks (fixture .driftignore + repo copy naming triage.md)
+#       are skipped by EVERY install mode when the installed copy exists (bare
+#       install, --dry-run), and written only by a first install (bare or
+#       --files-only) where no copy exists yet.
 #   Q - subagent-model ownership is RECORDED (env.TRIAGE_LAYER_OWNS_SUBAGENT_MODEL),
 #       never inferred from the value; the default comes from config/tiers.json.
 #   R - timestamped backups of locally modified installed files, newest 5 kept.
@@ -52,7 +54,8 @@
 #       anything else moved aside.
 #   W - a jq failure (or a settings.json of the wrong shape) fails install and
 #       uninstall with rc != 0 and never prints Installed./Uninstalled.
-#   X - .driftignore entries with CRLF / trailing whitespace still protect forks.
+#   X - .driftignore entries with CRLF / trailing whitespace still protect forks
+#       (fixture .driftignore + repo copy).
 #   Y - tiers-sync.sh: --root without a value, an unclosed frontmatter.
 #   Z - drift.sh warns "settings migration pending" for a legacy subagent model.
 #   Plus two direct statusline.sh checks (non-numeric / numeric pct).
@@ -318,9 +321,27 @@ chk "F11: --dry-run writes no preinstall snapshot and no settings backup" \
   '[ ! -f "$F_DIR/triage-preinstall.json" ] && [ ! -f "$F_DIR/settings.json.triage-preinstall.bak" ]'
 
 # =============================================================================
-# Case G — install.sh --files-only skips a driftignored, differing fork
-# (repo's own .driftignore already lists triage.md — see .driftignore)
+# Shared helpers for the cases below.
 # =============================================================================
+# A .git-less copy of this repo (as the mutation harness runs it), for cases that
+# need a different config/tiers.json or .driftignore than the real one.
+repo_copy() {
+  local d
+  d=$(new_sandbox)
+  ( cd "$REPO_DIR" && tar cf - --exclude=.git . ) | ( cd "$d" && tar xf - )
+  printf '%s' "$d"
+}
+# Files under $1, relative, sorted — symlinks and regular files, never dirs.
+file_set() { ( cd "$1" && find . \( -type f -o -type l \) | sed 's|^\./||' | LC_ALL=C sort ); }
+
+# =============================================================================
+# Case G — install.sh --files-only skips a driftignored, differing fork.
+# The shipped .driftignore lists no files, so this case runs against a repo
+# copy with a fixture .driftignore that lists triage.md (same pattern as
+# Case Q6's tiers.json fixture below).
+# =============================================================================
+G_REPO=$(repo_copy)
+printf '# fixture: triage.md is a deliberate personal fork for this test\ntriage.md\n' > "$G_REPO/.driftignore"
 G_DIR=$(new_sandbox)
 mkdir -p "$G_DIR"
 printf 'my personal triage.md fork\n' > "$G_DIR/triage.md"
@@ -329,7 +350,7 @@ G_TRIAGE_BEFORE=$(cat "$G_DIR/triage.md")
 
 G_OUT_FILE=$(mktemp)
 ALL_TMP="$ALL_TMP $G_OUT_FILE"
-CLAUDE_DIR="$G_DIR" "$REPO_DIR/install.sh" --files-only >"$G_OUT_FILE" 2>&1
+CLAUDE_DIR="$G_DIR" "$G_REPO/install.sh" --files-only >"$G_OUT_FILE" 2>&1
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 G_RC=$?
 chk "G1: --files-only exits 0" '[ "$G_RC" -eq 0 ]'
@@ -732,21 +753,25 @@ chk "O7: uninstall removes both Agent(triage-external) and Agent(triage-overflow
   '[ "$(jq -c ".permissions.allow" "$O_DIR/settings.json")" = "[\"Bash(ls:*)\"]" ]'
 
 # =============================================================================
-# Case P — an expected fork (.driftignore: triage.md) survives EVERY install mode.
+# Case P — an expected fork (fixture .driftignore: triage.md) survives EVERY
+# install mode. The shipped .driftignore lists no files, so this runs against
+# a repo copy with a fixture .driftignore (same pattern as Case G above).
 # Found live 2026-09-23: a bare ./install.sh overwrote the personal ~/.claude/
 # triage.md fork (only a .bak-triage copy was kept), because the skip applied under
 # --files-only alone. A first install, where no copy exists yet, still writes it.
 # =============================================================================
+P_REPO=$(repo_copy)
+printf '# fixture: triage.md is a deliberate personal fork for this test\ntriage.md\n' > "$P_REPO/.driftignore"
 P_DIR=$(new_sandbox)
 printf 'my personal triage.md fork\n' > "$P_DIR/triage.md"
 P_DRY_OUT=$(mktemp)
 ALL_TMP="$ALL_TMP $P_DRY_OUT"
-CLAUDE_DIR="$P_DIR" "$REPO_DIR/install.sh" --dry-run >"$P_DRY_OUT" 2>&1
+CLAUDE_DIR="$P_DIR" "$P_REPO/install.sh" --dry-run >"$P_DRY_OUT" 2>&1
 chk "P1: --dry-run shows the existing fork as 'skipped (expected fork)', never 'overwrite'" \
   'grep -qF "skipped (expected fork): triage.md" "$P_DRY_OUT" && ! grep -q "overwrite.*$P_DIR/triage.md" "$P_DRY_OUT"'
 P_OUT=$(mktemp)
 ALL_TMP="$ALL_TMP $P_OUT"
-CLAUDE_DIR="$P_DIR" "$REPO_DIR/install.sh" >"$P_OUT" 2>&1
+CLAUDE_DIR="$P_DIR" "$P_REPO/install.sh" >"$P_OUT" 2>&1
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 P_RC=$?
 chk "P2: a BARE install over an existing fork exits 0 and leaves the fork byte-for-byte" \
@@ -761,20 +786,6 @@ chk "P5: a first bare install (no triage.md yet) writes the repo copy" 'cmp -s "
 P3_DIR=$(new_sandbox)
 CLAUDE_DIR="$P3_DIR" "$REPO_DIR/install.sh" --files-only >/dev/null 2>&1
 chk "P6: a first --files-only install (no triage.md yet) writes the repo copy too" 'cmp -s "$REPO_DIR/triage.md" "$P3_DIR/triage.md"'
-
-# =============================================================================
-# Shared helpers for the cases below.
-# =============================================================================
-# A .git-less copy of this repo (as the mutation harness runs it), for cases that
-# need a different config/tiers.json or .driftignore than the real one.
-repo_copy() {
-  local d
-  d=$(new_sandbox)
-  ( cd "$REPO_DIR" && tar cf - --exclude=.git . ) | ( cd "$d" && tar xf - )
-  printf '%s' "$d"
-}
-# Files under $1, relative, sorted — symlinks and regular files, never dirs.
-file_set() { ( cd "$1" && find . \( -type f -o -type l \) | sed 's|^\./||' | LC_ALL=C sort ); }
 
 # =============================================================================
 # Case Q — subagent-model ownership is RECORDED, never inferred from the value
