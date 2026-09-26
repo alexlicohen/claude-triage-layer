@@ -16,7 +16,7 @@
 # A locally modified installed file is backed up before it is overwritten, to
 # <file>.bak-triage-<UTC timestamp>; the newest BACKUP_KEEP (5) per file are kept.
 #
-# Files listed in .driftignore (deliberate personal forks, e.g. triage.md) are
+# Files listed in .driftignore (deliberate personal forks — none currently) are
 # skipped rather than clobbered in EVERY mode — bare install, --files-only and
 # --dry-run alike — whenever the installed copy already exists. Only a first
 # install (no copy there yet) writes them.
