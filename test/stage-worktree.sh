@@ -242,6 +242,91 @@ chk "S12f a relative --patch is a usage error (exit 2)" '[ "$RC" -eq 2 ] && [ "$
 OUT=$(GIT_DIR="$DECOY/.git" GIT_WORK_TREE="$DECOY" "$SW" apply --repo "$AR" --patch "$T/out/empty.patch" 2>"$T/err"); RC=$?
 chk "S12g apply resolves --repo itself even with a decoy GIT_DIR inherited" '[ "$RC" -eq 0 ] && [ "$(j .repo)" = "$AR" ] && [ "$({ st "$DECOY"; git -C "$DECOY" rev-parse HEAD; git -C "$DECOY" worktree list; })" = "$DECOY_BEFORE" ]'
 
+# --- S13: apply --require-clean and treeModified (M3, M4) ----------------------
+git -C "$AR" reset -q --hard "$A_BASE"; rm -f "$AR/wip.txt"
+run_sw apply --repo "$AR" --patch "$T/out/apply.patch"
+chk "S13 a successful apply reports treeModified:true" '[ "$RC" -eq 0 ] && [ "$(j .treeModified)" = true ]'
+git -C "$AR" checkout -q -- f.txt
+printf 'unstaged wip in a patched file\n' >> "$AR/f.txt"
+B13=$(tree_sum "$AR")
+run_sw apply --repo "$AR" --patch "$T/out/apply.patch" --require-clean
+chk "S13b --require-clean: a patch touching a file with uncommitted work is exit 6, nothing written, the path named" \
+  '[ "$RC" -eq 6 ] && [ "$(j .applied)" = false ] && [ "$(j .treeModified)" = false ] && j .error | grep -q "f.txt" && [ "$(tree_sum "$AR")" = "$B13" ]'
+run_sw apply --repo "$AR" --patch "$T/out/apply.patch"
+chk "S13c ...where without --require-clean the same apply would have written on top of that work" \
+  '[ "$RC" -eq 0 ] && grep -qx l5-patched "$AR/f.txt"'
+git -C "$AR" checkout -q -- f.txt
+printf 'wip elsewhere\n' >> "$AR/g.txt"
+run_sw apply --repo "$AR" --patch "$T/out/apply.patch" --require-clean
+chk "S13d --require-clean ignores uncommitted work OUTSIDE the patch's paths (applies)" '[ "$RC" -eq 0 ] && [ "$(j .method)" = plain ]'
+git -C "$AR" checkout -q -- f.txt g.txt
+( cd "$AR" && printf 'n\n' > newf.txt && git add newf.txt && git diff --cached > "$T/out/newf.patch" && git reset -q && rm -f newf.txt )
+printf 'untracked squatter\n' > "$AR/newf.txt"
+run_sw apply --repo "$AR" --patch "$T/out/newf.patch" --require-clean
+chk "S13e --require-clean: an untracked file where the patch creates one is exit 6" '[ "$RC" -eq 6 ] && [ "$(cat "$AR/newf.txt")" = "untracked squatter" ]'
+rm -f "$AR/newf.txt"
+# A git shim: the WRITE step of an apply fails — a 3-way leaving conflict markers,
+# or a plain apply writing nothing — after its clean pre-check.
+SHIM="$T/shim"; mkdir -p "$SHIM"; REALGIT=$(command -v git)
+cat > "$SHIM/git" <<SHIMEOF
+#!/bin/bash
+ap=0 ck=0 tw=0 ns=0
+for a in "\$@"; do case "\$a" in apply) ap=1 ;; --check) ck=1 ;; --3way) tw=1 ;; --numstat) ns=1 ;; esac; done
+if [ \$ap = 1 ] && [ \$ck = 0 ] && [ \$ns = 0 ]; then
+  if [ "\${SHIM_MODE:-}" = markers ] && [ \$tw = 1 ]; then printf '<<<<<<< ours\n' >> "\$SHIM_FILE"; exit 1; fi
+  if [ "\${SHIM_MODE:-}" = plainfail ] && [ \$tw = 0 ]; then exit 1; fi
+fi
+exec "$REALGIT" "\$@"
+SHIMEOF
+chmod +x "$SHIM/git"
+sed 's/^l2$/l2-drift/' "$AR/f.txt" > "$AR/f.new" && cat "$AR/f.new" > "$AR/f.txt" && rm -f "$AR/f.new"
+git -C "$AR" commit -qam "drift inside the patch context (forces the 3-way path)"
+OUT=$(PATH="$SHIM:$PATH" SHIM_MODE=markers SHIM_FILE="$AR/f.txt" "$SW" apply --repo "$AR" --patch "$T/out/apply.patch" 2>"$T/err"); RC=$?
+chk "S13f a 3-way write that fails after a clean pre-check and leaves conflict markers: exit 1, treeModified:true (M4)" \
+  '[ "$RC" -eq 1 ] && [ "$(j .applied)" = false ] && [ "$(j .method)" = 3way ] && [ "$(j .treeModified)" = true ] && grep -q "^<<<<<<<" "$AR/f.txt"'
+git -C "$AR" reset -q --hard "$A_BASE"
+OUT=$(PATH="$SHIM:$PATH" SHIM_MODE=plainfail "$SW" apply --repo "$AR" --patch "$T/out/apply.patch" 2>"$T/err"); RC=$?
+chk "S13g a plain write that fails without writing: exit 1, treeModified:false (measured, not assumed)" \
+  '[ "$RC" -eq 1 ] && [ "$(j .method)" = plain ] && [ "$(j .treeModified)" = false ] && ! grep -q l5-patched "$AR/f.txt"'
+
+# --- S14: leakcheck --line, ignored paths (H4 reduced, H5) ---------------------
+IR="$T/ign-repo"
+mkrepo "$IR"
+printf 'build/\n*.cache\n' > "$IR/.gitignore"
+printf 'x\n' > "$IR/x.txt"
+git -C "$IR" add -A && git -C "$IR" commit -qm one
+mkdir -p "$IR/build"; printf 'old artifact\n' > "$IR/build/out.bin"
+D4="$T/out/stage4"
+run_sw create --repo "$IR" --base HEAD --count 1 --dir "$D4"
+run_sw leakcheck --repo "$IR" --dir "$D4" --line
+chk "S14 --line prints ONE line 'LEAKCHECK {json}' carrying rc, status and the sha" \
+  '[ "$RC" -eq 0 ] && [ "$(printf "%s\n" "$OUT" | wc -l | tr -d " ")" = 1 ] && case "$OUT" in "LEAKCHECK {"*) true ;; *) false ;; esac &&
+   [ "$(printf "%s" "${OUT#LEAKCHECK }" | jq -r ".status + \" \" + (.rc|tostring)")" = "CLEAN 0" ] && [ "$(printf "%s" "${OUT#LEAKCHECK }" | jq -r .sha)" = "$(git -C "$IR" rev-parse HEAD)" ]'
+printf 'rewritten by a candidate\n' > "$IR/build/out.bin"
+run_sw leakcheck --repo "$IR" --dir "$D4" --line
+chk "S14b a write to an IGNORED file in the real repo is a LEAK (the cache/build-output class): rc 7 in the line" \
+  '[ "$RC" -eq 7 ] && [ "$(printf "%s" "${OUT#LEAKCHECK }" | jq -r ".status + \" \" + (.rc|tostring)")" = "LEAK 7" ] && printf "%s" "${OUT#LEAKCHECK }" | jq -e ".paths | index(\"build/out.bin\") != null" >/dev/null'
+printf 'old artifact\n' > "$IR/build/out.bin"
+printf 'new cache\n' > "$IR/new.cache"
+run_sw leakcheck --repo "$IR" --dir "$D4"
+chk "S14c a NEW ignored file is a LEAK too (plain JSON without --line)" '[ "$RC" -eq 7 ] && [ "$(j .status)" = LEAK ] && [ "$(j .rc)" = null ]'
+rm -f "$IR/new.cache"
+run_sw leakcheck --repo "$IR" --dir "$D4"
+chk "S14d restored → CLEAN again" '[ "$RC" -eq 0 ] && [ "$(j .status)" = CLEAN ]'
+printf '.claude/agent-memory/\nPROJECT_MEMORY*.md\n' >> "$IR/.git/info/exclude"
+mkdir -p "$IR/.claude/agent-memory/x"; printf 'a note\n' > "$IR/.claude/agent-memory/x/m.md"; printf 'entry\n' > "$IR/PROJECT_MEMORY.md"
+run_sw leakcheck --repo "$IR" --dir "$D4"
+chk "S14f IGNORED agent bookkeeping written mid-run (.claude/, PROJECT_MEMORY*.md) is not a leak" '[ "$RC" -eq 0 ] && [ "$(j .status)" = CLEAN ]'
+rm -rf "$IR/.claude" "$IR/PROJECT_MEMORY.md"
+# diff: what the patch cannot carry is reported.
+mkdir -p "$D4/wt-1/build"; printf 'candidate artifact\n' > "$D4/wt-1/build/new.bin"; printf 'ok\n' > "$D4/wt-1/.parity-env"
+printf 'y\n' > "$D4/wt-1/y.txt"
+NESTED="$D4/wt-1/vendored"; mkrepo "$NESTED"; printf 'v\n' > "$NESTED/v.txt"; git -C "$NESTED" add -A && git -C "$NESTED" commit -qm v
+run_sw diff --worktree "$D4/wt-1" --base "$(git -C "$IR" rev-parse HEAD)" --out "$T/out/ign.patch"
+chk "S14e diff reports ignoredNew (build/new.bin; the harness's .parity-env not counted) and the nested repo as a gitlink" \
+  '[ "$RC" -eq 0 ] && [ "$(j .ignoredNew)" = 1 ] && [ "$(j ".gitlinks | join(\",\")")" = vendored ]'
+run_sw cleanup --repo "$IR" --dir "$D4"
+
 echo ""
 echo "RESULT: $PASS_COUNT passed, $FAIL_COUNT failed"
 [ "$FAIL_COUNT" -eq 0 ]

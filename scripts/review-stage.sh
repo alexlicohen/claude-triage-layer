@@ -37,15 +37,22 @@
 #            each --hard-exclude. Pattern semantics are gitignore's, erring wide: a
 #            pattern with no inner slash matches ANY path component (context/ drops
 #            docs/context/x too); one with a slash is anchored at the repo root and
-#            its * may cross directories. A hard-excluded path is never archived,
+#            its * may cross directories; a leading **/ also matches at the top
+#            (**/secrets drops secrets/key), and a/**/b also matches a/b. The two
+#            defaults match case-insensitively (Context/, project_memory.md). A
+#            hard-excluded path is never archived,
 #            never in range.diff, and is listed in manifest.excluded. An --extra
 #            whose DEST, or any component of whose SRC, a hard exclude matches is
 #            refused (exit 2).
-#            DENY CARRIES OVER: when R (or its main worktree) or an --extra SRC is
-#            under a hard-denied repo (clip-creator) or a .codex-deny marker lies
-#            on its way up to $HOME, DIR/.codex-deny is written, so ext-run.sh
-#            refuses the snapshot and the diff for codex exactly as it would the
-#            repo (Claude may still read them). stdout: one JSON line
+#            DENY CARRIES OVER: when ext-run.sh would refuse R (or its main
+#            worktree), anything beneath R, or an --extra SRC for codex — a
+#            hard-denied repo (clip-creator), a CODEX_DENY_REPOS name, or a
+#            .codex-deny marker on its way up to $HOME — DIR/.codex-deny is
+#            written, so ext-run.sh refuses the snapshot and the diff for codex
+#            exactly as it would the repo (Claude may still read them). The rule is
+#            ext-run.sh's own (`ext-run.sh deny-query`), never a copy; if ext-run.sh
+#            is missing or errors, the snapshot is marked denied (fail closed).
+#            stdout: one JSON line
 #              {"step":"snapshot","ok":true,"base","head","snap","diff","manifest",
 #               "files","bytes","diffBytes","extras","excluded","codexDenied"}
 #            A failure removes what this run wrote.
@@ -71,9 +78,8 @@ export LC_ALL=C
 # every `git -C` below at another repository — -C does not override it.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_NAMESPACE GIT_CEILING_DIRECTORIES
 
-# Mirrors HARD_DENY_REPOS in ext-run.sh (the owner of deny decisions);
-# test/review-stage.sh fails if the two ever differ.
-HARD_DENY_REPOS="clip-creator"
+# ext-run.sh owns every codex deny decision; this script only asks it (deny-query).
+EXT_RUN="${REVIEW_STAGE_EXT_RUN:-$(cd "$(dirname "$0")" && pwd)/ext-run.sh}"
 TAB=$(printf '\t')
 NL='
 '
@@ -118,7 +124,9 @@ while [ $# -gt 0 ]; do
     *) POS+=("$1"); shift ;;
   esac
 done
-# The default hard excludes come first, always (quoted: never glob-expanded).
+# The default hard excludes come first, always (quoted: never glob-expanded), and
+# are matched case-insensitively (the first DEFAULT_HARD entries of HARD).
+DEFAULT_HARD=2
 HARD=("context/" "PROJECT_MEMORY*.md" ${HARD+"${HARD[@]}"})
 
 # phys PATH — the physical form of an absolute path that may not exist yet.
@@ -134,7 +142,6 @@ phys() {
   printf '%s%s\n' "$p" "$rest"
 }
 within() { [ "$1" = "$2" ] || case "$1" in "$2"/*) return 0 ;; *) return 1 ;; esac; }
-HOME_P=$(cd "${HOME:-/}" 2>/dev/null && pwd -P) || HOME_P="${HOME:-/}"
 
 check_abs() { # $1 flag name, $2 value
   case "$2" in /*) ;; *) usage "$1 must be an absolute path (got '$2')" ;; esac
@@ -158,26 +165,68 @@ empty_tree() { git -C "$1" hash-object -t tree /dev/null; }
 # hard_match REL — SINGLE OWNER of the hard-exclude decision. Prints the pattern
 # that matches the repo-relative path REL (rc 0), or nothing (rc 1). gitignore
 # semantics, erring wide (see the header).
-hard_match() {
-  local rel="$1" pat p c anchored rest
+# glob_variants P — P, plus every form with a leading **/ dropped or an inner /**/
+# collapsed to / (gitignore: **/x matches x at the top, a/**/b matches a/b); a
+# case pattern's * already spans directories, so these are the only misses.
+glob_variants() {
+  local todo="$1" v out="" nl='
+'
+  while [ -n "$todo" ]; do
+    v="${todo%%"$nl"*}"
+    case "$todo" in *"$nl"*) todo="${todo#*"$nl"}" ;; *) todo="" ;; esac
+    case "$nl$out" in *"$nl$v$nl"*) continue ;; esac
+    out="$out$v$nl"
+    case "$v" in '**/'?*) todo="$todo${v#\*\*/}$nl" ;; esac
+    case "$v" in *'/**/'*) todo="$todo${v%%/\*\*/*}/${v#*/\*\*/}$nl" ;; esac
+  done
+  printf '%s' "$out"
+}
+# hard_prepare — HARD compiled ONCE into parallel arrays: HV_KIND (a = anchored,
+# c = matches any one path component), HV_PAT (the case pattern; every
+# glob_variants form of an anchored one), HV_SRC (the HARD entry it came from) and
+# HV_NOCASE (1 for the defaults).
+HV_KIND=() HV_PAT=() HV_SRC=() HV_NOCASE=()
+hard_prepare() {
+  local pat p anchored i=0 v
   for pat in "${HARD[@]}"; do
+    i=$((i + 1))
     p="$pat"; anchored=0
     case "$p" in /*) anchored=1; p="${p#/}" ;; esac
     p="${p%/}"
     case "$p" in */*) anchored=1 ;; esac
     [ -n "$p" ] || continue
     if [ "$anchored" -eq 1 ]; then
+      while IFS= read -r v; do
+        [ -n "$v" ] || continue
+        HV_KIND+=(a); HV_PAT+=("$v"); HV_SRC+=("$pat"); HV_NOCASE+=("$([ "$i" -le "$DEFAULT_HARD" ] && echo 1 || echo 0)")
+      done <<VARIANTS
+$(glob_variants "$p")
+VARIANTS
+    else
+      HV_KIND+=(c); HV_PAT+=("$p"); HV_SRC+=("$pat"); HV_NOCASE+=("$([ "$i" -le "$DEFAULT_HARD" ] && echo 1 || echo 0)")
+    fi
+  done
+}
+hard_match() {
+  local rel="$1" k=0 p c rest hit
+  while [ "$k" -lt "${#HV_PAT[@]}" ]; do
+    p="${HV_PAT[$k]}"; hit=1
+    if [ "${HV_NOCASE[$k]}" = 1 ]; then shopt -s nocasematch; else shopt -u nocasematch; fi
+    if [ "${HV_KIND[$k]}" = a ]; then
       # shellcheck disable=SC2254  # $p is a glob pattern on purpose
-      case "$rel" in $p|$p/*) printf '%s\n' "$pat"; return 0 ;; esac
+      case "$rel" in $p|$p/*) hit=0 ;; esac
     else
       rest="$rel"
       while [ -n "$rest" ]; do
         c="${rest%%/*}"
         # shellcheck disable=SC2254  # $p is a glob pattern on purpose
-        case "$c" in $p) printf '%s\n' "$pat"; return 0 ;; esac
+        case "$c" in $p) hit=0; break ;; esac
         case "$rest" in */*) rest="${rest#*/}" ;; *) rest="" ;; esac
       done
     fi
+    shopt -u nocasematch
+    if [ "$hit" -eq 0 ]; then printf '%s\n' "${HV_SRC[$k]}"; return 0; fi
+    k=$((k + 1))
   done
   return 1
 }
@@ -195,40 +244,21 @@ split_hard() {
   done < "$1"
 }
 
-# deny_marked PATH — rc 0 when PATH has a hard-denied repo name as a component, or
-# a .codex-deny marker in PATH (a dir) or any directory above it up to AND
-# INCLUDING $HOME (or /). Mirrors ext-run.sh deny_check_path; used only to carry
-# the deny over to the snapshot (ext-run.sh stays the owner of every refusal).
-deny_marked() {
-  local p="$1" d name
-  for name in $HARD_DENY_REPOS; do
-    case "/$p/" in */"$name"/*) return 0 ;; esac
-  done
-  d="$p"
-  [ -d "$d" ] || d=$(dirname "$d")
-  while [ -n "$d" ]; do
-    [ -f "$d/.codex-deny" ] && return 0
-    case "$d" in /|"${HOME:-/}"|"$HOME_P") break ;; esac
-    [ "$(dirname "$d")" != "$d" ] || break
-    d=$(dirname "$d")
-  done
-  return 1
+# codex_denied [--beneath] PATH — rc 0 when ext-run.sh would refuse PATH for codex
+# (deny-listed repo name incl. CODEX_DENY_REPOS, a .codex-deny marker up to $HOME,
+# the same for the main worktree of PATH's repo; with --beneath, also anything
+# below PATH). ext-run.sh owns the rule: this only asks it. Any answer other than
+# "allowed" (exit 0) — a refusal, a missing ext-run.sh, an error — is a deny.
+codex_denied() {
+  local rc
+  [ -x "$EXT_RUN" ] || { echo "review-stage: $EXT_RUN is missing — marking the snapshot off-limits to codex" >&2; return 0; }
+  "$EXT_RUN" deny-query "$@" >/dev/null 2>"$W_DENY_ERR"
+  rc=$?
+  [ "$rc" -eq 0 ] && return 1
+  [ "$rc" -eq 3 ] || echo "review-stage: ext-run.sh deny-query exited $rc — marking the snapshot off-limits to codex: $(head -c 300 "$W_DENY_ERR")" >&2
+  return 0
 }
-# deny_beneath DIR — rc 0 when a .codex-deny marker or a hard-denied repo name
-# lies anywhere below DIR (.git skipped): part of DIR may be off-limits to codex.
-deny_beneath() {
-  local name
-  set -- "$1" -name .codex-deny
-  for name in $HARD_DENY_REPOS; do set -- "$@" -o -name "$name"; done
-  [ -n "$(find "$1" -name .git -prune -o \( "${@:2}" \) -print 2>/dev/null | head -n 1)" ]
-}
-main_worktree_of() { # the main worktree of the repo PATH belongs to, physical
-  local common
-  common=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 0
-  [ -n "$common" ] || return 0
-  common=$(cd "$common" 2>/dev/null && pwd -P) || return 0
-  case "$common" in */.git) dirname "$common" ;; *) printf '%s\n' "$common" ;; esac
-}
+W_DENY_ERR=/dev/null
 
 # pathspecs MAGIC GLOB... — prints one :(MAGIC)GLOB per line.
 pathspecs() {
@@ -269,7 +299,7 @@ do_snapshot() {
   for g in ${CONTEXTS+"${CONTEXTS[@]}"}; do check_glob --context "$g"; done
   for g in "${HARD[@]}"; do case "$g" in ''|*"$NL"*) usage "--hard-exclude must be a non-empty single-line pattern" ;; esac; done
   check_abs --out "$OUT"
-  local R D B H EMPTY created=0 codex_denied=false main
+  local R D B H EMPTY created=0 codex_denied=false
   R=$(repo_top "$REPO")
   B=$(git -C "$R" rev-parse --verify --quiet "$BASE^{commit}") || usage "--base does not name a commit in $R: $BASE"
   H=$(git -C "$R" rev-parse --verify --quiet "$HEAD_REF^{commit}") || usage "--head does not name a commit in $R: $HEAD_REF"
@@ -294,12 +324,10 @@ do_snapshot() {
     x=$(hard_match "$dest") && usage "refusing: --extra DEST $dest matches the hard exclude '$x'"
     comp="${srcp#/}"
     x=$(hard_match "$comp") && usage "refusing: --extra $src matches the hard exclude '$x' (a component of its path)"
-    deny_marked "$srcp" && codex_denied=true
+    codex_denied "$srcp" && codex_denied=true
     extras_tsv="$extras_tsv$srcp$TAB$dest$NL"
   done
-  if deny_marked "$R" || deny_beneath "$R"; then codex_denied=true; fi
-  main=$(main_worktree_of "$R")
-  if [ -n "$main" ] && [ "$main" != "$R" ] && deny_marked "$main"; then codex_denied=true; fi
+  if codex_denied --beneath "$R"; then codex_denied=true; fi
 
   [ -e "$D" ] || { mkdir -p "$D" || usage "could not create --out $OUT"; created=1; }
   local W="$D/.review-stage.tmp"
@@ -492,6 +520,7 @@ do_compare() {
   exit 7
 }
 
+hard_prepare
 case "$SUB" in
   snapshot)    do_snapshot ;;
   fingerprint) do_fingerprint ;;

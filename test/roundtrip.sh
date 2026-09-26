@@ -42,6 +42,19 @@
 #   P - .driftignore'd forks (triage.md) are skipped by EVERY install mode when
 #       the installed copy exists (bare install, --dry-run), and written only by a
 #       first install (bare or --files-only) where no copy exists yet.
+#   Q - subagent-model ownership is RECORDED (env.TRIAGE_LAYER_OWNS_SUBAGENT_MODEL),
+#       never inferred from the value; the default comes from config/tiers.json.
+#   R - timestamped backups of locally modified installed files, newest 5 kept.
+#   U - uninstall moves forks, edited files and per-agent memory to a backup dir;
+#       a clean round-trip leaves exactly {settings.json, CLAUDE.md}; drift checks
+#       every file install placed.
+#   V - retired files (agy-run.sh, triage-overflow.md): shipped bytes deleted,
+#       anything else moved aside.
+#   W - a jq failure (or a settings.json of the wrong shape) fails install and
+#       uninstall with rc != 0 and never prints Installed./Uninstalled.
+#   X - .driftignore entries with CRLF / trailing whitespace still protect forks.
+#   Y - tiers-sync.sh: --root without a value, an unclosed frontmatter.
+#   Z - drift.sh warns "settings migration pending" for a legacy subagent model.
 #   Plus two direct statusline.sh checks (non-numeric / numeric pct).
 set -u
 
@@ -62,6 +75,8 @@ unset CLAUDE_CODE_SUBAGENT_MODEL_FORCE
 PASS_COUNT=0
 FAIL_COUNT=0
 ALL_TMP=""
+# The subagent default install writes = the deep level's Claude model (config/tiers.json).
+DEEP_MODEL=$(jq -r '.levels.deep.claude.model' "$REPO_DIR/config/tiers.json")
 
 cleanup() {
   # shellcheck disable=SC2086
@@ -130,7 +145,7 @@ chk "A6: effortLevel left exactly as the user had it (never written)" \
 chk "A6b: statusLine left exactly as the user had it (never written)" \
   '[ "$(jq -r ".statusLine.command" "$A_DIR/settings.json")" = "/old/statusline.sh" ]'
 chk "A6c: env.CLAUDE_CODE_SUBAGENT_MODEL set (was unset)" \
-  '[ "$(jq -r ".env.CLAUDE_CODE_SUBAGENT_MODEL" "$A_DIR/settings.json")" = "claude-opus-5-5" ]'
+  '[ "$(jq -r ".env.CLAUDE_CODE_SUBAGENT_MODEL" "$A_DIR/settings.json")" = "$DEEP_MODEL" ]'
 chk "A6d: subagentPromptCacheTtl set (was unset)" \
   '[ "$(jq -r ".subagentPromptCacheTtl" "$A_DIR/settings.json")" = "1h" ]'
 chk "A7: permissions.allow has 7 entries after install (1 pre-existing + 6 workers)" \
@@ -213,7 +228,7 @@ chk "C2: settings.json is still a symlink after install" '[ -L "$C_DIR/settings.
 chk "C3: symlink still points at the original target file" \
   '[ "$(readlink "$C_DIR/settings.json")" = "$C_REAL" ]'
 chk "C4: the symlink target received the merge" \
-  '[ "$(jq -r ".env.CLAUDE_CODE_SUBAGENT_MODEL" "$C_REAL")" = "claude-opus-5-5" ]'
+  '[ "$(jq -r ".env.CLAUDE_CODE_SUBAGENT_MODEL" "$C_REAL")" = "$DEEP_MODEL" ]'
 
 # =============================================================================
 # Case D — invalid settings.json: install must abort before ANY mutation
@@ -325,7 +340,7 @@ chk "G5: scripts/triage-usage.sh copied and executable" '[ -x "$G_DIR/scripts/tr
 chk "G6: skip notice printed for triage.md" 'grep -q "skipped (expected fork): triage.md" "$G_OUT_FILE"'
 chk "G7: sandbox triage.md left untouched (fork preserved)" \
   '[ "$(cat "$G_DIR/triage.md")" = "$G_TRIAGE_BEFORE" ]'
-chk "G8: no .bak-triage backup created for the skipped fork" '[ ! -f "$G_DIR/triage.md.bak-triage" ]'
+chk "G8: no .bak-triage backup created for the skipped fork" '! ls "$G_DIR"/triage.md.bak-triage* >/dev/null 2>&1'
 chk "G9: CLAUDE.md not created (files-only leaves it alone)" '[ ! -f "$G_DIR/CLAUDE.md" ]'
 chk "G10: settings.json not created (files-only leaves it alone)" '[ ! -f "$G_DIR/settings.json" ]'
 chk "G11: scripts/ext-run.sh copied and executable" '[ -x "$G_DIR/scripts/ext-run.sh" ]'
@@ -628,7 +643,7 @@ N_DRY_OUT=$(mktemp)
 ALL_TMP="$ALL_TMP $N_DRY_OUT"
 CLAUDE_DIR="$N_DIR" "$REPO_DIR/install.sh" --dry-run >"$N_DRY_OUT" 2>&1
 chk "N1: --dry-run over a previous installer default prints the upgrade line" \
-  'grep -qF "env.CLAUDE_CODE_SUBAGENT_MODEL: would upgrade claude-opus-5 -> claude-opus-5-5" "$N_DRY_OUT"'
+  'grep -qF "env.CLAUDE_CODE_SUBAGENT_MODEL: would upgrade claude-opus-5 -> $DEEP_MODEL" "$N_DRY_OUT"'
 chk "N2: that --dry-run still writes nothing" \
   '[ "$(cat "$N_DIR/settings.json")" = "$N_SETTINGS_BEFORE" ]'
 
@@ -638,10 +653,10 @@ CLAUDE_DIR="$N_DIR" "$REPO_DIR/install.sh" >"$N_OUT" 2>&1
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 N_RC=$?
 chk "N3: install exits 0 over a previous installer default" '[ "$N_RC" -eq 0 ]'
-chk "N4: a previous installer default (claude-opus-5) is upgraded to claude-opus-5-5" \
-  '[ "$(jq -r ".env.CLAUDE_CODE_SUBAGENT_MODEL" "$N_DIR/settings.json")" = "claude-opus-5-5" ]'
+chk "N4: a previous installer default (claude-opus-5) is upgraded to the deep model and marked as ours" \
+  '[ "$(jq -r ".env.CLAUDE_CODE_SUBAGENT_MODEL" "$N_DIR/settings.json")" = "$DEEP_MODEL" ] && [ "$(jq -r ".env.TRIAGE_LAYER_OWNS_SUBAGENT_MODEL" "$N_DIR/settings.json")" = "$DEEP_MODEL" ]'
 chk "N5: the upgrade is announced" \
-  'grep -qF "upgraded claude-opus-5 -> claude-opus-5-5" "$N_OUT"'
+  'grep -qF "upgraded claude-opus-5 -> $DEEP_MODEL (previous installer default)" "$N_OUT"'
 chk "N5b: an unrelated env var survives the upgrade" \
   '[ "$(jq -r ".env.MY_OWN_VAR" "$N_DIR/settings.json")" = "keepme" ]'
 
@@ -656,22 +671,29 @@ CLAUDE_DIR="$N6_DIR" "$REPO_DIR/install.sh" --dry-run >"$N6_OUT" 2>&1
 chk "N6: --dry-run over a user value says 'already set ... left as is', never 'would upgrade'" \
   'grep -qF "env.CLAUDE_CODE_SUBAGENT_MODEL: already set to claude-sonnet-5" "$N6_OUT" && ! grep -q "would upgrade" "$N6_OUT"'
 
-# Uninstall straight over an OLD install's settings (no re-install in between).
+# Uninstall straight over an OLD install's settings (no re-install in between): the
+# value carries no ownership marker, so it is NOT ours to remove (codex#20) — it stays,
+# with a note saying so. The TTL still holds our value and goes.
 N7_DIR=$(new_sandbox)
 mkdir -p "$N7_DIR"
 echo '{"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "claude-opus-5"}, "subagentPromptCacheTtl": "1h"}' > "$N7_DIR/settings.json"
-run_uninstall "$N7_DIR" >/dev/null 2>&1
-chk "N7: uninstall removes a previous installer default (and the env object it empties)" \
-  '[ "$(jq "has(\"env\")" "$N7_DIR/settings.json")" = "false" ]'
+N7_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $N7_OUT"
+run_uninstall "$N7_DIR" >"$N7_OUT" 2>&1
+chk "N7: uninstall leaves an unmarked subagent model (even a previous default) and says so; the TTL goes" \
+  '[ "$(jq -r ".env.CLAUDE_CODE_SUBAGENT_MODEL" "$N7_DIR/settings.json")" = "claude-opus-5" ] && grep -q "no installer ownership marker" "$N7_OUT" && [ "$(jq "has(\"subagentPromptCacheTtl\")" "$N7_DIR/settings.json")" = "false" ]'
 
-# install.sh and uninstall.sh each define the owned values; they must agree exactly.
-owned_lines() { grep -E '^(SUBAGENT_MODEL|SUBAGENT_CACHE_TTL|LEGACY_SUBAGENT_MODELS)=' "$1" | sort; }
+# The TTL is the one value both scripts own by value: they must agree. The subagent
+# model is a literal in neither (it comes from config/tiers.json; ownership is the marker).
+owned_lines() { grep -E '^(SUBAGENT_CACHE_TTL|OWNER_MARK)=' "$1" | sort; }
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 N_INSTALL_OWNED=$(owned_lines "$REPO_DIR/install.sh")
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 N_UNINSTALL_OWNED=$(owned_lines "$REPO_DIR/uninstall.sh")
-chk "N8: install.sh and uninstall.sh define identical SUBAGENT_MODEL / SUBAGENT_CACHE_TTL / LEGACY_SUBAGENT_MODELS" \
-  '[ "$(printf "%s\n" "$N_INSTALL_OWNED" | grep -c .)" -eq 3 ] && [ "$N_INSTALL_OWNED" = "$N_UNINSTALL_OWNED" ]'
+chk "N8: install.sh and uninstall.sh define identical SUBAGENT_CACHE_TTL / OWNER_MARK" \
+  '[ "$(printf "%s\n" "$N_INSTALL_OWNED" | grep -c .)" -eq 2 ] && [ "$N_INSTALL_OWNED" = "$N_UNINSTALL_OWNED" ]'
+chk "N9: neither script hard-codes a subagent model id (config/tiers.json owns it)" \
+  '! grep -qE "^SUBAGENT_MODEL=\"claude-" "$REPO_DIR/install.sh" "$REPO_DIR/uninstall.sh"'
 
 # =============================================================================
 # Case O — Wave 12 rename: triage-overflow -> triage-external. An install made
@@ -688,7 +710,7 @@ O_DRY_OUT=$(mktemp)
 ALL_TMP="$ALL_TMP $O_DRY_OUT"
 CLAUDE_DIR="$O_DIR" "$REPO_DIR/install.sh" --dry-run >"$O_DRY_OUT" 2>&1
 chk "O1: --dry-run announces removing the legacy agent and its allow rule, adding triage-external, and changes nothing" \
-  'grep -qF "remove (renamed to agents/triage-external.md)" "$O_DRY_OUT" && grep -qF "would remove legacy: Agent(triage-overflow)" "$O_DRY_OUT" && grep -qF "would add: Agent(triage-external)" "$O_DRY_OUT" && [ -f "$O_DIR/agents/triage-overflow.md" ]'
+  'grep -qF "move aside (modified or unhashable; renamed to agents/triage-external.md)" "$O_DRY_OUT" && grep -qF "would remove legacy: Agent(triage-overflow)" "$O_DRY_OUT" && grep -qF "would add: Agent(triage-external)" "$O_DRY_OUT" && [ -f "$O_DIR/agents/triage-overflow.md" ]'
 
 run_install "$O_DIR" >/dev/null 2>&1
 chk "O2: install removed the legacy agents/triage-overflow.md and placed triage-external.md" \
@@ -730,7 +752,7 @@ P_RC=$?
 chk "P2: a BARE install over an existing fork exits 0 and leaves the fork byte-for-byte" \
   '[ "$P_RC" -eq 0 ] && [ "$(cat "$P_DIR/triage.md")" = "my personal triage.md fork" ]'
 chk "P3: the bare install announces the skip and writes no .bak-triage copy" \
-  'grep -qF "skipped (expected fork): triage.md" "$P_OUT" && [ ! -e "$P_DIR/triage.md.bak-triage" ]'
+  'grep -qF "skipped (expected fork): triage.md" "$P_OUT" && ! ls "$P_DIR"/triage.md.bak-triage* >/dev/null 2>&1'
 chk "P4: the rest of the bare install still happened (agents, workflows, @triage.md wiring)" \
   '[ -f "$P_DIR/agents/triage-quick-task.md" ] && [ -f "$P_DIR/workflows/triage-compare.js" ] && grep -qxF "@triage.md" "$P_DIR/CLAUDE.md"'
 P2_DIR=$(new_sandbox)
@@ -739,6 +761,269 @@ chk "P5: a first bare install (no triage.md yet) writes the repo copy" 'cmp -s "
 P3_DIR=$(new_sandbox)
 CLAUDE_DIR="$P3_DIR" "$REPO_DIR/install.sh" --files-only >/dev/null 2>&1
 chk "P6: a first --files-only install (no triage.md yet) writes the repo copy too" 'cmp -s "$REPO_DIR/triage.md" "$P3_DIR/triage.md"'
+
+# =============================================================================
+# Shared helpers for the cases below.
+# =============================================================================
+# A .git-less copy of this repo (as the mutation harness runs it), for cases that
+# need a different config/tiers.json or .driftignore than the real one.
+repo_copy() {
+  local d
+  d=$(new_sandbox)
+  ( cd "$REPO_DIR" && tar cf - --exclude=.git . ) | ( cd "$d" && tar xf - )
+  printf '%s' "$d"
+}
+# Files under $1, relative, sorted — symlinks and regular files, never dirs.
+file_set() { ( cd "$1" && find . \( -type f -o -type l \) | sed 's|^\./||' | LC_ALL=C sort ); }
+
+# =============================================================================
+# Case Q — subagent-model ownership is RECORDED, never inferred from the value
+# (codex#20), and the default comes from config/tiers.json (M35).
+# =============================================================================
+Q1_DIR=$(new_sandbox)
+run_install "$Q1_DIR" >/dev/null 2>&1
+chk "Q1: a fresh install writes the deep model AND the ownership marker holding the same value" \
+  '[ "$(jq -r ".env.CLAUDE_CODE_SUBAGENT_MODEL" "$Q1_DIR/settings.json")" = "$DEEP_MODEL" ] && [ "$(jq -r ".env.TRIAGE_LAYER_OWNS_SUBAGENT_MODEL" "$Q1_DIR/settings.json")" = "$DEEP_MODEL" ]'
+
+# A user who chose exactly our default BEFORE installing: no marker, so it stays theirs.
+Q2_DIR=$(new_sandbox)
+printf '{"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "%s"}}\n' "$DEEP_MODEL" > "$Q2_DIR/settings.json"
+run_install "$Q2_DIR" >/dev/null 2>&1
+chk "Q2a: install does not adopt a user-set value equal to the default (no marker written)" \
+  '[ "$(jq -r ".env.TRIAGE_LAYER_OWNS_SUBAGENT_MODEL // \"none\"" "$Q2_DIR/settings.json")" = "none" ]'
+Q2_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $Q2_OUT"
+run_uninstall "$Q2_DIR" >"$Q2_OUT" 2>&1
+chk "Q2b: ... and uninstall leaves it in place, with a note (value equality is not ownership)" \
+  '[ "$(jq -r ".env.CLAUDE_CODE_SUBAGENT_MODEL" "$Q2_DIR/settings.json")" = "$DEEP_MODEL" ] && grep -q "no installer ownership marker" "$Q2_OUT"'
+
+# Installed (marked), then repointed by the user: uninstall keeps the new value.
+Q3_DIR=$(new_sandbox)
+run_install "$Q3_DIR" >/dev/null 2>&1
+jq '.env.CLAUDE_CODE_SUBAGENT_MODEL = "claude-sonnet-5"' "$Q3_DIR/settings.json" > "$Q3_DIR/s.tmp" && mv "$Q3_DIR/s.tmp" "$Q3_DIR/settings.json"
+run_uninstall "$Q3_DIR" >/dev/null 2>&1
+chk "Q3: a model repointed after install survives uninstall; the marker is removed" \
+  '[ "$(jq -r ".env.CLAUDE_CODE_SUBAGENT_MODEL" "$Q3_DIR/settings.json")" = "claude-sonnet-5" ] && [ "$(jq -r ".env.TRIAGE_LAYER_OWNS_SUBAGENT_MODEL // \"none\"" "$Q3_DIR/settings.json")" = "none" ]'
+
+# Repointed, then re-installed: the stale marker is dropped, the value kept.
+Q4_DIR=$(new_sandbox)
+run_install "$Q4_DIR" >/dev/null 2>&1
+jq '.env.CLAUDE_CODE_SUBAGENT_MODEL = "claude-sonnet-5"' "$Q4_DIR/settings.json" > "$Q4_DIR/s.tmp" && mv "$Q4_DIR/s.tmp" "$Q4_DIR/settings.json"
+run_install "$Q4_DIR" >/dev/null 2>&1
+chk "Q4: re-install over a repointed model keeps it and drops the stale marker" \
+  '[ "$(jq -r ".env.CLAUDE_CODE_SUBAGENT_MODEL" "$Q4_DIR/settings.json")" = "claude-sonnet-5" ] && [ "$(jq -r ".env.TRIAGE_LAYER_OWNS_SUBAGENT_MODEL // \"none\"" "$Q4_DIR/settings.json")" = "none" ]'
+
+# A marked value from an older default (not in LEGACY_SUBAGENT_MODELS) is upgraded.
+Q5_DIR=$(new_sandbox)
+echo '{"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "claude-opus-4-9", "TRIAGE_LAYER_OWNS_SUBAGENT_MODEL": "claude-opus-4-9"}}' > "$Q5_DIR/settings.json"
+Q5_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $Q5_OUT"
+run_install "$Q5_DIR" >"$Q5_OUT" 2>&1
+chk "Q5: a value still equal to its marker is upgraded to the deep model (marker follows)" \
+  '[ "$(jq -r ".env.CLAUDE_CODE_SUBAGENT_MODEL" "$Q5_DIR/settings.json")" = "$DEEP_MODEL" ] && [ "$(jq -r ".env.TRIAGE_LAYER_OWNS_SUBAGENT_MODEL" "$Q5_DIR/settings.json")" = "$DEEP_MODEL" ] && grep -qF "upgraded claude-opus-4-9 -> $DEEP_MODEL (set by this installer)" "$Q5_OUT"'
+
+# M35: the default is read from config/tiers.json, not hard-coded.
+Q6_REPO=$(repo_copy)
+jq '.levels.deep.claude.model = "claude-opus-9-9"' "$Q6_REPO/config/tiers.json" > "$Q6_REPO/t.tmp" && mv "$Q6_REPO/t.tmp" "$Q6_REPO/config/tiers.json"
+Q6_DIR=$(new_sandbox)
+CLAUDE_DIR="$Q6_DIR" "$Q6_REPO/install.sh" >/dev/null 2>&1
+chk "Q6: the subagent default follows config/tiers.json levels.deep.claude.model" \
+  '[ "$(jq -r ".env.CLAUDE_CODE_SUBAGENT_MODEL" "$Q6_DIR/settings.json")" = "claude-opus-9-9" ]'
+jq 'del(.levels.deep.claude.model)' "$Q6_REPO/config/tiers.json" > "$Q6_REPO/t.tmp" && mv "$Q6_REPO/t.tmp" "$Q6_REPO/config/tiers.json"
+Q7_DIR=$(new_sandbox)
+CLAUDE_DIR="$Q7_DIR" "$Q6_REPO/install.sh" >/dev/null 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+Q7_RC=$?
+chk "Q7: no deep Claude model in tiers.json = install refuses before any mutation" \
+  '[ "$Q7_RC" -ne 0 ] && [ ! -e "$Q7_DIR/agents" ] && [ ! -e "$Q7_DIR/settings.json" ]'
+
+# =============================================================================
+# Case R — backups of locally modified installed files are timestamped (a later
+# sync never overwrites an earlier backup) and only the newest 5 per file are kept.
+# =============================================================================
+R_DIR=$(new_sandbox)
+run_install "$R_DIR" >/dev/null 2>&1
+printf 'edit-1\n' > "$R_DIR/statusline.sh"
+CLAUDE_DIR="$R_DIR" "$REPO_DIR/install.sh" --files-only >/dev/null 2>&1
+printf 'edit-2\n' > "$R_DIR/statusline.sh"
+CLAUDE_DIR="$R_DIR" "$REPO_DIR/install.sh" --files-only >/dev/null 2>&1
+chk "R1: two syncs over two different local edits keep BOTH edits as separate backups" \
+  '[ "$(ls "$R_DIR"/statusline.sh.bak-triage-* | wc -l | tr -d " ")" -eq 2 ] && grep -lx "edit-1" "$R_DIR"/statusline.sh.bak-triage-* >/dev/null && grep -lx "edit-2" "$R_DIR"/statusline.sh.bak-triage-* >/dev/null'
+for n in 3 4 5 6 7 8; do
+  printf 'edit-%s\n' "$n" > "$R_DIR/statusline.sh"
+  CLAUDE_DIR="$R_DIR" "$REPO_DIR/install.sh" --files-only >/dev/null 2>&1
+done
+chk "R2: after 8 edited syncs exactly the newest 5 backups remain (edit-4..edit-8)" \
+  '[ "$(ls "$R_DIR"/statusline.sh.bak-triage-* | wc -l | tr -d " ")" -eq 5 ] && grep -lx "edit-8" "$R_DIR"/statusline.sh.bak-triage-* >/dev/null && grep -lx "edit-4" "$R_DIR"/statusline.sh.bak-triage-* >/dev/null && ! grep -lx "edit-3" "$R_DIR"/statusline.sh.bak-triage-* >/dev/null'
+chk "R3: the repo copy is back in place after the sync" 'cmp -s "$REPO_DIR/statusline.sh" "$R_DIR/statusline.sh"'
+
+# =============================================================================
+# Case U — uninstall never destroys bytes the repo cannot reproduce (M32, agent
+# memory), and a clean round-trip leaves exactly the expected set (M36).
+# =============================================================================
+U_DIR=$(new_sandbox)
+run_install "$U_DIR" >/dev/null 2>&1
+printf 'my personal rule\n' >> "$U_DIR/triage.md"
+mkdir -p "$U_DIR/agent-memory/triage-builder"
+printf 'remember this\n' > "$U_DIR/agent-memory/triage-builder/MEMORY.md"
+U_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $U_OUT"
+run_uninstall "$U_DIR" >"$U_OUT" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+U_BACKUP=$(find "$U_DIR" -maxdepth 1 -type d -name 'triage-uninstall-backup-*' | head -n 1)
+chk "U1: a forked triage.md is moved to the uninstall backup dir, never just deleted" \
+  '[ ! -e "$U_DIR/triage.md" ] && [ -n "$U_BACKUP" ] && grep -qx "my personal rule" "$U_BACKUP/triage.md"'
+chk "U2: per-agent memory is moved to the backup dir, not rm -rf'd" \
+  '[ ! -e "$U_DIR/agent-memory/triage-builder" ] && grep -qx "remember this" "$U_BACKUP/agent-memory/triage-builder/MEMORY.md"'
+chk "U3: the uninstall output names the backup dir" 'grep -qF "$U_BACKUP" "$U_OUT"'
+chk "U4: unmodified shipped files are deleted, not backed up (only the fork and the memory are in the backup)" \
+  '[ "$(file_set "$U_BACKUP" | tr "\n" " ")" = "agent-memory/triage-builder/MEMORY.md triage.md " ]'
+
+# M36: install -> drift clean -> uninstall on an empty dir leaves exactly these files.
+U5_DIR=$(new_sandbox)
+run_install "$U5_DIR" >/dev/null 2>&1
+U5_DRIFT=$(mktemp)
+ALL_TMP="$ALL_TMP $U5_DRIFT"
+CLAUDE_DIR="$U5_DIR" "$REPO_DIR/drift.sh" >"$U5_DRIFT" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+U5_DRIFT_RC=$?
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+U5_INSTALLED=$(file_set "$U5_DIR" | grep -vxE 'settings.json|CLAUDE.md' | grep -c .)
+chk "U5: drift is clean right after install" '[ "$U5_DRIFT_RC" -eq 0 ] && ! grep -qE "MISSING|FORKED" "$U5_DRIFT"'
+chk "U6: drift checks every file install placed (same-line count == installed file count)" \
+  '[ "$(grep -cE "^(same|forked \(expected\)): " "$U5_DRIFT")" -eq "$U5_INSTALLED" ]'
+run_uninstall "$U5_DIR" >/dev/null 2>&1
+chk "U7: install -> uninstall leaves exactly {CLAUDE.md, settings.json} and no backup dir" \
+  '[ "$(file_set "$U5_DIR" | tr "\n" " ")" = "CLAUDE.md settings.json " ]'
+
+# =============================================================================
+# Case V — retired files: bytes this repo shipped are deleted; anything else is
+# moved aside, never deleted (codex#19).
+# =============================================================================
+V_DIR=$(new_sandbox)
+mkdir -p "$V_DIR/scripts" "$V_DIR/agents"
+printf '#!/bin/bash\n# my local agy wrapper\n' > "$V_DIR/scripts/agy-run.sh"
+cp "$REPO_DIR/test/fixtures/legacy/triage-overflow.md" "$V_DIR/agents/triage-overflow.md"
+V_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $V_OUT"
+CLAUDE_DIR="$V_DIR" "$REPO_DIR/install.sh" --files-only >"$V_OUT" 2>&1
+chk "V1: an agy-run.sh with unknown bytes is moved to a timestamped backup, not deleted" \
+  '[ ! -e "$V_DIR/scripts/agy-run.sh" ] && grep -qx "# my local agy wrapper" "$V_DIR"/scripts/agy-run.sh.bak-triage-* && grep -q "is modified (or unhashable) — moved to" "$V_OUT"'
+chk "V2: a shipped triage-overflow.md (fixture) is deleted outright, with no backup" \
+  '[ ! -e "$V_DIR/agents/triage-overflow.md" ] && ! ls "$V_DIR"/agents/triage-overflow.md.bak-triage* >/dev/null 2>&1 && grep -qF "removed legacy file: $V_DIR/agents/triage-overflow.md" "$V_OUT"'
+
+# =============================================================================
+# Case W — failures are failures: a jq error mid-install/uninstall exits non-zero
+# and never prints Installed./Uninstalled.; a wrong-shaped settings.json is refused
+# before any mutation.
+# =============================================================================
+W_BIN=$(new_sandbox)
+REAL_JQ=$(command -v jq)
+cat > "$W_BIN/jq" <<EOF
+#!/bin/bash
+for a in "\$@"; do case "\$a" in *"\$FAILJQ_MATCH"*) exit 5 ;; esac; done
+exec "$REAL_JQ" "\$@"
+EOF
+chmod +x "$W_BIN/jq"
+W1_DIR=$(new_sandbox)
+W1_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $W1_OUT"
+FAILJQ_MATCH='.subagentPromptCacheTtl = $ttl' PATH="$W_BIN:$PATH" CLAUDE_DIR="$W1_DIR" "$REPO_DIR/install.sh" >"$W1_OUT" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+W1_RC=$?
+chk "W1: a failing settings merge fails install (rc != 0) and never prints Installed." \
+  '[ "$W1_RC" -ne 0 ] && ! grep -q "^Installed" "$W1_OUT" && grep -q "settings merge (jq) failed" "$W1_OUT"'
+W2_DIR=$(new_sandbox)
+run_install "$W2_DIR" >/dev/null 2>&1
+W2_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $W2_OUT"
+FAILJQ_MATCH='-= $workers' PATH="$W_BIN:$PATH" CLAUDE_DIR="$W2_DIR" "$REPO_DIR/uninstall.sh" >"$W2_OUT" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+W2_RC=$?
+chk "W2: a failing settings rewrite fails uninstall BEFORE any file is removed" \
+  '[ "$W2_RC" -ne 0 ] && ! grep -q "^Uninstalled" "$W2_OUT" && [ -f "$W2_DIR/agents/triage-builder.md" ] && grep -qxF "@triage.md" "$W2_DIR/CLAUDE.md"'
+W3_DIR=$(new_sandbox)
+printf 'keep me\n' > "$W3_DIR/CLAUDE.md"
+echo '{"env": "not-an-object"}' > "$W3_DIR/settings.json"
+W3_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $W3_OUT"
+CLAUDE_DIR="$W3_DIR" "$REPO_DIR/install.sh" >"$W3_OUT" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+W3_RC=$?
+chk "W3: a settings.json of the wrong shape is refused before any mutation" \
+  '[ "$W3_RC" -ne 0 ] && grep -q "unexpected shape" "$W3_OUT" && [ ! -e "$W3_DIR/agents" ] && [ "$(cat "$W3_DIR/CLAUDE.md")" = "keep me" ]'
+
+# =============================================================================
+# Case X — a .driftignore entry with CRLF / trailing whitespace still protects the
+# fork, in install.sh AND drift.sh.
+# =============================================================================
+X_REPO=$(repo_copy)
+printf '# forks\r\ntriage.md \r\n' > "$X_REPO/.driftignore"
+X_DIR=$(new_sandbox)
+CLAUDE_DIR="$X_DIR" "$X_REPO/install.sh" >/dev/null 2>&1
+printf 'my fork\n' > "$X_DIR/triage.md"
+CLAUDE_DIR="$X_DIR" "$X_REPO/install.sh" --files-only >/dev/null 2>&1
+chk "X1: install skips a fork listed as 'triage.md<space><CR>'" '[ "$(cat "$X_DIR/triage.md")" = "my fork" ]'
+X_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $X_OUT"
+CLAUDE_DIR="$X_DIR" "$X_REPO/drift.sh" >"$X_OUT" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+X_RC=$?
+chk "X2: drift.sh reports it 'forked (expected)' and exits 0" \
+  '[ "$X_RC" -eq 0 ] && grep -qxF "forked (expected): triage.md" "$X_OUT"'
+
+# =============================================================================
+# Case Y — scripts/tiers-sync.sh argument and frontmatter guards.
+# =============================================================================
+TSYNC="$REPO_DIR/scripts/tiers-sync.sh"
+Y_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $Y_OUT"
+"$TSYNC" --root >"$Y_OUT" 2>&1 &
+Y_PID=$!
+Y_I=0
+while kill -0 "$Y_PID" 2>/dev/null && [ "$Y_I" -lt 50 ]; do sleep 0.1; Y_I=$((Y_I + 1)); done
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+Y_HUNG=0
+if kill -0 "$Y_PID" 2>/dev/null; then
+  # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+  Y_HUNG=1
+  kill "$Y_PID" 2>/dev/null
+fi
+wait "$Y_PID" 2>/dev/null
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+Y_RC=$?
+chk "Y1: tiers-sync.sh --root with no value exits 2 (usage) instead of looping" \
+  '[ "$Y_HUNG" -eq 0 ] && [ "$Y_RC" -eq 2 ]'
+
+Y_ROOT=$(new_sandbox)
+mkdir -p "$Y_ROOT/config" "$Y_ROOT/agents"
+echo '{"levels": {"deep": {"claude": {"agent": "triage-x", "model": "claude-opus-9-9", "effort": "high"}}}}' > "$Y_ROOT/config/tiers.json"
+printf -- '---\nname: triage-x\nmodel: claude-old\n\nbody text\nmodel: body-line-not-frontmatter\n' > "$Y_ROOT/agents/triage-x.md"
+cp "$Y_ROOT/agents/triage-x.md" "$Y_ROOT/before.md"
+"$TSYNC" --root "$Y_ROOT" >"$Y_OUT" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+Y2_RC=$?
+chk "Y2: an unclosed frontmatter fails tiers-sync (rc 1) and the file is left byte-for-byte" \
+  '[ "$Y2_RC" -eq 1 ] && grep -q "never closed" "$Y_OUT" && cmp -s "$Y_ROOT/before.md" "$Y_ROOT/agents/triage-x.md"'
+
+# =============================================================================
+# Case Z — drift.sh warns (never fails) when settings.json still holds a subagent
+# model a bare install would upgrade: `make sync` never edits settings (M34).
+# =============================================================================
+Z_DIR=$(new_sandbox)
+run_install "$Z_DIR" >/dev/null 2>&1
+Z_CLEAN=$(mktemp)
+ALL_TMP="$ALL_TMP $Z_CLEAN"
+CLAUDE_DIR="$Z_DIR" "$REPO_DIR/drift.sh" >"$Z_CLEAN" 2>&1
+chk "Z1: a current install reports no pending settings migration" '! grep -q "migration pending" "$Z_CLEAN"'
+jq '.env = {"CLAUDE_CODE_SUBAGENT_MODEL": "claude-opus-5"}' "$Z_DIR/settings.json" > "$Z_DIR/s.tmp" && mv "$Z_DIR/s.tmp" "$Z_DIR/settings.json"
+Z_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $Z_OUT"
+CLAUDE_DIR="$Z_DIR" "$REPO_DIR/drift.sh" >"$Z_OUT" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+Z_RC=$?
+chk "Z2: a legacy subagent model prints 'settings migration pending' naming it, and drift still exits 0" \
+  '[ "$Z_RC" -eq 0 ] && grep -q "settings migration pending: env.CLAUDE_CODE_SUBAGENT_MODEL is claude-opus-5" "$Z_OUT"'
 
 # =============================================================================
 # Statusline checks (direct, no install needed)

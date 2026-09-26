@@ -211,8 +211,18 @@ GNU-only flags, or associative arrays.
 Nothing else in this repo, and no agent, may call `codex` (OpenAI Codex CLI) directly. The
 adapter, the OS sandbox profile, the deny-list, the known-good flags, the timeouts, the build
 staging worktree, the command audit log and the exit-code contract all live in this one
-script. It was `agy-run.sh` until Wave 12; `install.sh` removes a leftover installed copy of
-the old name.
+script. It was `agy-run.sh` until Wave 12; `install.sh` retires a leftover installed copy of
+the old name (deleted when its bytes match a shipped version, otherwise moved to a timestamped
+backup).
+
+**Threat model.** codex is treated as a trusted collaborator that can make mistakes, not as an
+adversary. The confinement below, the deny-list and the bake-off leak checks exist to keep an
+accident away from real trees and to keep bake-off measurements honest (no candidate may read
+the answer); they are not built to contain a hostile model. Within that scope, what they do not
+cover: reads outside `$HOME` and the temp dirs (see **Reads** below), `~/.codex` stays writable,
+network egress is unrestricted (the workspace can reach OpenAI), `--check` and `patch-check.sh`
+run candidate code unsandboxed, and the boundary attestation (`AGY_BOUNDARY_CLEARED=1`) is the
+caller's statement, never verified.
 
 **agy (Google Antigravity) was retired on 2026-09-24**: its headless mode let the model set a
 per-command `BypassSandbox` flag, and a read-only parity review used it to copy a file into a
@@ -241,7 +251,10 @@ Every model id and effort is read from the tiers file: `$TRIAGE_TIERS`, else
 - `scripts/triage-tiers.sh` prints the level × vendor table and the latest parity note and
   flags `basis: "guess"` entries. `make tiers` (`scripts/tiers-sync.sh`) writes the Claude
   agents' `model:`/`effort:` frontmatter from the same file; `test/lint.sh` fails while the
-  two disagree.
+  two disagree. tiers-sync refuses (exit 1) an agent whose frontmatter is never closed —
+  its body would otherwise be rewritten as frontmatter — and `--root` without a value
+  (exit 2). `install.sh` reads the subagent default (`env.CLAUDE_CODE_SUBAGENT_MODEL`) from
+  `levels.deep.claude.model` too.
 
 ### Modes
 
@@ -481,9 +494,12 @@ supplies exactly one value, its own run directory, after that path has passed th
 | `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_COMMON_DIR`, `GIT_NAMESPACE`, `GIT_CEILING_DIRECTORIES` | **cleared** at the top (also by `patch-check.sh`, `stage-worktree.sh`, `parity-suite.sh`): an inherited absolute `GIT_DIR`/`GIT_WORK_TREE` (a git hook's environment) would otherwise redirect `git -C` into another repository |
 
 Vendor-side token spend is invisible to `triage-usage.sh`, so each run echoes
-`ext-run: <N> tokens (<S>s, codex/<model>) out=<M>` to **stderr**: `N` = `input_tokens +
-output_tokens` summed over `turn.completed`; `out=` = `output_tokens` (reasoning included), the
-part a bake-off compares.
+`ext-run: <N> tokens (<S>s, codex/<model>) out=<M> effort=<E>` to **stderr**: `N` =
+`input_tokens + output_tokens` summed over `turn.completed`; `out=` = `output_tokens`
+(reasoning included), the part a bake-off compares; `effort=` is the effort the run actually
+used (`agents/triage-external.md` relays this line verbatim — the last line of its report).
+`triage-compare.js` cross-checks `effort=` against the candidate's asked-for effort: a
+mismatch (like a model mismatch) makes the candidate `invalid`.
 
 ### Requirements and tests
 
@@ -528,13 +544,17 @@ need LibreOffice (grant-forge's docx rendering), so it is deliberately not done.
 ## `patch-check.sh` — the independent grader of a bake-off
 
 ```
-patch-check.sh --repo DIR --base REV --check CMD [--overlay DIR] [--timeout SECS] [--env-map FILE] PATCH...
+patch-check.sh --repo DIR --base REV --check CMD [--overlay DIR] [--timeout SECS]
+               [--env-map FILE] [--summary --tail-dir DIR] PATCH...
 patch-check.sh --print-env --check CMD [--env-map FILE]
 ```
 
 `workflows/triage-compare.js` runs one brief on several candidates (Claude levels, codex),
 each writing a patch. The candidates' own claims about their checks are never the grade; this
-script is. For each PATCH, in argument order:
+script is. When the brief carries several `checks`, `triage-compare.js` joins them into ONE CMD
+with each check in its own `bash -c '...'`, `&&`-chained — so one check's own `||` fallback can
+never mask a later check's failure, and CMD (below) still runs as a single string. For each
+PATCH, in argument order:
 
 1. `git worktree add --detach` a fresh worktree of DIR at REV under a temp dir (hooks off);
 2. `git apply --binary`, falling back to `git apply --3way` (a conflict is `applies:false`);
@@ -562,10 +582,27 @@ It prints one JSON line per patch on stdout:
 not found"). `"error":"overlay-failed"` (with `applies:true, rc:null`) means the patch applied
 but the `--overlay` copy failed, so the hidden tests are missing and the check was NOT run: the
 patch is ungradable — `triage-compare.js` maps it to `invalid`, `parity-suite.sh verify-task`
-to "neither base-fails nor solution-passes"; never a pass or a fail. `error` appears only then.
-Exit 0 = every patch was reported; exit 2 = usage error (bad flag, a flag with no value, not a
-repo, unknown REV, an unmapped `$PARITY_` variable), nothing ran. It never touches the caller's
-working tree, index or HEAD.
+to "neither base-fails nor solution-passes"; never a pass or a fail. `"error":"harness"` (with
+`applies:false, rc:null`) means the GRADER itself failed (the patch file is missing, no temp
+dir, no worktree) — also ungradable, and never the candidate's fault; `error` appears only in
+these two cases. Exit 0 = every patch was reported; exit 2 = usage error (bad flag, a flag with
+no value, not a repo, unknown REV, an unmapped `$PARITY_` variable), nothing ran. It never
+touches the caller's working tree, index or HEAD.
+
+`--summary` (requires `--tail-dir DIR`, an absolute path, created if needed) prints ONE line
+instead of one JSON object per patch:
+
+```
+PATCHCHECK {"base":"<sha>","results":[{"patch","applies","rc","diffstat","files","filesTruncated","tailFile"[,"error"]},...]}
+```
+
+— so a relay copying the line never sees candidate-written check output. Each patch's tail is
+written to `--tail-dir DIR/<n>.tail` (`n` = its argument position) and `tailFile` names it;
+`files` is the paths the applied patch changes (at most 200, else `filesTruncated:true`),
+computed **before** the overlay. `triage-compare.js` parses the `PATCHCHECK ` line, cross-checks
+it against `stage-worktree.sh`'s `leakcheck --line` output (sha, patch order, status/rc) and
+treats a missing, garbled, or mismatched line the same as `error:"harness"` — invalid, never a
+pass or a fail.
 
 ### Parity env map — no real paths to candidates
 
@@ -611,9 +648,9 @@ patch beside its worktree, removed). `qc/mutate.sh` #32, #48, #63 (unmapped vari
 ```
 stage-worktree.sh create    --repo R --base REV --count N --dir D
 stage-worktree.sh diff      --worktree W --base SHA --out FILE
-stage-worktree.sh leakcheck --repo R --dir D
+stage-worktree.sh leakcheck --repo R --dir D [--line]
 stage-worktree.sh cleanup   --repo R --dir D
-stage-worktree.sh apply     --repo R --patch P
+stage-worktree.sh apply     --repo R --patch P [--require-clean]
 ```
 
 `workflows/triage-compare.js` never gives a candidate the real repo as its working directory.
@@ -630,18 +667,32 @@ refuses a main working tree, so it can never stage into R's index. `leakcheck` c
 the fingerprint: `CLEAN` (exit 0); `LEAK` (exit 7) when, with HEAD unchanged, the status or any
 path's content changed, or, with HEAD moved, any path's content changed; `BASE_MOVED` (exit 0,
 flagged) when someone committed and nothing else changed — grading stays at the recorded sha.
-`cleanup` removes each staged worktree and its bookkeeping, prunes, and deletes D; it refuses a
-D without a fingerprint. Every step prints one JSON line; except for `apply`, R's working tree
-and index are only ever read (`--no-optional-locks`).
+The fingerprint's IGNORED-path coverage (bounded — content hash for the first 2000 up to 256
+KiB, size+mtime for the rest, at most 100000 listed) catches a candidate's accidental cache or
+build-output write too, but always excludes `.claude/` and `PROJECT_MEMORY*.md`: agent
+bookkeeping writes them by design while a bake-off runs, so they are never a leak. `--line`
+prints the same object plus `rc` as ONE line `LEAKCHECK {json}` — the single line a relay copies
+verbatim (`workflows/triage-compare.js` parses it and cross-checks it, alongside `patch-check.sh
+--summary`'s `PATCHCHECK` line, for sha / patch order / status agreement; a missing or garbled
+line is treated as invalid). `cleanup` removes each staged worktree and its bookkeeping, prunes,
+and deletes D; it refuses a D without a fingerprint. Every step prints one JSON line; except for
+`apply`, R's working tree and index are only ever read (`--no-optional-locks`).
 
 `apply` is the one deliberate write into R: an inline bake-off's fallback applies the chosen
 candidate's patch P. Only an apply proven clean first is written: `git apply --check` then
 `git apply` (index-free, so unrelated unstaged/untracked work does not block it); else `git apply
 --3way --check`, which exits 0 even when the merge WOULD conflict, so it counts as clean only
 with rc 0 **and** no `conflict` in its output, then `git apply --3way`; else nothing is written
-and the exit is **6** with R byte-identical. An empty P is a no-op success. It prints
-`{step:"apply", repo, patch, ok, applied, method: plain|3way|empty|none, error?}`. The rule
-mirrors `ext-run.sh`'s `apply_back()` on purpose instead of sharing a helper: ext-run stays
+and the exit is **6** with R byte-identical. `--require-clean` checks first that every path P
+touches (`git apply --numstat`, both sides of a rename) is unmodified and not untracked in R,
+else exit 6 with nothing written — a patch never lands on top of the caller's own uncommitted
+work; `triage-exec`'s inline bake-offs always pass it. An empty P is a no-op success. It prints
+`{step:"apply", repo, patch, ok, applied, method: plain|3way|empty|none, treeModified, error?}`.
+`treeModified` is whether the paths P touches (index entries and files) differ from before the
+call: `true` after a real apply, `false` on exit 6 — except that after a FAILED write it is
+measured rather than assumed (a failed 3-way can leave conflict markers behind), so a caller
+must never run anything on the tree while `treeModified` is `true` or absent. The rule mirrors
+`ext-run.sh`'s `apply_back()` on purpose instead of sharing a helper: ext-run stays
 self-contained (single owner of every external-CLI run, its own exit-6 contract and
 diagnostics), and a runtime dependency from that danger-zone script on this one was judged
 worse than a three-command rule kept in two places. Each copy has its own conflict-marker
@@ -651,11 +702,14 @@ mutation (#51 ext-run, #55 here).
 refusals (D inside/containing R, populated D, relative D, unknown REV), a diff with
 new/modified/deleted/binary files that applies cleanly at the sha through `patch-check.sh`, an
 empty diff still checked, diff refusing the main tree and never leaving a stale patch, leakcheck
-CLEAN / LEAK (tracked edit, untracked file, content change to an already-dirty file) /
-BASE_MOVED (including committing pre-existing work), cleanup leaving no worktree registered, and
-R's tree, index bytes and HEAD untouched; `apply` with a clean patch, a drifted tree recovered by
-a clean 3-way merge, a conflicting patch (exit 6, tree incl. untracked/unstaged work and index
-byte-identical, no markers), an empty patch and a relative path. `qc/mutate.sh` #39 proves the
+CLEAN / LEAK (tracked edit, untracked file, content change to an already-dirty file, an ignored
+path written) / BASE_MOVED (including committing pre-existing work), the IGNORED fingerprint's
+`.claude/`/`PROJECT_MEMORY*.md` exclusion, `--line`'s single-line form, cleanup leaving no
+worktree registered, and R's tree, index bytes and HEAD untouched; `apply` with a clean patch, a
+drifted tree recovered by a clean 3-way merge, a conflicting patch (exit 6, tree incl.
+untracked/unstaged work and index byte-identical, no markers), `--require-clean` refusing a
+dirty path the patch touches (and passing a clean one), `treeModified` on every outcome
+including a failed write, an empty patch and a relative path. `qc/mutate.sh` #39 proves the
 new-file capture has teeth, #55 the apply conflict pre-check.
 
 ## `review-stage.sh` — the staging area of a review bake-off
@@ -688,13 +742,20 @@ codexDenied}`; a failure removes what it wrote.
 applied to everything written into DIR whatever git thinks of the path (tracked, ignored or
 untracked) and whatever `--include`/`--context` name. gitignore semantics, erring wide: a pattern
 with no inner slash matches **any** path component (`context/` also drops `docs/context/x.md`); one
-with a slash is anchored at the repo root and its `*` may cross directories. A hard-excluded path
-is never archived and never in range.diff (only its name, in `manifest.excluded`); an `--extra`
-whose DEST, or any component of whose SRC, matches is refused (exit 2). **Deny carries over:** when
-R (or its main worktree) or an extra SRC is under a hard-denied repo (clip-creator), or a
-`.codex-deny` marker lies inside R or on the way up to `$HOME`, DIR gets a `.codex-deny` of its
-own — `ext-run.sh` then refuses the snapshot and the diff for codex exactly as it would the repo;
-Claude reviewers may still read them.
+with a slash is anchored at the repo root and its `*` may cross directories; `**/x` also matches
+top-level `x` and `a/**/b` also matches `a/b` (any depth in between), and matching is
+case-insensitive by default. A hard-excluded path is never archived and never in range.diff (only
+its name, in `manifest.excluded`); an `--extra`
+whose DEST, or any component of whose SRC, matches is refused (exit 2). **Deny carries over:**
+`review-stage.sh` never re-derives ext-run's deny rule — it only ASKS it, via `ext-run.sh
+deny-query [--beneath] PATH...` (exit 0 allowed, 3 refused). When R (or its main worktree) or an
+extra SRC is denied — a hard-denied repo name (clip-creator), `CODEX_DENY_REPOS`, or a
+`.codex-deny` marker on the way up to `$HOME` — or `deny-query` itself errors (a non-3 failure,
+a missing `ext-run.sh`), DIR gets a `.codex-deny` of its own, failing closed: `ext-run.sh` then
+refuses the snapshot and the diff for codex exactly as it would the repo. Claude reviewers may
+still read them. **Deferred:** an `extend` re-run trusts the prior snapshot's `.codex-deny`
+marker rather than re-asking `deny-query` — a deny added between the original run and an
+`extend` is not picked up.
 
 `fingerprint` is the review's SOURCE_CHANGED guard, scoped to its paths: `{step, head, paths,
 status (git status --porcelain=v1 -uall --no-renames -- paths), tree (a hash over the content of
@@ -795,8 +856,14 @@ normal shape plus `extendedFrom: {base, head, outDir, reviewers, items}`, `newIt
 run: …`; the markdown is regenerated for the combined set with an "Extended with" line. EX* covers
 it (EX10 runs the check's real `jq`/`git` command against a temp repo + outDir); #72 (attached items
 re-adjudicated), #73 (a superseded reviewer scored) and #74 (a codex spawn without TIMEOUT) prove
-it. `ingest-review` counts a superseded row as unavailable, and derives the run id from the
-outDir basename — pass `--run` when ingesting an extension of an already-ingested review.
+it. Re-ingesting: an extended result, or a plain re-ingest of the same run with `--resolved`,
+appends a new ledger line for that run at `revision` = the previous highest + 1 (never rewrites
+the old line); `parity-report.sh report`/`history` read only the **latest** revision per run.
+`superseded` is a reviewer's own `status` value (never folded into `unavailable`), so a report
+can tell "this reviewer didn't answer" apart from "this reviewer's earlier run was superseded by
+an extension." `ingest-review` derives the run id from the outDir basename when `--run` is
+omitted — pass `--run` explicitly when ingesting an extension of an already-ingested review, so
+the revision lands on the same run.
 
 ## `parity-suite.sh` — the task suite of a parity run
 
@@ -868,17 +935,24 @@ exclude lives in the common git dir, so it holds in every worktree of the repo: 
 Without the opt-in, candidates are told the checks run only at grading.
 
 **Source-repo leak guard.** `fingerprint` prints, for a git source,
-`{id, source:"git", name, head, tree}`: `name` is the repo directory's name (never its path),
-`head` its HEAD sha, `tree` one hash over `git status --porcelain=v1 -uall` and the content of
-every modified or untracked non-ignored file (so a second edit to an already-dirty file changes
-it too); everything runs with `--no-optional-locks`, so not even the index is refreshed. A
-generator source prints `{id, source:"generator"}` (nothing to guard). triage-parity takes it
-before a task's candidates run (in the materialize spawn, before materializing — no valid
-fingerprint, no run) and after grading, for EVERY task kind (build, rubric, review): any
-difference voids every result of the task (`invalid`, reason and flag
-`SOURCE_CHANGED <name>: HEAD moved|tree changed`); no after-fingerprint (one retry) is
-`SOURCE_UNVERIFIED`, also invalid. The run continues — a concurrent human commit is possible, so
-the flag tells the orchestrator to investigate rather than aborting.
+`{id, source:"git", guarded:true, name, head, tree, ignored, refs}`: `name` is the repo
+directory's name (never its path), `head` its HEAD sha, `tree` one hash over `git status
+--porcelain=v1 -uall` and the content of every modified or untracked non-ignored file (so a
+second edit to an already-dirty file changes it too); `ignored` is one hash over the IGNORED
+files — their count plus size/mtime of the first `PARITY_FP_IGNORED_CAP` (default 5000,
+shallowest paths first) — catching a candidate or a grader regenerating a gitignored cache
+(e.g. grant-forge's) in the real source repo; `refs` is one hash over `refs/heads`, `refs/tags`
+and `refs/stash` (a branch/tag/stash change that touches no tree and no HEAD). Everything runs
+with `--no-optional-locks`, so not even the index is refreshed. A generator source has no source
+repo to guard and prints `{id, source:"generator", guarded:false}`. `triage-parity.js` requires
+and compares both `tree`/`ignored`/`refs` fingerprints for every git-sourced task and exposes
+`tasks[].guarded` (`false` for a generator task — unguarded, never a leak signal); it takes the
+fingerprint before a task's candidates run (in the materialize spawn, before materializing — no
+valid fingerprint, no run) and after grading, for EVERY task kind (build, rubric, review): any
+difference voids every result of the task (`invalid`, reason and flag `SOURCE_CHANGED <name>:
+HEAD moved|tree changed|ignored files changed|refs/config/hooks changed`); no after-fingerprint
+(one retry) is `SOURCE_UNVERIFIED`, also invalid. The run continues — a concurrent human commit
+is possible, so the flag tells the orchestrator to investigate rather than aborting.
 
 `verify-task` materializes, then for a build task runs `patch-check.sh` twice — an empty patch
 (the base) and `solution.patch`, both with the overlay and the env map's variables exported — and prints
@@ -905,8 +979,8 @@ a repo path) cover the workflow side in `test/parity-scenarios.mjs`.
 
 ```
 parity-report.sh ingest-compare --result FILE --repo-name NAME --level L --source inline|suite
-                                [--task ID] [--applied LABEL] [--run ID] [--ts ISO]
-parity-report.sh ingest-parity  --result FILE [--ts ISO]
+                                --run ID [--task ID] [--applied LABEL] [--ts ISO]
+parity-report.sh ingest-parity  --result FILE [--run ID] [--ts ISO]
 parity-report.sh ingest-review  --result FILE --repo-name NAME [--resolved FILE] [--run ID] [--ts ISO]
 parity-report.sh migrate        [--from ~/.agents/evidence/vendor-parity.jsonl]
 parity-report.sh backfill-modelid [--dry-run]
@@ -920,6 +994,25 @@ Single owner of the ledger schema and of the rule that turns outcomes into a **p
 `config/tiers.json` change. `triage-parity.js` and inline bake-offs only produce results; the
 orchestrator saves a result as JSON, ingests it here, then runs `report`. It never writes
 tiers.json (a `--ledger` that is the tiers file is refused) — Alex approves every change.
+`ingest-compare` **requires** `--run` (a globally unique run id — its own idempotence key,
+since a compare result carries no run id of its own); `ingest-parity` and `ingest-review` still
+default it to the result's outDir basename.
+
+**Concurrency and idempotence.** Every ledger write (`ingest-*`, `migrate`, `backfill-modelid`)
+holds ONE lock, `<real ledger>.lock` (a `mkdir` lock recording the holder's pid; a lock whose pid
+is dead is taken over), across its read-check-append or its snapshot-validate-replace — so two
+writers never interleave. `PARITY_LOCK_TRIES` (default 300 tries × 0.1s) bounds the wait; still
+locked after that is exit 1 with nothing written. A symlinked ledger is written through to its
+target (`real_path()` follows the symlink chain; the link itself is never replaced) — `backfill-
+modelid`'s rename lands on the target, not the link. Each new line carries `runHash` — a hash of
+its canonical result plus the ingest options that shape it (never `--ts`, so re-ingesting the
+same run at a different observed time still matches). Re-ingesting a run whose lines all carry
+the SAME `runHash` appends only the observations (run, task, candidate) not already present —
+idempotent, and the way an interrupted multi-line ingest (e.g. `ingest-parity`, one line per
+graded task) safely resumes. A run id already in the ledger under a DIFFERENT `runHash` is
+refused (exit 2, "run id … is already in the ledger with DIFFERENT content") — pass a globally
+unique `--run`. Lines written before Wave 16B have no `runHash`; they keep the old
+skip-by-run-id behaviour (any line with that run id already present skips the whole ingest).
 
 **Config.** `tuning` in the tiers file, read through `triage-tiers.sh --bakeoff-json` (the one
 validator; also what the orchestrator passes to triage-exec as `args.bakeoff.config`):
@@ -937,8 +1030,15 @@ and labels are id tokens; anything else is refused with exit 2 and nothing writt
 {"v":1, "ts":"<ISO>", "source":"inline|suite", "run":<id|null>, "repoName":"<name>",
  "level":"quick|builder|deep|top", "band":<1-4, suite lines only>, "task":<id|null>,
  "candidates":[{"label","vendor","model","effort","status","totalTokens","seconds","modelId","modelIdSource"}],
- "applied":<label|null>, "migrated":"vendor-parity.jsonl" (migrated lines only)}
+ "applied":<label|null>, "migrated":"vendor-parity.jsonl" (migrated lines only), "runHash":<hex>}
 ```
+
+`ts` is always stored as UTC (`YYYY-MM-DDTHH:MM:SSZ`): an offset in `--ts` or the result's own
+`ts` is honored and converted, no zone means UTC, a bare date means midnight UTC, fractions are
+dropped. The run's time is `--ts`, else the result's own top-level `ts`, else now; a `--ts` that
+disagrees with the result's own `ts` is refused. `PARITY_TODAY=YYYY-MM-DD` overrides "today" for
+alias resolution and `tuning.rejected` expiry (tests only; unset in normal use uses the real UTC
+date).
 
 **Model versions** (Wave 15). `model` keeps what was configured; `modelId` is the concrete
 version it ran on and `modelIdSource` says how that is known: `pinned` (a concrete id was
@@ -969,9 +1069,11 @@ tiers file); idempotent by run id.
 
 ```
 {"v":1, "ts", "source":"inline-review", "run":<id|null>, "repoName",
- "reviewers":[{"label","vendor","level","model","effort","status":"ok|unavailable","precision",
-   "recall","n","real","rejected","disputed","findings","totalTokens","seconds"}],
- "items":<merged items>, "real":<real items>, "disputed":<still disputed>, "resolved":<by Alex>}
+ "reviewers":[{"label","vendor","level","model","effort","status":"ok|unavailable|superseded",
+   "precision","recall","n","real","rejected","disputed","findings","totalTokens","seconds",
+   "modelId","modelIdSource"}],
+ "items":<merged items>, "real":<real items>, "disputed":<still disputed>, "resolved":<by Alex>,
+ "revision":<1, 2, ...>, "runHash":<hex>}
 ```
 
 Scores are **recomputed here** from the items' verdicts and `foundBy` after applying `--resolved`
@@ -979,25 +1081,49 @@ Scores are **recomputed here** from the items' verdicts and `foundBy` after appl
 item, or any other value, is exit 2): precision = real / (real + rejected) with `n` = that
 denominator, recall = real / all real, null for a zero denominator; an unavailable reviewer keeps
 null scores and n 0. No file path, claim, evidence, flag or markdown reaches the ledger. Run id =
-`--run`, else the result's outDir basename; a run already in the ledger is skipped — resolve the
-disputes first, then ingest once. Reviewers carry `modelId`/`modelIdSource` too.
+`--run`, else the result's outDir basename. Ingesting a run already in the ledger with the SAME
+`runHash` is skipped; with different content (an extended result, or a plain re-ingest after
+`--resolved`) it instead appends a new line for that run at `revision` = the previous highest + 1
+(the first line is revision 1) rather than refusing — `report`/`history` read only the LATEST
+revision per run, so resolve disputes and re-ingest freely; the earlier revision(s) stay in the
+ledger but are superseded. A reviewer's own `status` can independently be `superseded` (an
+extend's older reviewer, carried through from the workflow result) — never folded into
+`unavailable`. Reviewers carry `modelId`/`modelIdSource` too.
 
 **Rule** (`report`). Groups graded outcomes per level × vendor × (**modelId**, effort) — two
-versions under one alias never pool — with n, passes, rate, Wilson 95% lower and upper bounds,
-excluded (non-graded) count, mean tokens and seconds, first/last ts, the configured `models`
-pooled and a `role` (incumbent | challenger | null). Per level × vendor the incumbent is
-`levels.<level>.<vendor>` as a concrete id (a tiers alias resolves as of today); every other
-(modelId, effort) there is a challenger. Cheapness by **family**, a whole token of the id, so
-every version ranks: claude haiku < sonnet < opus < fable; codex luna < sol < astra; agy flash <
-pro (agy is retired and has no levels entry: historical ledger rows still validate, and it is
-never an incumbent or proposed); then effort low < medium < high < xhigh < max. Two versions of
-one family at one effort are unranked: a version upgrade is a tiers edit, not a rule outcome.
+versions under one alias never pool — with `n` (the EFFECTIVE outcome count, see **Outcomes**
+below), `passes`, `rate`, Wilson 95% lower and upper bounds, `excluded` (non-graded) count,
+`observations` (the raw graded count before collapsing) and `ties` (excluded observations),
+mean tokens and seconds, first/last ts, the configured `models` pooled and a `role` (incumbent |
+challenger | null). Per level × vendor the incumbent is `levels.<level>.<vendor>` as a concrete
+id (a tiers alias resolves as of today). A challenger is every OTHER (modelId, effort) there
+whose model is a **current** id — one the tiers file configures today for that vendor, in any
+`levels` entry or `tuning.challengers` entry, resolved as of today; a superseded version (e.g.
+`claude-opus-5` once `opus` means `claude-opus-5-5`) or a model the tiers file no longer names is
+never a challenger — it shows in `history` only, keeping its counts. `tuning.rejected`
+(`[{level, vendor, model, effort, until?}]`, `until` inclusive UTC, absent = no end date): a
+qualifying rejected challenger gets verdict **`rejected`** instead of `propose` — Alex turned
+that proposal down, so it is never proposed again (and never holds its level at the explore
+rate as a gap) until `until` expires. Cheapness by **family**, a whole token of the id, so every
+version ranks: claude haiku < sonnet < opus < fable; codex luna < sol < astra; agy flash < pro
+(agy is retired and has no levels entry: historical ledger rows still validate, and it is never
+an incumbent or proposed); then effort low < medium < high < xhigh < max. Two versions of one
+family at one effort are unranked: a version upgrade is a tiers edit, not a rule outcome.
+
+**Outcomes** (reps are not independent trials). Within a group, the graded observations of one
+(run, task) — the reps of one candidate on one task, or the same inline run ingested twice —
+collapse to ONE outcome by majority; a tie (e.g. 1 pass + 1 fail) is EXCLUDED from `n`, `passes`
+and Wilson (counted in `ties`, never a pass or a fail). A line with no run id, or a migrated
+legacy line, is its own outcome. `n` is that effective count; `observations` is the raw graded
+count before collapsing.
 
 | Case | Verdict |
 |---|---|
 | either side has n < minN | `insufficient-data`, naming the graded runs still needed on each side |
-| cheaper challenger | `propose` iff its Wilson LB ≥ incumbent rate − cheaperTolerance, else `keep` |
-| pricier challenger | `propose` iff its rate − incumbent rate ≥ pricierMargin, else `keep` |
+| cheaper challenger, rejected | `rejected` |
+| cheaper challenger, not rejected | `propose` iff its Wilson LB ≥ incumbent rate − cheaperTolerance, else `keep` |
+| pricier challenger, rejected | `rejected` |
+| pricier challenger, not rejected | `propose` iff its rate − incumbent rate ≥ pricierMargin, else `keep` |
 | no family token / same cost | `unranked`, never proposed |
 
 One proposal per level × vendor: a qualifying pricier challenger first (quality; highest rate,
@@ -1025,6 +1151,9 @@ sampling rate per **level**, from the same groups and proposals:
 | `none` | no challenger configured at the level (`tuning.challengers`; quick today) | 0 |
 | `maintain` | for every vendor with a `levels` entry or configured challengers there: the incumbent and every configured challenger have n ≥ minN, each Wilson 95% interval is ≤ `maintain.maxWidth` wide, and no proposal is pending for that level × vendor | `maintain.rate` |
 | `explore` | otherwise; `reason` names every gap (`codex gpt-6-sol@medium n=3 < 8`, a CI width, a pending proposal) | `sampleRate` |
+
+A `rejected` challenger (`tuning.rejected`) is no proposal, so it is no gap either — it does not
+by itself force `explore`.
 
 `--json`: `{asOf (the tiers file's), params, levels: {<level>: {state, rate, reason}}, rates:
 {<level>: rate}}`; the orchestrator passes `.rates` verbatim as triage-exec `args.bakeoff.rates`.
@@ -1071,6 +1200,12 @@ cache write, output — per agent label, per model, and per parity candidate: ag
 fold onto `<label>`, with a `-r<N>` repetition suffix removed; everything else (loaders,
 graders, judges, cleanup) is `overhead`. Claude Code repeats a message id across content-block
 lines with a growing usage object, so each id counts once with the max of each field.
+
+Prints one JSON object: `{agents, skippedLines, total:{input, cacheRead, cacheWrite, output,
+messages}, byModel, byLabel, byCandidate, overhead}`. `skippedLines` counts transcript lines
+that are not JSON, or not a JSON object — a partial write from a still-running agent, or a
+corrupt line mid-file — and is never fatal; it does not count against `agents`, and a
+transcript with only skipped lines still counts as having no usage.
 
 This is a different cut from `triage-usage.sh`, which keeps the per-tier PEAK-context proxy;
 the per-label/per-candidate attribution lives only here. External spend is vendor-side and is

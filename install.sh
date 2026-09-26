@@ -9,6 +9,12 @@
 #                 tiers file as scripts/triage-tiers.json, triage.md).
 #                 Skips CLAUDE.md, settings.json, and permissions entirely.
 #                 This is the "make sync" primitive.
+#   --settings-status  read-only: print one "settings migration pending" line per
+#                 settings.json change a bare install would still make that `make sync`
+#                 never does (drift.sh calls this); prints nothing when there is none.
+#
+# A locally modified installed file is backed up before it is overwritten, to
+# <file>.bak-triage-<UTC timestamp>; the newest BACKUP_KEEP (5) per file are kept.
 #
 # Files listed in .driftignore (deliberate personal forks, e.g. triage.md) are
 # skipped rather than clobbered in EVERY mode — bare install, --files-only and
@@ -20,9 +26,9 @@
 # not this layer's to own — pick your orchestrator model yourself. It writes only
 # what the layer actually needs to function (subagent default model, subagent
 # prompt-cache TTL, the Agent(...) permission rules), and only when unset — the one
-# exception being a subagent model still at a PREVIOUS installer default, which is
-# upgraded (see LEGACY_SUBAGENT_MODELS).
-# The two flags compose: --dry-run --files-only plans only the file ops.
+# exception being a subagent model this installer owns (the env ownership marker, or
+# for pre-marker installs a LEGACY_SUBAGENT_MODELS value), which is upgraded.
+# --dry-run and --files-only compose: --dry-run --files-only plans only the file ops.
 set -euo pipefail
 
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
@@ -30,16 +36,26 @@ REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 SETTINGS="$CLAUDE_DIR/settings.json"
 DRIFTIGNORE="$REPO_DIR/.driftignore"
 
-# The two settings.json keys this layer owns. Both are written ONLY when unset, and
-# uninstall removes them ONLY when they still equal these values.
-SUBAGENT_MODEL="claude-opus-5-5"
+TIERS_FILE="$REPO_DIR/config/tiers.json"
+
+# The two settings.json keys this layer owns. Both are written ONLY when unset (or,
+# for the subagent model, when this installer owns the current value — see below).
+# SUBAGENT_MODEL is not a literal here: it is the deep level's Claude model in
+# config/tiers.json (the single owner of every model id), read after the jq check.
+SUBAGENT_MODEL=""
 SUBAGENT_CACHE_TTL="1h"
-# Every PREVIOUS value of SUBAGENT_MODEL this installer shipped (space-separated).
-# A settings.json still holding one of these was written by us, not chosen by you,
-# so install upgrades it to SUBAGENT_MODEL and uninstall removes it. Append the old
-# default here whenever SUBAGENT_MODEL changes. uninstall.sh keeps an identical copy
-# (test/roundtrip.sh case N asserts the two match).
-LEGACY_SUBAGENT_MODELS="claude-opus-5"
+# Ownership of env.CLAUDE_CODE_SUBAGENT_MODEL is RECORDED, not inferred from its value:
+# whenever install writes that key it also writes this env key holding the same value.
+# Install upgrades, and uninstall removes, the subagent model only while it still
+# equals this marker; a value you set yourself (even one equal to our default) has no
+# marker and is never touched.
+OWNER_MARK="TRIAGE_LAYER_OWNS_SUBAGENT_MODEL"
+# Migration for installs made before the marker existed (<= Wave 15): every value an
+# unmarked installer wrote. Install upgrades such a value (and marks it); uninstall does
+# NOT remove it without a marker (it says so instead). Frozen: new installs mark.
+LEGACY_SUBAGENT_MODELS="claude-opus-5 claude-opus-5-5"
+BACKUP_KEEP=5
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 
 # Single owner of the legacy-default decision: is $1 a previous installer default?
 is_legacy_subagent_model() {
@@ -52,13 +68,17 @@ is_legacy_subagent_model() {
 
 DRY_RUN=0
 FILES_ONLY=0
+SETTINGS_STATUS=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
     --files-only) FILES_ONLY=1 ;;
-    *) echo "ERROR: unknown argument: $arg (supported: --dry-run, --files-only)" >&2; exit 1 ;;
+    --settings-status) SETTINGS_STATUS=1 ;;
+    *) echo "ERROR: unknown argument: $arg (supported: --dry-run, --files-only, --settings-status)" >&2; exit 1 ;;
   esac
 done
+
+die() { echo "ERROR: $*" >&2; exit 1; }
 
 tmp=""
 trap 'rm -f "${tmp:-}"' EXIT
@@ -70,6 +90,48 @@ command -v jq >/dev/null || { echo "ERROR: jq is required (brew install jq)" >&2
 # in --dry-run/--files-only: these are read-only checks that should still fail loudly.
 if [ -f "$SETTINGS" ]; then
   jq empty "$SETTINGS" 2>/dev/null || { echo "ERROR: $SETTINGS is not valid JSON — fix it before installing (nothing was changed)." >&2; exit 1; }
+fi
+# Valid JSON of the wrong shape (a top-level array, a string `env`, ...) would make a
+# later jq filter fail halfway through the install: refuse it here instead.
+if [ -f "$SETTINGS" ]; then
+  jq -e 'type == "object"
+    and ((.env // {}) | type == "object")
+    and ((.permissions // {}) | type == "object")
+    and ((.permissions.allow // []) | type == "array")
+    and ((.permissions.ask // []) | type == "array")' "$SETTINGS" >/dev/null 2>&1 \
+    || die "$SETTINGS has an unexpected shape (want an object whose env/permissions are objects and permissions.allow/ask arrays) — fix it before installing (nothing was changed)."
+fi
+
+# The subagent default model = the deep level's Claude model (config/tiers.json).
+SUBAGENT_MODEL="$(jq -r '.levels.deep.claude.model // empty | strings' "$TIERS_FILE" 2>/dev/null || true)"
+case "$SUBAGENT_MODEL" in
+  claude-*) ;;
+  *) die "$TIERS_FILE has no Claude model id at .levels.deep.claude.model (got '${SUBAGENT_MODEL}') — nothing was changed." ;;
+esac
+
+# Single owner of the subagent-model decision. $1 = current value, $2 = the ownership
+# marker (both "null" when unset). Prints: set | current | upgrade-owned |
+# upgrade-legacy | user.
+sub_model_action() {
+  if [ "$1" = "null" ]; then echo "set"
+  elif [ "$1" = "$SUBAGENT_MODEL" ]; then echo "current"
+  elif [ "$1" = "$2" ]; then echo "upgrade-owned"
+  elif is_legacy_subagent_model "$1"; then echo "upgrade-legacy"
+  else echo "user"
+  fi
+}
+
+# --settings-status: read-only, for drift.sh. Only the settings changes `make sync`
+# (--files-only) never makes; nothing to report without a settings.json.
+if [ "$SETTINGS_STATUS" -eq 1 ]; then
+  [ -f "$SETTINGS" ] || exit 0
+  cur_sub=$(jq -r '.env.CLAUDE_CODE_SUBAGENT_MODEL // "null"' "$SETTINGS")
+  cur_mark=$(jq -r --arg k "$OWNER_MARK" '.env[$k] // "null"' "$SETTINGS")
+  case "$(sub_model_action "$cur_sub" "$cur_mark")" in
+    set) echo "settings migration pending: env.CLAUDE_CODE_SUBAGENT_MODEL is unset — run ./install.sh to set it to $SUBAGENT_MODEL (make sync never edits settings.json)" ;;
+    upgrade-owned|upgrade-legacy) echo "settings migration pending: env.CLAUDE_CODE_SUBAGENT_MODEL is $cur_sub, an earlier installer default — run ./install.sh to upgrade it to $SUBAGENT_MODEL (make sync never edits settings.json)" ;;
+  esac
+  exit 0
 fi
 
 # --- version-compat warning (runs in every mode; NEVER fails the install) ---
@@ -132,9 +194,12 @@ check_force_override
 
 # Files where a live ~/.claude fork is EXPECTED (config-as-data, shared with drift.sh) —
 # every mode skips an existing copy instead of clobbering a deliberate personal fork.
+# Entries are normalized (CR, surrounding whitespace stripped), so a CRLF or a trailing
+# space in .driftignore cannot silently switch fork protection off.
 is_ignored() { # $1 = repo-relative path
   [ -f "$DRIFTIGNORE" ] || return 1
-  grep -vE '^\s*#|^\s*$' "$DRIFTIGNORE" | grep -qxF "$1"
+  tr -d '\r' < "$DRIFTIGNORE" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+    | grep -v '^#' | grep -qxF "$1"
 }
 
 # create | overwrite | unchanged — read-only, used by the --dry-run plan.
@@ -148,13 +213,50 @@ plan_file_status() { # $1 = src, $2 = dst
   fi
 }
 
+# Single owner of backups. A backup is <file>.bak-triage-<UTC stamp>[-N] (one stamp
+# per run, -N only on a same-second clash), so a later sync never overwrites an
+# earlier backup; only the newest BACKUP_KEEP per file are kept.
+backup_path() { # $1 = file -> prints a fresh backup path
+  local b i
+  b="$1.bak-triage-$STAMP"
+  i=1
+  while [ -e "$b" ] || [ -L "$b" ]; do b="$1.bak-triage-$STAMP-$i"; i=$((i + 1)); done
+  printf '%s' "$b"
+}
+prune_backups() { # $1 = file whose timestamped backups to prune to the newest BACKUP_KEEP
+  local n b
+  n=0
+  for b in "$1".bak-triage-[0-9]*; do
+    if [ -e "$b" ]; then n=$((n + 1)); fi
+  done
+  for b in "$1".bak-triage-[0-9]*; do
+    [ "$n" -gt "$BACKUP_KEEP" ] || break
+    if [ -e "$b" ]; then rm -f "$b"; n=$((n - 1)); fi
+  done
+}
+backup_copy() { # $1 = file -> copy saved to a fresh backup path (printed)
+  local b
+  b=$(backup_path "$1")
+  cp -p "$1" "$b"
+  prune_backups "$1"
+  printf '%s' "$b"
+}
+backup_move() { # $1 = file -> moved to a fresh backup path (printed)
+  local b
+  b=$(backup_path "$1")
+  mv "$1" "$b"
+  prune_backups "$1"
+  printf '%s' "$b"
+}
+
 # Copy a repo file into place, backing up a locally-modified target first so a
 # re-run never silently clobbers edits you made under ~/.claude (e.g. a tuned
 # statusline threshold or a hand-edited triage.md).
 copy_file() { # $1 = src, $2 = dst
+  local b
   if [ -f "$2" ] && ! cmp -s "$1" "$2"; then
-    cp "$2" "$2.bak-triage"
-    echo "  note: $2 differed from the repo — saved your copy to $2.bak-triage"
+    b=$(backup_copy "$2")
+    echo "  note: $2 differed from the repo — saved your copy to $b"
   fi
   cp "$1" "$2"
 }
@@ -184,7 +286,7 @@ install_file() {
     status=$(plan_file_status "$REPO_DIR/$rel" "$dst")
     case "$status" in
       create) echo "  create: $dst" ;;
-      overwrite) echo "  overwrite (differs from repo — backs up to $dst.bak-triage first): $dst" ;;
+      overwrite) echo "  overwrite (differs from repo — backs up to $dst.bak-triage-<timestamp> first): $dst" ;;
       unchanged) echo "  unchanged: $dst" ;;
     esac
     return
@@ -241,33 +343,48 @@ retire_triage_run() {
 # --- retiring scripts/agy-run.sh (renamed to ext-run.sh in Wave 12) ----------
 # ext-run.sh is the single owner of every external-CLI call now. A leftover
 # agy-run.sh would be a second, stale owner with hard-coded model ids and none of
-# the per-vendor deny rules, so it is removed (the layer shipped it; it was never
-# a place for local edits).
-retire_agy_run() {
-  old="$CLAUDE_DIR/scripts/agy-run.sh"
+# the per-vendor deny rules. Checksums: every agy-run.sh revision this repo shipped.
+SHIPPED_AGY_RUN_SHA256="
+4a8c43d68632aebac6a6c632fc6937b23160b45afdb4155a64763048191ef204
+a5156feb2d68506c788e091c2c4560681d688decabfc504e96ad3ccc9f8a79a2
+"
+# --- retiring agents/triage-overflow.md (renamed to triage-external in Wave 12) ---
+# A leftover triage-overflow.md would be an eighth, stale agent that knows only agy
+# and none of the VENDOR/LEVEL/EFFORT header. Its Agent(triage-overflow) allow rule
+# goes in step 3b. Checksums: every triage-overflow.md revision this repo shipped.
+SHIPPED_OVERFLOW_AGENT_SHA256="
+107c132fba26ddbd5da87e215fb2f49c51f273108c73fe80f02c9e26d3d84bdb
+22f23167c50bceb245e02369f717b931aa90d0bcb2973dd6b6b1c2160275da8f
+"
+
+# Single owner of retiring a renamed file. Bytes this repo shipped are removed;
+# anything else is yours and is moved to a timestamped backup (out of the way of the
+# agent/script loaders, never deleted). $1 = installed path, $2 = checksum list,
+# $3 = what replaced it.
+retire_renamed() {
+  local old sums why sha b
+  old="$1"; sums="$2"; why="$3"
   [ -f "$old" ] || return 0
-  if [ "$DRY_RUN" -eq 1 ]; then
-    echo "  remove (renamed to scripts/ext-run.sh): $old"
+  sha=$(file_sha256 "$old")
+  if [ -n "$sha" ] && printf '%s' "$sums" | grep -qxF "$sha"; then
+    if [ "$DRY_RUN" -eq 1 ]; then
+      echo "  remove (unmodified; $why): $old"
+    else
+      rm -f "$old"
+      echo "  removed legacy file: $old ($why)"
+    fi
+  elif [ "$DRY_RUN" -eq 1 ]; then
+    echo "  move aside (modified or unhashable; $why): $old -> $old.bak-triage-<timestamp>"
   else
-    rm -f "$old"
-    echo "  removed legacy script: $old (renamed to scripts/ext-run.sh)"
+    b=$(backup_move "$old")
+    echo "  note: $old is modified (or unhashable) — moved to $b ($why)"
   fi
 }
-
-# --- retiring agents/triage-overflow.md (renamed to triage-external in Wave 12) ---
-# triage-external is the external build worker for every vendor now. A leftover
-# triage-overflow.md would be an eighth, stale agent that knows only agy and none of
-# the VENDOR/LEVEL/EFFORT header, so it is removed (the layer shipped it; it was never
-# a place for local edits). Its Agent(triage-overflow) allow rule goes in step 3b.
+retire_agy_run() {
+  retire_renamed "$CLAUDE_DIR/scripts/agy-run.sh" "$SHIPPED_AGY_RUN_SHA256" "renamed to scripts/ext-run.sh"
+}
 retire_overflow_agent() {
-  old="$CLAUDE_DIR/agents/triage-overflow.md"
-  [ -f "$old" ] || return 0
-  if [ "$DRY_RUN" -eq 1 ]; then
-    echo "  remove (renamed to agents/triage-external.md): $old"
-  else
-    rm -f "$old"
-    echo "  removed legacy agent: $old (renamed to agents/triage-external.md)"
-  fi
+  retire_renamed "$CLAUDE_DIR/agents/triage-overflow.md" "$SHIPPED_OVERFLOW_AGENT_SHA256" "renamed to agents/triage-external.md"
 }
 
 # =============================================================================
@@ -351,13 +468,13 @@ if [ "$DRY_RUN" -eq 1 ]; then
   echo "settings.json ($SETTINGS):"
   echo "  model / effortLevel / statusLine: NOT touched (yours to set)"
   cur_sub=$(printf '%s' "$CUR_SETTINGS_JSON" | jq -r '.env.CLAUDE_CODE_SUBAGENT_MODEL // "null"')
-  if [ "$cur_sub" = "null" ]; then
-    echo "  env.CLAUDE_CODE_SUBAGENT_MODEL: would set -> $SUBAGENT_MODEL"
-  elif is_legacy_subagent_model "$cur_sub"; then
-    echo "  env.CLAUDE_CODE_SUBAGENT_MODEL: would upgrade $cur_sub -> $SUBAGENT_MODEL (previous installer default)"
-  else
-    echo "  env.CLAUDE_CODE_SUBAGENT_MODEL: already set to $cur_sub — left as is"
-  fi
+  cur_mark=$(printf '%s' "$CUR_SETTINGS_JSON" | jq -r --arg k "$OWNER_MARK" '.env[$k] // "null"')
+  case "$(sub_model_action "$cur_sub" "$cur_mark")" in
+    set) echo "  env.CLAUDE_CODE_SUBAGENT_MODEL: would set -> $SUBAGENT_MODEL (and env.$OWNER_MARK, the ownership marker)" ;;
+    upgrade-owned) echo "  env.CLAUDE_CODE_SUBAGENT_MODEL: would upgrade $cur_sub -> $SUBAGENT_MODEL (set by this installer)" ;;
+    upgrade-legacy) echo "  env.CLAUDE_CODE_SUBAGENT_MODEL: would upgrade $cur_sub -> $SUBAGENT_MODEL (previous installer default)" ;;
+    *) echo "  env.CLAUDE_CODE_SUBAGENT_MODEL: already set to $cur_sub — left as is" ;;
+  esac
   cur_ttl=$(printf '%s' "$CUR_SETTINGS_JSON" | jq -r '.subagentPromptCacheTtl // "null"')
   if [ "$cur_ttl" = "null" ]; then
     echo "  subagentPromptCacheTtl: would set -> $SUBAGENT_CACHE_TTL"
@@ -389,29 +506,37 @@ if [ "$DRY_RUN" -eq 1 ]; then
 fi
 
 # 3. Merge the two settings keys this layer owns (settings.json was already validated
-#    as JSON upfront, above). Both are set ONLY when absent, so an existing choice of
-#    yours always wins and a re-run never overwrites it:
+#    as JSON of the right shape upfront, above). Both are set ONLY when absent, so an
+#    existing choice of yours always wins and a re-run never overwrites it:
 #      env.CLAUDE_CODE_SUBAGENT_MODEL — the default model for any subagent spawn that
-#        does not pin one. This is what keeps an un-pinned Agent()/workflow agent()
-#        call off the (expensive) orchestrator tier. One exception: a value equal to
-#        a PREVIOUS installer default (LEGACY_SUBAGENT_MODELS) was ours, not yours,
-#        and is upgraded to SUBAGENT_MODEL.
+#        does not pin one (config/tiers.json's deep Claude model). This is what keeps
+#        an un-pinned Agent()/workflow agent() call off the (expensive) orchestrator
+#        tier. Whenever install writes it, it writes env.$OWNER_MARK = the same value;
+#        a value still equal to that marker (or, for installs made before the marker,
+#        to a LEGACY_SUBAGENT_MODELS entry) is ours and is upgraded. A marker that no
+#        longer matches (you repointed the model) is dropped: the value is yours now.
 #      subagentPromptCacheTtl — extended prompt-cache lifetime for subagents, so a
 #        fan-out of workers sharing a brief re-reads a warm cache.
 #    No snapshot is taken: the only value ever overwritten is one this installer
 #    wrote itself. model/effortLevel/statusLine are never written at all.
+#    Any jq or write failure aborts with rc 1 — never "Installed." over a skipped merge.
 [ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
 cur_sub=$(jq -r '.env.CLAUDE_CODE_SUBAGENT_MODEL // "null"' "$SETTINGS")
+cur_mark=$(jq -r --arg k "$OWNER_MARK" '.env[$k] // "null"' "$SETTINGS")
+sub_action=$(sub_model_action "$cur_sub" "$cur_mark")
 upgrade_sub=0
-if is_legacy_subagent_model "$cur_sub"; then upgrade_sub=1; fi
+case "$sub_action" in upgrade-owned|upgrade-legacy) upgrade_sub=1 ;; esac
 tmp=$(mktemp)
-jq --arg m "$SUBAGENT_MODEL" --arg ttl "$SUBAGENT_CACHE_TTL" --arg up "$upgrade_sub" '
-  (if (.env.CLAUDE_CODE_SUBAGENT_MODEL // null) == null or $up == "1" then .env.CLAUDE_CODE_SUBAGENT_MODEL = $m else . end)
+jq --arg m "$SUBAGENT_MODEL" --arg ttl "$SUBAGENT_CACHE_TTL" --arg up "$upgrade_sub" --arg k "$OWNER_MARK" '
+  (if (.env.CLAUDE_CODE_SUBAGENT_MODEL // null) == null or $up == "1" then .env.CLAUDE_CODE_SUBAGENT_MODEL = $m | .env[$k] = $m else . end)
+  | (if (.env[$k] // null) != null and .env[$k] != .env.CLAUDE_CODE_SUBAGENT_MODEL then del(.env[$k]) else . end)
   | (if (.subagentPromptCacheTtl // null) == null then .subagentPromptCacheTtl = $ttl else . end)
-' "$SETTINGS" > "$tmp" && apply_settings "$tmp"
-if [ "$upgrade_sub" -eq 1 ]; then
-  echo "env.CLAUDE_CODE_SUBAGENT_MODEL: upgraded $cur_sub -> $SUBAGENT_MODEL (previous installer default)"
-fi
+' "$SETTINGS" > "$tmp" || die "settings merge (jq) failed — $SETTINGS left unchanged."
+apply_settings "$tmp" || die "could not write $SETTINGS."
+case "$sub_action" in
+  upgrade-owned) echo "env.CLAUDE_CODE_SUBAGENT_MODEL: upgraded $cur_sub -> $SUBAGENT_MODEL (set by this installer)" ;;
+  upgrade-legacy) echo "env.CLAUDE_CODE_SUBAGENT_MODEL: upgraded $cur_sub -> $SUBAGENT_MODEL (previous installer default)" ;;
+esac
 
 # 3b. Harness-level routing rules (idempotent; appends only what's missing and
 #     preserves existing rules + order). Enforces the rubric at the permission layer:
@@ -430,7 +555,8 @@ jq '
   | ["Agent(triage-fable-architect)"] as $fable
   | .permissions.allow = (((.permissions.allow // []) - $legacy_workers) + ($workers - (.permissions.allow // [])))
   | .permissions.ask   = ((.permissions.ask   // []) + ($fable   - (.permissions.ask   // [])))
-' "$SETTINGS" > "$tmp" && apply_settings "$tmp"
+' "$SETTINGS" > "$tmp" || die "permissions merge (jq) failed — the settings keys above were applied, the Agent(...) rules were not."
+apply_settings "$tmp" || die "could not write $SETTINGS."
 
 # 4. Billing-safety warning
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then

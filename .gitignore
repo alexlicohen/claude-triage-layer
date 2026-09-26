@@ -5,3 +5,7 @@
 
 # Local project memory (per-clone durable context) — never shipped, never installed.
 PROJECT_MEMORY*.md
+
+# Claude Code project agent memory (per-clone; private notes). Versioned backup lives in the
+# private dot-agents repo (agent-memory/claude-triage-layer/), not in this public repo.
+.claude/agent-memory/

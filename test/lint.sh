@@ -20,6 +20,9 @@
 #      config/tiers.json levels.*.claude.agent, key for key.
 #   6b. triage-compare.js's DEFAULT_ADJUDICATORS (review bake-off) equal
 #      config/tiers.json levels.<level>.<vendor> model/effort.
+#   6c. Danger floor: config/tiers.json levels.deep and levels.top name, for every
+#      vendor, a model of a family triage-exec.js's DANGER_FAMILIES allows (danger
+#      work is lifted to >= deep, so planned danger routing always meets the floor).
 #
 # Fail-loud: accumulates all failures, exits non-zero if any hard failure
 # occurred (shellcheck's absence is NOT a hard failure — it's an explicit,
@@ -228,6 +231,33 @@ if command -v node >/dev/null 2>&1; then
   else
     fail "review-adjudicators: triage-compare.js DEFAULT_ADJUDICATORS differ from config/tiers.json levels"
     printf '%s\n' "$ADJ_OUT" >&2
+  fi
+
+  # 6c. The danger floor (policy: DANGER_FAMILIES in triage-exec.js) against the
+  # data: every vendor's deep and top model must be a floor family — a whole token
+  # of the id, split on - . _ : + @ (the workflow's own notion).
+  if DF_OUT=$(node -e '
+    const fs = require("fs");
+    const src = fs.readFileSync("workflows/triage-exec.js", "utf8");
+    const m = src.match(/^const DANGER_FAMILIES = (\{[^\n]*\})$/m);
+    if (!m) { console.error("no single-line `const DANGER_FAMILIES = {...}` in workflows/triage-exec.js"); process.exit(1); }
+    const fam = Function(`"use strict"; return (${m[1]})`)();
+    const tiers = JSON.parse(fs.readFileSync("config/tiers.json", "utf8"));
+    const bad = [];
+    for (const level of ["deep", "top"]) {
+      const byV = (tiers.levels || {})[level];
+      if (!byV || typeof byV !== "object") { bad.push(`levels.${level} missing`); continue; }
+      for (const [v, e] of Object.entries(byV)) {
+        const toks = String((e && e.model) || "").toLowerCase().split(/[-._:+@]/).filter(Boolean);
+        if (!(fam[v] || []).some(f => toks.includes(f))) bad.push(`levels.${level}.${v}.model ${e && e.model} is not a danger-floor family (${(fam[v] || []).join("|") || "none for this vendor"})`);
+      }
+    }
+    if (bad.length) { console.error(bad.join("\n")); process.exit(1); }
+  ' 2>&1); then
+    ok "danger-floor: config/tiers.json levels.deep/top models are DANGER_FAMILIES families for every vendor"
+  else
+    fail "danger-floor: config/tiers.json levels.deep/top name a model below triage-exec.js DANGER_FAMILIES"
+    printf '%s\n' "$DF_OUT" >&2
   fi
 
   # Workflow-DSL constraints (the runtime throws on these at run time, so catch them

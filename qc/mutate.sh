@@ -79,7 +79,29 @@ done
 # 87-90 cover model-version tracking (Wave 15) in parity-report.sh: grouping by
 # the concrete modelId, the inferred-by-date boundary (from <= date), family-based
 # cheapness (a new codex version still ranks) and backfill-modelid's idempotence.
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90"
+# 21 was re-anchored in Wave 16C: uninstall no longer keeps a legacy-value list; it
+# removes the subagent model only while it equals the install-written ownership marker.
+# 130-149 cover install/uninstall safety (Wave 16C): uninstall backups (fork, memory,
+# the leftover set), timestamped + pruned install backups, the retire checksum guard,
+# the tiers.json-derived subagent default and its ownership marker, jq failures and
+# settings shape, .driftignore normalization (install + drift), tiers-sync's --root
+# and unclosed-frontmatter guards, drift's settings-migration warning and file list.
+# 110-129 cover parity ledger integrity (Wave 16B): per-observation dedupe, the
+# run-id collision refusal, UTC offsets, the one ledger lock and its stale takeover,
+# backfill through a symlink, current-id challengers only, tuning.rejected, reps
+# collapsed per (run, task), parity-cost skipping a corrupt line, review revisions
+# (latest only, superseded status, the revision append), modelFrom through
+# ingest-parity and triage-parity, the ignored/refs source fingerprint and its
+# guard, and triage-tiers.sh's aliasHistory and challengerMix-sum checks.
+# 91-109 cover Wave 16A (bake-off / grading correctness, danger floor): an empty
+# diff never the passing choice, no out-of-scope inline apply, an unknown leak state
+# withheld, the same-repo guard, a failed apply never run in place, effort on a level
+# climb, an external rejection's Claude fallback, the weekly-unknown pause, the
+# danger family floor; per-check bash -c, the PATCHCHECK sha cross-check, the
+# model/effort mismatch, the extend scope check; the locked build worktree; the
+# **/ hard-exclude variants and the fail-closed deny carry-over; apply
+# --require-clean, the measured treeModified and the ignored-path fingerprint.
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -132,6 +154,16 @@ mut_file() {
     29) echo "workflows/triage-exec.js" ;;
     75|76|77|78|79|80|81|85|86) echo "workflows/triage-exec.js" ;;
     82|83|84|87|88|89|90) echo "scripts/parity-report.sh" ;;
+    110|111|112|113|114|115|116|117|118|120|121|122|123) echo "scripts/parity-report.sh" ;;
+    119) echo "scripts/parity-cost.sh" ;;
+    124|127) echo "workflows/triage-parity.js" ;;
+    125|126) echo "scripts/parity-suite.sh" ;;
+    128|129) echo "scripts/triage-tiers.sh" ;;
+    91|92|93|94|95|96|97|98|99) echo "workflows/triage-exec.js" ;;
+    100|101|102|103) echo "workflows/triage-compare.js" ;;
+    104) echo "scripts/ext-run.sh" ;;
+    105|106) echo "scripts/review-stage.sh" ;;
+    107|108|109) echo "scripts/stage-worktree.sh" ;;
     31) echo "workflows/triage-compare.js" ;;
     32) echo "scripts/patch-check.sh" ;;
     33) echo "install.sh" ;;
@@ -162,6 +194,26 @@ mut_file() {
     67) echo "scripts/review-stage.sh" ;;
     68|69|72|73|74) echo "workflows/triage-compare.js" ;;
     70|71) echo "scripts/ext-run.sh" ;;
+    130) echo "uninstall.sh" ;;
+    131) echo "uninstall.sh" ;;
+    132) echo "install.sh" ;;
+    133) echo "install.sh" ;;
+    134) echo "install.sh" ;;
+    135) echo "install.sh" ;;
+    136) echo "install.sh" ;;
+    137) echo "install.sh" ;;
+    138) echo "install.sh" ;;
+    139) echo "install.sh" ;;
+    140) echo "install.sh" ;;
+    141) echo "uninstall.sh" ;;
+    142) echo "install.sh" ;;
+    143) echo "scripts/tiers-sync.sh" ;;
+    144) echo "scripts/tiers-sync.sh" ;;
+    145) echo "install.sh" ;;
+    146) echo "drift.sh" ;;
+    147) echo "drift.sh" ;;
+    148) echo "uninstall.sh" ;;
+    149) echo "drift.sh" ;;
     *) echo "" ;;
   esac
 }
@@ -186,7 +238,7 @@ mut_desc() {
     18) echo "install.sh: neuter check_force_override (the CLAUDE_CODE_SUBAGENT_MODEL_FORCE warning never prints)" ;;
     19) echo "install.sh: neuter is_legacy_subagent_model (a previous installer default is never upgraded, dry-run never says so)" ;;
     20) echo "install.sh: the settings merge reverts to set-only-when-unset (dry-run promises an upgrade the write never makes)" ;;
-    21) echo "uninstall.sh: drop LEGACY_SUBAGENT_MODELS from the removal set (an old install's subagent model is left behind)" ;;
+    21) echo "uninstall.sh: the subagent model is removed whenever the ownership marker exists, even after the user repointed it" ;;
     22) echo "triage-exec.js: remove the deep@max rung (an ESCALATE on a below-max deep attempt goes straight to Fable)" ;;
     23) echo "triage-exec.js: runFable() always takes the deep@max fallback (Fable unavailable after a failed deep@max re-runs it)" ;;
     24) echo "ext-run.sh: a level/mode missing from tiers.json falls back to a default model instead of refusing" ;;
@@ -252,7 +304,66 @@ mut_desc() {
     88) echo "parity-report.sh: the alias-history boundary is exclusive (from < date), so a line on an entry's own from date resolves to the previous version" ;;
     89) echo "parity-report.sh: the codex cheapness order is back to version-bound ids (gpt-6-*), so any other codex version is unranked" ;;
     90) echo "parity-report.sh: backfill-modelid refills rows that already have a modelId (an observed id is overwritten; a second run rewrites the ledger)" ;;
+    130) echo "uninstall.sh: an installed file is deleted even when it differs from the repo copy (a triage.md fork is lost)" ;;
+    131) echo "uninstall.sh: per-agent memory is rm -rf'd instead of moved to the backup dir" ;;
+    132) echo "install.sh: backups go to one fixed slot again (the next sync overwrites the previous backup)" ;;
+    133) echo "install.sh: timestamped backups are never pruned (unbounded .bak-triage-* growth)" ;;
+    134) echo "install.sh: a retired file with unknown bytes is deleted (the shipped-checksum guard is bypassed)" ;;
+    135) echo "install.sh: the subagent default is a hard-coded id again, not config/tiers.json levels.deep.claude.model" ;;
+    136) echo "install.sh: the subagent model is written without its ownership marker (uninstall then never removes it)" ;;
+    137) echo "install.sh: a value still equal to its ownership marker is treated as the user's (never upgraded)" ;;
+    138) echo "install.sh: a stale ownership marker (model repointed by the user) is kept" ;;
+    139) echo "install.sh: an unmarked value equal to the default is adopted as ours (value equality as ownership, codex#20)" ;;
+    140) echo "install.sh: a failing settings-merge jq is swallowed and install still prints Installed. with rc 0" ;;
+    141) echo "uninstall.sh: a failing settings-rewrite jq is swallowed (files removed, settings.json emptied, rc 0)" ;;
+    142) echo "install.sh: a settings.json of the wrong shape is not refused upfront (half-applied install)" ;;
+    143) echo "tiers-sync.sh: --root with no value loops forever" ;;
+    144) echo "tiers-sync.sh: an unclosed frontmatter is not detected (body model: lines rewritten)" ;;
+    145) echo "install.sh: .driftignore entries are not normalized (CRLF/trailing space disables fork protection)" ;;
+    146) echo "drift.sh: .driftignore entries are not normalized (a CRLF entry reports the fork as FORKED)" ;;
+    147) echo "drift.sh: the settings-migration check is dropped (a legacy subagent model goes unreported)" ;;
+    148) echo "uninstall.sh: scripts/parity-report.sh dropped from the removal list (a file left behind)" ;;
+    149) echo "drift.sh: scripts/triage-stats.sh dropped from the checked list (an installed file drift never sees)" ;;
+    91) echo "triage-exec.js (bake-off): an EMPTY diff counts as the passing choice (a no-op 'pass' beats a challenger's real patch)" ;;
+    92) echo "triage-exec.js (bake-off): a patch that changes paths outside the subtask's files is inline-applied" ;;
+    93) echo "triage-exec.js (bake-off): an unknown leak state runs the subtask in place on an unchecked tree" ;;
+    94) echo "triage-exec.js (bake-off): args.bakeoff.repo is never compared with the session repo (the patch lands in one tree, checks run in another)" ;;
+    95) echo "triage-exec.js (bake-off): any failed apply counts as nothing written (a 3-way that left conflict markers is run in place on)" ;;
+    96) echo "triage-exec.js: an ESCALATE level climb carries the lower rung's plan effort (builder@low -> deep@low)" ;;
+    97) echo "triage-exec.js: a rejected external spawn escapes the same-level Claude fallback (the subtask is dropped)" ;;
+    98) echo "triage-exec.js (bake-off): a missing weeklyPct samples as if usage were known to be low" ;;
+    99) echo "triage-exec.js (bake-off): the danger floor by model family is not applied to challengers (danger work graded against sonnet / codex sol)" ;;
+    100) echo "triage-compare.js: checks are joined with a bare ' && ' again (['false', 'true || true'] grades as a pass)" ;;
+    101) echo "triage-compare.js: a PATCHCHECK line graded at another sha is accepted" ;;
+    102) echo "triage-compare.js: a model/effort other than the candidate asked for (ext-run line) is graded and credited" ;;
+    103) echo "triage-compare.js (review extend): the prior snapshot's include/exclude/context/hardExclude are not checked" ;;
+    104) echo "ext-run.sh: the build worktree is not locked, so a parallel run's git worktree prune deletes it mid-run" ;;
+    105) echo "review-stage.sh: no **/ variants — '**/secrets' misses a top-level secrets/, 'a/**/b' misses a/b" ;;
+    106) echo "review-stage.sh: a missing ext-run.sh lets the snapshot go to codex (the deny carry-over fails open)" ;;
+    107) echo "stage-worktree.sh: apply --require-clean is ignored (a patch lands on top of uncommitted work)" ;;
+    108) echo "stage-worktree.sh: a failed apply write is assumed to have left the tree untouched (treeModified false)" ;;
+    109) echo "stage-worktree.sh: ignored paths are left out of the leak fingerprint (a cache/build-output write is CLEAN)" ;;
     74) echo "triage-compare.js (review): a codex reviewer/adjudicator is spawned without TIMEOUT (ext-run's 5m read default kills a large review)" ;;
+    110) echo "parity-report.sh: the per-observation dedupe is dropped (a same-content re-ingest appends every line again: double counts, no partial recovery)" ;;
+    111) echo "parity-report.sh: a run id already in the ledger with DIFFERENT content is silently skipped instead of refused" ;;
+    112) echo "parity-report.sh: utc ignores the UTC offset (a -05:00 ts is stored at the local wall time; aliases resolve on the wrong date)" ;;
+    113) echo "parity-report.sh: the ledger lock is never taken (a held lock blocks nothing; check + append race)" ;;
+    114) echo "parity-report.sh: a stale lock (its pid gone) is never taken over (every writer waits out its tries and fails)" ;;
+    115) echo "parity-report.sh: backfill-modelid renames over the symlink path, replacing a symlinked ledger with a regular file" ;;
+    116) echo "parity-report.sh: superseded / unconfigured model ids are challengers again (a proposal back to claude-opus-5)" ;;
+    117) echo "parity-report.sh: tuning.rejected is ignored (a rejected challenger is proposed, pinning its level to explore)" ;;
+    118) echo "parity-report.sh: reps are counted as independent trials (no collapse per (run, task))" ;;
+    119) echo "parity-cost.sh: a corrupt transcript line is no longer skipped and counted" ;;
+    120) echo "parity-report.sh: every review revision is counted, not only the latest of each run" ;;
+    121) echo "parity-report.sh: ingest-review records a superseded reviewer as unavailable" ;;
+    122) echo "parity-report.sh: a --resolved or extended review re-ingest gets no new revision (refused as a collision)" ;;
+    123) echo "parity-report.sh: ingest-parity drops modelFrom (a runner-reported model is ledgered pinned, not observed)" ;;
+    124) echo "triage-parity.js: build rows drop modelFrom (observed models reach the ledger as pinned)" ;;
+    125) echo "parity-suite.sh: gitignored files are counted but not stat-ed (a refreshed cache file goes unseen)" ;;
+    126) echo "parity-suite.sh: refs/heads, tags and the stash are left out of the refs hash" ;;
+    127) echo "triage-parity.js: sourceGuard compares head and tree only (ignored-file and refs changes never void a task)" ;;
+    128) echo "triage-tiers.sh: --bakeoff-json no longer validates aliasHistory (ALIAS_ERRORS not evaluated)" ;;
+    129) echo "triage-tiers.sh: the challengerMix shares-sum-to-1 check is dropped" ;;
     *) echo "" ;;
   esac
 }
@@ -266,15 +377,19 @@ mut_desc() {
 mut_suite() {
   case "$1" in
     1|2|3|4|5|6|10|12|18|19|20|21|33) echo "roundtrip" ;;
-    7|8|9|11|16|17|22|23|28|29|75|76|77|78|79|80|81|85|86) echo "scenarios" ;;
-    15|24|25|26|40|49|50|51|56|57|58|59|60|61|62|70|71) echo "extrun" ;;
-    31|34|36|37|38|47|68|69|72|73|74) echo "compare" ;;
+    130|131|132|133|134|135|136|137|138|139|140|141|142|143|144|145|146|147|148|149) echo "roundtrip" ;;
+    7|8|9|11|16|17|22|23|28|29|75|76|77|78|79|80|81|85|86|91|92|93|94|95|96|97|98|99) echo "scenarios" ;;
+    15|24|25|26|40|49|50|51|56|57|58|59|60|61|62|70|71|104) echo "extrun" ;;
+    31|34|36|37|38|47|68|69|72|73|74|100|101|102|103) echo "compare" ;;
     32|48|63|66) echo "patchcheck" ;;
-    39|55) echo "stagewt" ;;
+    39|55|107|108|109) echo "stagewt" ;;
     41|42|46|64|65) echo "parity" ;;
     44|45) echo "paritysuite" ;;
     43|52|53|54|82|83|84|87|88|89|90) echo "parityreport" ;;
-    67) echo "reviewstage" ;;
+    110|111|112|113|114|115|116|117|118|120|121|122|123|128|129) echo "parityreport" ;;
+    119|125|126) echo "paritysuite" ;;
+    124|127) echo "parity" ;;
+    67|105|106) echo "reviewstage" ;;
     *) echo "" ;;
   esac
 }
@@ -528,13 +643,13 @@ MUT20
         '  (if (.env.CLAUDE_CODE_SUBAGENT_MODEL // null) == null or $up == "1" then' 1 "$rep"
       ;;
     21)
-      # uninstall.sh: the removal set shrinks to the CURRENT default only, so an
-      # install made by an older installer leaves its subagent model behind.
+      # uninstall.sh: the removal loses its "still equals the marker" half, so a
+      # model the user repointed after install is deleted with the marker.
       cat > "$rep" <<'MUT21'
-    | [$m] as $ours_sub
+    | (if $mark != null then del(.env.CLAUDE_CODE_SUBAGENT_MODEL) else . end)
 MUT21
       mut_replace_block "$target" \
-        '    | ([$m] + ($legacy | split(" ") | map(select(length > 0)))) as $ours_sub' 1 "$rep"
+        '    | (if $mark != null and (.env.CLAUDE_CODE_SUBAGENT_MODEL // null) == $mark then' 1 "$rep"
       ;;
     22)
       # triage-exec.js: delete redoStep()'s deep@max arm. An ESCALATE on a deep
@@ -644,7 +759,7 @@ MUT37
       cat > "$rep" <<'MUT38'
 const leakInfo = { leak: false, baseMoved: false, detail: null } // MUTATED: leakcheck result ignored
 MUT38
-      mut_replace_block "$target" 'const leakInfo = leakState(gr && gr.leakcheck)' 1 "$rep"
+      mut_replace_block "$target" 'const leakInfo = leakState(gr && leakLine(gr.leakcheckLine))' 1 "$rep"
       ;;
     39)
       # stage-worktree.sh: `git add -u` stages modifications and deletions only, so
@@ -942,7 +1057,7 @@ MUT74
       cat > "$rep" <<'MUT75'
 const bakeoffPaused = false // MUTATED: weekly pause ignored
 MUT75
-      mut_replace_block "$target" 'const bakeoffPaused = !!bo && bo.weeklyPct != null && bo.weeklyPct >= bo.tuning.pauseAtWeeklyPct' 1 "$rep"
+      mut_replace_block "$target" 'const bakeoffPaused = !!bo && (weeklyUnknown || bo.weeklyPct >= bo.tuning.pauseAtWeeklyPct)' 1 "$rep"
       ;;
     76)
       # triage-exec.js: bakeoffPick() loses its sample threshold.
@@ -956,7 +1071,7 @@ MUT76
       cat > "$rep" <<'MUT77'
   // MUTATED: challenger fallback dropped
 MUT77
-      mut_replace_block "$target" "  if (ch.status === 'pass') return { apply: 'challenger', cand: ch, planned: p }" 1 "$rep"
+      mut_replace_block "$target" "  if (ch.status === 'pass' && realDiff(ch)) return { apply: 'challenger', cand: ch, planned: p }" 1 "$rep"
       ;;
     78)
       # triage-exec.js: runBakeoff() no longer treats leak:true as an abort.
@@ -975,9 +1090,9 @@ MUT79
     80)
       # triage-exec.js: bakeoffPick()'s challenger pool drops the codex danger floor.
       cat > "$rep" <<'MUT80'
-      true) // MUTATED: danger floor on challengers dropped
+      true && // MUTATED: danger floor on challengers dropped
 MUT80
-      mut_replace_block "$target" "      !(st.danger && v === 'codex' && !meetsCodexDangerFloor(st.level, c.effort)))" 1 "$rep"
+      mut_replace_block "$target" "      !(st.danger && v === 'codex' && !meetsCodexDangerFloor(st.level, c.effort)) &&" 1 "$rep"
       ;;
     81)
       # triage-exec.js: report() adds the bake-off fields unconditionally.
@@ -1049,6 +1164,355 @@ MUT89
 MUT90
       mut_replace_block "$target" '    | def unfilled: type == "object" and (has("modelId") | not);' 1 "$rep"
       ;;
+    130)
+      printf '  if true; then # MUTATED: deleted without the repo-copy check\n' > "$rep"
+      mut_replace_block "$target" '  if [ -f "$REPO_DIR/$1" ] && cmp -s "$REPO_DIR/$1" "$2"; then' 1 "$rep"
+      ;;
+    131)
+      printf '  rm -rf "$CLAUDE_DIR/agent-memory/$a" # MUTATED: memory deleted, not backed up\n' > "$rep"
+      mut_replace_block "$target" '  if [ -e "$CLAUDE_DIR/agent-memory/$a" ]; then backup_move' 1 "$rep"
+      ;;
+    132)
+      printf '  b="$1.bak-triage-0"; printf "%%s" "$b"; return 0 # MUTATED: single-slot backup\n' > "$rep"
+      mut_replace_block "$target" '  b="$1.bak-triage-$STAMP"' 1 "$rep"
+      ;;
+    133)
+      printf 'prune_backups() { return 0 # MUTATED: backups never pruned\n' > "$rep"
+      mut_replace_block "$target" 'prune_backups() {' 1 "$rep"
+      ;;
+    134)
+      printf '  if true; then # MUTATED: retire deletes unknown bytes\n' > "$rep"
+      mut_replace_block "$target" '  if [ -n "$sha" ] && printf '"'"'%s'"'"' "$sums" | grep -qxF "$sha"; then' 1 "$rep"
+      ;;
+    135)
+      printf 'SUBAGENT_MODEL="claude-opus-5-5" # MUTATED: hard-coded subagent model\n' > "$rep"
+      mut_replace_block "$target" 'SUBAGENT_MODEL="$(jq -r' 1 "$rep"
+      ;;
+    136)
+      cat > "$rep" <<'MUT136'
+  (if (.env.CLAUDE_CODE_SUBAGENT_MODEL // null) == null or $up == "1" then .env.CLAUDE_CODE_SUBAGENT_MODEL = $m else . end)
+MUT136
+      mut_replace_block "$target" '  (if (.env.CLAUDE_CODE_SUBAGENT_MODEL // null) == null or $up == "1" then' 1 "$rep"
+      ;;
+    137)
+      printf '  elif false; then echo "upgrade-owned" # MUTATED: marker ownership ignored\n' > "$rep"
+      mut_replace_block "$target" '  elif [ "$1" = "$2" ]; then echo "upgrade-owned"' 1 "$rep"
+      ;;
+    138)
+      printf '  | . # MUTATED-138\n' > "$rep"
+      mut_replace_block "$target" '  | (if (.env[$k] // null) != null and .env[$k] != .env.CLAUDE_CODE_SUBAGENT_MODEL then del(.env[$k]) else . end)' 1 "$rep"
+      ;;
+    139)
+      printf '  elif [ "$1" = "$SUBAGENT_MODEL" ]; then echo "upgrade-owned" # MUTATED: unmarked current value adopted\n' > "$rep"
+      mut_replace_block "$target" '  elif [ "$1" = "$SUBAGENT_MODEL" ]; then echo "current"' 1 "$rep"
+      ;;
+    140)
+      printf "' \"\$SETTINGS\" > \"\$tmp\" && apply_settings \"\$tmp\" # MUTATED: merge failure swallowed\n" > "$rep"
+      mut_replace_block "$target" "' \"\$SETTINGS\" > \"\$tmp\" || die \"settings merge (jq) failed" 2 "$rep"
+      ;;
+    141)
+      printf "  ' \"\$SETTINGS\" > \"\$tmp\" || true # MUTATED: rewrite failure swallowed\n" > "$rep"
+      mut_replace_block "$target" "  ' \"\$SETTINGS\" > \"\$tmp\" || die \"settings rewrite (jq) failed" 1 "$rep"
+      ;;
+    142)
+      printf '  true # MUTATED: settings shape not validated\n' > "$rep"
+      mut_replace_block "$target" "  jq -e 'type == \"object\"" 6 "$rep"
+      ;;
+    143)
+      printf '    --root)  ROOT="${2:-}"; shift 2 ;; # MUTATED: --root value unchecked\n' > "$rep"
+      mut_replace_block "$target" '    --root)' 3 "$rep"
+      ;;
+    144)
+      mut_delete_block "$target" '    END { if (infm) exit 3 }' 1
+      ;;
+    145|146)
+      printf '  grep -vE '"'"'^\\s*#|^\\s*$'"'"' "$DRIFTIGNORE" | grep -qxF "$1" # MUTATED: entries not normalized\n' > "$rep"
+      mut_replace_block "$target" "  tr -d '\\r' < \"\$DRIFTIGNORE\"" 2 "$rep"
+      ;;
+    147)
+      printf '    : # MUTATED: settings status not checked\n' > "$rep"
+      mut_replace_block "$target" '"$REPO_DIR/install.sh" --settings-status' 1 "$rep"
+      ;;
+    148)
+      printf '         stage-worktree.sh review-stage.sh parity-suite.sh parity-cost.sh \\\n' > "$rep"
+      mut_replace_block "$target" '         stage-worktree.sh review-stage.sh parity-suite.sh parity-cost.sh parity-report.sh \' 1 "$rep"
+      ;;
+    149)
+      mut_delete_block "$target" 'check_file "scripts/triage-stats.sh"' 1
+      ;;
+    110)
+      # parity-report.sh COMMIT: a same-content re-ingest appends all its lines.
+      cat > "$rep" <<'MUT110'
+      | $new as $miss # MUTATED: dedupe dropped
+MUT110
+      mut_replace_block "$target" '      | [$new[] | select(okey as $k | any($have[]; . == $k) | not)] as $miss' 1 "$rep"
+      ;;
+    111)
+      # parity-report.sh COMMIT: a run-id collision is skipped, not refused.
+      cat > "$rep" <<'MUT111'
+  else {action: "skip", lines: [], reason: "collision"} # MUTATED: collision skipped
+MUT111
+      mut_replace_block "$target" '  else {action: "refuse", lines: []' 1 "$rep"
+      ;;
+    112)
+      # parity-report.sh utc: the offset is dropped.
+      cat > "$rep" <<'MUT112'
+      | 0 as $off # MUTATED: UTC offset ignored
+MUT112
+      mut_replace_block "$target" '      | (if $c.sg == null then 0 else' 1 "$rep"
+      ;;
+    113)
+      # parity-report.sh lock_ledger: never waits for, nor takes, the lock dir.
+      cat > "$rep" <<'MUT113'
+  while false; do # MUTATED: lock not taken
+MUT113
+      mut_replace_block "$target" '  while ! mkdir "$lock" 2>/dev/null; do' 1 "$rep"
+      ;;
+    114)
+      # parity-report.sh lock_ledger: a dead holder's lock is waited on like a live one.
+      cat > "$rep" <<'MUT114'
+    if false; then # MUTATED: stale lock never taken over
+MUT114
+      mut_replace_block "$target" '    if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then' 1 "$rep"
+      ;;
+    115)
+      # parity-report.sh backfill: the rename goes over the (symlink) path given.
+      cat > "$rep" <<'MUT115'
+    cp -p "$LEDGER" "$LEDGER.bf.$$" && cat "$TMP/new" > "$LEDGER.bf.$$" && mv "$LEDGER.bf.$$" "$LEDGER" || # MUTATED: symlink clobbered
+MUT115
+      mut_replace_block "$target" '    cp -p "$REAL_LEDGER" "$REAL_LEDGER.backfill.$$"' 1 "$rep"
+      ;;
+    116)
+      # parity-report.sh decisions: every other group is a challenger again.
+      cat > "$rep" <<'MUT116'
+    | . # MUTATED: superseded versions are challengers
+MUT116
+      mut_replace_block "$target" '    | select(. as $g | any($current[]; .vendor == $g.vendor and .modelId == $g.modelId))' 1 "$rep"
+      ;;
+    117)
+      # parity-report.sh decisions: tuning.rejected never turns a propose into rejected.
+      cat > "$rep" <<'MUT117'
+    | if false # MUTATED: tuning.rejected ignored
+MUT117
+      mut_replace_block "$target" '    | if .verdict == "propose" and $r != null' 1 "$rep"
+      ;;
+    118)
+      # parity-report.sh rows: every graded row is its own outcome.
+      cat > "$rep" <<'MUT118'
+      unit: "line:\($li)|\(.label)"} # MUTATED: reps counted as independent
+MUT118
+      mut_replace_block "$target" '      unit: (if $l.run == null' 3 "$rep"
+      ;;
+    119)
+      # parity-cost.sh: fromjson without ?, so a corrupt line is an error, not a skip.
+      cat > "$rep" <<'MUT119'
+    'select(test("\\S")) | [fromjson] as $o # MUTATED: corrupt line not skipped
+MUT119
+      mut_replace_block "$target" "    'select(test(\"\\\\S\")) | [fromjson?] as \$o" 1 "$rep"
+      ;;
+    120)
+      # parity-report.sh reviews: all revisions of a run count.
+      cat > "$rep" <<'MUT120'
+| $rvAll as $rv # MUTATED: every revision counted
+MUT120
+      mut_replace_block "$target" '| ([$rvi[] | select(.run == null)]' 1 "$rep"
+      ;;
+    121)
+      # parity-report.sh ingest-review: superseded collapses into unavailable.
+      cat > "$rep" <<'MUT121'
+           status: (if $r.status == "ok" then "ok" else "unavailable" end), # MUTATED: superseded recorded as unavailable
+MUT121
+      mut_replace_block "$target" '           status: (if $r.status == "ok" or $r.status == "superseded"' 1 "$rep"
+      ;;
+    122)
+      # parity-report.sh COMMIT: the review revision branch never fires.
+      cat > "$rep" <<'MUT122'
+  elif false then # MUTATED: no review revisions
+MUT122
+      mut_replace_block "$target" '  elif $mode == "review" and $revisable then' 1 "$rep"
+      ;;
+    123)
+      # parity-report.sh ingest-parity: modelFrom is not forwarded to cand().
+      cat > "$rep" <<'MUT123'
+        model: ($row.model // $rk.model), modelFrom: null, # MUTATED: ingest-parity modelFrom dropped
+MUT123
+      mut_replace_block "$target" '        model: ($row.model // $rk.model), modelFrom: (if $row.model' 1 "$rep"
+      ;;
+    124)
+      # triage-parity.js buildTask: rows carry no modelFrom.
+      cat > "$rep" <<'MUT124'
+      modelFrom: null }) // MUTATED: row modelFrom dropped
+MUT124
+      mut_replace_block "$target" "      modelFrom: g.model ? (g.modelFrom || null) : (x.c.model ? 'candidate' : null) })" 1 "$rep"
+      ;;
+    125)
+      # parity-suite.sh ignored_tree: only the count is hashed.
+      cat > "$rep" <<'MUT125'
+    : # MUTATED: ignored files not stat-ed
+MUT125
+      mut_replace_block "$target" '    [ -z "$list" ] || ( cd "$top"' 1 "$rep"
+      ;;
+    126)
+      # parity-suite.sh refs_tree: branches, tags and the stash are not listed.
+      cat > "$rep" <<'MUT126'
+  { : # MUTATED: refs not hashed
+MUT126
+      mut_replace_block "$target" '  { git -C "$top" --no-optional-locks for-each-ref' 1 "$rep"
+      ;;
+    127)
+      # triage-parity.js sourceGuard: ignored/refs differences are not named (nor acted on).
+      cat > "$rep" <<'MUT127'
+    null].filter(Boolean).join(', ') : null // MUTATED: ignored/refs not compared
+MUT127
+      mut_replace_block "$target" "    after.ignored !== before.ignored ? 'ignored files changed'" 1 "$rep"
+      ;;
+    128)
+      # triage-tiers.sh --bakeoff-json: ALIAS_ERRORS is not evaluated.
+      cat > "$rep" <<'MUT128'
+  ERRS=$(jq -r "$TUNING_ERRORS" "$TIERS") || { # MUTATED: aliasHistory not validated
+MUT128
+      mut_replace_block "$target" '  ERRS=$(jq -r "$TUNING_ERRORS, ($ALIAS_ERRORS)" "$TIERS") || {' 1 "$rep"
+      ;;
+    129)
+      # triage-tiers.sh TUNING_ERRORS: the shares may sum to anything.
+      cat > "$rep" <<'MUT129'
+           | empty) # MUTATED: mix-sum check dropped
+MUT129
+      mut_replace_block "$target" '           | if ($sum - 1 | fabs) < 1e-9 then empty' 1 "$rep"
+      ;;
+    91)
+      # triage-exec.js (H8): an empty diff counts as the passing choice again.
+      cat > "$rep" <<'MUT91'
+const realDiff = c => c.outOfScope !== true // MUTATED: empty diff counts
+MUT91
+      mut_replace_block "$target" 'const realDiff = c => isStr(c.diffstat) && c.outOfScope !== true' 1 "$rep"
+      ;;
+    92)
+      # triage-exec.js (M10): an out-of-scope patch is inline-applied.
+      cat > "$rep" <<'MUT92'
+const realDiff = c => isStr(c.diffstat) // MUTATED: out-of-scope patch applied
+MUT92
+      mut_replace_block "$target" 'const realDiff = c => isStr(c.diffstat) && c.outOfScope !== true' 1 "$rep"
+      ;;
+    93)
+      # triage-exec.js (M1): an unknown leak state runs the subtask in place again.
+      cat > "$rep" <<'MUT93'
+  if (res.leak !== false) { rec.outcome = 'in-place'; return { inPlace: true } } // MUTATED: unknown leak runs in place
+MUT93
+      mut_replace_block "$target" "  if (res.leak !== false) { noExt(); return withhold(" 1 "$rep"
+      ;;
+    94)
+      # triage-exec.js (M2): bakeoff.repo is never compared with the session repo.
+      cat > "$rep" <<'MUT94'
+  if (false) { // MUTATED: repo mismatch ignored
+MUT94
+      mut_replace_block "$target" '  if (!isStr(dirty.sessionTop) || !isStr(dirty.repoTop) || stripSlash(dirty.sessionTop) !== stripSlash(dirty.repoTop)) {' 1 "$rep"
+      ;;
+    95)
+      # triage-exec.js (M4): any failed apply counts as "nothing written" → in place.
+      cat > "$rep" <<'MUT95'
+    const untouched = !!ap // MUTATED: failed apply runs in place
+MUT95
+      mut_replace_block "$target" '    const untouched = !!ap && ap.applied === false && ap.treeModified === false && [0, 1, 6].includes(ap.rc)' 1 "$rep"
+      ;;
+    96)
+      # triage-exec.js (M6): an ESCALATE level climb carries the lower rung's plan effort.
+      cat > "$rep" <<'MUT96'
+  return { level: up, vendor, effort: r.subtask.effort, reason: 'reviewer returned ESCALATE' } // MUTATED: climb keeps plan effort
+MUT96
+      mut_replace_block "$target" "  return { level: up, vendor, effort: up === r.level ? r.subtask.effort : null, reason: 'reviewer returned ESCALATE' }" 1 "$rep"
+      ;;
+    97)
+      # triage-exec.js (codex#12): a rejected external spawn escapes the Claude fallback.
+      cat > "$rep" <<'MUT97'
+      throw e // MUTATED: external rejection escapes the fallback
+MUT97
+      mut_replace_block "$target" '      if (budgeted && budget.remaining() <= 0) throw e' 1 "$rep"
+      ;;
+    98)
+      # triage-exec.js: a missing weeklyPct no longer pauses sampling.
+      cat > "$rep" <<'MUT98'
+const bakeoffPaused = !!bo && bo.weeklyPct != null && bo.weeklyPct >= bo.tuning.pauseAtWeeklyPct // MUTATED: unknown weekly samples
+MUT98
+      mut_replace_block "$target" 'const bakeoffPaused = !!bo && (weeklyUnknown || bo.weeklyPct >= bo.tuning.pauseAtWeeklyPct)' 1 "$rep"
+      ;;
+    99)
+      # triage-exec.js: the danger floor by model family is not applied to challengers.
+      cat > "$rep" <<'MUT99'
+      true) // MUTATED: danger family floor dropped
+MUT99
+      mut_replace_block "$target" '      !(st.danger && !meetsDangerFloor(v, c.model)))' 1 "$rep"
+      ;;
+    100)
+      # triage-compare.js (codex#10): checks joined with a bare ' && ' again.
+      cat > "$rep" <<'MUT100'
+const checkCmd = checks.join(' && ') // MUTATED: checks joined unguarded
+MUT100
+      mut_replace_block "$target" "const checkCmd = checks.length === 1 ? checks[0] : checks.map(c => \`bash -c \${shq(c)}\`).join(' && ')" 1 "$rep"
+      ;;
+    101)
+      # triage-compare.js (H5): a PATCHCHECK line from another sha is accepted.
+      cat > "$rep" <<'MUT101'
+  : false ? '' // MUTATED: PATCHCHECK sha not cross-checked
+MUT101
+      mut_replace_block "$target" '  : pcLine.base !== sha ? `PATCHCHECK graded at' 1 "$rep"
+      ;;
+    102)
+      # triage-compare.js (M12): what ext-run ran is never compared with what was asked.
+      cat > "$rep" <<'MUT102'
+    const mismatch = null // MUTATED: model/effort mismatch ignored
+MUT102
+      mut_replace_block "$target" '    const mismatch = !nothing && ((c.model && ranModel && ranModel !== c.model)' 2 "$rep"
+      ;;
+    103)
+      # triage-compare.js (M13): an extension ignores the prior snapshot's scope.
+      cat > "$rep" <<'MUT103'
+    if (false) { // MUTATED: extend scope unchecked
+MUT103
+      mut_replace_block "$target" '    if (c.scopeOk !== true) {' 1 "$rep"
+      ;;
+    104)
+      # ext-run.sh (H7): the build worktree is not locked (a parallel prune removes it).
+      cat > "$rep" <<'MUT104'
+  if ! git -C "$BUILD_REPO" worktree add --detach "$STAGE/build" HEAD >"$STAGE/meta/worktree.log" 2>&1; then # MUTATED: build worktree unlocked
+MUT104
+      mut_replace_block "$target" '  if ! git -C "$BUILD_REPO" worktree add --lock --detach "$STAGE/build" HEAD' 1 "$rep"
+      ;;
+    105)
+      # review-stage.sh (H6): no **/ variants — **/x misses a top-level x, a/**/b misses a/b.
+      cat > "$rep" <<'MUT105'
+    : # MUTATED: no glob variants
+MUT105
+      mut_replace_block "$target" "    case \"\$v\" in '**/'?*)" 2 "$rep"
+      ;;
+    106)
+      # review-stage.sh (M14): no ext-run.sh to ask → codex allowed (fail open).
+      cat > "$rep" <<'MUT106'
+  [ -x "$EXT_RUN" ] || return 1 # MUTATED: missing ext-run allows codex
+MUT106
+      mut_replace_block "$target" '  [ -x "$EXT_RUN" ] || {' 1 "$rep"
+      ;;
+    107)
+      # stage-worktree.sh (M3): apply --require-clean is ignored.
+      cat > "$rep" <<'MUT107'
+  if false; then # MUTATED: require-clean ignored
+MUT107
+      mut_replace_block "$target" '  if [ "$REQUIRE_CLEAN" -eq 1 ]; then' 1 "$rep"
+      ;;
+    108)
+      # stage-worktree.sh (M4): a failed write is assumed to have left the tree untouched.
+      cat > "$rep" <<'MUT108'
+  modified() { echo false; } # MUTATED: failed write assumed untouched
+MUT108
+      mut_replace_block "$target" '  modified() { paths_state' 1 "$rep"
+      ;;
+    109)
+      # stage-worktree.sh (H4): ignored paths are left out of the leak fingerprint.
+      cat > "$rep" <<'MUT109'
+  : > "$out.ign" # MUTATED: ignored paths not fingerprinted
+MUT109
+      mut_replace_block "$target" '  ignored_snapshot "$r" "$out.ign" || return 1' 1 "$rep"
+      ;;
     *)
       return 1
       ;;
@@ -1083,7 +1547,7 @@ verify_mutation() {
     18) grep -qF 'MUTATED: FORCE warning suppressed' "$target" ;;
     19) grep -qF 'MUTATED: legacy upgrade disabled' "$target" ;;
     20) ! grep -qF 'or $up == "1"' "$target" && grep -qF '(if (.env.CLAUDE_CODE_SUBAGENT_MODEL // null) == null then .env.CLAUDE_CODE_SUBAGENT_MODEL = $m else . end)' "$target" ;;
-    21) grep -qF '| [$m] as $ours_sub' "$target" && ! grep -qF '($legacy | split(" ")' "$target" ;;
+    21) grep -qF '| (if $mark != null then del(.env.CLAUDE_CODE_SUBAGENT_MODEL) else . end)' "$target" && ! grep -qF '== $mark then' "$target" ;;
     22) ! grep -qF "effort: 'max', owesFable: true" "$target" && grep -qF 'function redoStep(r, isEscalate) {' "$target" ;;
     23) grep -qF 'MUTATED: deep@max fallback always taken' "$target" && ! grep -qF '  if (afterMax) {' "$target" ;;
     24) grep -qF 'MUTATED: default model fallback' "$target" && ! grep -qF 'an absent entry is a refusal, never a default model' "$target" ;;
@@ -1097,7 +1561,7 @@ verify_mutation() {
     34) ! grep -qF 'args.outDir must not be inside args.repo' "$target" ;;
     36) ! grep -qF "if (candidates.some(c => c.vendor !== 'claude') && files.length === 0) {" "$target" ;;
     37) grep -qF 'MUTATED: real repo as WORKDIR' "$target" && ! grep -qF '` WORKDIR=${c.worktree}`' "$target" ;;
-    38) grep -qF 'MUTATED: leakcheck result ignored' "$target" && ! grep -qF 'const leakInfo = leakState(gr && gr.leakcheck)' "$target" ;;
+    38) grep -qF 'MUTATED: leakcheck result ignored' "$target" && ! grep -qF 'const leakInfo = leakState(gr && leakLine(gr.leakcheckLine))' "$target" ;;
     39) grep -qF 'MUTATED: untracked files omitted' "$target" && ! grep -qF 'git -C "$WT" add -A' "$target" ;;
     40) grep -qF 'MUTATED: common-dir deny check dropped' "$target" && ! grep -qF 'deny_check_path "$main"' "$target" ;;
     41) grep -qF 'MUTATED: unavailable counted as fail' "$target" && ! grep -qF "pb.other++" "$target" ;;
@@ -1150,6 +1614,64 @@ verify_mutation() {
     88) grep -qF 'MUTATED: alias boundary exclusive' "$target" && ! grep -qF 'select(.from <= $date)' "$target" ;;
     89) grep -qF 'MUTATED: version-bound cheapness order' "$target" && ! grep -qF '"codex":["luna","sol","astra"]' "$target" ;;
     90) grep -qF 'MUTATED: backfill refills filled rows' "$target" && ! grep -qF 'def unfilled: type == "object" and (has("modelId") | not);' "$target" ;;
+    130) grep -qF 'MUTATED: deleted without the repo-copy check' "$target" ;;
+    131) grep -qF 'MUTATED: memory deleted, not backed up' "$target" && ! grep -qF 'then backup_move "$CLAUDE_DIR/agent-memory/$a"' "$target" ;;
+    132) grep -qF 'MUTATED: single-slot backup' "$target" ;;
+    133) grep -qF 'MUTATED: backups never pruned' "$target" ;;
+    134) grep -qF 'MUTATED: retire deletes unknown bytes' "$target" ;;
+    135) grep -qF 'MUTATED: hard-coded subagent model' "$target" && ! grep -qF '.levels.deep.claude.model // empty' "$target" ;;
+    136) ! grep -qF '.env[$k] = $m' "$target" ;;
+    137) grep -qF 'MUTATED: marker ownership ignored' "$target" ;;
+    138) grep -qF 'MUTATED-138' "$target" && ! grep -qF 'then del(.env[$k]) else . end)' "$target" ;;
+    139) grep -qF 'MUTATED: unmarked current value adopted' "$target" ;;
+    140) grep -qF 'MUTATED: merge failure swallowed' "$target" && ! grep -qF 'settings merge (jq) failed' "$target" ;;
+    141) grep -qF 'MUTATED: rewrite failure swallowed' "$target" ;;
+    142) grep -qF 'MUTATED: settings shape not validated' "$target" && ! grep -qF 'unexpected shape' "$target" ;;
+    143) grep -qF 'MUTATED: --root value unchecked' "$target" && ! grep -qF -- '--root needs a directory' "$target" ;;
+    144) ! grep -qF 'END { if (infm) exit 3 }' "$target" ;;
+    145|146) grep -qF 'MUTATED: entries not normalized' "$target" && ! grep -qF "tr -d '\r' < \"\$DRIFTIGNORE\"" "$target" ;;
+    147) grep -qF 'MUTATED: settings status not checked' "$target" && ! grep -qF -- '--settings-status 2>&1' "$target" ;;
+    148) ! grep -qF 'parity-cost.sh parity-report.sh' "$target" ;;
+    149) ! grep -qF 'check_file "scripts/triage-stats.sh"' "$target" ;;
+    110) grep -qF 'MUTATED: dedupe dropped' "$target" && ! grep -qF 'select(okey as $k | any($have[]; . == $k) | not)] as $miss' "$target" ;;
+    111) grep -qF 'MUTATED: collision skipped' "$target" && ! grep -qF 'else {action: "refuse", lines: []' "$target" ;;
+    112) grep -qF 'MUTATED: UTC offset ignored' "$target" && ! grep -qF '(if $c.sg == null then 0 else' "$target" ;;
+    113) grep -qF 'MUTATED: lock not taken' "$target" && ! grep -qF 'while ! mkdir "$lock" 2>/dev/null; do' "$target" ;;
+    114) grep -qF 'MUTATED: stale lock never taken over' "$target" && ! grep -qF 'if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then' "$target" ;;
+    115) grep -qF 'MUTATED: symlink clobbered' "$target" && ! grep -qF 'cp -p "$REAL_LEDGER" "$REAL_LEDGER.backfill.$$"' "$target" ;;
+    116) grep -qF 'MUTATED: superseded versions are challengers' "$target" && ! grep -qF 'any($current[]; .vendor == $g.vendor and .modelId == $g.modelId))' "$target" ;;
+    117) grep -qF 'MUTATED: tuning.rejected ignored' "$target" && ! grep -qF 'if .verdict == "propose" and $r != null' "$target" ;;
+    118) grep -qF 'MUTATED: reps counted as independent' "$target" && ! grep -qF 'unit: (if $l.run == null' "$target" ;;
+    119) grep -qF 'MUTATED: corrupt line not skipped' "$target" && ! grep -qF '[fromjson?] as $o' "$target" ;;
+    120) grep -qF 'MUTATED: every revision counted' "$target" && ! grep -qF '| ([$rvi[] | select(.run == null)]' "$target" ;;
+    121) grep -qF 'MUTATED: superseded recorded as unavailable' "$target" && ! grep -qF 'if $r.status == "ok" or $r.status == "superseded"' "$target" ;;
+    122) grep -qF 'MUTATED: no review revisions' "$target" && ! grep -qF 'elif $mode == "review" and $revisable then' "$target" ;;
+    123) grep -qF 'MUTATED: ingest-parity modelFrom dropped' "$target" && ! grep -qF 'modelFrom: (if $row.model != null then $row.modelFrom else null end),' "$target" ;;
+    124) grep -qF 'MUTATED: row modelFrom dropped' "$target" && ! grep -qF "modelFrom: g.model ? (g.modelFrom || null)" "$target" ;;
+    125) grep -qF 'MUTATED: ignored files not stat-ed' "$target" && ! grep -qF 'head -n "$cap" | tr' "$target" ;;
+    126) grep -qF 'MUTATED: refs not hashed' "$target" && ! grep -qF "for-each-ref --format='%(objectname) %(refname)' refs/heads refs/tags refs/stash" "$target" ;;
+    127) grep -qF 'MUTATED: ignored/refs not compared' "$target" && ! grep -qF "after.ignored !== before.ignored ? 'ignored files changed'" "$target" ;;
+    128) grep -qF 'MUTATED: aliasHistory not validated' "$target" && ! grep -qF '"$TUNING_ERRORS, ($ALIAS_ERRORS)"' "$target" ;;
+    129) grep -qF 'MUTATED: mix-sum check dropped' "$target" && ! grep -qF '| if ($sum - 1 | fabs) < 1e-9 then empty' "$target" ;;
+    91) grep -qF 'MUTATED: empty diff counts' "$target" && ! grep -qF 'const realDiff = c => isStr(c.diffstat) && c.outOfScope !== true' "$target" ;;
+    92) grep -qF 'MUTATED: out-of-scope patch applied' "$target" && ! grep -qF 'const realDiff = c => isStr(c.diffstat) && c.outOfScope !== true' "$target" ;;
+    93) grep -qF 'MUTATED: unknown leak runs in place' "$target" && ! grep -qF "if (res.leak !== false) { noExt(); return withhold(" "$target" ;;
+    94) grep -qF 'MUTATED: repo mismatch ignored' "$target" && ! grep -qF 'stripSlash(dirty.sessionTop) !== stripSlash(dirty.repoTop)' "$target" ;;
+    95) grep -qF 'MUTATED: failed apply runs in place' "$target" && ! grep -qF 'ap.treeModified === false && [0, 1, 6].includes(ap.rc)' "$target" ;;
+    96) grep -qF 'MUTATED: climb keeps plan effort' "$target" && ! grep -qF 'effort: up === r.level ? r.subtask.effort : null' "$target" ;;
+    97) grep -qF 'MUTATED: external rejection escapes the fallback' "$target" && ! grep -qF 'if (budgeted && budget.remaining() <= 0) throw e' "$target" ;;
+    98) grep -qF 'MUTATED: unknown weekly samples' "$target" && ! grep -qF '(weeklyUnknown || bo.weeklyPct >= bo.tuning.pauseAtWeeklyPct)' "$target" ;;
+    99) grep -qF 'MUTATED: danger family floor dropped' "$target" && ! grep -qF '!(st.danger && !meetsDangerFloor(v, c.model))' "$target" ;;
+    100) grep -qF 'MUTATED: checks joined unguarded' "$target" && ! grep -qF 'checks.map(c => `bash -c ${shq(c)}`)' "$target" ;;
+    101) grep -qF 'MUTATED: PATCHCHECK sha not cross-checked' "$target" && ! grep -qF ': pcLine.base !== sha ?' "$target" ;;
+    102) grep -qF 'MUTATED: model/effort mismatch ignored' "$target" && ! grep -qF 'ranModel !== c.model' "$target" ;;
+    103) grep -qF 'MUTATED: extend scope unchecked' "$target" && ! grep -qF 'if (c.scopeOk !== true) {' "$target" ;;
+    104) grep -qF 'MUTATED: build worktree unlocked' "$target" && ! grep -qF 'worktree add --lock' "$target" ;;
+    105) grep -qF 'MUTATED: no glob variants' "$target" && ! grep -qF "case \"\$v\" in '**/'?*)" "$target" ;;
+    106) grep -qF 'MUTATED: missing ext-run allows codex' "$target" && ! grep -qF 'is missing — marking the snapshot off-limits to codex' "$target" ;;
+    107) grep -qF 'MUTATED: require-clean ignored' "$target" && ! grep -qF 'if [ "$REQUIRE_CLEAN" -eq 1 ]; then' "$target" ;;
+    108) grep -qF 'MUTATED: failed write assumed untouched' "$target" && ! grep -qF 'modified() { paths_state' "$target" ;;
+    109) grep -qF 'MUTATED: ignored paths not fingerprinted' "$target" && ! grep -qF 'ignored_snapshot "$r" "$out.ign" || return 1' "$target" ;;
     *) return 1 ;;
   esac
 }

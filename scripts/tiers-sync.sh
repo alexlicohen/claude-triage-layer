@@ -17,7 +17,8 @@
 #
 # Also fails (exit 1) when an agents/triage-*.md is not covered by tiers.json, when
 # tiers.json names an agent file that does not exist, when an entry lacks a model
-# or effort, or when one agent is given two different entries.
+# or effort, when one agent is given two different entries, or when an agent's
+# frontmatter is never closed (its body would otherwise be rewritten as frontmatter).
 # Exit 2: usage error, jq missing, or tiers.json missing/unparseable.
 # bash-3.2-safe (macOS default): no associative arrays, no GNU-only flags.
 set -u
@@ -28,7 +29,9 @@ CHECK=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --check) CHECK=1; shift ;;
-    --root)  ROOT="${2:-}"; shift 2 ;;
+    --root)
+      [ $# -ge 2 ] && [ -n "$2" ] || { echo "USAGE: --root needs a directory" >&2; exit 2; }
+      ROOT="$2"; shift 2 ;;
     -h|--help) sed -n '2,23p' "$0"; exit 0 ;;
     *) echo "USAGE: unknown argument '$1' (--check, --root DIR)" >&2; exit 2 ;;
   esac
@@ -98,7 +101,11 @@ while IFS="$TAB" read -r name model effort; do
     infm && /^model:/  { print "model: " m;  sm = 1; next }
     infm && /^effort:/ { print "effort: " e; se = 1; next }
     { print }
-  ' "$file" > "$TMP/new.md"
+    END { if (infm) exit 3 }
+  ' "$file" > "$TMP/new.md" || {
+    problem "agents/$name.md: frontmatter opened on line 1 is never closed with ---"
+    continue
+  }
   if cmp -s "$file" "$TMP/new.md"; then
     continue
   fi
