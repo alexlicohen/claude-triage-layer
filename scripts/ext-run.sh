@@ -403,9 +403,14 @@ deny_names() { echo "$HARD_DENY_REPOS $CODEX_DENY_REPOS"; }
 deny_beneath_check() {
   local hit name
   [ -d "$1" ] || return 0
-  set -- "$1" "$2" -name ".$VENDOR-deny"
-  for name in $(deny_names); do set -- "$@" -o -name "$name"; done
-  hit=$(find "$1" \( "${@:3}" \) -print -quit 2>/dev/null)
+  # Deny-listed repo names first, markers second: find's traversal order is the
+  # filesystem's (sorted on APFS, unordered on ext4), so one mixed search would name
+  # a different hit per platform when a tree holds both.
+  for name in $(deny_names); do
+    hit=$(find "$1" -name "$name" -print -quit 2>/dev/null)
+    [ -z "$hit" ] || break
+  done
+  [ -n "$hit" ] || hit=$(find "$1" -name ".$VENDOR-deny" -print -quit 2>/dev/null)
   [ -z "$hit" ] || die "REFUSED: $2 $1 contains $hit — a deny-listed repo or a .$VENDOR-deny marker lies beneath it." "$E_REFUSED"
 }
 
