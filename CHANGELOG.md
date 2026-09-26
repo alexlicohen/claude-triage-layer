@@ -12,6 +12,14 @@ target accidents to working trees and wrong measurements; anti-escape hardening 
 deliberately out of scope. Danger floor by model family (claude opus|fable, codex
 gpt-6-astra). `.claude/agent-memory` untracked from this public repo (`b8dbc9f`).
 
+**Follow-up — mutations for 16A's covered-but-unmutated guards** (branch wave16-mutations):
+ids 150–163 (the `--require-clean` apply flag, plan effort on applied results, apply
+patch identity, the planned-candidate danger floor, top-claude, high-bit challenger
+pick, `ranExternally`, `outOfScope`, Claude-only `selfCheckEnv`, U4 non-empty errors,
+all-malformed reviewer, `cleanPath` first `/snap/`, `PATCHCHECK` and `LEAKCHECK` lines).
+All 14 killed by existing assertions — no test needed strengthening; 159 (U4) is
+killed only by general invariant checks, a thinner margin than the rest. Catalog 144 → 158.
+
 ### 16A — bake-off / grading correctness + danger floor (`b438cb5`)
 
 - Inline bake-offs (`triage-exec`): an empty or out-of-scope diff never counts as the
