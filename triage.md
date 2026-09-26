@@ -83,6 +83,12 @@ Subagents default to Opus via `env.CLAUDE_CODE_SUBAGENT_MODEL` in `settings.json
 - **`triage-exec`.** A reusable workflow: parallel level+vendor delegation → objective checks and/or reviewer → targeted re-run of only the implicated subtasks → one-rung escalation. It classifies nothing; a malformed plan throws before any spawn.
 - **Statusline.** `statusline.sh` renders `model · ctx N%` (⚠ at ≥60%) plus a live subagent-spend suffix, and prepends `ccusage` cost/burn when installed. Copied, not wired.
 
+- **Session end** (this layer's state for `~/.agents/AGENTS.md` › Session end): run every pending
+  `report.ingest` (write `.result` to `.file`, run `.cmd`) or name the workflow run id and result file in
+  the handoff (the harness keeps runs under `~/.claude/projects/<slug>/<session>/workflows/`); commit and
+  push the dot-agents ledger after ingests; `make sync` after repo changes, then diff the repo `triage.md`
+  against the live fork (`~/.claude/triage.md`); name open PRs and CI state.
+
 ## Uninstall / disable
 
 - **Disable routing only**: remove the `@triage.md` line from `~/.claude/CLAUDE.md`.

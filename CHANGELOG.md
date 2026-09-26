@@ -12,6 +12,23 @@ target accidents to working trees and wrong measurements; anti-escape hardening 
 deliberately out of scope. Danger floor by model family (claude opus|fable, codex
 gpt-6-astra). `.claude/agent-memory` untracked from this public repo (`b8dbc9f`).
 
+**Follow-up — mutations for 16A's covered-but-unmutated guards** (branch wave16-mutations):
+ids 150–163 (the `--require-clean` apply flag, plan effort on applied results, apply
+patch identity, the planned-candidate danger floor, top-claude, high-bit challenger
+pick, `ranExternally`, `outOfScope`, Claude-only `selfCheckEnv`, U4 non-empty errors,
+all-malformed reviewer, `cleanPath` first `/snap/`, `PATCHCHECK` and `LEAKCHECK` lines).
+All 14 killed by existing assertions — no test needed strengthening; 159 (U4) is
+killed only by general invariant checks, a thinner margin than the rest. Catalog 144 → 158.
+
+**Fix — same-second install backups (16C regression, caught by Ubuntu CI on PR #21):**
+`backup_path` took the first free `<stamp>-N` name, so once pruning freed an older slot a
+fast same-second sync reused it and the newest backup sorted oldest and was pruned; `-N`
+also sorted as text (`-10` before `-2`) and glob order followed the locale. Now a clash
+takes one past the highest `-N`, and `backups_oldest_first` orders by (stamp, numeric
+N) under `LC_ALL=C`. `TRIAGE_INSTALL_STAMP` (test hook) pins the stamp; roundtrip R4
+(12 same-second syncs keep edit-8..edit-12) is deterministic where R2 was timing-
+dependent. Mutations 164–165; roundtrip 191 → 192, catalog 158 → 160.
+
 ### 16A — bake-off / grading correctness + danger floor (`b438cb5`)
 
 - Inline bake-offs (`triage-exec`): an empty or out-of-scope diff never counts as the

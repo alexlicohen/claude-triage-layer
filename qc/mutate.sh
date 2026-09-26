@@ -101,7 +101,20 @@ done
 # model/effort mismatch, the extend scope check; the locked build worktree; the
 # **/ hard-exclude variants and the fail-closed deny carry-over; apply
 # --require-clean, the measured treeModified and the ignored-path fingerprint.
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149"
+# 150-163 cover Wave 16A guards that shipped covered but unmutated: the bake-off
+# apply's --require-clean flag, the applied result keeping the PLAN's (not the
+# challenger's) effort, an apply reply counted only for the patch it named, the
+# danger floor on the PLANNED candidate, top-level Claude ineligibility, the
+# challenger entry from the draw's high bits, ranExternally excluding an
+# unavailable planned codex run (triage-exec.js); outOfScope from changedFiles vs
+# files, selfCheckEnv offered to Claude only, U4's non-empty-error rule, an
+# all-malformed reviewer reported unavailable (never scored 0), cleanPath cutting
+# at the FIRST /snap/ (triage-compare.js); patch-check.sh's one --summary
+# PATCHCHECK line; stage-worktree.sh's one leakcheck --line LEAKCHECK line.
+# 164-165 cover install.sh's backup naming under a same-second clash: a new backup
+# takes one past the HIGHEST -N (never a pruned-free older name), and backups age in
+# numeric -N order (-10 after -2).
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -214,6 +227,11 @@ mut_file() {
     147) echo "drift.sh" ;;
     148) echo "uninstall.sh" ;;
     149) echo "drift.sh" ;;
+    150|151|152|153|154|155|156) echo "workflows/triage-exec.js" ;;
+    157|158|159|160|161) echo "workflows/triage-compare.js" ;;
+    162) echo "scripts/patch-check.sh" ;;
+    163) echo "scripts/stage-worktree.sh" ;;
+    164|165) echo "install.sh" ;;
     *) echo "" ;;
   esac
 }
@@ -324,6 +342,22 @@ mut_desc() {
     147) echo "drift.sh: the settings-migration check is dropped (a legacy subagent model goes unreported)" ;;
     148) echo "uninstall.sh: scripts/parity-report.sh dropped from the removal list (a file left behind)" ;;
     149) echo "drift.sh: scripts/triage-stats.sh dropped from the checked list (an installed file drift never sees)" ;;
+    150) echo "triage-exec.js (bake-off): the apply command drops --require-clean (a patch could land on top of uncommitted work)" ;;
+    151) echo "triage-exec.js (bake-off): the applied result carries the CHALLENGER's effort, not the plan's (a later redo re-runs at the wrong rung)" ;;
+    152) echo "triage-exec.js (bake-off): an apply reply counts even when it names another patch than the one requested" ;;
+    153) echo "triage-exec.js (bake-off): the danger floor is never checked against the PLANNED candidate" ;;
+    154) echo "triage-exec.js (bake-off): a top-level Claude subtask is no longer excluded (Fable's one sanctioned spawn path bypassed)" ;;
+    155) echo "triage-exec.js (bake-off): the challenger entry reverts to a plain modulo of the raw hash (the weak low bits)" ;;
+    156) echo "triage-exec.js (bake-off): an unavailable planned codex run is no longer excluded from ranExternally" ;;
+    157) echo "triage-compare.js: outOfScope is never computed from changedFiles vs the brief's files (always false)" ;;
+    158) echo "triage-compare.js: selfCheckEnv reaches external candidates too (they cannot actually self-check)" ;;
+    159) echo "triage-compare.js: any present error field invalidates the grade, even an empty string" ;;
+    160) echo "triage-compare.js: a reviewer whose findings are ALL malformed is scored ok instead of unavailable" ;;
+    161) echo "triage-compare.js: cleanPath cuts an absolute path at the LAST /snap/ instead of the first" ;;
+    162) echo "patch-check.sh: --summary no longer emits the one PATCHCHECK json line" ;;
+    163) echo "stage-worktree.sh: leakcheck --line no longer emits the one LEAKCHECK json line" ;;
+    164) echo "install.sh: a same-second backup reuses the first free name (a pruned older slot), so the newest backup sorts oldest and is pruned" ;;
+    165) echo "install.sh: backups age in text order of -N (-10 before -2), pruning newer backups first" ;;
     91) echo "triage-exec.js (bake-off): an EMPTY diff counts as the passing choice (a no-op 'pass' beats a challenger's real patch)" ;;
     92) echo "triage-exec.js (bake-off): a patch that changes paths outside the subtask's files is inline-applied" ;;
     93) echo "triage-exec.js (bake-off): an unknown leak state runs the subtask in place on an unchecked tree" ;;
@@ -390,6 +424,11 @@ mut_suite() {
     119|125|126) echo "paritysuite" ;;
     124|127) echo "parity" ;;
     67|105|106) echo "reviewstage" ;;
+    150|151|152|153|154|155|156) echo "scenarios" ;;
+    157|158|159|160|161) echo "compare" ;;
+    162) echo "patchcheck" ;;
+    163) echo "stagewt" ;;
+    164|165) echo "roundtrip" ;;
     *) echo "" ;;
   esac
 }
@@ -1240,6 +1279,120 @@ MUT136
     149)
       mut_delete_block "$target" 'check_file "scripts/triage-stats.sh"' 1
       ;;
+    150)
+      # triage-exec.js: the bake-off apply command drops --require-clean.
+      cat > "$rep" <<'MUT150'
+    `${STAGE_WT} apply --repo ${shq(bo.repo)} --patch ${shq(patch)}`, // MUTATED: --require-clean dropped
+MUT150
+      mut_replace_block "$target" '--patch ${shq(patch)} --require-clean' 1 "$rep"
+      ;;
+    151)
+      # triage-exec.js: the applied result carries the CHALLENGER's effort, not the plan's.
+      cat > "$rep" <<'MUT151'
+  const who = choice.apply === 'planned' ? { level: st.level, vendor: st.vendor, effort: st.effort } : { level: st.level, vendor: ch.vendor, effort: ch.effort } // MUTATED: challenger effort stored
+MUT151
+      mut_replace_block "$target" 'vendor: st.vendor, effort: st.effort } : { level: st.level, vendor: ch.vendor, effort: st.effort }' 1 "$rep"
+      ;;
+    152)
+      # triage-exec.js: an apply reply counts even when it names another patch.
+      cat > "$rep" <<'MUT152'
+  const applied = !!ap && ap.rc === 0 && ap.ok === true && ap.applied === true && (ap.method === 'plain' || ap.method === '3way') // MUTATED: patch identity not checked
+MUT152
+      mut_replace_block "$target" '&& ap.patch === patch' 1 "$rep"
+      ;;
+    153)
+      # triage-exec.js: the danger floor is not checked against the PLANNED candidate.
+      cat > "$rep" <<'MUT153'
+  // MUTATED: planned danger floor check dropped
+MUT153
+      mut_replace_block "$target" "skip: 'planned-below-danger-floor'" 1 "$rep"
+      ;;
+    154)
+      # triage-exec.js: a top-level Claude subtask is no longer excluded from bake-offs.
+      cat > "$rep" <<'MUT154'
+  // MUTATED: top-claude ineligibility dropped
+MUT154
+      mut_replace_block "$target" "skip: 'top-claude'" 1 "$rep"
+      ;;
+    155)
+      # triage-exec.js: the challenger entry reverts to a plain modulo of the raw hash
+      # (FNV-1a's low bits are weak).
+      cat > "$rep" <<'MUT155'
+  const c = list[fnv1a32(`${key}\0entry`) % list.length] // MUTATED: entry via raw hash modulo (low bits)
+MUT155
+      mut_replace_block "$target" 'Math.floor(draw(`${key}\0entry`) * list.length)' 1 "$rep"
+      ;;
+    156)
+      # triage-exec.js: an unavailable planned codex run no longer excludes the
+      # subtask from ranExternally.
+      cat > "$rep" <<'MUT156'
+  const noExt = () => {} // MUTATED: never adds to neverRanExternally
+MUT156
+      mut_replace_block "$target" 'if (plannedNothing) neverRanExternally.add(st.id)' 1 "$rep"
+      ;;
+    157)
+      # triage-compare.js: outOfScope is never computed from changedFiles vs files.
+      cat > "$rep" <<'MUT157'
+  const outOfScope = false // MUTATED: outOfScope always false
+MUT157
+      mut_replace_block "$target" 'const outOfScope = !files.length' 1 "$rep"
+      ;;
+    158)
+      # triage-compare.js: selfCheckEnv reaches external candidates too.
+      cat > "$rep" <<'MUT158'
+const selfCheckFor = c => selfCheckEnv // MUTATED: selfCheckEnv offered to externals too
+MUT158
+      mut_replace_block "$target" 'selfCheckFor = c => selfCheckEnv &&' 1 "$rep"
+      ;;
+    159)
+      # triage-compare.js: any present error field invalidates, even an empty string.
+      cat > "$rep" <<'MUT159'
+  if (pc.error != null || (pc.applies === true && pc.rc == null)) { // MUTATED: any present error field invalidates
+MUT159
+      mut_replace_block "$target" 'if (isStr(pc.error) ||' 1 "$rep"
+      ;;
+    160)
+      # triage-compare.js: a reviewer whose findings are all malformed still scores ok.
+      cat > "$rep" <<'MUT160'
+    const allMalformed = c => false // MUTATED: all-malformed reviewer scored ok
+MUT160
+      mut_replace_block "$target" 'const allMalformed = c => c.ok.length === 0 && c.dropped > 0' 1 "$rep"
+      ;;
+    161)
+      # triage-compare.js: cleanPath cuts an absolute path at the LAST /snap/, not the first.
+      cat > "$rep" <<'MUT161'
+    if (s.startsWith('/')) { const i = s.lastIndexOf('/snap/'); return i >= 0 ? s.slice(i + 6) : s } // MUTATED: last /snap/ instead of first
+MUT161
+      mut_replace_block "$target" 'return i >= 0 ? s.slice(i + 6) : s }' 1 "$rep"
+      ;;
+    162)
+      # patch-check.sh: --summary no longer emits the PATCHCHECK json line.
+      cat > "$rep" <<'MUT162'
+  : # MUTATED: --summary line dropped
+MUT162
+      mut_replace_block "$target" "sed 's/^/PATCHCHECK /'" 1 "$rep"
+      ;;
+    163)
+      # stage-worktree.sh: leakcheck --line no longer emits the LEAKCHECK json line.
+      cat > "$rep" <<'MUT163'
+  printf '%s\n' "$json" # MUTATED: LEAKCHECK line never emitted
+MUT163
+      mut_replace_block "$target" "printf 'LEAKCHECK %s" 1 "$rep"
+      ;;
+    164)
+      # install.sh backup_path: back to the first free name.
+      cat > "$rep" <<'MUT164'
+  n=1; while [ -e "$b" ] || [ -L "$b" ]; do b="$1.bak-triage-$STAMP-$n"; n=$((n + 1)); done # MUTATED: first free backup name
+MUT164
+      mut_replace_block "$target" '  if [ -e "$b" ] || [ -L "$b" ] || ls -d "$b"-* >/dev/null 2>&1; then' 9 "$rep"
+      ;;
+    165)
+      # install.sh backups_oldest_first: -N compared as text.
+      cat > "$rep" <<'MUT165'
+  done | LC_ALL=C sort -k1,1 -k2,2 | cut -d' ' -f3- # MUTATED: -N sorted as text
+MUT165
+      mut_replace_block "$target" "  done | LC_ALL=C sort -k1,1 -k2,2n | cut -d' ' -f3-" 1 "$rep"
+      ;;
     110)
       # parity-report.sh COMMIT: a same-content re-ingest appends all its lines.
       cat > "$rep" <<'MUT110'
@@ -1633,6 +1786,22 @@ verify_mutation() {
     147) grep -qF 'MUTATED: settings status not checked' "$target" && ! grep -qF -- '--settings-status 2>&1' "$target" ;;
     148) ! grep -qF 'parity-cost.sh parity-report.sh' "$target" ;;
     149) ! grep -qF 'check_file "scripts/triage-stats.sh"' "$target" ;;
+    150) grep -qF 'MUTATED: --require-clean dropped' "$target" && ! grep -qF -- '--patch ${shq(patch)} --require-clean' "$target" ;;
+    151) grep -qF 'MUTATED: challenger effort stored' "$target" && ! grep -qF ': { level: st.level, vendor: ch.vendor, effort: st.effort }' "$target" ;;
+    152) grep -qF 'MUTATED: patch identity not checked' "$target" && ! grep -qF -- '&& ap.patch === patch' "$target" ;;
+    153) grep -qF 'MUTATED: planned danger floor check dropped' "$target" && ! grep -qF "return { skip: 'planned-below-danger-floor' }" "$target" ;;
+    154) grep -qF 'MUTATED: top-claude ineligibility dropped' "$target" && ! grep -qF "return { skip: 'top-claude' }" "$target" ;;
+    155) grep -qF 'MUTATED: entry via raw hash modulo (low bits)' "$target" && ! grep -qF 'Math.floor(draw(`${key}\0entry`) * list.length)' "$target" ;;
+    156) grep -qF 'MUTATED: never adds to neverRanExternally' "$target" && ! grep -qF 'if (plannedNothing) neverRanExternally.add(st.id)' "$target" ;;
+    157) grep -qF 'MUTATED: outOfScope always false' "$target" && ! grep -qF 'const outOfScope = !files.length || !changed ? null :' "$target" ;;
+    158) grep -qF 'MUTATED: selfCheckEnv offered to externals too' "$target" && ! grep -qF "selfCheckFor = c => selfCheckEnv && c.vendor === 'claude'" "$target" ;;
+    159) grep -qF 'MUTATED: any present error field invalidates' "$target" && ! grep -qF 'if (isStr(pc.error) ||' "$target" ;;
+    160) grep -qF 'MUTATED: all-malformed reviewer scored ok' "$target" && ! grep -qF 'const allMalformed = c => c.ok.length === 0 && c.dropped > 0' "$target" ;;
+    161) grep -qF 'MUTATED: last /snap/ instead of first' "$target" && ! grep -qF 'const i = s.indexOf(' "$target" ;;
+    162) grep -qF 'MUTATED: --summary line dropped' "$target" && ! grep -qF "sed 's/^/PATCHCHECK /'" "$target" ;;
+    163) grep -qF 'MUTATED: LEAKCHECK line never emitted' "$target" && ! grep -qF "printf 'LEAKCHECK %s" "$target" ;;
+    164) grep -qF 'MUTATED: first free backup name' "$target" && ! grep -qF 'ls -d "$b"-* >/dev/null 2>&1; then' "$target" ;;
+    165) grep -qF 'MUTATED: -N sorted as text' "$target" && ! grep -qF -- '-k2,2n' "$target" ;;
     110) grep -qF 'MUTATED: dedupe dropped' "$target" && ! grep -qF 'select(okey as $k | any($have[]; . == $k) | not)] as $miss' "$target" ;;
     111) grep -qF 'MUTATED: collision skipped' "$target" && ! grep -qF 'else {action: "refuse", lines: []' "$target" ;;
     112) grep -qF 'MUTATED: UTC offset ignored' "$target" && ! grep -qF '(if $c.sg == null then 0 else' "$target" ;;
