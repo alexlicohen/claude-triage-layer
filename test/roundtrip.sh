@@ -856,6 +856,16 @@ done
 chk "R2: after 8 edited syncs exactly the newest 5 backups remain (edit-4..edit-8)" \
   '[ "$(ls "$R_DIR"/statusline.sh.bak-triage-* | wc -l | tr -d " ")" -eq 5 ] && grep -lx "edit-8" "$R_DIR"/statusline.sh.bak-triage-* >/dev/null && grep -lx "edit-4" "$R_DIR"/statusline.sh.bak-triage-* >/dev/null && ! grep -lx "edit-3" "$R_DIR"/statusline.sh.bak-triage-* >/dev/null'
 chk "R3: the repo copy is back in place after the sync" 'cmp -s "$REPO_DIR/statusline.sh" "$R_DIR/statusline.sh"'
+# R4 pins one stamp for every sync (the same-second clash a fast machine hits): a
+# pruned-free older name must never be reused, and -10/-11 must sort after -2.
+R4_DIR=$(new_sandbox)
+run_install "$R4_DIR" >/dev/null 2>&1
+for n in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  printf 'edit-%s\n' "$n" > "$R4_DIR/statusline.sh"
+  TRIAGE_INSTALL_STAMP=20260101T000000Z CLAUDE_DIR="$R4_DIR" "$REPO_DIR/install.sh" --files-only >/dev/null 2>&1
+done
+chk "R4: 12 same-second syncs keep exactly the newest 5 backups (edit-8..edit-12)" \
+  '[ "$(ls "$R4_DIR"/statusline.sh.bak-triage-* | wc -l | tr -d " ")" -eq 5 ] && (for e in 8 9 10 11 12; do grep -lx "edit-$e" "$R4_DIR"/statusline.sh.bak-triage-* >/dev/null || exit 1; done) && ! grep -lx "edit-7" "$R4_DIR"/statusline.sh.bak-triage-* >/dev/null'
 
 # =============================================================================
 # Case U — uninstall never destroys bytes the repo cannot reproduce (M32, agent

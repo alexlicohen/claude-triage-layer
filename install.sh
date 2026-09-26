@@ -55,7 +55,8 @@ OWNER_MARK="TRIAGE_LAYER_OWNS_SUBAGENT_MODEL"
 # NOT remove it without a marker (it says so instead). Frozen: new installs mark.
 LEGACY_SUBAGENT_MODELS="claude-opus-5 claude-opus-5-5"
 BACKUP_KEEP=5
-STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+# TRIAGE_INSTALL_STAMP: test hook only (forces the same-second clash case).
+STAMP="${TRIAGE_INSTALL_STAMP:-$(date -u +%Y%m%dT%H%M%SZ)}"
 
 # Single owner of the legacy-default decision: is $1 a previous installer default?
 is_legacy_subagent_model() {
@@ -216,22 +217,40 @@ plan_file_status() { # $1 = src, $2 = dst
 # Single owner of backups. A backup is <file>.bak-triage-<UTC stamp>[-N] (one stamp
 # per run, -N only on a same-second clash), so a later sync never overwrites an
 # earlier backup; only the newest BACKUP_KEEP per file are kept.
+# Age order is (stamp, N) with N numeric (-10 after -2) and no -N = 0; a clash takes
+# one past the HIGHEST N in use, never the first free name — pruning may have freed
+# an older name, and reusing it would make the newest backup sort as the oldest.
+backups_oldest_first() { # $1 = file -> its backups, oldest first, one per line
+  local b rest
+  for b in "$1".bak-triage-[0-9]*; do
+    [ -e "$b" ] || [ -L "$b" ] || continue
+    rest=${b#"$1".bak-triage-}
+    case "$rest" in
+      *-*) printf '%s %s %s\n' "${rest%%-*}" "${rest#*-}" "$b" ;;
+      *)   printf '%s 0 %s\n' "$rest" "$b" ;;
+    esac
+  done | LC_ALL=C sort -k1,1 -k2,2n | cut -d' ' -f3-
+}
 backup_path() { # $1 = file -> prints a fresh backup path
-  local b i
+  local b n max
   b="$1.bak-triage-$STAMP"
-  i=1
-  while [ -e "$b" ] || [ -L "$b" ]; do b="$1.bak-triage-$STAMP-$i"; i=$((i + 1)); done
+  if [ -e "$b" ] || [ -L "$b" ] || ls -d "$b"-* >/dev/null 2>&1; then
+    max=0
+    for n in "$b"-*; do
+      n=${n#"$b"-}
+      case "$n" in ''|*[!0-9]*) continue ;; esac
+      if [ "$n" -gt "$max" ]; then max=$n; fi
+    done
+    b="$b-$((max + 1))"
+  fi
   printf '%s' "$b"
 }
 prune_backups() { # $1 = file whose timestamped backups to prune to the newest BACKUP_KEEP
   local n b
-  n=0
-  for b in "$1".bak-triage-[0-9]*; do
-    if [ -e "$b" ]; then n=$((n + 1)); fi
-  done
-  for b in "$1".bak-triage-[0-9]*; do
+  n=$(backups_oldest_first "$1" | wc -l | tr -d ' ')
+  backups_oldest_first "$1" | while IFS= read -r b; do
     [ "$n" -gt "$BACKUP_KEEP" ] || break
-    if [ -e "$b" ]; then rm -f "$b"; n=$((n - 1)); fi
+    rm -f "$b"; n=$((n - 1))
   done
 }
 backup_copy() { # $1 = file -> copy saved to a fresh backup path (printed)

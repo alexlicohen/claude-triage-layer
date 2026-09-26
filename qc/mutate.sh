@@ -111,7 +111,10 @@ done
 # all-malformed reviewer reported unavailable (never scored 0), cleanPath cutting
 # at the FIRST /snap/ (triage-compare.js); patch-check.sh's one --summary
 # PATCHCHECK line; stage-worktree.sh's one leakcheck --line LEAKCHECK line.
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163"
+# 164-165 cover install.sh's backup naming under a same-second clash: a new backup
+# takes one past the HIGHEST -N (never a pruned-free older name), and backups age in
+# numeric -N order (-10 after -2).
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -228,6 +231,7 @@ mut_file() {
     157|158|159|160|161) echo "workflows/triage-compare.js" ;;
     162) echo "scripts/patch-check.sh" ;;
     163) echo "scripts/stage-worktree.sh" ;;
+    164|165) echo "install.sh" ;;
     *) echo "" ;;
   esac
 }
@@ -352,6 +356,8 @@ mut_desc() {
     161) echo "triage-compare.js: cleanPath cuts an absolute path at the LAST /snap/ instead of the first" ;;
     162) echo "patch-check.sh: --summary no longer emits the one PATCHCHECK json line" ;;
     163) echo "stage-worktree.sh: leakcheck --line no longer emits the one LEAKCHECK json line" ;;
+    164) echo "install.sh: a same-second backup reuses the first free name (a pruned older slot), so the newest backup sorts oldest and is pruned" ;;
+    165) echo "install.sh: backups age in text order of -N (-10 before -2), pruning newer backups first" ;;
     91) echo "triage-exec.js (bake-off): an EMPTY diff counts as the passing choice (a no-op 'pass' beats a challenger's real patch)" ;;
     92) echo "triage-exec.js (bake-off): a patch that changes paths outside the subtask's files is inline-applied" ;;
     93) echo "triage-exec.js (bake-off): an unknown leak state runs the subtask in place on an unchecked tree" ;;
@@ -422,6 +428,7 @@ mut_suite() {
     157|158|159|160|161) echo "compare" ;;
     162) echo "patchcheck" ;;
     163) echo "stagewt" ;;
+    164|165) echo "roundtrip" ;;
     *) echo "" ;;
   esac
 }
@@ -1372,6 +1379,20 @@ MUT162
 MUT163
       mut_replace_block "$target" "printf 'LEAKCHECK %s" 1 "$rep"
       ;;
+    164)
+      # install.sh backup_path: back to the first free name.
+      cat > "$rep" <<'MUT164'
+  n=1; while [ -e "$b" ] || [ -L "$b" ]; do b="$1.bak-triage-$STAMP-$n"; n=$((n + 1)); done # MUTATED: first free backup name
+MUT164
+      mut_replace_block "$target" '  if [ -e "$b" ] || [ -L "$b" ] || ls -d "$b"-* >/dev/null 2>&1; then' 9 "$rep"
+      ;;
+    165)
+      # install.sh backups_oldest_first: -N compared as text.
+      cat > "$rep" <<'MUT165'
+  done | LC_ALL=C sort -k1,1 -k2,2 | cut -d' ' -f3- # MUTATED: -N sorted as text
+MUT165
+      mut_replace_block "$target" "  done | LC_ALL=C sort -k1,1 -k2,2n | cut -d' ' -f3-" 1 "$rep"
+      ;;
     110)
       # parity-report.sh COMMIT: a same-content re-ingest appends all its lines.
       cat > "$rep" <<'MUT110'
@@ -1779,6 +1800,8 @@ verify_mutation() {
     161) grep -qF 'MUTATED: last /snap/ instead of first' "$target" && ! grep -qF 'const i = s.indexOf(' "$target" ;;
     162) grep -qF 'MUTATED: --summary line dropped' "$target" && ! grep -qF "sed 's/^/PATCHCHECK /'" "$target" ;;
     163) grep -qF 'MUTATED: LEAKCHECK line never emitted' "$target" && ! grep -qF "printf 'LEAKCHECK %s" "$target" ;;
+    164) grep -qF 'MUTATED: first free backup name' "$target" && ! grep -qF 'ls -d "$b"-* >/dev/null 2>&1; then' "$target" ;;
+    165) grep -qF 'MUTATED: -N sorted as text' "$target" && ! grep -qF -- '-k2,2n' "$target" ;;
     110) grep -qF 'MUTATED: dedupe dropped' "$target" && ! grep -qF 'select(okey as $k | any($have[]; . == $k) | not)] as $miss' "$target" ;;
     111) grep -qF 'MUTATED: collision skipped' "$target" && ! grep -qF 'else {action: "refuse", lines: []' "$target" ;;
     112) grep -qF 'MUTATED: UTC offset ignored' "$target" && ! grep -qF '(if $c.sg == null then 0 else' "$target" ;;
