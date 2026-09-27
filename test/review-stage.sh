@@ -14,7 +14,8 @@
 # refusals (inside / containing the repo, not empty); the .codex-deny carry-over;
 # the live repo untouched; fingerprint scoped to its paths (a change outside them,
 # or a hard-excluded one, is not a change; a second edit to a dirty file is);
-# compare exit codes; HARD_DENY_REPOS in step with ext-run.sh.
+# compare exit codes; HARD_DENY_REPOS in step with ext-run.sh; deny-refresh
+# re-asking the snapshot's deny queries for an extension (fail closed).
 # shellcheck disable=SC2034  # *_BEFORE etc. are read inside chk's eval'd conditions
 set -u
 
@@ -221,6 +222,43 @@ chk "S7g ...and without it the same repo is not denied" '[ "$RC" -eq 0 ] && [ ! 
 OUT=$(REVIEW_STAGE_EXT_RUN="$T/no-such-ext-run.sh" "$RS" snapshot --repo "$CX" --base HEAD --head HEAD --include 'docs/**' --out "$T/out-cx3" 2>"$T/err"); RC=$?; ERR=$(cat "$T/err")
 chk "S7h no ext-run.sh to ask → the snapshot is marked off-limits to codex (fail closed)" \
   '[ "$RC" -eq 0 ] && [ -f "$T/out-cx3/.codex-deny" ] && printf "%s" "$ERR" | grep -q "missing"'
+
+# --- S9: deny-refresh — the snapshot's deny queries asked again (review extend) ------
+DR="$T/out-cx2"
+run_rs deny-refresh --repo "$CX" --out "$DR"
+chk "S9 deny-refresh on an allowed repo: exit 0, {step deny-refresh, codexDenied false}, no .codex-deny written" \
+  '[ "$RC" -eq 0 ] && [ "$(j .step)" = deny-refresh ] && [ "$(j .codexDenied)" = false ] && [ ! -e "$DR/.codex-deny" ]'
+: > "$T/cx/.codex-deny"
+run_rs deny-refresh --repo "$CX" --out "$DR"
+chk "S9b a .codex-deny marker added AFTER staging: codexDenied true, and the out dir gets .codex-deny (ext-run.sh then refuses the snapshot)" \
+  '[ "$RC" -eq 0 ] && [ "$(j .codexDenied)" = true ] && [ -f "$DR/.codex-deny" ]'
+rm -f "$T/cx/.codex-deny" "$DR/.codex-deny"
+OUT=$(CODEX_DENY_REPOS="codex-private" "$RS" deny-refresh --repo "$CX" --out "$DR" 2>"$T/err"); RC=$?; ERR=$(cat "$T/err")
+chk "S9c a CODEX_DENY_REPOS entry added after staging: codexDenied true" '[ "$RC" -eq 0 ] && [ "$(j .codexDenied)" = true ] && [ -f "$DR/.codex-deny" ]'
+rm -f "$DR/.codex-deny"
+OUT=$(REVIEW_STAGE_EXT_RUN="$T/no-such-ext-run.sh" "$RS" deny-refresh --repo "$CX" --out "$DR" 2>"$T/err"); RC=$?; ERR=$(cat "$T/err")
+chk "S9d no ext-run.sh to ask: codexDenied true (fail closed)" '[ "$RC" -eq 0 ] && [ "$(j .codexDenied)" = true ] && printf "%s" "$ERR" | grep -q "missing"'
+rm -f "$DR/.codex-deny"
+mkdir -p "$T/xsrc"; printf '{}\n' > "$T/xsrc/cache.json"
+run_rs snapshot --repo "$CX" --base HEAD --head HEAD --include 'docs/**' --extra "$T/xsrc/cache.json:c.json" --out "$T/out-cxe"
+run_rs deny-refresh --repo "$CX" --out "$T/out-cxe"
+chk "S9e ...an extra's source, allowed at staging and now: codexDenied false" '[ "$RC" -eq 0 ] && [ "$(j .codexDenied)" = false ]'
+: > "$T/xsrc/.codex-deny"
+run_rs deny-refresh --repo "$CX" --out "$T/out-cxe"
+chk "S9f a .codex-deny marker added next to an --extra SOURCE after staging (from the manifest's extras): codexDenied true" \
+  '[ "$RC" -eq 0 ] && [ "$(j .codexDenied)" = true ] && [ -f "$T/out-cxe/.codex-deny" ]'
+rm -f "$T/xsrc/.codex-deny"
+run_rs deny-refresh --repo "$CX" --out "$T/out-none"
+chk "S9g no manifest.json under --out: codexDenied true (fail closed), nothing created" '[ "$RC" -eq 0 ] && [ "$(j .codexDenied)" = true ] && [ ! -e "$T/out-none" ]'
+mkdir -p "$T/out-garbled/snap"; printf '{"extras": "nope"}\n' > "$T/out-garbled/manifest.json"
+run_rs deny-refresh --repo "$CX" --out "$T/out-garbled"
+chk "S9h a manifest whose extras are garbled: codexDenied true" '[ "$RC" -eq 0 ] && [ "$(j .codexDenied)" = true ] && [ -f "$T/out-garbled/.codex-deny" ]'
+rm -f "$DR/.codex-deny"
+run_rs deny-refresh --repo "$T/not-a-repo" --out "$DR"
+chk "S9i a --repo that is no git work tree: codexDenied true" '[ "$RC" -eq 0 ] && [ "$(j .codexDenied)" = true ]'
+rm -f "$DR/.codex-deny"
+run_rs deny-refresh --out "$DR"
+chk "S9j deny-refresh without --repo is a usage error (exit 2, no JSON)" '[ "$RC" -eq 2 ] && [ -z "$OUT" ]'
 
 # --- S8: hard-exclude globbing (H6) and case-insensitive defaults -------------------
 HX="$T/hx/repo"

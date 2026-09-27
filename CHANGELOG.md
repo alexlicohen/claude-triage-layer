@@ -4,6 +4,26 @@ Reverse-chronological. Each entry cites the commit(s) it corresponds to and,
 where known, the test-count delta. See `test/roundtrip.sh` and `test/lint.sh`
 for the current check catalog.
 
+## Wave 17 — review-extend deny refresh; verify/drift split (branch wave17-extend-deny-verify-split)
+
+Closes two Wave 16 deferred items.
+- Review `extend` re-asks the codex deny before any codex reviewer or adjudicator runs:
+  new `review-stage.sh deny-refresh --repo --out` re-runs the snapshot's own
+  `codex_denied()` queries (repo `--beneath` + each extra; `ext-run.sh deny-query` still
+  owns the rule) and prints `{"codexDenied": bool}`; a missing/garbled manifest, a
+  non-repo, or a missing/erroring `ext-run.sh` answers denied, and a deny writes
+  `<snap>/.codex-deny`. triage-compare runs it inside the existing extend check spawn
+  (no new spawn); the extend's deny = prior OR manifest OR refreshed OR relay missing
+  (fail closed), with its own flag and unavailable reason.
+- `make verify` = lint → test (the gate for any branch, no live-install dependence);
+  new `make verify-live` = verify → drift, run after `make sync`. AGENTS.md line 3
+  updated (approved).
+- Checks: review-stage 61 → 71, compare-scenarios 339 → 348; mutations 166–169
+  (refreshed deny ignored, relay-missing fails open, repo query not re-asked, missing
+  manifest fails open).
+- Note: both packets were planned on codex but the triage-external wrapper refused
+  them (brief lacked a data-boundary attestation); triage-exec redid them on Claude.
+
 ## Wave 16 — deep-review fixes: bake-off/grading correctness, ledger integrity, install safety (branch wave16)
 
 Triggered by a deep multi-agent + codex review of Waves 10–15 (2026-09-25). Threat model

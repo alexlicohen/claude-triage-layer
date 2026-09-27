@@ -114,7 +114,11 @@ done
 # 164-165 cover install.sh's backup naming under a same-second clash: a new backup
 # takes one past the HIGHEST -N (never a pruned-free older name), and backups age in
 # numeric -N order (-10 after -2).
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165"
+# 166-169 cover the review-extend deny refresh: triage-compare.js using the re-asked
+# deny (codexDeniedNow) and failing closed when the relay drops it; review-stage.sh
+# deny-refresh re-asking the repo's deny query and failing closed on a missing
+# manifest.
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165 166 167 168 169"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -232,6 +236,8 @@ mut_file() {
     162) echo "scripts/patch-check.sh" ;;
     163) echo "scripts/stage-worktree.sh" ;;
     164|165) echo "install.sh" ;;
+    166|167) echo "workflows/triage-compare.js" ;;
+    168|169) echo "scripts/review-stage.sh" ;;
     *) echo "" ;;
   esac
 }
@@ -358,6 +364,10 @@ mut_desc() {
     163) echo "stage-worktree.sh: leakcheck --line no longer emits the one LEAKCHECK json line" ;;
     164) echo "install.sh: a same-second backup reuses the first free name (a pruned older slot), so the newest backup sorts oldest and is pruned" ;;
     165) echo "install.sh: backups age in text order of -N (-10 before -2), pruning newer backups first" ;;
+    166) echo "triage-compare.js (review extend): the re-asked deny (codexDeniedNow) is ignored — a deny added since staging still sends the snapshot to codex" ;;
+    167) echo "triage-compare.js (review extend): a relay that drops or garbles codexDeniedNow counts as allowed (fails open)" ;;
+    168) echo "review-stage.sh deny-refresh: the repo's deny query is not re-asked (a marker or CODEX_DENY_REPOS entry added since staging is missed)" ;;
+    169) echo "review-stage.sh deny-refresh: a missing manifest.json answers allowed (fails open)" ;;
     91) echo "triage-exec.js (bake-off): an EMPTY diff counts as the passing choice (a no-op 'pass' beats a challenger's real patch)" ;;
     92) echo "triage-exec.js (bake-off): a patch that changes paths outside the subtask's files is inline-applied" ;;
     93) echo "triage-exec.js (bake-off): an unknown leak state runs the subtask in place on an unchecked tree" ;;
@@ -429,6 +439,8 @@ mut_suite() {
     162) echo "patchcheck" ;;
     163) echo "stagewt" ;;
     164|165) echo "roundtrip" ;;
+    166|167) echo "compare" ;;
+    168|169) echo "reviewstage" ;;
     *) echo "" ;;
   esac
 }
@@ -1393,6 +1405,34 @@ MUT164
 MUT165
       mut_replace_block "$target" "  done | LC_ALL=C sort -k1,1 -k2,2n | cut -d' ' -f3-" 1 "$rep"
       ;;
+    166)
+      # triage-compare.js (review extend): the deny re-asked at extend is ignored.
+      cat > "$rep" <<'MUT166'
+    const deniedNow = false // MUTATED: refreshed deny ignored
+MUT166
+      mut_replace_block "$target" '    const deniedNow = prior.codexDeniedNow !== false' 1 "$rep"
+      ;;
+    167)
+      # triage-compare.js (review extend): a dropped/garbled codexDeniedNow counts as allowed.
+      cat > "$rep" <<'MUT167'
+          codexDeniedNow: c.codexDeniedNow === true, // MUTATED: missing refresh allows codex
+MUT167
+      mut_replace_block "$target" "          codexDeniedNow: typeof c.codexDeniedNow === 'boolean' ? c.codexDeniedNow : true," 1 "$rep"
+      ;;
+    168)
+      # review-stage.sh deny-refresh: the repo's deny query is skipped.
+      cat > "$rep" <<'MUT168'
+    : # MUTATED: deny-refresh skips the repo
+MUT168
+      mut_replace_block "$target" '    if codex_denied --beneath "$R"; then denied=true; fi' 1 "$rep"
+      ;;
+    169)
+      # review-stage.sh deny-refresh: no manifest → allowed (fail open).
+      cat > "$rep" <<'MUT169'
+    : # MUTATED: missing manifest allows codex
+MUT169
+      mut_replace_block "$target" '    echo "review-stage: deny-refresh: no $OUT/manifest.json' 2 "$rep"
+      ;;
     110)
       # parity-report.sh COMMIT: a same-content re-ingest appends all its lines.
       cat > "$rep" <<'MUT110'
@@ -1802,6 +1842,10 @@ verify_mutation() {
     163) grep -qF 'MUTATED: LEAKCHECK line never emitted' "$target" && ! grep -qF "printf 'LEAKCHECK %s" "$target" ;;
     164) grep -qF 'MUTATED: first free backup name' "$target" && ! grep -qF 'ls -d "$b"-* >/dev/null 2>&1; then' "$target" ;;
     165) grep -qF 'MUTATED: -N sorted as text' "$target" && ! grep -qF -- '-k2,2n' "$target" ;;
+    166) grep -qF 'MUTATED: refreshed deny ignored' "$target" && ! grep -qF 'const deniedNow = prior.codexDeniedNow !== false' "$target" ;;
+    167) grep -qF 'MUTATED: missing refresh allows codex' "$target" && ! grep -qF "codexDeniedNow: typeof c.codexDeniedNow === 'boolean' ? c.codexDeniedNow : true," "$target" ;;
+    168) grep -qF 'MUTATED: deny-refresh skips the repo' "$target" && ! grep -qF 'if codex_denied --beneath "$R"; then denied=true; fi' "$target" ;;
+    169) grep -qF 'MUTATED: missing manifest allows codex' "$target" && ! grep -qF 'deny-refresh: no $OUT/manifest.json' "$target" ;;
     110) grep -qF 'MUTATED: dedupe dropped' "$target" && ! grep -qF 'select(okey as $k | any($have[]; . == $k) | not)] as $miss' "$target" ;;
     111) grep -qF 'MUTATED: collision skipped' "$target" && ! grep -qF 'else {action: "refuse", lines: []' "$target" ;;
     112) grep -qF 'MUTATED: UTC offset ignored' "$target" && ! grep -qF '(if $c.sg == null then 0 else' "$target" ;;
