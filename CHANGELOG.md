@@ -4,6 +4,24 @@ Reverse-chronological. Each entry cites the commit(s) it corresponds to and,
 where known, the test-count delta. See `test/roundtrip.sh` and `test/lint.sh`
 for the current check catalog.
 
+## Wave 18 — external refusals are attested and reported (branch wave18-external-refusals)
+
+Live failure 2026-09-27 (wf_e41e2345-ec5): both planned codex subtasks were refused by
+triage-external (no boundary attestation); one refusal followed a preamble line, was
+read as work and reported as "codex output failed verification".
+- Auto-attest (user decision): runOn() prepends `BOUNDARY_ATTESTATION` to every
+  triage-external brief; choosing `vendor: 'codex'` at plan time is the orchestrator's
+  boundary decision. One constant, shared with the crossReview brief. The wrapper's own
+  refusals and ext-run.sh's deny-list are unchanged.
+- `classifyExternal()` (replaces `externalProducedNothing()`): the first line starting
+  `EXTERNAL (` / `REFUSED:` / `UNAVAILABLE:` decides; none = `malformed` (no work).
+- Reporting: escalation reason and log name kind + reason; `report.external.<vendor>`
+  gains `refused[{id, reason}]` and `unavailable[{id, reason, kind}]`.
+- Checks: workflow-scenarios 369 → 382; mutations 170–173.
+- First live inline bake-off since Wave 16 (deep rate forced to 1): planned opus@high and
+  codex gpt-6-astra@high both pass, leak false, planned applied, ledger +1 line — the
+  16A grader relay works live.
+
 ## Wave 17 — review-extend deny refresh; verify/drift split (branch wave17-extend-deny-verify-split)
 
 Closes two Wave 16 deferred items.
