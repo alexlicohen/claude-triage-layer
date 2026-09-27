@@ -19,7 +19,7 @@
 // attach-without-re-adjudication, blind adjudication of new items only, superseded
 // runs kept but unscored, recall recomputed — and the check's real jq command.
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -1139,7 +1139,7 @@ const RV = await run(RA({}), RV_SCRIPT())
 const PRIOR = RV.result
 const CHECK = (prior, over = {}) => Object.assign({
   ok: true, resolvedBase: prior.base, resolvedHead: prior.head, manifestBase: prior.base, manifestHead: prior.head,
-  snapshotExists: true, snapshotOk: true, fingerprintExists: true, codexDenied: false, files: 3, extras: 0, diffBytes: 50, snapKB: 4, scopeOk: true,
+  snapshotExists: true, snapshotOk: true, fingerprintExists: true, codexDenied: false, codexDeniedNow: false, files: 3, extras: 0, diffBytes: 50, snapKB: 4, scopeOk: true,
 }, over)
 const clone = v => JSON.parse(JSON.stringify(v))
 const EXT_REVIEWERS = [
@@ -1258,7 +1258,7 @@ const noReviewer = calls => !calls.some(c => /^(reviewer:|review:merge|adjudicat
   const props = Object.keys(ck.opts.schema.properties)
   chk('EX3: exactly ONE extend spawn, and its schema holds only small snapshot scalars (no items, reviewers or digest)',
     ext.length === 1 && props.every(k => ['ok', 'error', 'resolvedBase', 'resolvedHead', 'manifestBase', 'manifestHead', 'snapshotExists', 'snapshotOk',
-      'fingerprintExists', 'codexDenied', 'files', 'extras', 'diffBytes', 'snapKB', 'scopeOk'].includes(k)) && !props.includes('items') && !props.includes('reviewers'))
+      'fingerprintExists', 'codexDenied', 'codexDeniedNow', 'files', 'extras', 'diffBytes', 'snapKB', 'scopeOk'].includes(k)) && !props.includes('items') && !props.includes('reviewers'))
   chk('EX3: …its prompt carries no prior item text or reviewer label, and stays small',
     PRIOR.items.every(it => !ck.prompt.includes(it.claim)) && PRIOR.reviewers.every(x => !ck.prompt.includes(x.label)) && ck.prompt.length < 2000)
   chk('EX3: the prior items reach the result verbatim from the inline object (text, verdict, adjudication)',
@@ -1282,6 +1282,9 @@ const EX = await run(XA({}), XS())
   chk('EX4: the check runs one jq -n command over the outDir manifest, snap/, range.diff and the rev-parse of base/head, with the prior shas as args (no input file)',
     ld.prompt.includes(`jq -n -c --arg pb '${RB}' --arg ph '${RH}'`) && ld.prompt.includes(`--slurpfile man '${ROUT}/manifest.json'`) && ld.prompt.includes(`[ -d '${SNAPDIR}' ] && [ -f '${ROUT}/range.diff' ]`) &&
     ld.prompt.includes(`git -C '${LIVE}' rev-parse --verify --quiet 'abc123^{commit}'`) && ld.prompt.includes(`'HEAD^{commit}'`) && !ld.opts.schema.properties.digest && !/prior-result|utf8bytelength/.test(ld.prompt))
+  chk('EX4: …and the same command re-asks the codex deny through review-stage.sh deny-refresh (the live repo, the prior outDir), relayed as codexDeniedNow',
+    ld.prompt.includes(`--arg dr "$(~/.claude/scripts/review-stage.sh deny-refresh --repo '${LIVE}' --out '${ROUT}' 2>/dev/null)"`) && ld.opts.schema.properties.codexDeniedNow &&
+    /codexDeniedNow: \(if \(\$drj \| type\) == "object" and \$drj\.codexDenied == false then false else true end\)/.test(ld.prompt))
   chk('EX4: returns the prior base/head/outDir, extendedFrom, the new item ids and the superseded labels',
     result.kind === 'review' && result.base === RB && result.head === RH && result.outDir === ROUT &&
     JSON.stringify(result.extendedFrom) === JSON.stringify({ base: RB, head: RH, outDir: ROUT, reviewers: PRIOR.reviewers.map(x => x.label), items: 7 }) &&
@@ -1294,6 +1297,31 @@ const EX = await run(XA({}), XS())
   const cx = calls.find(c => c.label === 'reviewer:rv-astra2')
   chk('EX4: a new codex reviewer gets the same header contract (MODE=read, INPUT_DIR = the prior snapshot, TIMEOUT, PROMPT_BYTES)',
     cx.prompt.startsWith(`VENDOR=codex\nMODE=read\nMODEL=gpt-6-astra\nEFFORT=high\nINPUT_DIR=${SNAPDIR}\nTIMEOUT=30m\nPROMPT_BYTES=`))
+}
+
+// ---- EX11: the codex deny is re-asked at extend, never only carried over ----------------
+{
+  const reCheckFlag = res => res.flags.some(f => /re-checked at extend/.test(f))
+  const codexSpawned = calls => calls.some(c => c.label === 'reviewer:rv-astra2' || /^adjudicate:codex/.test(c.label))
+  chk('EX11: an allowed re-check (codexDeniedNow false) extends with codex exactly as before (reviewer spawned, no deny flag)',
+    EX.calls.some(c => c.label === 'reviewer:rv-astra2') && EX.calls.some(c => /^adjudicate:codex/.test(c.label)) &&
+    rvRev(EX.result, 'rv-astra2').status === 'ok' && !reCheckFlag(EX.result) && !EX.result.flags.some(f => /off-limits to codex/.test(f)))
+  const cases = [
+    ['a deny added since the original run (codexDeniedNow true)', CHECK(PRIOR, { codexDeniedNow: true })],
+    ['a relay that drops codexDeniedNow (the refresh field missing)', Object.assign(CHECK(PRIOR), { codexDeniedNow: undefined })],
+    ['a garbled codexDeniedNow (the string "false")', CHECK(PRIOR, { codexDeniedNow: 'false' })],
+  ]
+  for (const [what, ck] of cases) {
+    const { result, calls } = await run(XA({}), XS({ 'review:extend-check': [ck] }))
+    const cx = rvRev(result, 'rv-astra2')
+    chk(`EX11: ${what} → no codex reviewer or adjudicator spawn; the codex reviewer is unavailable (deny re-checked at extend); flagged`,
+      !codexSpawned(calls) && cx.status === 'unavailable' && /off-limits to codex \(deny re-checked at extend\)/.test(cx.reason) && reCheckFlag(result) &&
+      rvRev(result, 'rv-new').status === 'ok' && result.newItems.length > 0 && result.items.filter(it => result.newItems.includes(it.id)).every(it => it.verdict === 'disputed'))
+  }
+  const { result: st, calls: sc } = await run(XA({}), XS({ 'review:extend-check': [CHECK(PRIOR, { codexDenied: true, codexDeniedNow: false })] }))
+  chk('EX11: a snapshot denied at staging stays denied when the re-check allows (prior OR now), with the carried-over flag, not the re-check one',
+    !codexSpawned(sc) && rvRev(st, 'rv-astra2').status === 'unavailable' && /carried into the snapshot/.test(rvRev(st, 'rv-astra2').reason) &&
+    !reCheckFlag(st) && st.flags.some(f => /off-limits to codex \(\.codex-deny \/ deny-list\)/.test(f)))
 }
 
 // ---- EX5: merge — attach or new item, blind ---------------------------------------------
@@ -1403,8 +1431,16 @@ const EX = await run(XA({}), XS())
     Object.assign(prior, { base: baseSha, head: headSha, outDir: out })
     prior.items[0].claim += ' — café → 🔩'
     prior.items[0].adjudication[1].evidence = null
+    // The real command, with THIS repo's review-stage.sh (and its ext-run.sh) in place of
+    // the live install's; HOME is the temp root so only markers placed here count.
+    const rsPath = join(here, '..', 'scripts', 'review-stage.sh')
+    const checkEnv = Object.assign({}, gitEnv, { HOME: tmp })
+    delete checkEnv.CODEX_DENY_REPOS
+    delete checkEnv.REVIEW_STAGE_EXT_RUN
+    let checkExtraEnv = {}
     const REAL_CHECK = p => {
-      try { return JSON.parse(execFileSync('bash', ['-c', p.split('\n').pop()], { encoding: 'utf8', env: gitEnv, stdio: ['ignore', 'pipe', 'pipe'] })) } catch (e) { return { ok: false, error: String(e.stderr || e.message).trim().split('\n').pop() } }
+      const cmd = p.split('\n').pop().split('~/.claude/scripts/review-stage.sh').join(`'${rsPath}'`)
+      try { return JSON.parse(execFileSync('bash', ['-c', cmd], { encoding: 'utf8', env: Object.assign({}, checkEnv, checkExtraEnv), stdio: ['ignore', 'pipe', 'pipe'] })) } catch (e) { return { ok: false, error: String(e.stderr || e.message).trim().split('\n').pop() } }
     }
     // base/head as revision NAMES, so the real rev-parse is what resolves them.
     const args = extra => RA(Object.assign({ repo, base: 'HEAD~1', head: 'HEAD', outDir: out, extendResult: prior, supersedes: [], reviewers: [{ vendor: 'claude', level: 'deep', label: 'rv-real' }] }, extra))
@@ -1416,6 +1452,24 @@ const EX = await run(XA({}), XS())
       !ok.threw && res && res.items.length === 7 && res.items[0].claim === prior.items[0].claim && res.items[0].adjudication[1].evidence === null &&
       res.extendedFrom.head === headSha && rvRev(res, 'rv-opus').precision === 1 && res.markdown.includes('Snapshot: 2 file(s), range diff 5 bytes'))
     if (ok.threw) console.log(`  (EX10 threw: ${ok.message.split('\n')[0]})`)
+    // The deny re-check, for real: review-stage.sh deny-refresh → ext-run.sh deny-query.
+    const cxArgs = args({ reviewers: [{ vendor: 'codex', level: 'deep', model: 'gpt-6-astra', effort: 'high', label: 'rv-cx' }] })
+    const cxScript = Object.assign({}, script, { 'reviewer:rv-cx': [CX({ findings: [] }, 500, 12, 'gpt-6-astra')] })
+    const reCheck = res => res.flags.some(f => /re-checked at extend/.test(f))
+    const allowed = await run(cxArgs, cxScript)
+    chk('EX10: …an unmarked repo: the real deny re-check allows, the codex reviewer runs, no deny flag, no .codex-deny written',
+      allowed.calls.some(c => c.label === 'reviewer:rv-cx') && rvRev(allowed.result, 'rv-cx').status === 'ok' && !reCheck(allowed.result) && !existsSync(join(out, '.codex-deny')))
+    writeFileSync(join(tmp, '.codex-deny'), '')
+    const marked = await run(cxArgs, cxScript)
+    chk('EX10: …a .codex-deny marker added AFTER staging: the real re-check denies — no codex spawn, unavailable, flagged, and the out dir gets .codex-deny',
+      !marked.calls.some(c => c.label === 'reviewer:rv-cx') && rvRev(marked.result, 'rv-cx').status === 'unavailable' && reCheck(marked.result) && existsSync(join(out, '.codex-deny')))
+    rmSync(join(tmp, '.codex-deny')); rmSync(join(out, '.codex-deny'))
+    checkExtraEnv = { REVIEW_STAGE_EXT_RUN: join(tmp, 'no-such-ext-run.sh') }
+    const noExt = await run(cxArgs, cxScript)
+    checkExtraEnv = {}
+    chk('EX10: …a re-check that cannot ask ext-run.sh (missing) fails closed: no codex spawn, flagged',
+      !noExt.calls.some(c => c.label === 'reviewer:rv-cx') && rvRev(noExt.result, 'rv-cx').status === 'unavailable' && reCheck(noExt.result))
+    rmSync(join(out, '.codex-deny'), { force: true })
     const hm = await throws(args({ head: 'HEAD~1' }), script)
     chk('EX10: …a head that resolves elsewhere is refused (real rev-parse)', hm.threw && /base\/head mismatch/.test(hm.message) && noReviewer(hm.calls))
     const sc = await throws(args({ hardExclude: ['secrets/'] }), script)

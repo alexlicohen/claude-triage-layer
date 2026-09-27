@@ -1,7 +1,7 @@
 export const meta = {
   name: 'triage-compare',
   description: 'Bake-off. kind build (default): run one brief on several candidates (Claude levels, codex), each in its own staged worktree outside the repo, then grade every worktree diff independently with patch-check.sh. kind review: the same pinned snapshot + range diff to N reviewers in parallel, merge duplicate findings, blind cross-vendor adjudication, per-reviewer precision/recall. Never applies anything; the real repo is never a candidate or reviewer workdir.',
-  whenToUse: 'Compare vendors/levels/models on the SAME well-specified task: /triage-compare with args = {repo, base?, brief, files, acceptance, checks:[cmd...], outDir, overlay?, selfCheckEnv?, candidates:[{vendor:claude|codex, level:quick|builder|deep|top, model?, effort?, label?}]} (agy was retired 2026-09-24 and is refused). repo is any absolute git repo path (not necessarily the session repo) and may be dirty: base (default HEAD) is resolved to ONE sha up front and each candidate works in its own detached worktree at that sha under <outDir>/stage (scripts/stage-worktree.sh), never in repo. outDir/overlay must be OUTSIDE repo and <outDir>/stage must not already exist. External (non-claude) candidates require args.files. Checks may name tools only as $PARITY_<NAME> variables (exported at grading by patch-check.sh from the parity env map; candidates see them unexpanded); selfCheckEnv:true copies <repo>/.parity-env into each CLAUDE candidate\'s worktree and tells it to source it (external candidates cannot self-check; recorded per candidate as selfCheckEnv). Several checks are graded each in its own bash -c (one check\'s || never masks another\'s failure). Candidates run one at a time (parallel:true runs them concurrently; Claude outTokens is then null); the grade is scripts/patch-check.sh on each worktree diff at the sha (plus the hidden overlay), never the candidate self-report; a leakcheck then proves repo did not change (only leak:false lets a grade stand: leak true OR unknown => every candidate invalid, graded:false; a patch patch-check could not grade, e.g. overlay-failed or a harness fault, is invalid; so is every graded candidate when the relayed PATCHCHECK line is missing, garbled or not for this sha and patch set, and a candidate whose ext-run line shows another model/effort than it asked for). Returns sha/leak/baseMoved and per-candidate status/applies/rc/diffstat/patch/tokens/model/effort/modelFrom (candidate|runner|null)/changedFiles/outOfScope (a changed path outside args.files; null without files)/captureWarnings/selfCheckEnv; check output stays in <outDir>/tails (tail names the file); the orchestrator picks and applies. REVIEW bake-off: args = {kind:"review", repo, repoName, base, head?, include:[globs], exclude?, context?, extras?:[{src,dest}], hardExclude?, groundTruth, accepted?, conventions?, outDir (fresh, outside repo), reviewers:[{vendor:claude|codex, level, model?, effort?, label?}] (codex needs model+effort), adjudicators? (default claude deep claude-opus-5-5·high + codex deep gpt-6-astra·high), batchSize?:10, reviewerTimeout?:"30m", adjudicatorTimeout?:"15m" (codex spawns only: passed as TIMEOUT= to the ext-run.sh watchdog), extendResult?:{the prior result OBJECT, inline}, supersedes?:[labels]}. scripts/review-stage.sh snapshots commit head (never the live tree; context/ and PROJECT_MEMORY*.md always hard-excluded) + the base..head range diff under outDir; reviewers read ONLY those (Claude: cd <snap> on every command; codex: INPUT_DIR, OS-confined); one deep agent merges duplicates (provenance kept here, anonymized); every merged item is judged by each adjudicator BLIND to reviewers and provenance: all real = real, all not-real/accepted-deviation = rejected, else disputed (for Alex). precision/recall per reviewer over non-disputed items; a failed or invalid reviewer is unavailable, never zero. Every codex prompt carries PROMPT_BYTES (the UTF-8 byte length of its prompt-file body) and the wrapper refuses a prompt file that is not verbatim. EXTEND (extendResult = the result OBJECT a prior run of this workflow returned, passed inline — the path form extend:"/file" is refused, a prior result never passes through an LLM; re-pass the args of the prior run with ONLY the new reviewers, base/head resolving to the prior shas, the prior outDir): the prior result is validated in code, then one quick task only checks that its snapshot still exists (manifest base/head = the prior shas); only the new reviewers run (labels must not collide with prior ones); the merge attaches each new finding to an existing item (provenance only, never re-adjudicated) or makes a new item (next id); only new items are adjudicated, blind, by the same panel; every non-superseded reviewer is rescored over the combined set (supersedes:[labels] keeps those prior runs as status superseded, unscored, their findings intact). Returns {kind, base, head, reviewers, items, disputed, sourceChanged, flags, markdown} (+ extendedFrom {base, head, outDir, reviewers, items}, newItems, superseded when extending); ingest with scripts/parity-report.sh ingest-review.',
+  whenToUse: 'Compare vendors/levels/models on the SAME well-specified task: /triage-compare with args = {repo, base?, brief, files, acceptance, checks:[cmd...], outDir, overlay?, selfCheckEnv?, candidates:[{vendor:claude|codex, level:quick|builder|deep|top, model?, effort?, label?}]} (agy was retired 2026-09-24 and is refused). repo is any absolute git repo path (not necessarily the session repo) and may be dirty: base (default HEAD) is resolved to ONE sha up front and each candidate works in its own detached worktree at that sha under <outDir>/stage (scripts/stage-worktree.sh), never in repo. outDir/overlay must be OUTSIDE repo and <outDir>/stage must not already exist. External (non-claude) candidates require args.files. Checks may name tools only as $PARITY_<NAME> variables (exported at grading by patch-check.sh from the parity env map; candidates see them unexpanded); selfCheckEnv:true copies <repo>/.parity-env into each CLAUDE candidate\'s worktree and tells it to source it (external candidates cannot self-check; recorded per candidate as selfCheckEnv). Several checks are graded each in its own bash -c (one check\'s || never masks another\'s failure). Candidates run one at a time (parallel:true runs them concurrently; Claude outTokens is then null); the grade is scripts/patch-check.sh on each worktree diff at the sha (plus the hidden overlay), never the candidate self-report; a leakcheck then proves repo did not change (only leak:false lets a grade stand: leak true OR unknown => every candidate invalid, graded:false; a patch patch-check could not grade, e.g. overlay-failed or a harness fault, is invalid; so is every graded candidate when the relayed PATCHCHECK line is missing, garbled or not for this sha and patch set, and a candidate whose ext-run line shows another model/effort than it asked for). Returns sha/leak/baseMoved and per-candidate status/applies/rc/diffstat/patch/tokens/model/effort/modelFrom (candidate|runner|null)/changedFiles/outOfScope (a changed path outside args.files; null without files)/captureWarnings/selfCheckEnv; check output stays in <outDir>/tails (tail names the file); the orchestrator picks and applies. REVIEW bake-off: args = {kind:"review", repo, repoName, base, head?, include:[globs], exclude?, context?, extras?:[{src,dest}], hardExclude?, groundTruth, accepted?, conventions?, outDir (fresh, outside repo), reviewers:[{vendor:claude|codex, level, model?, effort?, label?}] (codex needs model+effort), adjudicators? (default claude deep claude-opus-5-5·high + codex deep gpt-6-astra·high), batchSize?:10, reviewerTimeout?:"30m", adjudicatorTimeout?:"15m" (codex spawns only: passed as TIMEOUT= to the ext-run.sh watchdog), extendResult?:{the prior result OBJECT, inline}, supersedes?:[labels]}. scripts/review-stage.sh snapshots commit head (never the live tree; context/ and PROJECT_MEMORY*.md always hard-excluded) + the base..head range diff under outDir; reviewers read ONLY those (Claude: cd <snap> on every command; codex: INPUT_DIR, OS-confined); one deep agent merges duplicates (provenance kept here, anonymized); every merged item is judged by each adjudicator BLIND to reviewers and provenance: all real = real, all not-real/accepted-deviation = rejected, else disputed (for Alex). precision/recall per reviewer over non-disputed items; a failed or invalid reviewer is unavailable, never zero. Every codex prompt carries PROMPT_BYTES (the UTF-8 byte length of its prompt-file body) and the wrapper refuses a prompt file that is not verbatim. EXTEND (extendResult = the result OBJECT a prior run of this workflow returned, passed inline — the path form extend:"/file" is refused, a prior result never passes through an LLM; re-pass the args of the prior run with ONLY the new reviewers, base/head resolving to the prior shas, the prior outDir): the prior result is validated in code, then one quick task only checks that its snapshot still exists (manifest base/head = the prior shas) and re-asks the codex deny (review-stage.sh deny-refresh: a marker or deny-list entry added since the original run, or a failed re-check, makes codex reviewers/adjudicators unavailable); only the new reviewers run (labels must not collide with prior ones); the merge attaches each new finding to an existing item (provenance only, never re-adjudicated) or makes a new item (next id); only new items are adjudicated, blind, by the same panel; every non-superseded reviewer is rescored over the combined set (supersedes:[labels] keeps those prior runs as status superseded, unscored, their findings intact). Returns {kind, base, head, reviewers, items, disputed, sourceChanged, flags, markdown} (+ extendedFrom {base, head, outDir, reviewers, items}, newItems, superseded when extending); ingest with scripts/parity-report.sh ingest-review.',
   phases: [
     { title: 'Stage' },
     { title: 'Candidates' },
@@ -756,10 +756,14 @@ async function runReview() {
   // scopeOk: the prior snapshot was cut with exactly these include/exclude/context
   // globs and hard excludes (review-stage.sh records the two defaults first) — an
   // extension with a new hardExclude would otherwise hand codex a path it excludes.
-  const CHECK_JQ = '(($man[0] // {})) as $m | {ok: true, resolvedBase: $rb, resolvedHead: $rh, manifestBase: $m.base, manifestHead: $m.head,' +
+  // codexDeniedNow: the codex deny re-asked NOW (review-stage.sh deny-refresh, the
+  // snapshot's own queries), not carried over from staging; anything but a clean
+  // false from it is a deny.
+  const CHECK_JQ = '(try ($dr | fromjson) catch null) as $drj | (($man[0] // {})) as $m | {ok: true, resolvedBase: $rb, resolvedHead: $rh, manifestBase: $m.base, manifestHead: $m.head,' +
     ' scopeOk: ($m.include == $inc and ($m.exclude // []) == $exc and ($m.context // []) == $ctx and ($m.hardExclude // []) == (["context/", "PROJECT_MEMORY*.md"] + $hard)),' +
     ' snapshotExists: ($snap == "yes"), snapshotOk: ($snap == "yes" and $m.base == $pb and $m.head == $ph),' +
     ' fingerprintExists: ($fp == "yes"), codexDenied: ($m.codexDenied == true),' +
+    ' codexDeniedNow: (if ($drj | type) == "object" and $drj.codexDenied == false then false else true end),' +
     ' files: (($m.files // []) | length), extras: (($m.extras // []) | length),' +
     ' diffBytes: ($db | tonumber? // null), snapKB: ($kb | tonumber? // null)}'
   const checkCmd = p => `jq -n -c --arg pb ${shq(p.base)} --arg ph ${shq(p.head)}` +
@@ -770,6 +774,7 @@ async function runReview() {
     ` --arg rb "$(git -C ${shq(repo)} rev-parse --verify --quiet ${shq(`${base}^{commit}`)})"` +
     ` --arg rh "$(git -C ${shq(repo)} rev-parse --verify --quiet ${shq(`${headRef}^{commit}`)})"` +
     ` --arg db "$(wc -c < ${shq(diffPath)} 2>/dev/null | tr -d ' ')" --arg kb "$(du -sk ${shq(snap)} 2>/dev/null | cut -f1)"` +
+    ` --arg dr "$(${REVIEW_STAGE} deny-refresh --repo ${shq(repo)} --out ${shq(outDir)} 2>/dev/null)"` +
     ` --slurpfile man ${shq(`${outDir}/manifest.json`)} ${shq(CHECK_JQ)}`
   const STR = { type: 'string' }
   const STR_N = { type: ['string', 'null'] }
@@ -779,7 +784,7 @@ async function runReview() {
     type: 'object',
     properties: {
       ok: BOOL, error: STR, resolvedBase: STR, resolvedHead: STR, manifestBase: STR_N, manifestHead: STR_N, scopeOk: BOOL,
-      snapshotExists: BOOL, snapshotOk: BOOL, fingerprintExists: BOOL, codexDenied: BOOL,
+      snapshotExists: BOOL, snapshotOk: BOOL, fingerprintExists: BOOL, codexDenied: BOOL, codexDeniedNow: BOOL,
       files: INT_N, extras: INT_N, diffBytes: INT_N, snapKB: INT_N,
     },
     required: ['ok'],
@@ -814,7 +819,10 @@ async function runReview() {
       why = checkProblem(c, p)
       if (!why) {
         return Object.assign(p, {
-          fingerprintExists: c.fingerprintExists === true, codexDenied: c.codexDenied === true,
+          // A deny the prior result itself carried is never dropped (prior OR manifest).
+          fingerprintExists: c.fingerprintExists === true, codexDenied: p.codexDenied === true || c.codexDenied === true,
+          // Fail closed: a relay that drops or garbles the re-asked deny is a deny.
+          codexDeniedNow: typeof c.codexDeniedNow === 'boolean' ? c.codexDeniedNow : true,
           files: nul(c.files), extras: nul(c.extras), diffBytes: nul(c.diffBytes), snapKB: nul(c.snapKB),
         })
       }
@@ -851,6 +859,9 @@ async function runReview() {
   let headSha = null
   let fpOk = false
   let prior = null
+  // An extension whose deny re-check denies what the snapshot allowed (a marker or
+  // deny-list entry added since the original run, or a failed re-check).
+  let denyRefreshed = false
   if (!extending) {
     let st = null
     let stErr = null
@@ -874,14 +885,19 @@ async function runReview() {
     if (sn.diffBytes === 0) flag(`the range diff ${base}..${headRef} is EMPTY under the include globs — reviewers see the snapshot only`)
   } else {
     prior = await loadPrior(priorIn)
-    sn = { files: prior.files, extras: prior.extras, diffBytes: prior.diffBytes, bytes: Number.isInteger(prior.snapKB) ? prior.snapKB * 1024 : null, codexDenied: prior.codexDenied === true }
+    const deniedAtStaging = prior.codexDenied === true
+    const deniedNow = prior.codexDeniedNow !== false
+    denyRefreshed = deniedNow && !deniedAtStaging
+    sn = { files: prior.files, extras: prior.extras, diffBytes: prior.diffBytes, bytes: Number.isInteger(prior.snapKB) ? prior.snapKB * 1024 : null, codexDenied: deniedAtStaging || deniedNow }
     baseSha = prior.base
     headSha = prior.head
     fpOk = prior.fingerprintExists === true
     if (!fpOk) flag(`${fpBefore} is missing — SOURCE_CHANGED cannot be checked for this extension`)
   }
   const codexDenied = sn.codexDenied === true
-  if (codexDenied) flag('the repo (or an extra) is off-limits to codex (.codex-deny / deny-list): codex reviewers and adjudicators are unavailable for this review')
+  if (denyRefreshed) flag('the codex deny was re-checked at extend (review-stage.sh deny-refresh) and now denies the repo (or an extra): a .codex-deny / deny-list entry added since the original run, or the re-check failed — codex reviewers and adjudicators are unavailable for this extension')
+  else if (codexDenied) flag('the repo (or an extra) is off-limits to codex (.codex-deny / deny-list): codex reviewers and adjudicators are unavailable for this review')
+  const codexDenyReason = denyRefreshed ? 'the repo is off-limits to codex (deny re-checked at extend)' : 'the repo is off-limits to codex (.codex-deny carried into the snapshot)'
   // ext-run.sh refuses an --input-dir over its size cap (default 200 MB): say so now,
   // not as a string of unavailable codex spawns later.
   if (!codexDenied && typeof sn.bytes === 'number' && sn.bytes > 200 * 1024 * 1024 && reviewers.concat(adjudicators).some(x => x.vendor !== 'claude')) {
@@ -1010,7 +1026,7 @@ async function runReview() {
   }
   async function runReviewer(r) {
     const done = (status, extra) => Object.assign({ r, status, reason: null, findings: [], dropped: 0, tokens: null, seconds: null }, extra)
-    if (r.vendor !== 'claude' && codexDenied) return done('unavailable', { reason: 'the repo is off-limits to codex (.codex-deny carried into the snapshot)' })
+    if (r.vendor !== 'claude' && codexDenied) return done('unavailable', { reason: codexDenyReason })
     let out = null
     try {
       out = await agent(r.vendor === 'claude' ? claudeReviewPrompt() : codexReviewPrompt(r),

@@ -1,4 +1,4 @@
-.PHONY: lint test drift verify sync mutate tiers
+.PHONY: lint test drift verify verify-live sync mutate tiers
 
 lint:
 	./test/lint.sh
@@ -37,5 +37,10 @@ tiers:
 mutate:
 	./qc/mutate.sh --strict
 
-# One green gate: lint -> drift -> test, fail-fast.
-verify: lint drift test
+# verify = the gate for any branch: lint -> test, fail-fast. It never touches the
+# live ~/.claude install, so it passes on an unmerged/unsynced branch.
+# verify-live = after `make sync`, also checks the live install matches the repo
+# (verify, then drift).
+verify: lint test
+
+verify-live: verify drift

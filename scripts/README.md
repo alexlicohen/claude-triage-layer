@@ -720,6 +720,7 @@ review-stage.sh snapshot    --repo R --base B --head H --include GLOB... [--excl
                             --out DIR
 review-stage.sh fingerprint --repo R --path P... [--hard-exclude PATTERN...] [--out FILE]
 review-stage.sh compare     A.json B.json
+review-stage.sh deny-refresh --repo R --out DIR
 ```
 
 A multi-value flag takes every argument up to the next `--flag` (and may repeat). Globs are git
@@ -753,9 +754,12 @@ extra SRC is denied — a hard-denied repo name (clip-creator), `CODEX_DENY_REPO
 `.codex-deny` marker on the way up to `$HOME` — or `deny-query` itself errors (a non-3 failure,
 a missing `ext-run.sh`), DIR gets a `.codex-deny` of its own, failing closed: `ext-run.sh` then
 refuses the snapshot and the diff for codex exactly as it would the repo. Claude reviewers may
-still read them. **Deferred:** an `extend` re-run trusts the prior snapshot's `.codex-deny`
-marker rather than re-asking `deny-query` — a deny added between the original run and an
-`extend` is not picked up.
+still read them. `deny-refresh` re-asks exactly those queries for a review **extend** that reuses
+DIR (`deny-query --beneath` R's top level, and `deny-query` each `manifest.extras[].src`), so a
+marker or `CODEX_DENY_REPOS` entry added since the snapshot is honoured; it prints one JSON line
+`{step: "deny-refresh", codexDenied}` and fails closed (R no work tree, a missing or garbled
+manifest, a missing or erroring `ext-run.sh` => `codexDenied: true`); when denied it also writes
+`DIR/.codex-deny` (never removes one). Exit 0 whenever it answered, 2 on a usage error.
 
 `fingerprint` is the review's SOURCE_CHANGED guard, scoped to its paths: `{step, head, paths,
 status (git status --porcelain=v1 -uall --no-renames -- paths), tree (a hash over the content of
@@ -771,7 +775,10 @@ include/exclude/context; hard excludes winning over include, context and trackin
 in the snapshot and the diff, with the manifest listing them; symlinks dropped; extras (and their
 refusals); range.diff byte-equal to `git diff B H` of the included paths; out-dir refusals; the
 deny carry-over; R untouched; fingerprint scoping and compare codes; `HARD_DENY_REPOS` equal to
-ext-run.sh's. `qc/mutate.sh` #67 proves the hard exclude holds for tracked paths.
+ext-run.sh's; deny-refresh (allowed, a marker or deny-list entry added after staging, an extra's
+source marked, a missing ext-run.sh, a missing or garbled manifest, a non-repo). `qc/mutate.sh` #67
+proves the hard exclude holds for tracked paths, #168/#169 the deny-refresh repo query and its
+fail-closed manifest.
 
 ### The review bake-off (`triage-compare` kind `review`)
 
@@ -842,7 +849,11 @@ status), a sha `base`/`head` equal to the prior's — and the caller errors: a n
 with a prior one, `supersedes` naming no prior reviewer, adjudicators other than the prior panel.
 Then, instead of a snapshot, ONE quick task runs one tiny `jq -n` command (`git rev-parse` of
 base/head, `snap/` + `range.diff` present, `<outDir>/manifest.json` base/head, file/extra counts,
-diff/snapshot size, codexDenied, fingerprint-before present) and relays its few scalars; a
+diff/snapshot size, codexDenied, fingerprint-before present, and `codexDeniedNow` from
+`review-stage.sh deny-refresh` — the codex deny re-asked now, not carried over) and relays its few
+scalars. The extension's codex deny is the manifest's OR the re-asked one OR a relay that drops or
+garbles `codexDeniedNow` (fail closed); a deny the re-check adds makes every codex reviewer and
+adjudicator `unavailable` with no spawn and is flagged ("re-checked at extend"; `#166`/`#167`); a
 base/head that does not resolve to the prior shas, or a snapshot that is gone or whose manifest is
 not the prior's, is retried once and then refused before any reviewer. The merge agent sees the
 prior items (ids + text, never verdicts or provenance) and the new findings: each new finding

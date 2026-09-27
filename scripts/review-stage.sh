@@ -10,6 +10,7 @@
 #                               --out DIR
 #   review-stage.sh fingerprint --repo R --path P... [--hard-exclude PATTERN...] [--out FILE]
 #   review-stage.sh compare     A.json B.json
+#   review-stage.sh deny-refresh --repo R --out DIR
 #
 # A multi-value flag takes every following argument up to the next --flag, and may
 # be repeated. GLOB/PATH/P are git pathspecs with :(glob) magic, relative to the
@@ -56,6 +57,17 @@
 #              {"step":"snapshot","ok":true,"base","head","snap","diff","manifest",
 #               "files","bytes","diffBytes","extras","excluded","codexDenied"}
 #            A failure removes what this run wrote.
+# deny-refresh  re-asks, for a review EXTENSION that reuses DIR, exactly the deny
+#            queries snapshot asked: `ext-run.sh deny-query --beneath <R's top
+#            level>` and `ext-run.sh deny-query <src>` for each DIR/manifest.json
+#            extras[].src — so a .codex-deny marker or CODEX_DENY_REPOS entry added
+#            since the snapshot is honoured. stdout: one JSON line
+#              {"step":"deny-refresh","codexDenied":BOOL}
+#            FAILS CLOSED: R not a git work tree, DIR/manifest.json missing or
+#            garbled, a missing or erroring ext-run.sh => codexDenied true. When
+#            denied it also writes DIR/.codex-deny (never removes one), so ext-run.sh
+#            refuses the snapshot for codex as it would have at staging. Exit 0
+#            whenever it answered (allowed or denied); 2 on a usage error (no JSON).
 # fingerprint  the SOURCE-CHANGED guard of a review: prints (and with --out also
 #            writes to FILE) one JSON line
 #              {"step":"fingerprint","head","paths":[P...],"status","tree","committed"}
@@ -440,6 +452,40 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# deny-refresh: the snapshot's deny queries, asked again (see the header).
+do_deny_refresh() {
+  [ -n "$REPO" ] && [ -n "$OUT" ] || usage "deny-refresh needs --repo --out"
+  [ ${#POS[@]} -eq 0 ] || usage "unexpected argument ${POS[0]}"
+  check_abs --out "$OUT"
+  local D R srcs="" src denied=false
+  D=$(phys "$OUT") || D=""
+  if [ -z "$D" ] || [ ! -f "$D/manifest.json" ]; then
+    echo "review-stage: deny-refresh: no $OUT/manifest.json — marking the snapshot off-limits to codex" >&2
+    denied=true
+  elif ! srcs=$(jq -r 'if (.extras | type) == "array" and all(.extras[]; (.src | type) == "string" and (.src | startswith("/")))
+                       then .extras[].src else error("extras is not a list of {src: <absolute path>}") end' "$D/manifest.json" 2>/dev/null); then
+    echo "review-stage: deny-refresh: $OUT/manifest.json is unreadable or its extras are malformed — marking the snapshot off-limits to codex" >&2
+    denied=true; srcs=""
+  fi
+  if R=$(git -C "$REPO" rev-parse --show-toplevel 2>/dev/null) && R=$(cd "$R" && pwd -P); then
+    if codex_denied --beneath "$R"; then denied=true; fi
+  else
+    echo "review-stage: deny-refresh: --repo is not a git work tree: $REPO — marking the snapshot off-limits to codex" >&2
+    denied=true
+  fi
+  while IFS= read -r src; do
+    [ -n "$src" ] || continue
+    codex_denied "$src" && denied=true
+  done <<EOF
+$srcs
+EOF
+  if [ "$denied" = true ] && [ -n "$D" ] && { [ -f "$D/manifest.json" ] || [ -d "$D/snap" ]; }; then
+    : > "$D/.codex-deny" 2>/dev/null || echo "review-stage: deny-refresh: could not write $D/.codex-deny" >&2
+  fi
+  jq -n -c --argjson denied "$denied" '{step: "deny-refresh", codexDenied: $denied}'
+}
+
+# ---------------------------------------------------------------------------
 do_fingerprint() {
   [ -n "$REPO" ] || usage "fingerprint needs --repo --path"
   [ ${#PATHS[@]} -gt 0 ] || usage "fingerprint needs at least one --path"
@@ -525,5 +571,6 @@ case "$SUB" in
   snapshot)    do_snapshot ;;
   fingerprint) do_fingerprint ;;
   compare)     do_compare ;;
-  *)           usage "review-stage.sh snapshot|fingerprint|compare [options] (see the header)" ;;
+  deny-refresh) do_deny_refresh ;;
+  *)           usage "review-stage.sh snapshot|fingerprint|compare|deny-refresh [options] (see the header)" ;;
 esac
