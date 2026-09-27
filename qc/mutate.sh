@@ -118,7 +118,11 @@ done
 # deny (codexDeniedNow) and failing closed when the relay drops it; review-stage.sh
 # deny-refresh re-asking the repo's deny query and failing closed on a missing
 # manifest.
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165 166 167 168 169"
+# 170-173 cover triage-exec's external no-work handling (Wave 18): the boundary
+# attestation on the triage-external brief, classifyExternal() reading the FIRST
+# verdict line anywhere in the reply (not only line one), the refused list in
+# report().external, and the escalation reason naming the kind and reason.
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165 166 167 168 169 170 171 172 173"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -238,6 +242,7 @@ mut_file() {
     164|165) echo "install.sh" ;;
     166|167) echo "workflows/triage-compare.js" ;;
     168|169) echo "scripts/review-stage.sh" ;;
+    170|171|172|173) echo "workflows/triage-exec.js" ;;
     *) echo "" ;;
   esac
 }
@@ -368,6 +373,10 @@ mut_desc() {
     167) echo "triage-compare.js (review extend): a relay that drops or garbles codexDeniedNow counts as allowed (fails open)" ;;
     168) echo "review-stage.sh deny-refresh: the repo's deny query is not re-asked (a marker or CODEX_DENY_REPOS entry added since staging is missed)" ;;
     169) echo "review-stage.sh deny-refresh: a missing manifest.json answers allowed (fails open)" ;;
+    170) echo "triage-exec.js: the triage-external brief drops the data-boundary attestation (the wrapper refuses every planned codex subtask)" ;;
+    171) echo "triage-exec.js: classifyExternal() reads only the first line (a REFUSED after a preamble is misread)" ;;
+    172) echo "triage-exec.js: report().external.<vendor>.refused is always empty (a refusal goes unreported)" ;;
+    173) echo "triage-exec.js: the no-work escalation reason drops the kind and reason text" ;;
     91) echo "triage-exec.js (bake-off): an EMPTY diff counts as the passing choice (a no-op 'pass' beats a challenger's real patch)" ;;
     92) echo "triage-exec.js (bake-off): a patch that changes paths outside the subtask's files is inline-applied" ;;
     93) echo "triage-exec.js (bake-off): an unknown leak state runs the subtask in place on an unchecked tree" ;;
@@ -441,6 +450,7 @@ mut_suite() {
     164|165) echo "roundtrip" ;;
     166|167) echo "compare" ;;
     168|169) echo "reviewstage" ;;
+    170|171|172|173) echo "scenarios" ;;
     *) echo "" ;;
   esac
 }
@@ -1433,6 +1443,34 @@ MUT168
 MUT169
       mut_replace_block "$target" '    echo "review-stage: deny-refresh: no $OUT/manifest.json' 2 "$rep"
       ;;
+    170)
+      # triage-exec.js: the triage-external brief drops the boundary attestation.
+      cat > "$rep" <<'MUT170'
+      out = await agent(`${externalHeader(step)}\n\n${prompt}`, // MUTATED: attestation dropped
+MUT170
+      mut_replace_block "$target" 'out = await agent(`${externalHeader(step)}\n\n${BOUNDARY_ATTESTATION}\n\n${prompt}`,' 1 "$rep"
+      ;;
+    171)
+      # triage-exec.js: classifyExternal() reads only the reply's first line.
+      cat > "$rep" <<'MUT171'
+  for (const raw of lines.slice(0, 1)) { // MUTATED: first line only
+MUT171
+      mut_replace_block "$target" '  for (const raw of lines) {' 1 "$rep"
+      ;;
+    172)
+      # triage-exec.js: the refused list is never reported.
+      cat > "$rep" <<'MUT172'
+      refused: [], // MUTATED: refused not reported
+MUT172
+      mut_replace_block "$target" "      refused: externalNoWork.filter(n => n.vendor === v && n.kind === 'refused')" 1 "$rep"
+      ;;
+    173)
+      # triage-exec.js: the no-work escalation reason is the old generic text.
+      cat > "$rep" <<'MUT173'
+    escalations.push({ id: st.id, from: tierName(step.level, step.vendor), to: claudeTier, reason: `${step.vendor} unavailable — same level on Claude` }) // MUTATED: reason drops kind
+MUT173
+      mut_replace_block "$target" 'to: claudeTier, reason: `${what} — same level on Claude` })' 1 "$rep"
+      ;;
     110)
       # parity-report.sh COMMIT: a same-content re-ingest appends all its lines.
       cat > "$rep" <<'MUT110'
@@ -1846,6 +1884,10 @@ verify_mutation() {
     167) grep -qF 'MUTATED: missing refresh allows codex' "$target" && ! grep -qF "codexDeniedNow: typeof c.codexDeniedNow === 'boolean' ? c.codexDeniedNow : true," "$target" ;;
     168) grep -qF 'MUTATED: deny-refresh skips the repo' "$target" && ! grep -qF 'if codex_denied --beneath "$R"; then denied=true; fi' "$target" ;;
     169) grep -qF 'MUTATED: missing manifest allows codex' "$target" && ! grep -qF 'deny-refresh: no $OUT/manifest.json' "$target" ;;
+    170) grep -qF 'MUTATED: attestation dropped' "$target" && ! grep -qF '\n\n${BOUNDARY_ATTESTATION}\n\n${prompt}`' "$target" ;;
+    171) grep -qF 'MUTATED: first line only' "$target" && ! grep -qF '  for (const raw of lines) {' "$target" ;;
+    172) grep -qF 'MUTATED: refused not reported' "$target" && ! grep -qF "refused: externalNoWork.filter(n => n.vendor === v && n.kind === 'refused')" "$target" ;;
+    173) grep -qF 'MUTATED: reason drops kind' "$target" && ! grep -qF 'reason: `${what} — same level on Claude`' "$target" ;;
     110) grep -qF 'MUTATED: dedupe dropped' "$target" && ! grep -qF 'select(okey as $k | any($have[]; . == $k) | not)] as $miss' "$target" ;;
     111) grep -qF 'MUTATED: collision skipped' "$target" && ! grep -qF 'else {action: "refuse", lines: []' "$target" ;;
     112) grep -qF 'MUTATED: UTC offset ignored' "$target" && ! grep -qF '(if $c.sg == null then 0 else' "$target" ;;

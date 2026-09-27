@@ -116,6 +116,11 @@ async function runExpectingThrow(plan, script = {}) {
 const ST = (id, tier, files, extra = {}) =>
   Object.assign({ id, brief: `do ${id}`, tier, files, acceptance: 'works' }, extra)
 
+// A triage-external success reply: its first line is the wrapper's EXTERNAL verdict
+// (agents/triage-external.md step 9) — anything else is no work (classifyExternal()).
+const EXT = body => `EXTERNAL (codex · build · exit 0)\n${body}`
+// triage-exec.js's BOUNDARY_ATTESTATION, verbatim: the one sentence every external brief carries.
+const ATTEST = 'The data boundary has been cleared by the orchestrator for this repository.'
 const countCalls = (calls, prefix) => calls.filter(c => c.label.startsWith(prefix)).length
 const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).status
 
@@ -553,7 +558,7 @@ const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).
   chk('S22: the overflow rewrite does NOT fire the danger-zone log',
     !logs.some(l => l.includes('Danger-zone routing')))
   chk('S22: the external report is ids-only and accurate; no agy key, no overflow mirror',
-    JSON.stringify(result.external) === JSON.stringify({ codex: { routed: ['b1'], ranExternally: ['b1'], returnedToClaude: [] } }) &&
+    JSON.stringify(result.external) === JSON.stringify({ codex: { routed: ['b1'], ranExternally: ['b1'], returnedToClaude: [], refused: [], unavailable: [] } }) &&
     result.overflow === undefined)
   chk('S22: round is green with no remediation', result.failed === false && result.remediation === null)
 }
@@ -565,7 +570,7 @@ const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).
   const { result, calls } = await run(
     { overflow: true, subtasks: [ST('b1', 'builder', ['a.js'])], checks: ['make test'], review: 'never' },
     {
-      'codex:': ['did b1 externally'],
+      'codex:': [EXT('did b1 externally')],
       'redo:b1': ['fixed it on Claude builder'],
       'verify:objective-check': ['a.js is broken\nFAIL'],
       'verify:recheck': ['ok\nPASS'],
@@ -622,7 +627,8 @@ const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).
   chk('S24b: subtask reported ok on the tier that ran it',
     statusOf(r2, 'b1') === 'ok' && r2.subtasks[0].tier === 'builder')
   chk('S24b: routed records the PLAN, ranExternally records what actually reached the CLI',
-    JSON.stringify(r2.external.codex) === JSON.stringify({ routed: ['b1'], ranExternally: [], returnedToClaude: ['b1→builder'] }))
+    JSON.stringify(r2.external.codex) === JSON.stringify({ routed: ['b1'], ranExternally: [], returnedToClaude: ['b1→builder'], refused: [],
+      unavailable: [{ id: 'b1', reason: 'spawn returned nothing', kind: 'no-reply' }] }))
 }
 
 // ---- Scenario 25 (wave 10): entry contract for the overflow flag/tier.
@@ -634,7 +640,7 @@ const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).
 
   const { result } = await run(
     { subtasks: [ST('t1', 'overflow', ['a.js'])], checks: ['make test'], review: 'never' },
-    { 'codex:': ['ok'], 'verify:objective-check': ['ok\nPASS'] })
+    { 'codex:': [EXT('ok')], 'verify:objective-check': ['ok\nPASS'] })
   chk('S25: an explicit tier:"overflow" is accepted without the plan flag (= builder on codex)',
     result.subtasks[0].tier === 'codex:builder' && result.external.codex.routed[0] === 't1')
 }
@@ -824,7 +830,7 @@ const GREEN = { 'verify:objective-check': ['ok\nPASS'] }
 {
   const { result, calls, logs } = await run(
     { subtasks: [ST('f', 'fable', ['f.js']), ST('o', 'overflow', ['o.js'])], checks: ['make test'], review: 'never' },
-    { 'fable:': ['fable did f'], 'codex:': ['codex did o'], ...GREEN })
+    { 'fable:': ['fable did f'], 'codex:': [EXT('codex did o')], ...GREEN })
   const f = result.subtasks.find(x => x.id === 'f')
   const o = result.subtasks.find(x => x.id === 'o')
   chk('S28: tier:"fable" = level top on claude, via runFable (announced)',
@@ -834,7 +840,7 @@ const GREEN = { 'verify:objective-check': ['ok\nPASS'] }
     o.level === 'builder' && o.vendor === 'codex' && firstLine(calls.find(c => c.label === 'codex:builder:o')) === 'VENDOR=codex LEVEL=builder')
   const both = await run(
     { subtasks: [ST('f', 'fable', [], { level: 'top' }), ST('o', 'overflow', [], { level: 'builder' })], checks: ['make test'], review: 'never' },
-    { 'fable:': ['ok'], 'codex:': ['ok'], ...GREEN })
+    { 'fable:': ['ok'], 'codex:': [EXT('ok')], ...GREEN })
   chk('S28: an alias and its expansion given together agree', both.result.subtasks.map(x => x.tier).join() === 'fable,codex:builder')
   const oClash = await runExpectingThrow({ subtasks: [ST('o', 'overflow', [], { vendor: 'claude' })] })
   chk('S28: tier:"overflow" with vendor:"claude" throws (the alias implies codex)',
@@ -848,7 +854,7 @@ const GREEN = { 'verify:objective-check': ['ok\nPASS'] }
 {
   const { result, calls } = await run(
     { vendor: 'codex', subtasks: [LV('b', 'builder', ['b.js']), LV('d', 'deep', ['d.js'], { vendor: 'claude' })], checks: ['make test'], review: 'never' },
-    { 'codex:': ['codex did b'], 'deep:': ['did d'], ...GREEN })
+    { 'codex:': [EXT('codex did b')], 'deep:': ['did d'], ...GREEN })
   chk('S29: a subtask without vendor takes the plan default (codex)',
     extCalls(calls).length === 1 && firstLine(extCalls(calls)[0]) === 'VENDOR=codex LEVEL=builder')
   chk('S29: a subtask vendor overrides the plan default', calls.find(c => c.label === 'deep:d').opts.agentType === 'triage-deep-reasoner')
@@ -856,7 +862,7 @@ const GREEN = { 'verify:objective-check': ['ok\nPASS'] }
 
   const { calls: c2 } = await run(
     { vendor: 'claude', overflow: true, subtasks: [LV('b', 'builder', ['b.js']), LV('d', 'deep', ['d.js'])], checks: ['make test'], review: 'never' },
-    { 'codex:': ['codex did b'], 'deep:': ['did d'], ...GREEN })
+    { 'codex:': [EXT('codex did b')], 'deep:': ['did d'], ...GREEN })
   chk('S29: overflow:true beats the plan vendor for builder work (→ codex); deep keeps the plan vendor',
     firstLine(c2.find(c => c.label === 'codex:builder:b')) === 'VENDOR=codex LEVEL=builder' &&
     c2.find(c => c.label === 'deep:d').opts.agentType === 'triage-deep-reasoner')
@@ -900,8 +906,8 @@ const GREEN = { 'verify:objective-check': ['ok\nPASS'] }
   chk('S32: codex subtask spawns triage-external', !!c1 && c1.opts.agentType === 'triage-external' && c2.opts.agentType === 'triage-external')
   chk('S32: exact header line with EFFORT when the plan set one', firstLine(c1) === 'VENDOR=codex LEVEL=builder EFFORT=medium')
   chk('S32: EFFORT omitted when the plan set none', firstLine(c2) === 'VENDOR=codex LEVEL=quick')
-  chk('S32: the header is followed by a blank line and the full brief',
-    c1.prompt.startsWith('VENDOR=codex LEVEL=builder EFFORT=medium\n\ndo c1\n') && c1.prompt.includes('Acceptance criteria: works'))
+  chk('S32: the header is followed by a blank line, the boundary attestation, a blank line and the full brief',
+    c1.prompt.startsWith(`VENDOR=codex LEVEL=builder EFFORT=medium\n\n${ATTEST}\n\ndo c1\n`) && c1.prompt.includes('Acceptance criteria: works'))
   chk('S32: the Haiku wrapper runs at its own effort (EFFORT is the external model\'s)', c1.opts.effort === undefined)
   chk('S32: no Claude worker spawned for the codex subtasks',
     !calls.some(c => c.opts.phase === 'Execute' && c.opts.agentType !== 'triage-external'))
@@ -922,7 +928,7 @@ const GREEN = { 'verify:objective-check': ['ok\nPASS'] }
       ],
       checks: ['make test'], review: 'never',
     },
-    { 'codex:': ['did it'], ...GREEN })
+    { 'codex:': [EXT('did it')], ...GREEN })
   const hdr = id => firstLine(calls.find(c => c.label.startsWith('codex:') && c.label.endsWith(`:${id}`)))
   chk('S33: codex+danger quick@low → deep at effort high (still on codex)', hdr('q') === 'VENDOR=codex LEVEL=deep EFFORT=high')
   chk('S33: codex+danger builder, effort unset → deep at effort high', hdr('b') === 'VENDOR=codex LEVEL=deep EFFORT=high')
@@ -942,7 +948,7 @@ const GREEN = { 'verify:objective-check': ['ok\nPASS'] }
 {
   const { result, calls, logs } = await run(
     { overflow: true, subtasks: [LV('core', 'builder', ['core.js'], { danger: true }), LV('c2', 'builder', ['c2.js'], { vendor: 'codex', danger: true })], checks: ['make test'], review: 'never' },
-    { 'deep:': ['did core on Claude deep'], 'codex:': ['did c2 on codex'], ...GREEN })
+    { 'deep:': ['did core on Claude deep'], 'codex:': [EXT('did c2 on codex')], ...GREEN })
   chk('S34: overflow + danger → triage-deep-reasoner; only the explicit-codex subtask goes external',
     extCalls(calls).length === 1 && calls.find(c => c.label === 'deep:core').opts.agentType === 'triage-deep-reasoner' &&
     firstLine(extCalls(calls)[0]) === 'VENDOR=codex LEVEL=deep EFFORT=high')
@@ -998,7 +1004,7 @@ const GREEN = { 'verify:objective-check': ['ok\nPASS'] }
   // (a) plain objective FAIL on codex builder → Claude builder with the failure text.
   const { result, calls } = await run(
     { subtasks: [LV('b', 'builder', ['b.js'], { vendor: 'codex' })], checks: ['make test'], review: 'never' },
-    { 'codex:': ['did b'], 'verify:objective-check': ['b.js broke\nFAIL'], 'redo:': ['fixed on Claude'], 'verify:recheck': ['ok\nPASS'] })
+    { 'codex:': [EXT('did b')], 'verify:objective-check': ['b.js broke\nFAIL'], 'redo:': ['fixed on Claude'], 'verify:recheck': ['ok\nPASS'] })
   chk('S36a: redo ran on triage-builder with the failure text',
     calls.find(c => c.label === 'redo:b').opts.agentType === 'triage-builder' && calls.find(c => c.label === 'redo:b').prompt.includes('b.js broke'))
   chk('S36a: never a second external spawn', extCalls(calls).length === 1)
@@ -1012,7 +1018,7 @@ const GREEN = { 'verify:objective-check': ['ok\nPASS'] }
   // an Opus@max attempt, so Fable is not next).
   const { result: r2, calls: c2, logs: l2 } = await run(
     { subtasks: [LV('d', 'deep', ['d.js'], { vendor: 'codex', effort: 'max' })] },
-    { 'codex:': ['did d'], 'verify:reviewer': ['ESCALATE: d.js approach wrong'], 'redo:deep@max:': ['redone'], 'verify:re-review': ['PASS'] })
+    { 'codex:': [EXT('did d')], 'verify:reviewer': ['ESCALATE: d.js approach wrong'], 'redo:deep@max:': ['redone'], 'verify:re-review': ['PASS'] })
   chk('S36b: ESCALATE on codex deep@max → Claude deep@max, not Fable',
     deepMaxCalls(c2).length === 1 && deepMaxCalls(c2)[0].label === 'redo:deep@max:d' &&
     !c2.some(c => c.opts.agentType === 'triage-fable-architect') && !l2.some(l => l.includes('Escalating to Fable')))
@@ -1022,7 +1028,7 @@ const GREEN = { 'verify:objective-check': ['ok\nPASS'] }
   // (c) ESCALATE on an overflow (codex builder) subtask climbs the Claude ladder: builder -> deep.
   const { result: r3, calls: c3 } = await run(
     { subtasks: [ST('o', 'overflow', ['o.js'])] },
-    { 'codex:': ['did o'], 'verify:reviewer': ['ESCALATE: o.js wrong'], 'redo:': ['redone'], 'verify:re-review': ['PASS'] })
+    { 'codex:': [EXT('did o')], 'verify:reviewer': ['ESCALATE: o.js wrong'], 'redo:': ['redone'], 'verify:re-review': ['PASS'] })
   chk('S36c: ESCALATE on overflow codex builder → Claude deep, no second external spawn',
     c3.find(c => c.label === 'redo:o').opts.agentType === 'triage-deep-reasoner' && extCalls(c3).length === 1 &&
     escChain(r3) === 'codex:builder->deep')
@@ -1033,7 +1039,7 @@ const GREEN = { 'verify:objective-check': ['ok\nPASS'] }
 {
   const { calls, events } = await run(
     { subtasks: [LV('t', 'top', ['t.js']), LV('c', 'top', ['c.js'], { vendor: 'codex' })], checks: ['make test'], review: 'never' },
-    { 'fable:': ['fable did t'], 'codex:': ['codex did c'], ...GREEN })
+    { 'fable:': ['fable did t'], 'codex:': [EXT('codex did c')], ...GREEN })
   const fableCalls = calls.filter(c => c.opts.agentType === 'triage-fable-architect')
   const iWarn = events.indexOf('log:⚠ Escalating to Fable: t — do t')
   chk('S37: exactly one Fable spawn, labelled by runFable, announced before it',
@@ -1090,9 +1096,10 @@ const GREEN = { 'verify:objective-check': ['ok\nPASS'] }
       ],
       checks: ['make test'], review: 'never',
     },
-    { 'codex:builder:': ['did it'], 'codex:deep:': [null], 'deep←codex:': ['n on Claude'], 'quick:': ['did k'], ...GREEN })
+    { 'codex:builder:': [EXT('did it')], 'codex:deep:': [null], 'deep←codex:': ['n on Claude'], 'quick:': ['did k'], ...GREEN })
   chk('S39: external.codex counts overflow and explicit codex alike',
-    JSON.stringify(result.external.codex) === JSON.stringify({ routed: ['o', 'c', 'n'], ranExternally: ['o', 'c'], returnedToClaude: ['n→deep'] }))
+    JSON.stringify(result.external.codex) === JSON.stringify({ routed: ['o', 'c', 'n'], ranExternally: ['o', 'c'], returnedToClaude: ['n→deep'], refused: [],
+      unavailable: [{ id: 'n', reason: 'spawn returned nothing', kind: 'no-reply' }] }))
   chk('S39: external has no agy key; there is no overflow field', Object.keys(result.external).join() === 'codex' && result.overflow === undefined)
 
   const { result: r2 } = await run(
@@ -1275,7 +1282,7 @@ const BST = (id, level, extra = {}) => LV(id, level, [`src/${id}.js`], Object.as
   const same = await run(
     { subtasks: [BST('t1', 'deep', { vendor: 'codex' })], checks: ['make test'], review: 'never',
       bakeoff: BO({ challengers: { deep: { codex: [{ model: 'gpt-6-astra', effort: 'high' }], claude: [] } } }) },
-    { 'codex:deep:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
+    { 'codex:deep:': [EXT('did it')], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
   chk('S44: only challenger == planned (vendor, model, effort) → no-challenger', same.workflows.length === 0 && same.result.bakeoffSkipped[0].reason === 'no-challenger')
   const badId = await run(
     { subtasks: [BST('fix parser', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
@@ -1541,7 +1548,7 @@ const BST = (id, level, extra = {}) => LV(id, level, [`src/${id}.js`], Object.as
     { ...CLEAN, ...GREEN }, NO_BUDGET, CMP({ planned: 'fail', challenger: 'pass' }))
   chk('S55: codex challenger applied to an all-Claude plan → external.codex.bakeoffApplied = [t1]',
     a.result.bakeoffs[0].applied === 'challenger' &&
-    JSON.stringify(a.result.external) === JSON.stringify({ codex: { routed: [], ranExternally: [], returnedToClaude: [], bakeoffApplied: ['t1'] } }))
+    JSON.stringify(a.result.external) === JSON.stringify({ codex: { routed: [], ranExternally: [], returnedToClaude: [], refused: [], unavailable: [], bakeoffApplied: ['t1'] } }))
   // … and it stays credited when verification then sends it back to Claude.
   const back = await run(
     { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
@@ -1569,7 +1576,7 @@ const BST = (id, level, extra = {}) => LV(id, level, [`src/${id}.js`], Object.as
     { subtasks: [BST('t1', 'builder', { vendor: 'codex' })], checks: ['make test'], review: 'never', bakeoff: BO({ challengerMix: { codex: 0, claude: 1 } }) },
     { ...CLEAN, ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
   chk('S55: planned codex patch applied → bakeoffApplied names it',
-    JSON.stringify(pc.result.external.codex) === JSON.stringify({ routed: ['t1'], ranExternally: ['t1'], returnedToClaude: [], bakeoffApplied: ['t1'] }))
+    JSON.stringify(pc.result.external.codex) === JSON.stringify({ routed: ['t1'], ranExternally: ['t1'], returnedToClaude: [], refused: [], unavailable: [], bakeoffApplied: ['t1'] }))
   const pcl = await run(
     { subtasks: [BST('t1', 'builder', { vendor: 'codex' })], checks: ['make test'], review: 'never', bakeoff: BO({ challengerMix: { codex: 0, claude: 1 } }) },
     { ...CLEAN, ...GREEN }, NO_BUDGET, CMP({ planned: 'fail', challenger: 'pass' }))
@@ -1578,9 +1585,9 @@ const BST = (id, level, extra = {}) => LV(id, level, [`src/${id}.js`], Object.as
   // (c) args.bakeoff absent → external exactly as before: no bakeoffApplied key.
   const off = await run(
     { subtasks: [BST('t1', 'builder', { vendor: 'codex' })], checks: ['make test'], review: 'never' },
-    { 'codex:': ['did t1 externally'], ...GREEN })
+    { 'codex:': [EXT('did t1 externally')], ...GREEN })
   chk('S55: no bakeoff → external.codex has no bakeoffApplied key',
-    JSON.stringify(off.result.external) === JSON.stringify({ codex: { routed: ['t1'], ranExternally: ['t1'], returnedToClaude: [] } }))
+    JSON.stringify(off.result.external) === JSON.stringify({ codex: { routed: ['t1'], ranExternally: ['t1'], returnedToClaude: [], refused: [], unavailable: [] } }))
   const offClaude = await run(
     { subtasks: [BST('t1', 'deep')], checks: ['make test'], review: 'never' },
     { 'deep:': ['did t1'], ...GREEN })
@@ -1760,7 +1767,7 @@ const BST = (id, level, extra = {}) => LV(id, level, [`src/${id}.js`], Object.as
   const topCx = await run(
     { subtasks: [BST('arch', 'top', { vendor: 'codex' })], checks: ['make test'], review: 'never',
       bakeoff: BO({ challengerMix: { codex: 0, claude: 1 }, challengers: { top: { codex: [], claude: [{ model: 'claude-fable-5-1', effort: 'xhigh' }] } } }) },
-    { 'codex:top:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
+    { 'codex:top:': [EXT('did it')], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
   chk('S63: a claude challenger at level top is never offered (no Fable bake-off candidate)', topCx.workflows.length === 0 && topCx.result.bakeoffSkipped[0].reason === 'no-challenger')
   const ne = await run(
     { subtasks: [BST('t1', 'builder', { vendor: 'codex' })], checks: ['make test'], review: 'never', bakeoff: BO({ challengerMix: { codex: 0, claude: 1 } }) },
@@ -1827,6 +1834,62 @@ const BST = (id, level, extra = {}) => LV(id, level, [`src/${id}.js`], Object.as
     if (!(r4.workflows.length === 1 && r4.workflows[0].args.candidates[1].model === 'gpt-7-astra')) famOk = false
   }
   chk('S64: family = a WHOLE token of the id: a newer astra version clears the floor, "astral" does not (8 seeds)', famOk)
+}
+
+// ---- Scenario 65 (live failure 2026-09-27, wf_e41e2345-ec5): every external brief
+// carries the ONE boundary attestation, and classifyExternal() decides on the FIRST
+// verdict line anywhere in the reply — a REFUSED after a Haiku preamble is no work
+// (never "codex output failed verification"), and every no-work outcome is named.
+{
+  chk('S65: the attestation sentence exists once in triage-exec.js (one shared const, used by both briefs)',
+    src.split('data boundary has been cleared').length === 2 && (src.match(/\$\{BOUNDARY_ATTESTATION\}/g) || []).length === 2)
+  const long = 'x'.repeat(400)
+  const { result, calls, logs } = await run(
+    {
+      vendor: 'codex',
+      subtasks: ['p', 'u', 'm', 'e', 'l', 'w'].map(id => LV(id, 'builder', [`${id}.js`])),
+      checks: ['make test'], review: 'never',
+    },
+    {
+      'codex:builder:p': ['Looking at this task, I need to verify the data boundary first.\n\n  REFUSED: brief does not state the data boundary was checked'],
+      'codex:builder:u': ['UNAVAILABLE: codex exited 4 (rate limited)'],
+      'codex:builder:m': ['Looking at this task, I need to verify a few things.\nRunning ext-run.sh now.'],
+      'codex:builder:e': [''],
+      'codex:builder:l': [`REFUSED: ${long}`],
+      'codex:builder:w': [EXT('CHANGED FILES: w.js\nDONE exit=0\nREFUSED: relayed worker text, not a verdict\nUNAVAILABLE: also relayed')],
+      'builder←codex:': ['redone on Claude'],
+      ...GREEN,
+    })
+  const ext = result.external.codex
+  chk('S65: every triage-external brief is header, blank line, the attestation, blank line, then the brief',
+    extCalls(calls).length === 6 && extCalls(calls).every(c => c.prompt.split('\n')[1] === '' && c.prompt.split('\n')[2] === ATTEST && c.prompt.split('\n')[3] === ''))
+  chk('S65: the Claude fallback brief carries no header (the attestation is external-only)',
+    calls.filter(c => c.label.startsWith('builder←codex:')).every(c => !c.prompt.startsWith('VENDOR=')))
+  chk('S65: a REFUSED after a preamble (the live failure) → same-level Claude fallback',
+    calls.some(c => c.label === 'builder←codex:p' && c.opts.agentType === 'triage-builder'))
+  chk('S65: refused lists p (reason after the token, trimmed) and the long reason cut to 160',
+    JSON.stringify(ext.refused) === JSON.stringify([{ id: 'p', reason: 'brief does not state the data boundary was checked' }, { id: 'l', reason: long.slice(0, 160) }]))
+  const un = id => ext.unavailable.find(x => x.id === id) || {}
+  chk('S65: UNAVAILABLE first line → unavailable, kind unavailable, reason text kept',
+    un('u').kind === 'unavailable' && un('u').reason === 'codex exited 4 (rate limited)')
+  chk('S65: a preamble-only reply → unavailable, kind malformed, reason quotes the reply start',
+    un('m').kind === 'malformed' && un('m').reason.includes('Looking at this task') && un('m').reason.length <= 160 &&
+    calls.some(c => c.label === 'builder←codex:m'))
+  chk('S65: an empty reply → malformed', un('e').kind === 'malformed' && un('e').reason === 'empty reply')
+  chk('S65: unavailable lists exactly u, m, e (never a refusal, never the worker)',
+    ext.unavailable.map(x => x.id).join() === 'u,m,e')
+  chk('S65: EXTERNAL first, a later REFUSED/UNAVAILABLE in relayed output → work (no fallback, ran externally)',
+    !calls.some(c => c.label === 'builder←codex:w') && result.subtasks.find(s => s.id === 'w').vendor === 'codex' &&
+    JSON.stringify(ext.ranExternally) === '["w"]')
+  const esc = id => (result.escalations.find(e => e.id === id) || {}).reason || ''
+  chk('S65: escalation reasons name the kind and the reason text',
+    esc('p') === 'codex refused: brief does not state the data boundary was checked — same level on Claude' &&
+    esc('u').startsWith('codex unavailable: codex exited 4') && esc('m').startsWith('codex malformed: ') && esc('e').startsWith('codex malformed: empty reply'))
+  chk('S65: no no-work outcome is ever reported as external work that failed verification',
+    !result.escalations.some(e => /failed verification/.test(e.reason || '')) && result.escalations.length === 5 && result.remediation === null)
+  chk('S65: the fallback log names the kind and the reason',
+    logs.some(l => l.includes('codex→claude') && l.includes('codex refused: brief does not state') && l.includes(' p ')) &&
+    logs.some(l => l.includes('codex→claude') && l.includes('codex malformed:') && l.includes(' m ')))
 }
 
 console.log('')

@@ -244,7 +244,7 @@ for (const st of subtasks) {
 // rung, either because the external CLI never produced work (runOn()) or because its
 // work failed verification (redoStep()).
 const escalations = []
-// Ids whose external spawn produced no work (null, UNAVAILABLE or REFUSED) and so ran
+// Ids whose external spawn produced no work (classifyExternal(): no work) and so ran
 // on Claude instead — the one fact report()'s ranExternally cannot derive from the
 // escalation log, since a verification failure records the same from/to pair.
 const neverRanExternally = new Set()
@@ -349,11 +349,41 @@ async function runFable(st, prompt, ph, prefix, afterMax, effort) {
   return fb ? { output: fb, level: 'deep', vendor: 'claude', effort: 'max' } : null
 }
 
-// The first line of an external wrapper's reply says whether the vendor produced work.
-// UNAVAILABLE/REFUSED (triage-external's exit-code mapping) means it did not: there is
-// nothing to verify, so it is treated like a null spawn. This is availability, not a
-// verification verdict — those stay in assess().
-const externalProducedNothing = out => /^\s*(UNAVAILABLE|REFUSED)\b/i.test(String(out || '').trimStart())
+// The data-boundary attestation: ONE sentence, used by every brief this workflow sends
+// an external-vendor agent (runOn()'s triage-external path and the crossReview brief).
+// Both wrappers refuse a brief without it. Choosing vendor codex (or crossReview) in the
+// plan IS the orchestrator's boundary decision; the wrappers' own refusals (PHI, a repo
+// that forbids external agents, an excluded repo) and ext-run.sh's deny-list still apply.
+const BOUNDARY_ATTESTATION = 'The data boundary has been cleared by the orchestrator for this repository.'
+
+// classifyExternal(out) — SINGLE owner of reading a triage-external reply. The FIRST
+// line anywhere in the reply that starts (after leading whitespace) with one of the
+// wrapper's verdict tokens decides; the Haiku wrapper may write a preamble before it,
+// and a token on a LATER line is relayed worker output, never a verdict:
+//   `EXTERNAL (`   → {work: true,  kind: 'work'}
+//   `REFUSED:`     → {work: false, kind: 'refused',     reason}
+//   `UNAVAILABLE:` → {work: false, kind: 'unavailable', reason}
+//   no such line (preamble only, garbage, empty) → {work: false, kind: 'malformed'}
+//   null (the spawn returned nothing)            → {work: false, kind: 'no-reply'}
+// No work = nothing to verify: runOn() takes the same-level Claude fallback. This is
+// availability, not a verification verdict — those stay in assess().
+const EXTERNAL_REASON_MAX = 160
+function classifyExternal(out) {
+  const cut = s => s.trim().slice(0, EXTERNAL_REASON_MAX)
+  if (out == null) return { work: false, kind: 'no-reply', reason: 'spawn returned nothing' }
+  const lines = String(out).split('\n')
+  for (const raw of lines) {
+    const line = raw.trimStart()
+    if (line.startsWith('EXTERNAL (')) return { work: true, kind: 'work', reason: '' }
+    if (line.startsWith('REFUSED:')) return { work: false, kind: 'refused', reason: cut(line.slice('REFUSED:'.length)) || '(no reason given)' }
+    if (line.startsWith('UNAVAILABLE:')) return { work: false, kind: 'unavailable', reason: cut(line.slice('UNAVAILABLE:'.length)) || '(no reason given)' }
+  }
+  const first = lines.map(l => l.trim()).find(Boolean)
+  return { work: false, kind: 'malformed', reason: cut(first ? `no EXTERNAL/REFUSED/UNAVAILABLE line; reply began: ${first}` : 'empty reply') }
+}
+// Every runOn() external spawn that produced no work: {id, vendor, kind, reason}.
+// externalReport() splits it into refused / unavailable per vendor.
+const externalNoWork = []
 
 // The one header line triage-external reads before the brief. EFFORT is omitted when
 // the plan set none, so ext-run.sh takes the tiers.json default for the level.
@@ -364,9 +394,12 @@ const externalHeader = step => `VENDOR=${step.vendor} LEVEL=${step.level}` + (st
 // {output, level, vendor, effort} (what actually ran) or null.
 //   external (codex): triage-external with the header line. Its own effort stays
 //     the wrapper's default — EFFORT in the header is the external model's effort.
-//     No work (null, UNAVAILABLE, REFUSED) → the SAME level on Claude, logged
-//     '<vendor>→claude' and recorded. An external CLI that never ran has taught us
-//     nothing about the task, so it is not a reason to climb; it is also never retried
+//     The brief carries BOUNDARY_ATTESTATION right after the header line.
+//     No work (classifyExternal(): refused, unavailable, malformed, no reply, or a
+//     rejected spawn) → the SAME level on Claude, logged '<vendor>→claude' with the
+//     kind and reason, recorded in escalations and externalNoWork. An external CLI
+//     that never ran has taught us nothing about the task, so it is not a reason to
+//     climb; it is also never retried
 //     on the same vendor, and there is no automatic hop to another vendor.
 //   claude: top goes through runFable() only; every other level spawns its agent.
 // Labels: `prefix` is '' in Execute ('<tier>:<id>') and 'redo:' / 'redo:deep@max:' in
@@ -375,21 +408,26 @@ const externalHeader = step => `VENDOR=${step.vendor} LEVEL=${step.level}` + (st
 async function runOn(st, step, prompt, ph, prefix, afterMax, label) {
   if (isExternal(step.vendor)) {
     let out = null
+    let verdict = null
     try {
-      out = await agent(`${externalHeader(step)}\n\n${prompt}`,
+      out = await agent(`${externalHeader(step)}\n\n${BOUNDARY_ATTESTATION}\n\n${prompt}`,
         { phase: ph, agentType: 'triage-external', label: `${prefix}${step.vendor}:${step.level}:${st.id}` })
     } catch (e) {
       // A spent budget's hard ceiling stays the budget's (spawn() records the skip);
       // any other rejection is an external run that produced no work → the same
       // same-level Claude fallback as UNAVAILABLE, never a dropped subtask.
       if (budgeted && budget.remaining() <= 0) throw e
-      log(`⚠ ${step.vendor} spawn for ${st.id} was rejected (${String((e && e.message) || e).slice(0, 160)}).`)
-      out = null
+      const msg = String((e && e.message) || e).slice(0, EXTERNAL_REASON_MAX)
+      log(`⚠ ${step.vendor} spawn for ${st.id} was rejected (${msg}).`)
+      verdict = { work: false, kind: 'rejected', reason: msg }
     }
-    if (out && !externalProducedNothing(out)) return { output: out, level: step.level, vendor: step.vendor, effort: step.effort }
+    verdict = verdict || classifyExternal(out)
+    if (verdict.work) return { output: out, level: step.level, vendor: step.vendor, effort: step.effort }
     const claudeTier = tierName(step.level, 'claude')
-    log(`⚠ ${step.vendor}→claude: ${step.vendor} produced no work for ${st.id} (${out ? String(out).trimStart().split('\n')[0].slice(0, 120) : 'spawn returned nothing'}) — re-running the same level on Claude (${claudeTier}); this SPENDS Claude quota.`)
-    escalations.push({ id: st.id, from: tierName(step.level, step.vendor), to: claudeTier, reason: `${step.vendor} unavailable — same level on Claude` })
+    const what = `${step.vendor} ${verdict.kind}: ${verdict.reason}`
+    log(`⚠ ${step.vendor}→claude: ${what} — ${step.vendor} produced no work for ${st.id} — re-running the same level on Claude (${claudeTier}); this SPENDS Claude quota.`)
+    escalations.push({ id: st.id, from: tierName(step.level, step.vendor), to: claudeTier, reason: `${what} — same level on Claude` })
+    externalNoWork.push({ id: st.id, vendor: step.vendor, kind: verdict.kind, reason: verdict.reason })
     neverRanExternally.add(st.id)
     const onClaude = { level: step.level, vendor: 'claude', effort: step.effort }
     return runOn(st, onClaude, prompt, ph, prefix, afterMax, `${prefix}${claudeTier}←${step.vendor}:${st.id}`)
@@ -750,7 +788,9 @@ if (withheld.size && results.length === 0) {
 // and neverRanExternally, NOT read off `results`: remediation rewrites `results` in
 // place (results.length = 0; results.push(...merged)), so by the time report() runs, a
 // subtask that really did run on codex and was then redone on Claude reads back as a
-// Claude result. Ids only: bounded size, no worker prose. With args.bakeoff, each
+// Claude result. Ids only: bounded size, no worker prose — except refused / unavailable
+// (runOn()'s externalNoWork: each no-work spawn's id, the wrapper's one-line reason cut
+// to EXTERNAL_REASON_MAX, and for unavailable its kind). With args.bakeoff, each
 // vendor also carries bakeoffApplied = the subtasks whose APPLIED bake-off patch came
 // from that vendor's candidate (read off the bakeoffs records via appliedVendor(), so
 // codex work that landed as a challenger shows here and not only in report().bakeoffs).
@@ -762,6 +802,8 @@ function externalReport() {
       routed,
       ranExternally: routed.filter(id => !neverRanExternally.has(id)),
       returnedToClaude: escalations.filter(e => e.from.startsWith(`${v}:`)).map(e => `${e.id}→${e.to}`),
+      refused: externalNoWork.filter(n => n.vendor === v && n.kind === 'refused').map(n => ({ id: n.id, reason: n.reason })),
+      unavailable: externalNoWork.filter(n => n.vendor === v && n.kind !== 'refused').map(n => ({ id: n.id, reason: n.reason, kind: n.kind })),
     }, bakeoffOn ? { bakeoffApplied: bakeoffs.filter(b => appliedVendor(b) === v).map(b => b.id) } : {})
   }
   return byVendor
@@ -1115,7 +1157,7 @@ if (crossVendors.length) {
   const files = [...new Set(subtasks.flatMap(st => st.files))]
   const outs = await parallel(crossVendors.map(v => () => spawn(0, 'CrossReview', `cross-vendor second opinion (${v})`, () => agent(
     `VENDOR=${v}\n` +
-    `Cross-vendor review of the working-tree diff in this repo. The data boundary has been cleared by the orchestrator for this repository.\n` +
+    `Cross-vendor review of the working-tree diff in this repo. ${BOUNDARY_ATTESTATION}\n` +
     `Run \`git diff\` (and \`git status\`) from the repo root${files.length ? ` — focus on: ${files.join(', ')}` : ''} and relay the external reviewer's findings verbatim.\n` +
     (dangerNames.length ? `Danger-flagged subtasks needing seam scrutiny: ${dangerNames.join(', ')}\n` : '') +
     `Findings are advisory signal for the orchestrator, not a merge verdict.`,
