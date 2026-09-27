@@ -1,5 +1,5 @@
 {
-  "asOf": "2026-09-25",
+  "asOf": "2026-09-27",
   "parity": [
     {"date": "2026-09-23", "by": "alex", "note": "gpt-6-astra ~ Fable 5.1; Opus 5.5 top tier"},
     {"date": "2026-09-24", "by": "parity-run", "note": "17-task suite, bands 1-4, n=1: luna-low > haiku-low; sol-medium 14/14 graded. Suite saturates above quick tier: no deep/top conclusions (ledger ~/.agents/evidence/vendor-parity.jsonl)"}
@@ -31,17 +31,17 @@
     }
   },
   "tuning": {
-    "sampleRate": 0.2,
+    "sampleRate": 0.5,
     "maintain": {"rate": 0.05, "maxWidth": 0.35},
-    "challengerMix": {"codex": 0.8, "claude": 0.2},
+    "challengerMix": {"codex": 0.9, "claude": 0.1},
     "challengers": {
       "builder": {
         "codex": [{"model": "gpt-6-sol", "effort": "medium"}],
-        "claude": [{"model": "claude-sonnet-5", "effort": "high"}]
+        "claude": []
       },
       "deep": {
         "codex": [{"model": "gpt-6-sol", "effort": "medium"}, {"model": "gpt-6-astra", "effort": "high"}],
-        "claude": [{"model": "claude-opus-5-5", "effort": "medium"}, {"model": "claude-sonnet-5", "effort": "high"}]
+        "claude": [{"model": "claude-opus-5-5", "effort": "medium"}]
       },
       "top": {
         "codex": [{"model": "gpt-6-astra", "effort": "xhigh"}],

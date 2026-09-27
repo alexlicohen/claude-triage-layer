@@ -50,8 +50,12 @@ run_pr() { OUT=$("$PR" "$@" 2>"$T/err"); RC=$?; ERR=$(cat "$T/err"); }
 j() { printf '%s\n' "$OUT" | jq -r "$1"; }
 nlines() { if [ -f "$1" ]; then wc -l < "$1" | tr -d ' '; else echo 0; fi; }
 
+# The shipped levels, with a FROZEN tuning block (test/fixtures/parity/tuning-rules.json:
+# sampleRate 0.2, builder claude sonnet@high, deep claude opus@medium + sonnet@high): the
+# rule and rate tests below assert against these values, so retuning config/tiers.json
+# (Alex's call) never breaks them. RT checks the SHIPPED tuning separately.
 TIERS="$T/tiers.json"
-cp "$REPO_DIR/config/tiers.json" "$TIERS"
+jq --slurpfile tu "$REPO_DIR/test/fixtures/parity/tuning-rules.json" '.tuning = $tu[0]' "$REPO_DIR/config/tiers.json" > "$TIERS"
 TIERS_SUM=$(cksum < "$TIERS")
 DEFAULT_LEDGER="$HOME/.agents/parity/ledger.jsonl"
 
@@ -355,8 +359,8 @@ tt_bad() { # NAME JQ-EDIT NEEDLE
   OUT=$(TRIAGE_TIERS="$T/rt.json" "$TT" --bakeoff-json 2>&1); RC=$?; ERR="$OUT"; NEEDLE="$3"
   chk "RT $1 -> invalid tuning (exit 2) naming it" '[ "$RC" -eq 2 ] && printf "%s" "$OUT" | grep -qF "$NEEDLE"'
 }
-OUT=$(TRIAGE_TIERS="$TIERS" "$TT" --bakeoff-json 2>&1); RC=$?; ERR=""
-chk "RT the shipped tuning.maintain is valid and passed through (rate 0.05 <= sampleRate 0.2, maxWidth 0.35)" \
+OUT=$(TRIAGE_TIERS="$REPO_DIR/config/tiers.json" "$TT" --bakeoff-json 2>&1); RC=$?; ERR=""
+chk "RT the SHIPPED tuning is valid and tuning.maintain is passed through (rate 0.05, maxWidth 0.35)" \
   '[ "$RC" -eq 0 ] && [ "$(printf "%s" "$OUT" | jq -c .tuning.maintain)" = "{\"rate\":0.05,\"maxWidth\":0.35}" ]'
 tt_bad "maintain missing" 'del(.tuning.maintain)' "tuning.maintain must be an object"
 tt_bad "maintain.rate 0 (sampling would stop at a plateau)" '.tuning.maintain.rate = 0' "tuning.maintain.rate must be a number in (0, 1]"
