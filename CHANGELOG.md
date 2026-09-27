@@ -4,6 +4,23 @@ Reverse-chronological. Each entry cites the commit(s) it corresponds to and,
 where known, the test-count delta. See `test/roundtrip.sh` and `test/lint.sh`
 for the current check catalog.
 
+## Tuning 2026-09-27 — more codex bake-off samples, fewer challengers (branch tuning-codex-challengers)
+
+Only 4 of 146 ledger lines came from inline bake-offs (2 of them forced); at 0.2 split over
+four deep challengers, no level reaches minN by the 2026-10-26 review. Alex's call:
+- `tuning.sampleRate` 0.2 → 0.5 and `challengerMix` codex 0.8/claude 0.1 → 0.9/0.1: the
+  effective codex challenger rate rises 0.16 → 0.45 (OpenAI quota only); the claude one
+  stays ~0.05 (was 0.04).
+- Challengers concentrated: builder claude sonnet@high and deep claude sonnet@high dropped
+  (not a switch anyone would make). Deep codex keeps both sol@medium and astra@high: the
+  rule compares within a vendor, and astra@high (the codex incumbent) gets data only as a
+  challenger.
+- `test/parity-report.sh` rule/rate tests now pin a frozen tuning block
+  (`test/fixtures/parity/tuning-rules.json` = the previous tuning); RT checks the shipped
+  tuning. Retuning no longer breaks 15 rule tests.
+- Known limit (not changed; measurement freeze): pass-rate saturation — a cheaper
+  challenger needs ~17 straight passes vs opus@high (0.857) and ~73 vs astra@high (1.0).
+
 ## Wave 18 — external refusals are attested and reported (branch wave18-external-refusals)
 
 Live failure 2026-09-27 (wf_e41e2345-ec5): both planned codex subtasks were refused by
