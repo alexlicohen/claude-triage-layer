@@ -16,6 +16,7 @@
 #     ~/.claude/projects/<slug>/<session-id>/subagents/
 #         agent-<agentId>.jsonl                                 <- one subagent transcript
 #         agent-<agentId>.meta.json                             <- {agentType, description, ...}
+#         workflows/wf_*/agent-<agentId>.jsonl                  <- workflow subagent
 #   Each subagent transcript's assistant lines carry .message.model and
 #   .message.usage {input_tokens, output_tokens, cache_creation_input_tokens,
 #   cache_read_input_tokens}. The orchestrator's own turns live only in the main
@@ -132,8 +133,10 @@ elif [ -d "$ARG" ]; then
   ARG="${ARG%/}"
   if [ -d "$ARG/subagents" ]; then
     SUBDIR="$ARG/subagents"                 # a session dir
-  elif ls "$ARG"/agent-*.jsonl >/dev/null 2>&1; then
-    SUBDIR="$ARG"                           # a subagents/ dir itself
+  elif [ "${ARG##*/}" = subagents ] || ls "$ARG"/agent-*.jsonl >/dev/null 2>&1; then
+    # A subagents/ dir itself: by name, or by direct agent transcripts. Never a deep
+    # search here — a project dir holds every session's transcripts below it.
+    SUBDIR="$ARG"
   else
     main="$(newest_jsonl "$ARG")"           # treat as project dir
     [ -n "$main" ] || die "directory has no subagents/ and no *.jsonl: $ARG" "$EX_NOTFOUND"
@@ -145,7 +148,7 @@ else
   die "path not found: $ARG" "$EX_NOTFOUND"
 fi
 
-if [ ! -d "$SUBDIR" ] || ! ls "$SUBDIR"/agent-*.jsonl >/dev/null 2>&1; then
+if [ ! -d "$SUBDIR" ] || [ -z "$(find "$SUBDIR" -name 'agent-*.jsonl' -type f -print -quit)" ]; then
   die "INCOMPLETE: no subagent transcripts under ${SUBDIR} — nothing to tally (source: ${SRC_DESC})" "$EX_INCOMPLETE"
 fi
 
@@ -166,7 +169,7 @@ sum_haiku=0; sum_sonnet=0; sum_opus=0; sum_fable=0; sum_other=0
 n_agents=0; n_bad=0
 ROWS=""   # per-agent rows for -v (tab-separated), collected as text
 
-for f in "$SUBDIR"/agent-*.jsonl; do
+while IFS= read -r f; do
   [ -f "$f" ] || continue
   aid="$(basename "$f" .jsonl)"; aid="${aid#agent-}"
   meta="${f%.jsonl}.meta.json"
@@ -213,7 +216,7 @@ for f in "$SUBDIR"/agent-*.jsonl; do
   n_agents=$((n_agents + 1))
   ROWS="${ROWS}${aid}	${atype}	${fam}	${peak}	${cum_out}	${cum_in}	${cum_cr}
 "
-done
+done < <(find "$SUBDIR" -name 'agent-*.jsonl' -type f | sort)
 
 if [ "$n_agents" -eq 0 ]; then
   die "INCOMPLETE: found subagent files under ${SUBDIR} but none had readable token usage${n_bad:+ (${n_bad} unparseable)}" "$EX_INCOMPLETE"

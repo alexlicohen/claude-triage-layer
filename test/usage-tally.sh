@@ -23,23 +23,20 @@ fi
 
 PASS_COUNT=0
 FAIL_COUNT=0
-ALL_TMP=""
+TMP_ROOT=$(mktemp -d "$REPO_DIR/.usage-tally.XXXXXX") || exit 1
 
 cleanup() {
-  # shellcheck disable=SC2086
-  [ -n "$ALL_TMP" ] && rm -rf $ALL_TMP
+  rm -rf "$TMP_ROOT"
 }
 trap cleanup EXIT
 
 new_tmp() {
-  t=$(mktemp)
-  ALL_TMP="$ALL_TMP $t"
+  t=$(mktemp "$TMP_ROOT/file.XXXXXX")
   printf '%s' "$t"
 }
 
 new_sandbox() {
-  d=$(mktemp -d)
-  ALL_TMP="$ALL_TMP $d"
+  d=$(mktemp -d "$TMP_ROOT/dir.XXXXXX")
   printf '%s' "$d"
 }
 
@@ -167,6 +164,64 @@ pin_agent p5 "claude-opus-5-5" 5000
 PIN_LINE=$("$SCRIPT" "$PIN_DIR" 2>&1 | head -n 1)
 chk "4.3: pinned ids (claude-opus-5-5[1m], claude-haiku-4-5-20251001, claude-fable-5-1, claude-sonnet-5) tally by family, nothing under other" \
   '[ "$PIN_LINE" = "Usage: haiku 1k · sonnet 4k · opus 8k · fable 2k (orchestrator excluded; /usage for quota)" ]'
+
+# =============================================================================
+# Fixture 4c — workflow transcripts at several depths, including paths with spaces
+# =============================================================================
+WF_DIR="$(new_sandbox)/session with spaces"
+mkdir -p "$WF_DIR/subagents/workflows/wf_x" "$WF_DIR/subagents/workflows/wf_x/nested"
+wf_agent() { # DIRECTORY ID MODEL INPUT_TOKENS AGENT_TYPE
+  printf '{"type":"assistant","message":{"model":"%s","usage":{"input_tokens":%s,"output_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}\n' "$3" "$4" > "$1/agent-$2.jsonl"
+  printf '{"agentType":"%s"}\n' "$5" > "$1/agent-$2.meta.json"
+}
+wf_agent "$WF_DIR/subagents/workflows/wf_x" w1 claude-sonnet-5 2000 workflow-builder
+WF_OUT_FILE=$(new_tmp)
+"$SCRIPT" -v "$WF_DIR/subagents" > "$WF_OUT_FILE" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition string
+WF_RC=$?
+chk "4.4: workflow-only subagents directory tallies transcript and sibling agentType" \
+  '[ "$WF_RC" -eq 0 ] && grep -q "sonnet 2k" "$WF_OUT_FILE" && grep -qE "^w1[[:space:]]+workflow-builder[[:space:]]" "$WF_OUT_FILE"'
+
+wf_agent "$WF_DIR/subagents" d1 claude-sonnet-5 5000 direct-builder
+WF_MIX_FILE=$(new_tmp)
+"$SCRIPT" -v "$WF_DIR" > "$WF_MIX_FILE" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition string
+WF_MIX_RC=$?
+chk "4.5: mixed direct and workflow transcripts sum both exactly once" \
+  '[ "$WF_MIX_RC" -eq 0 ] && grep -q "sonnet 7k" "$WF_MIX_FILE" && grep -q "2 subagent(s) tallied" "$WF_MIX_FILE"'
+
+wf_agent "$WF_DIR/subagents/workflows/wf_x/nested" n1 claude-haiku-4 3000 nested-builder
+WF_NEST_FILE=$(new_tmp)
+"$SCRIPT" -v "$WF_DIR" > "$WF_NEST_FILE" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition string
+WF_NEST_RC=$?
+chk "4.6: nested workflow transcript is found and counted once" \
+  '[ "$WF_NEST_RC" -eq 0 ] && grep -q "haiku 3k · sonnet 7k" "$WF_NEST_FILE" && grep -q "3 subagent(s) tallied" "$WF_NEST_FILE"'
+
+WF_EMPTY_DIR="$(new_sandbox)/empty session"
+mkdir -p "$WF_EMPTY_DIR/subagents/workflows"
+WF_EMPTY_ERR=$(new_tmp)
+"$SCRIPT" "$WF_EMPTY_DIR" >/dev/null 2> "$WF_EMPTY_ERR"
+# shellcheck disable=SC2034  # used inside chk's eval'd condition string
+WF_EMPTY_RC=$?
+chk "4.7: empty workflows directory stays INCOMPLETE and names subagents dir" \
+  '[ "$WF_EMPTY_RC" -eq 5 ] && grep -q "INCOMPLETE: no subagent transcripts under ${WF_EMPTY_DIR}/subagents" "$WF_EMPTY_ERR"'
+
+# A project dir (sessions below it, workflow transcripts included) is NOT a subagents
+# dir: its newest session transcript is used, never a sum over every session.
+PD_DIR="$(new_sandbox)/proj"
+mkdir -p "$PD_DIR/old/subagents/workflows/wf_o" "$PD_DIR/new/subagents/workflows/wf_n"
+wf_agent "$PD_DIR/old/subagents/workflows/wf_o" o1 claude-opus-5-5 9000 old-deep
+wf_agent "$PD_DIR/new/subagents/workflows/wf_n" n2 claude-sonnet-5 4000 new-builder
+printf '{"type":"user"}\n' > "$PD_DIR/old.jsonl"
+sleep 1
+printf '{"type":"user"}\n' > "$PD_DIR/new.jsonl"
+# shellcheck disable=SC2034  # used inside chk's eval'd condition string
+PD_OUT=$("$SCRIPT" "$PD_DIR" 2>&1)
+# shellcheck disable=SC2034  # used inside chk's eval'd condition string
+PD_RC=$?
+chk "4.8: a project dir uses its newest session (workflow transcripts found), not every session below it" \
+  '[ "$PD_RC" -eq 0 ] && [ "$PD_OUT" = "Usage: haiku 0 · sonnet 4k · opus 0 · fable 0 (orchestrator excluded; /usage for quota)" ]'
 
 # =============================================================================
 # Exit-code / fail-loud coverage — every distinct exit code the script defines

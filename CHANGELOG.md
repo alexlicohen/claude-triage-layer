@@ -4,6 +4,20 @@ Reverse-chronological. Each entry cites the commit(s) it corresponds to and,
 where known, the test-count delta. See `test/roundtrip.sh` and `test/lint.sh`
 for the current check catalog.
 
+## triage-usage.sh counts workflow transcripts (branch usage-tally-workflows)
+
+- `scripts/triage-usage.sh` tallied only `subagents/agent-*.jsonl`; agents spawned inside a
+  Workflow run write to `subagents/workflows/wf_*/`, so a workflow-only session exited
+  INCOMPLETE. The scan is now recursive (`find | sort`, bash-3.2 safe). A directory
+  argument is still classified shallowly (named `subagents`, or direct transcripts), so a
+  project dir keeps meaning "its newest session", never a sum over every session.
+- Checks: usage-tally 25 → 30; mutations 174 (scan reverts to direct children) and 175
+  (deep directory classifier), both killed.
+- Live check of Wave 18: this change ran as a PLANNED codex subtask (gpt-6-sol@medium)
+  with no hand-written attestation — `ranExternally: [s1]`, `refused`/`unavailable`
+  empty. Orchestrator fixes on top of the codex patch: the project-dir regression (4.8,
+  175) and a `--only 174` baseline-skip special case removed from qc/mutate.sh.
+
 ## Tuning 2026-09-27 — more codex bake-off samples, fewer challengers (branch tuning-codex-challengers)
 
 Only 4 of 146 ledger lines came from inline bake-offs (2 of them forced); at 0.2 split over
