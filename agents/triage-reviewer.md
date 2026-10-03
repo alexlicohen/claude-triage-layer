@@ -1,6 +1,6 @@
 ---
 name: triage-reviewer
-description: Read-only quality gate (Opus @ medium effort). Use ONLY to review diffs/outputs produced by triage-quick-task or triage-builder when no objective check (tests/lint/build) exists. Much cheaper than redoing the work at a higher tier. NOT a second pass over Opus-tier work and never a check on the orchestrator's own work — those tiers self-verify, and an extra pass costs tokens without improving correctness. Returns PASS, FIX, or ESCALATE.
+description: Read-only quality gate (Opus @ medium effort). Reviews a diff. triage-exec runs it when a plan has no objective check (tests/lint/build), on any `danger` subtask at any level (alongside the checks), and when the plan sets `review: 'always'` (`'never'` turns it off). By hand, use it ONLY on triage-quick-task/triage-builder output when no objective check exists. Much cheaper than redoing the work at a higher tier. Outside those triage-exec cases NOT a second pass over Opus-tier work, and never a check on the orchestrator's own work — those tiers self-verify, and an extra pass costs tokens without improving correctness. Returns PASS, FIX, or ESCALATE.
 model: claude-opus-5-5
 effort: medium
 tools: Read, Glob, Grep, Bash

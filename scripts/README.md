@@ -478,6 +478,10 @@ refused, never followed:
    so it stays an explicit caller attestation (the name predates agy's retirement). COI
    material may go to codex (training opt-out confirmed, 2026-09-25).
 
+A path inside a linked git worktree is also checked as the **main worktree** of its repository
+(`main_worktree_of`, via `--git-common-dir`), so a `.codex-deny` on a source repo also refuses
+its staged checkouts, bake-off challengers included.
+
 The workspace (`-C`, cwd, the profile's workspace rule) is **not** a caller option: the script
 supplies exactly one value, its own run directory, after that path has passed the deny check.
 
@@ -1008,6 +1012,13 @@ tiers.json (a `--ledger` that is the tiers file is refused) — Alex approves ev
 `ingest-compare` **requires** `--run` (a globally unique run id — its own idempotence key,
 since a compare result carries no run id of its own); `ingest-parity` and `ingest-review` still
 default it to the result's outDir basename.
+
+**After a manual `triage-compare` (orchestrator recipe).** The compare never applies anything:
+pick a candidate (or ask the user), `git apply` its patch, re-run the checks, then ingest — the
+ledger's one writer, scores only:
+`~/.claude/scripts/parity-report.sh ingest-compare --result <file> --repo-name <name> --level <level> --source inline --run <unique id> [--applied <label>]`.
+Inline bake-offs inside `triage-exec` apply on their own; the orchestrator only writes each
+`report.ingest[i].result` to `.file` and runs `.cmd`.
 
 **Concurrency and idempotence.** Every ledger write (`ingest-*`, `migrate`, `backfill-modelid`)
 holds ONE lock, `<real ledger>.lock` (a `mkdir` lock recording the holder's pid; a lock whose pid
