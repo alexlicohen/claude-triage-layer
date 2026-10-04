@@ -127,7 +127,31 @@ done
 # 176-177 cover ext-run.sh's boundary attestation under both names: the canonical
 # CODEX_BOUNDARY_CLEARED and the deprecated AGY_BOUNDARY_CLEARED alias. 178 covers
 # lint's leaf-agent check (a leaf worker losing `disallowedTools: Agent`).
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165 166 167 168 169 170 171 172 173 174 175 176 177 178"
+# 179-188 cover the triage.md SessionStart hook (Wave 21): triage-context.sh's cap,
+# kill-switch, legacy-import and agent_id guards; install appending (never replacing)
+# the SessionStart array, the pointer appended once, a failed hook write never
+# reaching CLAUDE.md, and --settings-status's two new lines; uninstall deleting only
+# our SessionStart command. Mutation 1 was re-anchored on the pointer-line append.
+# 189-201 cover the Wave 21 fix round: the CLAUDE_DIR pinned in the hook command; the
+# one anchored ownership predicate (install's and uninstall's uses, and their N8
+# parity); matcher coverage; disableAllHooks (no migration + the status line); CRLF
+# legacy lines (install, hook); fail-closed CLAUDE.md filtering (install, uninstall);
+# a jq failure never read as a hook decision; drift without a settings.json.
+# 186 was retired in fix round 3: settings.json is written once, so a failed hook
+# merge is the one settings-merge failure 140 covers. 202-215 cover fix round 3:
+# ownership = a command hook pinned to THIS CLAUDE_DIR (install and uninstall, pin and
+# .type each); all four matcher events; the rubric gate on the INSTALLED rubric (skipped,
+# or asked of the repo copy); one settings write (no second write, no settings.json
+# created first); a false hooks.SessionStart refused; byte-exact CLAUDE.md filtering
+# (install, uninstall); the pointer naming this install's triage.md; a CLAUDE_DIR with a
+# line break refused.
+# 216-218 cover triage-exec's plan-level noFable (rubric rule 7 material): redoStep()
+# stopping at deep@max instead of stepping onto top, runFable()'s defence-in-depth
+# guard (an external top subtask coming back to Claude gets deep@max, never Fable),
+# and bad() refusing a plan-time claude top subtask. 219-221 cover its reporting: a
+# deep@max FIX/FAIL that owes nothing gets one marked retry (then the stop), an empty
+# deep@max fallback in runFable() stops for the user, and needs-user reads INCOMPLETE.
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165 166 167 168 169 170 171 172 173 174 175 176 177 178 179 180 181 182 183 184 185 187 188 189 190 191 192 193 194 195 196 197 198 199 200 201 202 203 204 205 206 207 208 209 210 211 212 213 214 215 216 217 218 219 220 221"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -248,17 +272,27 @@ mut_file() {
     166|167) echo "workflows/triage-compare.js" ;;
     168|169) echo "scripts/review-stage.sh" ;;
     170|171|172|173) echo "workflows/triage-exec.js" ;;
+    216|217|218|219|220|221) echo "workflows/triage-exec.js" ;;
     174) echo "scripts/triage-usage.sh" ;;
     175) echo "scripts/triage-usage.sh" ;;
     176|177) echo "scripts/ext-run.sh" ;;
     178) echo "agents/triage-deep-reasoner.md" ;;
+    179|180|181|185) echo "scripts/triage-context.sh" ;;
+    182|184|187|188) echo "install.sh" ;;
+    183) echo "uninstall.sh" ;;
+    189|190|193|194|195|196|197|198) echo "install.sh" ;;
+    191|192|200) echo "uninstall.sh" ;;
+    199) echo "drift.sh" ;;
+    201) echo "scripts/triage-context.sh" ;;
+    202|204|206|207|208|209|210|211|212|214|215) echo "install.sh" ;;
+    203|205|213) echo "uninstall.sh" ;;
     *) echo "" ;;
   esac
 }
 
 mut_desc() {
   case "$1" in
-    1) echo "install.sh: remove the trailing-newline guard before the @triage.md append" ;;
+    1) echo "install.sh: remove the trailing-newline guard before the CLAUDE.md pointer-line append" ;;
     2) echo "install.sh: remove the upfront 'jq empty' settings.json validation" ;;
     3) echo "install.sh: replace symlink-preserving apply_settings write with a plain mv" ;;
     4) echo "uninstall.sh: revert per-name agent removal to the triage-*.md glob" ;;
@@ -382,6 +416,12 @@ mut_desc() {
     167) echo "triage-compare.js (review extend): a relay that drops or garbles codexDeniedNow counts as allowed (fails open)" ;;
     168) echo "review-stage.sh deny-refresh: the repo's deny query is not re-asked (a marker or CODEX_DENY_REPOS entry added since staging is missed)" ;;
     169) echo "review-stage.sh deny-refresh: a missing manifest.json answers allowed (fails open)" ;;
+    216) echo "triage-exec.js: redoStep() ignores noFable (a deep@max failure steps onto top; rule 7 material reaches the Fable path)" ;;
+    217) echo "triage-exec.js: runFable() ignores noFable (an external top subtask coming back to Claude spawns Fable)" ;;
+    218) echo "triage-exec.js: bad() accepts a claude top subtask under noFable (Fable spawned at Execute)" ;;
+    219) echo "triage-exec.js: redoStep() retries a failed deep@max unmarked under noFable (never stops; reported ok while failing)" ;;
+    220) echo "triage-exec.js: runFable()'s empty deep@max fallback under noFable returns a bare null (no needs-user)" ;;
+    221) echo "triage-exec.js: a needs-user stop leaves the run not incomplete (a clean-looking run with unfinished work)" ;;
     170) echo "triage-exec.js: the triage-external brief drops the data-boundary attestation (the wrapper refuses every planned codex subtask)" ;;
     171) echo "triage-exec.js: classifyExternal() reads only the first line (a REFUSED after a preamble is misread)" ;;
     172) echo "triage-exec.js: report().external.<vendor>.refused is always empty (a refusal goes unreported)" ;;
@@ -391,6 +431,42 @@ mut_desc() {
     176) echo "ext-run.sh: the deprecated AGY_BOUNDARY_CLEARED alias no longer attests (an older caller is refused)" ;;
     177) echo "ext-run.sh: the canonical CODEX_BOUNDARY_CLEARED no longer attests (only the deprecated alias does)" ;;
     178) echo "triage-deep-reasoner.md: disallowedTools: Agent dropped (the leaf worker can spawn subagents again)" ;;
+    179) echo "triage-context.sh: the 10,000-char cap check is removed (an oversize triage.md is injected and arrives as a 2,000-char preview; --check passes it)" ;;
+    180) echo "triage-context.sh: the kill switch (triage.disabled) is ignored" ;;
+    181) echo "triage-context.sh: the legacy @triage.md guard is removed (the rubric loads twice while the import is still in CLAUDE.md)" ;;
+    182) echo "install.sh: the SessionStart array is replaced, not appended to (the user's other SessionStart hooks are lost)" ;;
+    183) echo "uninstall.sh: every SessionStart hook is deleted, not only the triage-context.sh command" ;;
+    184) echo "install.sh: the pointer line is appended on every install (no already-present guard)" ;;
+    185) echo "triage-context.sh: the agent_id guard is removed (a subagent's SessionStart input still gets the rubric)" ;;
+    187) echo "install.sh: --settings-status no longer reports a missing triage hook (drift stays quiet)" ;;
+    188) echo "install.sh: --settings-status no longer reports a legacy @triage.md import (drift stays quiet)" ;;
+    189) echo "install.sh: the hook command no longer pins CLAUDE_DIR (a non-default install reads ~/.claude's kill switch, guard and triage.md)" ;;
+    190) echo "install.sh: hook ownership is a substring match again (triage-context.sh.backup / echo ... count as installed)" ;;
+    191) echo "uninstall.sh: hook ownership is a substring match again (foreign triage-context.sh.backup / echo ... commands deleted)" ;;
+    192) echo "uninstall.sh: its copy of the ownership predicate drifts from install.sh's" ;;
+    193) echo "install.sh: matcher coverage ignored (our command under a resume-only matcher counts as installed)" ;;
+    194) echo "install.sh: disableAllHooks ignored (CLAUDE.md migrated although the hook can never run)" ;;
+    195) echo "install.sh: --settings-status no longer reports disableAllHooks" ;;
+    196) echo "install.sh: a CRLF @triage.md line is not recognized (import kept, status quiet)" ;;
+    197) echo "install.sh: an awk failure filtering CLAUDE.md is swallowed (CLAUDE.md emptied)" ;;
+    198) echo "install.sh: a jq failure in the hook decision is read as 'add'" ;;
+    199) echo "drift.sh: the settings status runs only when settings.json exists (a missing hook goes unreported)" ;;
+    200) echo "uninstall.sh: an awk failure filtering CLAUDE.md is swallowed (CLAUDE.md emptied)" ;;
+    201) echo "triage-context.sh: a CRLF @triage.md line is not recognized (rubric loads twice)" ;;
+    202) echo "install.sh: 'installed' ignores the CLAUDE_DIR pin (a hook pinned to another dir, or unpinned, counts; the legacy import goes with no hook of ours)" ;;
+    203) echo "uninstall.sh: removal ignores the CLAUDE_DIR pin (another install's hook, or an unpinned one, is deleted)" ;;
+    204) echo "install.sh: 'installed' ignores .type (a prompt-type entry carrying our command counts)" ;;
+    205) echo "uninstall.sh: removal ignores .type (a prompt-type entry carrying our command is deleted)" ;;
+    206) echo "install.sh: matcher coverage no longer requires resume" ;;
+    207) echo "install.sh: the rubric gate is skipped (an over-cap installed rubric loses its working @triage.md import)" ;;
+    208) echo "install.sh: the rubric gate checks the repo copy, not the INSTALLED rubric (a preserved over-cap fork is migrated)" ;;
+    209) echo "install.sh: the hook is merged in a second settings write (a failed hook merge leaves the earlier keys written)" ;;
+    210) echo "install.sh: an absent settings.json is created before the merge (a failed merge leaves a stray settings.json)" ;;
+    211) echo "install.sh: a false hooks.SessionStart passes the shape check (read as absent, then overwritten)" ;;
+    212) echo "install.sh: the CLAUDE.md migration adds a newline to an unterminated last line" ;;
+    213) echo "uninstall.sh: the CLAUDE.md filter adds a newline to an unterminated last line" ;;
+    214) echo "install.sh: the pointer line always names ~/.claude/triage.md (wrong for a custom CLAUDE_DIR)" ;;
+    215) echo "install.sh: a CLAUDE_DIR with a line break is accepted (the pointer line splits, is never found again)" ;;
     91) echo "triage-exec.js (bake-off): an EMPTY diff counts as the passing choice (a no-op 'pass' beats a challenger's real patch)" ;;
     92) echo "triage-exec.js (bake-off): a patch that changes paths outside the subtask's files is inline-applied" ;;
     93) echo "triage-exec.js (bake-off): an unknown leak state runs the subtask in place on an unchecked tree" ;;
@@ -440,8 +516,8 @@ mut_desc() {
 # "compare" (test/compare-scenarios.mjs), "patchcheck" (test/patch-check.sh),
 # "stagewt" (test/stage-worktree.sh), "parity" (test/parity-scenarios.mjs),
 # "paritysuite" (test/parity-suite.sh), "parityreport" (test/parity-report.sh) or
-# "reviewstage" (test/review-stage.sh), "usage" (test/usage-tally.sh) or "lint"
-# (test/lint.sh).
+# "reviewstage" (test/review-stage.sh), "usage" (test/usage-tally.sh), "lint"
+# (test/lint.sh) or "triagectx" (test/triage-context.sh).
 mut_suite() {
   case "$1" in
     1|2|3|4|5|6|10|12|18|19|20|21|33) echo "roundtrip" ;;
@@ -466,10 +542,16 @@ mut_suite() {
     166|167) echo "compare" ;;
     168|169) echo "reviewstage" ;;
     170|171|172|173) echo "scenarios" ;;
+    216|217|218|219|220|221) echo "scenarios" ;;
     174) echo "usage" ;;
     175) echo "usage" ;;
     176|177) echo "extrun" ;;
     178) echo "lint" ;;
+    179|180|181|185) echo "triagectx" ;;
+    182|183|184|187|188) echo "roundtrip" ;;
+    189|190|191|192|193|194|195|196|197|198|199|200) echo "roundtrip" ;;
+    201) echo "triagectx" ;;
+    202|203|204|205|206|207|208|209|210|211|212|213|214|215) echo "roundtrip" ;;
     *) echo "" ;;
   esac
 }
@@ -490,6 +572,7 @@ suite_file() {
     reviewstage) echo "test/review-stage.sh" ;;
     usage) echo "test/usage-tally.sh" ;;
     lint) echo "test/lint.sh" ;;
+    triagectx) echo "test/triage-context.sh" ;;
     *) echo "" ;;
   esac
 }
@@ -576,9 +659,9 @@ apply_mutation() {
 
   case "$id" in
     1)
-      # install.sh: delete the 3-line trailing-newline guard.
+      # install.sh: delete the 3-line trailing-newline guard before the pointer append.
       mut_delete_block "$target" \
-        '    if [ -s "$CLAUDE_DIR/CLAUDE.md" ] && [ -n "$(tail -c1 "$CLAUDE_DIR/CLAUDE.md")" ]; then' 3
+        '  if [ -s "$CLAUDE_MD" ] && [ -n "$(tail -c1 "$CLAUDE_MD")" ]; then' 3
       ;;
     2)
       # install.sh: delete the 3-line upfront `jq empty` validation.
@@ -1289,8 +1372,8 @@ MUT136
       mut_replace_block "$target" '  elif [ "$1" = "$SUBAGENT_MODEL" ]; then echo "current"' 1 "$rep"
       ;;
     140)
-      printf "' \"\$SETTINGS\" > \"\$tmp\" && apply_settings \"\$tmp\" # MUTATED: merge failure swallowed\n" > "$rep"
-      mut_replace_block "$target" "' \"\$SETTINGS\" > \"\$tmp\" || die \"settings merge (jq) failed" 2 "$rep"
+      printf "' \"\$SETTINGS_SRC\" > \"\$tmp\" && apply_settings \"\$tmp\" # MUTATED: merge failure swallowed\n" > "$rep"
+      mut_replace_block "$target" "' \"\$SETTINGS_SRC\" > \"\$tmp\" || die \"settings merge (jq) failed" 2 "$rep"
       ;;
     141)
       printf "  ' \"\$SETTINGS\" > \"\$tmp\" || true # MUTATED: rewrite failure swallowed\n" > "$rep"
@@ -1298,7 +1381,7 @@ MUT136
       ;;
     142)
       printf '  true # MUTATED: settings shape not validated\n' > "$rep"
-      mut_replace_block "$target" "  jq -e 'type == \"object\"" 6 "$rep"
+      mut_replace_block "$target" "  jq -e 'def shape(t): . == null or type == t;" 9 "$rep"
       ;;
     143)
       printf '    --root)  ROOT="${2:-}"; shift 2 ;; # MUTATED: --root value unchecked\n' > "$rep"
@@ -1464,6 +1547,48 @@ MUT168
 MUT169
       mut_replace_block "$target" '    echo "review-stage: deny-refresh: no $OUT/manifest.json' 2 "$rep"
       ;;
+    216)
+      # triage-exec.js: redoStep() loses its noFable guard.
+      cat > "$rep" <<'MUT216'
+  if (false) { // MUTATED: redoStep noFable guard dropped
+MUT216
+      mut_replace_block "$target" '  if (noFable && (r.owesFable || r.level === '"'"'top'"'"' || (isEscalate && ranMax(r)))) {' 1 "$rep"
+      ;;
+    217)
+      # triage-exec.js: runFable() loses its noFable guard.
+      cat > "$rep" <<'MUT217'
+  if (false) { // MUTATED: runFable noFable guard dropped
+MUT217
+      mut_replace_block "$target" '  if (noFable) {' 1 "$rep"
+      ;;
+    218)
+      # triage-exec.js: bad() no longer refuses a claude top subtask under noFable.
+      cat > "$rep" <<'MUT218'
+  // MUTATED: noFable top check dropped
+MUT218
+      mut_replace_block "$target" '  if (fableSt) bad(' 1 "$rep"
+      ;;
+    219)
+      # triage-exec.js: redoStep() drops the noFable same-rung retry marker on deep@max.
+      cat > "$rep" <<'MUT219'
+  // MUTATED: noFable deep@max retry unmarked
+MUT219
+      mut_replace_block "$target" '  if (noFable && ranMax(r)) return {' 1 "$rep"
+      ;;
+    220)
+      # triage-exec.js: runFable()'s empty deep@max fallback under noFable returns null.
+      cat > "$rep" <<'MUT220'
+    return mx ? { output: mx, level: 'deep', vendor: 'claude', effort: 'max' } : null // MUTATED: empty deep@max not stopped
+MUT220
+      mut_replace_block "$target" "    return mx ? { output: mx, level: 'deep', vendor: 'claude', effort: 'max' } : stopForUser(" 1 "$rep"
+      ;;
+    221)
+      # triage-exec.js: needs-user no longer makes the run incomplete.
+      cat > "$rep" <<'MUT221'
+  incomplete: finalAssessment.incomplete || withheld.size > 0, // MUTATED: needs-user not incomplete
+MUT221
+      mut_replace_block "$target" '  incomplete: finalAssessment.incomplete || withheld.size > 0 || needsUser.size > 0,' 1 "$rep"
+      ;;
     170)
       # triage-exec.js: the triage-external brief drops the boundary attestation.
       cat > "$rep" <<'MUT170'
@@ -1519,6 +1644,196 @@ MUT176
 : # MUTATED: CODEX name dropped
 MUT177
       mut_replace_block "$target" '[ "${CODEX_BOUNDARY_CLEARED:-}" = "1" ] && BOUNDARY_OK=1' 1 "$rep"
+      ;;
+    179)
+      # triage-context.sh: the one cap decision always says "fits".
+      printf 'over_cap() { return 1; } # MUTATED: cap check removed\n' > "$rep"
+      mut_replace_block "$target" 'over_cap() {' 1 "$rep"
+      ;;
+    180)
+      printf ': # MUTATED: kill switch ignored\n' > "$rep"
+      mut_replace_block "$target" '[ -e "$CLAUDE_DIR/triage.disabled" ] && exit 0' 1 "$rep"
+      ;;
+    181)
+      printf ': # MUTATED: legacy guard removed\n' > "$rep"
+      mut_replace_block "$target" 'if [ -f "$CLAUDE_DIR/CLAUDE.md" ] && tr -d' 3 "$rep"
+      ;;
+    182)
+      printf '  | (if $add == "1" then .hooks.SessionStart = [$group] else . end) # MUTATED: SessionStart replaced\n' > "$rep"
+      mut_replace_block "$target" '  | (if $add == "1" then .hooks.SessionStart = ((.hooks.SessionStart // []) + [$group]) else . end)' 1 "$rep"
+      ;;
+    183)
+      printf '    | del(.hooks.SessionStart) # MUTATED: every SessionStart hook deleted\n' > "$rep"
+      mut_replace_block "$target" '    | (if (.hooks.SessionStart | type) == "array" then' 1 "$rep"
+      ;;
+    184)
+      printf '  if true; then # MUTATED: pointer guard dropped\n' > "$rep"
+      mut_replace_block "$target" '  if [ "$POINTER" -eq 0 ]; then' 1 "$rep"
+      ;;
+    185)
+      printf 'if false; then # MUTATED: agent_id ignored\n' > "$rep"
+      mut_replace_block "$target" 'if [ -n "$INPUT" ] && printf' 1 "$rep"
+      ;;
+    187)
+      printf '    : # MUTATED: hook status dropped\n' > "$rep"
+      mut_replace_block "$target" '    echo "settings migration pending: triage hook missing' 1 "$rep"
+      ;;
+    188)
+      printf '    : # MUTATED: legacy status dropped\n' > "$rep"
+      mut_replace_block "$target" '    echo "settings migration pending: legacy @triage.md import present' 1 "$rep"
+      ;;
+    189)
+      cat > "$rep" <<'MUT189'
+triage_hook_command() { printf 'bash %q/%s' "$CLAUDE_DIR" "$TRIAGE_HOOK_SCRIPT"; } # MUTATED: CLAUDE_DIR not pinned
+MUT189
+      mut_replace_block "$target" 'triage_hook_command() {' 1 "$rep"
+      ;;
+    190)
+      cat > "$rep" <<'MUT190'
+    def owned: type == \"object\" and ((.command // null) | type == \"string\" and contains(\"/scripts/triage-context.sh\")); # MUTATED: substring ownership
+"'
+MUT190
+      mut_replace_block "$target" '    def owned: $TRIAGE_HOOK_OWNED_JQ;' 1 "$rep"
+      ;;
+    191)
+      cat > "$rep" <<'MUT191'
+    def ours: type == \"object\" and ((.command // null) | type == \"string\" and contains(\"/scripts/triage-context.sh\")); # MUTATED: substring ownership
+"'
+MUT191
+      mut_replace_block "$target" '    def ours: $TRIAGE_HOOK_OWNED_JQ;' 1 "$rep"
+      ;;
+    192)
+      cat > "$rep" <<'MUT192'
+TRIAGE_HOOK_OWNED_JQ='type == "object" and .command == $cmd' # MUTATED: predicate copy drifted
+MUT192
+      mut_replace_block "$target" 'TRIAGE_HOOK_OWNED_JQ=' 1 "$rep"
+      ;;
+    193)
+      cat > "$rep" <<'MUT193'
+    def covers: true; # MUTATED: matcher coverage ignored
+MUT193
+      mut_replace_block "$target" '    def covers: . == null' 2 "$rep"
+      ;;
+    194)
+      printf '    0) HOOKS_OFF=0 ;; # MUTATED: disableAllHooks ignored\n' > "$rep"
+      mut_replace_block "$target" '    0) HOOKS_OFF=1 ;;' 1 "$rep"
+      ;;
+    195)
+      printf '    : # MUTATED: blocked status dropped\n' > "$rep"
+      mut_replace_block "$target" '    echo "settings migration blocked:' 1 "$rep"
+      ;;
+    196)
+      cat > "$rep" <<'MUT196'
+  awk -v want="$2" '{ l = $0; if (l == want) found = 1 } END { exit found ? 0 : 1 }' "$1" # MUTATED: CR kept
+MUT196
+      mut_replace_block "$target" '  awk -v want="$2"' 1 "$rep"
+      ;;
+    197)
+      printf '    || true # MUTATED: filter failure swallowed\n' > "$rep"
+      mut_replace_block "$target" '    || die "could not filter $CLAUDE_MD (awk failed)' 1 "$rep"
+      ;;
+    198)
+      printf '    *) echo "add" ;; # MUTATED: jq failure read as add\n' > "$rep"
+      mut_replace_block "$target" '    *) return 1 ;;' 1 "$rep"
+      ;;
+    199)
+      cat > "$rep" <<'MUT199'
+if [ -f "$CLAUDE_DIR/settings.json" ] && command -v jq >/dev/null 2>&1; then # MUTATED: status needs settings.json
+MUT199
+      mut_replace_block "$target" 'if command -v jq >/dev/null 2>&1; then' 1 "$rep"
+      ;;
+    200)
+      printf '    || true # MUTATED: filter failure swallowed\n' > "$rep"
+      mut_replace_block "$target" '    || die "could not filter $CLAUDE_DIR/CLAUDE.md (awk failed)' 1 "$rep"
+      ;;
+    201)
+      cat > "$rep" <<'MUT201'
+if [ -f "$CLAUDE_DIR/CLAUDE.md" ] && grep -qxF '@triage.md' "$CLAUDE_DIR/CLAUDE.md"; then # MUTATED: CR not stripped
+MUT201
+      mut_replace_block "$target" 'if [ -f "$CLAUDE_DIR/CLAUDE.md" ] && tr -d' 1 "$rep"
+      ;;
+    202)
+      cat > "$rep" <<'MUT202'
+    def owned: type == \"object\" and .type == \"command\" and (.command | type == \"string\" and endswith(\"/scripts/triage-context.sh\")); # MUTATED: pin ignored
+"'
+MUT202
+      mut_replace_block "$target" '    def owned: $TRIAGE_HOOK_OWNED_JQ;' 1 "$rep"
+      ;;
+    203)
+      cat > "$rep" <<'MUT203'
+    def ours: type == \"object\" and .type == \"command\" and (.command | type == \"string\" and endswith(\"/scripts/triage-context.sh\")); # MUTATED: pin ignored
+"'
+MUT203
+      mut_replace_block "$target" '    def ours: $TRIAGE_HOOK_OWNED_JQ;' 1 "$rep"
+      ;;
+    204)
+      cat > "$rep" <<'MUT204'
+    def owned: type == \"object\" and .command == \$cmd; # MUTATED: type ignored
+"'
+MUT204
+      mut_replace_block "$target" '    def owned: $TRIAGE_HOOK_OWNED_JQ;' 1 "$rep"
+      ;;
+    205)
+      cat > "$rep" <<'MUT205'
+    def ours: type == \"object\" and .command == \$cmd; # MUTATED: type ignored
+"'
+MUT205
+      mut_replace_block "$target" '    def ours: $TRIAGE_HOOK_OWNED_JQ;' 1 "$rep"
+      ;;
+    206)
+      cat > "$rep" <<'MUT206'
+      or (type == "string" and ((["startup", "clear", "compact"] - split("|")) == [])); # MUTATED: resume not required
+MUT206
+      mut_replace_block "$target" '      or (type == "string" and ((($events | split("|")) - split("|")) == []));' 1 "$rep"
+      ;;
+    207)
+      printf '  elif false; then # MUTATED: rubric gate skipped\n' > "$rep"
+      mut_replace_block "$target" '  elif [ "$LEGACY" -eq 1 ] && ! rubric_fits "$1" "$2"; then' 1 "$rep"
+      ;;
+    208)
+      printf 'claude_md_decision "$REPO_DIR/$TRIAGE_HOOK_SCRIPT" "$REPO_DIR/triage.md" # MUTATED: repo rubric checked\n' > "$rep"
+      mut_replace_block "$target" 'claude_md_decision "$CLAUDE_DIR/$TRIAGE_HOOK_SCRIPT" "$CLAUDE_DIR/triage.md"' 1 "$rep"
+      ;;
+    209)
+      # Two edits: the hook leaves the one merge, and comes back as a second write.
+      printf '  | . # MUTATED: hook merged in a second write\n' > "$rep"
+      mut_replace_block "$target" '  | (if $add == "1" then .hooks.SessionStart = ((.hooks.SessionStart // []) + [$group]) else . end)' 1 "$rep" || return 1
+      cat > "$rep" <<'MUT209'
+apply_settings "$tmp" || die "could not write $SETTINGS — CLAUDE.md was not changed."
+if [ "$add_hook" -eq 1 ]; then
+  tmp=$(mktemp)
+  jq --argjson group "$hook_group" '.hooks.SessionStart = ((.hooks.SessionStart // []) + [$group])' "$SETTINGS" > "$tmp" || die "settings merge (jq) failed (hook)"
+  apply_settings "$tmp" || die "could not write $SETTINGS."
+fi
+MUT209
+      mut_replace_block "$target" 'apply_settings "$tmp" || die "could not write $SETTINGS — CLAUDE.md was not changed."' 1 "$rep"
+      ;;
+    210)
+      printf '[ -f "$SETTINGS" ] || echo "{}" > "$SETTINGS"; SETTINGS_SRC="$SETTINGS" # MUTATED: settings.json created first\n' > "$rep"
+      mut_replace_block "$target" 'SETTINGS_SRC="$SETTINGS"' 1 "$rep"
+      ;;
+    211)
+      cat > "$rep" <<'MUT211'
+    and ((.hooks.SessionStart // []) | type == "array") # MUTATED: false read as absent
+    ' "$SETTINGS" >/dev/null 2>&1 \
+MUT211
+      mut_replace_block "$target" '    and (.hooks.SessionStart | shape("array"))' 1 "$rep"
+      ;;
+    212|213)
+      cat > "$rep" <<'MUT212'
+    END { if (NR > 0 && keep) printf "%s\n", prev }' "$1" # MUTATED: final newline added
+MUT212
+      mut_replace_block "$target" '    END { if (NR > 0 && keep) printf "%s%s", prev, (nl ? "\n" : "") }'"'"' "$1"' 1 "$rep"
+      ;;
+    214)
+      cat > "$rep" <<'MUT214'
+pointer_line() { printf '%s%s%s' "$POINTER_HEAD" "~/.claude" "$POINTER_TAIL"; } # MUTATED: pointer names ~/.claude
+MUT214
+      mut_replace_block "$target" 'pointer_line() {' 1 "$rep"
+      ;;
+    215)
+      printf '    *$'"'"'\\n'"'"'*|*$'"'"'\\r'"'"'*) : ;; # MUTATED: line break accepted\n' > "$rep"
+      mut_replace_block "$target" '    *$'"'"'\n'"'"'*|*$'"'"'\r'"'"'*) die "CLAUDE_DIR contains a line break' 1 "$rep"
       ;;
     178)
       # triage-deep-reasoner.md: the Agent deny leaves the frontmatter.
@@ -1816,7 +2131,7 @@ verify_mutation() {
   target="$dest/$(mut_file "$id")"
   [ -f "$target" ] || return 1
   case "$id" in
-    1) ! grep -qF 'if [ -s "$CLAUDE_DIR/CLAUDE.md" ] && [ -n "$(tail -c1' "$target" ;;
+    1) ! grep -qF 'if [ -s "$CLAUDE_MD" ] && [ -n "$(tail -c1' "$target" ;;
     2) ! grep -qF 'jq empty "$SETTINGS"' "$target" ;;
     3) grep -qF '  mv "$1" "$SETTINGS"' "$target" && ! grep -qF 'if [ -L "$SETTINGS" ]; then cat' "$target" ;;
     4) grep -qF 'rm -f "$CLAUDE_DIR"/agents/triage-*.md' "$target" && ! grep -qF 'for a in $AGENTS; do' "$target" ;;
@@ -1835,7 +2150,7 @@ verify_mutation() {
     19) grep -qF 'MUTATED: legacy upgrade disabled' "$target" ;;
     20) ! grep -qF 'or $up == "1"' "$target" && grep -qF '(if (.env.CLAUDE_CODE_SUBAGENT_MODEL // null) == null then .env.CLAUDE_CODE_SUBAGENT_MODEL = $m else . end)' "$target" ;;
     21) grep -qF '| (if $mark != null then del(.env.CLAUDE_CODE_SUBAGENT_MODEL) else . end)' "$target" && ! grep -qF '== $mark then' "$target" ;;
-    22) ! grep -qF "effort: 'max', owesFable: true" "$target" && grep -qF 'function redoStep(r, isEscalate) {' "$target" ;;
+    22) ! grep -qF "if (r.level === 'deep' && !ranMax(r)) return { level: 'deep', vendor, effort: 'max', owesFable: true" "$target" && grep -qF 'function redoStep(r, isEscalate) {' "$target" ;;
     23) grep -qF 'MUTATED: deep@max fallback always taken' "$target" && ! grep -qF '  if (afterMax) {' "$target" ;;
     24) grep -qF 'MUTATED: default model fallback' "$target" && ! grep -qF 'an absent entry is a refusal, never a default model' "$target" ;;
     25) ! grep -qF 'codex wrote no final message' "$target" && grep -qF 'RESPONSE=$(cat "$LASTMSG")' "$target" ;;
@@ -1940,6 +2255,12 @@ verify_mutation() {
     167) grep -qF 'MUTATED: missing refresh allows codex' "$target" && ! grep -qF "codexDeniedNow: typeof c.codexDeniedNow === 'boolean' ? c.codexDeniedNow : true," "$target" ;;
     168) grep -qF 'MUTATED: deny-refresh skips the repo' "$target" && ! grep -qF 'if codex_denied --beneath "$R"; then denied=true; fi' "$target" ;;
     169) grep -qF 'MUTATED: missing manifest allows codex' "$target" && ! grep -qF 'deny-refresh: no $OUT/manifest.json' "$target" ;;
+    216) grep -qF 'MUTATED: redoStep noFable guard dropped' "$target" && ! grep -qF 'if (noFable && (r.owesFable' "$target" ;;
+    217) grep -qF 'MUTATED: runFable noFable guard dropped' "$target" && ! grep -qF '  if (noFable) {' "$target" ;;
+    218) grep -qF 'MUTATED: noFable top check dropped' "$target" && ! grep -qF 'if (fableSt) bad(' "$target" ;;
+    219) grep -qF 'MUTATED: noFable deep@max retry unmarked' "$target" && ! grep -qF 'if (noFable && ranMax(r)) return {' "$target" ;;
+    220) grep -qF 'MUTATED: empty deep@max not stopped' "$target" && ! grep -qF "effort: 'max' } : stopForUser(" "$target" ;;
+    221) grep -qF 'MUTATED: needs-user not incomplete' "$target" && ! grep -qF '|| needsUser.size > 0,' "$target" ;;
     170) grep -qF 'MUTATED: attestation dropped' "$target" && ! grep -qF '\n\n${BOUNDARY_ATTESTATION}\n\n${prompt}`' "$target" ;;
     171) grep -qF 'MUTATED: first line only' "$target" && ! grep -qF '  for (const raw of lines) {' "$target" ;;
     172) grep -qF 'MUTATED: refused not reported' "$target" && ! grep -qF "refused: externalNoWork.filter(n => n.vendor === v && n.kind === 'refused')" "$target" ;;
@@ -1949,6 +2270,39 @@ verify_mutation() {
     176) grep -qF 'MUTATED: AGY alias dropped' "$target" && ! grep -qF '[ "${AGY_BOUNDARY_CLEARED:-}" = "1" ]' "$target" ;;
     177) grep -qF 'MUTATED: CODEX name dropped' "$target" && ! grep -qF '[ "${CODEX_BOUNDARY_CLEARED:-}" = "1" ]' "$target" ;;
     178) grep -qF 'MUTATED: Agent deny dropped' "$target" && ! grep -q '^disallowedTools:' "$target" ;;
+    179) grep -qF 'MUTATED: cap check removed' "$target" && ! grep -qF -- '-gt "$CAP" ]; }' "$target" ;;
+    180) grep -qF 'MUTATED: kill switch ignored' "$target" && ! grep -qF 'triage.disabled" ] && exit 0' "$target" ;;
+    181) grep -qF 'MUTATED: legacy guard removed' "$target" && ! grep -qF "grep -qxF '@triage.md'" "$target" ;;
+    182) grep -qF 'MUTATED: SessionStart replaced' "$target" && ! grep -qF '+ [$group])' "$target" ;;
+    183) grep -qF 'MUTATED: every SessionStart hook deleted' "$target" && ! grep -qF 'any(.hooks[]; ours)' "$target" ;;
+    184) grep -qF 'MUTATED: pointer guard dropped' "$target" && ! grep -qF 'if [ "$POINTER" -eq 0 ]' "$target" ;;
+    185) grep -qF 'MUTATED: agent_id ignored' "$target" && ! grep -qF '(.agent_id // null) != null' "$target" ;;
+    187) grep -qF 'MUTATED: hook status dropped' "$target" && ! grep -qF 'echo "settings migration pending: triage hook missing' "$target" ;;
+    188) grep -qF 'MUTATED: legacy status dropped' "$target" && ! grep -qF 'echo "settings migration pending: legacy @triage.md' "$target" ;;
+    189) grep -qF 'MUTATED: CLAUDE_DIR not pinned' "$target" && ! grep -qF "printf 'CLAUDE_DIR=%q bash" "$target" ;;
+    190) grep -qF 'MUTATED: substring ownership' "$target" && ! grep -qF 'def owned: $TRIAGE_HOOK_OWNED_JQ;' "$target" ;;
+    191) grep -qF 'MUTATED: substring ownership' "$target" && ! grep -qF 'def ours: $TRIAGE_HOOK_OWNED_JQ;' "$target" ;;
+    192) grep -qF 'MUTATED: predicate copy drifted' "$target" && ! grep -qF '.type == "command" and .command == $cmd' "$target" ;;
+    193) grep -qF 'MUTATED: matcher coverage ignored' "$target" && ! grep -qF '(($events | split("|")) - split("|"))' "$target" ;;
+    194) grep -qF 'MUTATED: disableAllHooks ignored' "$target" && ! grep -qF '0) HOOKS_OFF=1 ;;' "$target" ;;
+    195) grep -qF 'MUTATED: blocked status dropped' "$target" && ! grep -qF 'echo "settings migration blocked:' "$target" ;;
+    196) grep -qF 'MUTATED: CR kept' "$target" && ! grep -qF 'sub(/\r$/, "", l); if (l == want)' "$target" ;;
+    197) grep -qF 'MUTATED: filter failure swallowed' "$target" && ! grep -qF 'die "could not filter $CLAUDE_MD' "$target" ;;
+    198) grep -qF 'MUTATED: jq failure read as add' "$target" && ! grep -qF '*) return 1 ;;' "$target" ;;
+    199) grep -qF 'MUTATED: status needs settings.json' "$target" ;;
+    200) grep -qF 'MUTATED: filter failure swallowed' "$target" && ! grep -qF 'die "could not filter $CLAUDE_DIR/CLAUDE.md' "$target" ;;
+    201) grep -qF 'MUTATED: CR not stripped' "$target" && ! grep -qF "tr -d '\r' <" "$target" ;;
+    202|203) grep -qF 'MUTATED: pin ignored' "$target" && ! grep -qF ': $TRIAGE_HOOK_OWNED_JQ;' "$target" ;;
+    204|205) grep -qF 'MUTATED: type ignored' "$target" && ! grep -qF ': $TRIAGE_HOOK_OWNED_JQ;' "$target" ;;
+    206) grep -qF 'MUTATED: resume not required' "$target" && ! grep -qF '(($events | split("|")) - split("|"))' "$target" ;;
+    207) grep -qF 'MUTATED: rubric gate skipped' "$target" && ! grep -qF '! rubric_fits "$1" "$2"' "$target" ;;
+    208) grep -qF 'MUTATED: repo rubric checked' "$target" && ! grep -qF 'claude_md_decision "$CLAUDE_DIR/$TRIAGE_HOOK_SCRIPT" "$CLAUDE_DIR/triage.md"' "$target" ;;
+    209) grep -qF 'MUTATED: hook merged in a second write' "$target" && grep -qF 'settings merge (jq) failed (hook)' "$target" ;;
+    210) grep -qF 'MUTATED: settings.json created first' "$target" ;;
+    211) grep -qF 'MUTATED: false read as absent' "$target" && ! grep -qF '(.hooks.SessionStart | shape("array"))' "$target" ;;
+    212|213) grep -qF 'MUTATED: final newline added' "$target" && ! grep -qF '(nl ? "\n" : "")' "$target" ;;
+    214) grep -qF 'MUTATED: pointer names ~/.claude' "$target" ;;
+    215) grep -qF 'MUTATED: line break accepted' "$target" && ! grep -qF 'CLAUDE_DIR contains a line break' "$target" ;;
     110) grep -qF 'MUTATED: dedupe dropped' "$target" && ! grep -qF 'select(okey as $k | any($have[]; . == $k) | not)] as $miss' "$target" ;;
     111) grep -qF 'MUTATED: collision skipped' "$target" && ! grep -qF 'else {action: "refuse", lines: []' "$target" ;;
     112) grep -qF 'MUTATED: UTC offset ignored' "$target" && ! grep -qF '(if $c.sg == null then 0 else' "$target" ;;
@@ -2031,6 +2385,7 @@ run_suite() { # $1 = repo copy dir, $2 = suite name (see suite_file) -> exit cod
     reviewstage) ( cd "$copy" && bash test/review-stage.sh ) >"$WORK_ROOT/last-suite.log" 2>&1 ;;
     usage) ( cd "$copy" && bash test/usage-tally.sh ) >"$WORK_ROOT/last-suite.log" 2>&1 ;;
     lint) ( cd "$copy" && bash test/lint.sh ) >"$WORK_ROOT/last-suite.log" 2>&1 ;;
+    triagectx) ( cd "$copy" && bash test/triage-context.sh ) >"$WORK_ROOT/last-suite.log" 2>&1 ;;
     *) return 1 ;;
   esac
 }
@@ -2058,6 +2413,12 @@ BASELINE_PARITYREPORT_OK=1
 BASELINE_REVIEWSTAGE_OK=1
 BASELINE_USAGE_OK=1
 BASELINE_LINT_OK=1
+BASELINE_TRIAGECTX_OK=1
+if run_suite "$BASELINE_DIR" triagectx; then
+  BASELINE_TRIAGECTX_OK=0
+else
+  echo "  ⚠ baseline $(suite_file triagectx) is already RED on unmutated code — mutations using it will be reported ERROR (baseline-red), not KILLED/SURVIVOR."
+fi
 if run_suite "$BASELINE_DIR" lint; then
   BASELINE_LINT_OK=0
 else
@@ -2160,6 +2521,7 @@ for id in $RUN_IDS; do
     reviewstage) baseline_ok=$BASELINE_REVIEWSTAGE_OK ;;
     usage) baseline_ok=$BASELINE_USAGE_OK ;;
     lint) baseline_ok=$BASELINE_LINT_OK ;;
+    triagectx) baseline_ok=$BASELINE_TRIAGECTX_OK ;;
     *) baseline_ok=1 ;;
   esac
 

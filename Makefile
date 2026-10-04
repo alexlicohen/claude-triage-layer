@@ -15,6 +15,7 @@ test:
 	./test/parity-suite.sh
 	node test/parity-scenarios.mjs
 	./test/parity-report.sh
+	./test/triage-context.sh
 
 drift:
 	./drift.sh

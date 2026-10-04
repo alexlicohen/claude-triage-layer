@@ -1,7 +1,7 @@
 export const meta = {
   name: 'triage-exec',
   description: 'Execute a pre-built triage plan: delegate each subtask to its level agent (Claude, or an external vendor), run the objective checks, remediate and escalate',
-  whenToUse: 'Run a plan the orchestrator has ALREADY classified (it never classifies; a malformed plan throws before any spawn): args = {subtasks:[{brief, level, vendor?, files, acceptance, danger?, effort?, checks?}], checks:[cmd...], review?, crossReview?, overflow?, vendor?, bakeoff?}. Inline build bake-offs are on by default: pass bakeoff on every plan unless triage.md rule 10 excludes the work, then run each report.ingest entry. Full arg spec: README.md › Workflow arguments › triage-exec.',
+  whenToUse: 'Run a plan the orchestrator has ALREADY classified (it never classifies; a malformed plan throws before any spawn): args = {subtasks:[{brief, level, vendor?, files, acceptance, danger?, effort?, checks?}], checks:[cmd...], review?, crossReview?, overflow?, vendor?, bakeoff?, noFable?}. noFable: true (rubric rule 7 material) refuses claude top subtasks and stops at deep@max with report.needsUser instead of escalating to Fable. Inline build bake-offs are on by default: pass bakeoff on every plan unless triage.md rule 10 excludes the work, then run each report.ingest entry. Full arg spec: README.md › Workflow arguments › triage-exec.',
   phases: [
     { title: 'Execute' },
     { title: 'Verify' },
@@ -51,6 +51,7 @@ const USAGE = 'Expected args = {\n' +
   '  overflow?:    boolean    // default: false — builder-level subtasks without a vendor run on codex\n' +
   `  review?:      ${REVIEW_MODES.join('|')}   // default: auto\n` +
   `  crossReview?: boolean|${Object.keys(CROSS_REVIEW_VENDORS).join('|')}   // default: false (true = codex)\n` +
+  '  noFable?:     boolean    // default: false — never spawn Fable: no claude top subtask; stop at deep@max (report.needsUser)\n' +
   '  bakeoff?:     { config: <triage-tiers.sh --bakeoff-json object>, seed: string, repo: "/abs repo",\n' +
   '                  outDir: "/abs dir outside repo", weeklyPct?: number,\n' +
   `                  rates?: { ${LEVELS.join('|')}: number in [0, 1] } }   // opt-in inline bake-offs; rates = parity-report.sh rates --json .rates\n}`
@@ -75,9 +76,13 @@ if (args.crossReview != null && typeof args.crossReview !== 'boolean' && !Object
   bad(`args.crossReview must be a boolean or one of ${Object.keys(CROSS_REVIEW_VENDORS).join('|')} (got ${JSON.stringify(args.crossReview)}).`)
 }
 if (args.overflow != null && typeof args.overflow !== 'boolean') bad('args.overflow must be a boolean.')
+if (args.noFable != null && typeof args.noFable !== 'boolean') bad(`args.noFable must be a boolean (got ${JSON.stringify(args.noFable)}).`)
 if (isRetired(args.vendor)) bad(`args.vendor ${JSON.stringify(args.vendor)}: ${RETIRED_VENDORS[args.vendor]}.`)
 if (args.vendor != null && !VENDORS.includes(args.vendor)) bad(`args.vendor must be one of ${VENDORS.join('|')} (got ${JSON.stringify(args.vendor)}).`)
 const wantsOverflow = args.overflow === true
+// noFable — the plan's material is excluded from Fable (rubric rule 7(a)/(b)). Deep@max
+// is then the ceiling: redoStep() never steps onto top and runFable() never spawns Fable.
+const noFable = args.noFable === true
 const planVendor = args.vendor || null
 
 // args.bakeoff — opt-in inline build bake-offs (Wave 13B; see bakeoffPick() and
@@ -220,6 +225,13 @@ const subtasks = args.subtasks.map((raw, i) => {
   }
 })
 
+// noFable + a plan-time top-level Claude subtask (= Fable itself) is a contradiction:
+// refused before any spawn. A codex top subtask is fine — codex is not Fable.
+if (noFable) {
+  const fableSt = subtasks.find(st => st.level === 'top' && st.vendor === 'claude')
+  if (fableSt) bad(`subtask "${fableSt.id}" is level top on claude (= Fable), but args.noFable is true — plan it at deep (deep@max is the ceiling) or on codex, or drop noFable.`)
+}
+
 const checks = (args.checks || []).map(c => c.trim())
 const reviewMode = args.review || 'auto'
 const crossVendors = args.crossReview === true ? CROSS_REVIEW_VENDORS.codex : (CROSS_REVIEW_VENDORS[args.crossReview] || [])
@@ -248,6 +260,9 @@ const escalations = []
 // on Claude instead — the one fact report()'s ranExternally cannot derive from the
 // escalation log, since a verification failure records the same from/to pair.
 const neverRanExternally = new Set()
+// Ids stopped under noFable where the ladder would have gone to Fable (stopForUser()).
+const needsUser = new Set()
+const NO_FABLE_REASON = 'noFable: Fable excluded for this plan — needs the user'
 
 // ─── Budget awareness ───────────────────────────────────────────────────────
 // The DSL exposes `budget = {total, spent(), remaining()}`. total === null means
@@ -334,7 +349,19 @@ function agentOpts(st, agentType, ph, label, effort = st.effort) {
 // just failed. The subtask keeps its last output instead, and the skip is logged and
 // recorded (to:'none') so the report never reads as if Fable ran. `prefix` namespaces the
 // labels ('' in Execute, 'redo:' in remediation). Returns {output, level, vendor, effort} or null.
+//
+// noFable (defence in depth — redoStep() never steps onto top under it): Fable is never
+// spawned. An external top subtask coming back to Claude gets deep@max instead; after a
+// failed deep@max attempt (`afterMax`) the subtask stops for the user (stopForUser()).
 async function runFable(st, prompt, ph, prefix, afterMax, effort) {
+  if (noFable) {
+    if (afterMax) return stopForUser(st.id)
+    log(`⚠ noFable: ${st.id} — Fable is excluded for this plan; triage-deep-reasoner at max effort instead.`)
+    escalations.push({ id: st.id, from: 'fable', to: 'deep', reason: 'noFable: Fable excluded for this plan — deep-reasoner at max effort instead (Fable never spawned)' })
+    const mx = await agent(prompt, agentOpts(st, CLAUDE_AGENT.deep, ph, `${prefix}deep@max:${st.id}`, 'max'))
+    // No output from deep@max: the ladder this plan allows is spent — the user, not a bare null.
+    return mx ? { output: mx, level: 'deep', vendor: 'claude', effort: 'max' } : stopForUser(st.id, 'returned no output at deep@max')
+  }
   log(`⚠ Escalating to Fable: ${st.id} — ${st.brief.slice(0, 80)}`)
   const out = await agent(prompt, agentOpts(st, CLAUDE_AGENT.top, ph, `${prefix}fable:${st.id}`, effort))
   if (out) return { output: out, level: 'top', vendor: 'claude', effort: effort || null }
@@ -347,6 +374,17 @@ async function runFable(st, prompt, ph, prefix, afterMax, effort) {
   escalations.push({ id: st.id, from: 'fable', to: 'deep', reason: 'fable spawn unavailable — deep-reasoner at max effort' })
   const fb = await agent(prompt, agentOpts(st, CLAUDE_AGENT.deep, ph, `${prefix}deep←fable:${st.id}`, 'max'))
   return fb ? { output: fb, level: 'deep', vendor: 'claude', effort: 'max' } : null
+}
+
+// stopForUser(id) — noFable's end of the ladder: the subtask failed at deep@max and the
+// next rung is Fable, which this plan excludes. Nothing is spawned; it keeps its last
+// output, the stop is recorded (deep → user) and report() lists it in needsUser (and the
+// run reads INCOMPLETE). `why` names the deep@max outcome for the log. Returns null.
+function stopForUser(id, why = 'failed at deep@max') {
+  log(`⚠ noFable: ${id} ${why} and Fable is excluded for this plan — stopping; it needs the user.`)
+  escalations.push({ id, from: 'deep', to: 'user', reason: NO_FABLE_REASON })
+  needsUser.add(id)
+  return null
 }
 
 // The data-boundary attestation: ONE sentence, used by every brief this workflow sends
@@ -855,12 +893,14 @@ function report(extra) {
       const r = ran.get(st.id)
       // A withheld bake-off subtask never ran (by design): skipped, with the reason
       // on its bakeoffs record, and the run INCOMPLETE.
-      const status = r ? 'ok' : (skippedIds.has(st.id) || withheld.has(st.id) ? 'skipped' : 'failed')
+      const status = needsUser.has(st.id) ? 'needs-user' : r ? 'ok' : (skippedIds.has(st.id) || withheld.has(st.id) ? 'skipped' : 'failed')
       const level = r ? r.level : st.level
       const vendor = r ? r.vendor : st.vendor
       return { id: st.id, tier: tierName(level, vendor), level, vendor, status, attempts: r ? r.attempts : 0 }
     }),
     escalations,
+    noFable,
+    needsUser: [...needsUser],
     budget: budgetReport(),
     ...(external ? { external } : {}),
     ...(bakeoffOn ? bakeoffReport() : {}),
@@ -922,6 +962,19 @@ function redoStep(r, isEscalate) {
   // keeps the result's effort (for an applied bake-off patch that is the plan's —
   // runBakeoff() records the challenger's effort only in the bakeoffs record).
   const vendor = 'claude' // every redo runs on Claude — never sideways on the same vendor
+  // noFable: deep@max is the ceiling. Where the ladder would step onto top — the owed
+  // escalation after deep@max, an ESCALATE at deep@max, or a codex top result coming
+  // back to Claude — a result that already ran deep@max stops ({stop}: remediate() calls
+  // stopForUser()); any other gets one deep@max attempt first.
+  if (noFable && (r.owesFable || r.level === 'top' || (isEscalate && ranMax(r)))) {
+    if (r.owesFable || ranMax(r)) return { stop: true, level: 'deep', vendor, effort: 'max', reason: NO_FABLE_REASON }
+    return { level: 'deep', vendor, effort: 'max', owesFable: true, reason: 'noFable: Fable excluded for this plan — one deep@max attempt instead of top' }
+  }
+  // noFable: a FIX / objective FAIL on a deep@max attempt that owes nothing yet (the plan's
+  // own deep@max, or runFable()'s deep@max in place of top) gets its one same-rung retry,
+  // marked owesFable so that a further failure reaches round 2, where the branch above stops
+  // it for the user — never a second retry, never left reading `ok` while it still fails.
+  if (noFable && ranMax(r)) return { level: 'deep', vendor, effort: 'max', owesFable: true, reason: 'noFable: deep@max retried once at the same rung — a further failure needs the user' }
   if (r.owesFable) return { level: 'top', vendor, effort: null, reason: 'the deep@max attempt failed verification too — the deferred Fable escalation goes ahead' }
   if (!isEscalate) {
     return { level: r.level, vendor, effort: r.effort, reason: isExternal(r.vendor) ? `${r.vendor} output failed verification — same level on Claude` : undefined }
@@ -1090,7 +1143,7 @@ async function remediate(pool, a, round) {
     log(a.isEscalate ? 'Verification: ESCALATE — re-running the implicated subtask(s) one rung up with the feedback.'
                      : 'Verification did not pass — re-running the implicated subtask(s) with the feedback as context.')
   } else if (targets.length) {
-    log(`⚠ deep@max attempt(s) failed verification — sending ${targets.map(r => `"${r.subtask.id}"`).join(', ')} on to Fable` +
+    log(`⚠ deep@max attempt(s) failed verification — ${noFable ? 'stopping' : 'sending'} ${targets.map(r => `"${r.subtask.id}"`).join(', ')} ${noFable ? 'for the user (noFable)' : 'on to Fable'}` +
       (attributionFailed ? ' (attribution matched no subtask files: ALL deep@max subtasks).' : '.'))
   } else {
     log('deep@max step: the remaining failure is attributed only to other subtasks — no Fable escalation.')
@@ -1099,14 +1152,18 @@ async function remediate(pool, a, round) {
   // Remediation redos are WORK → budget-gated on the RESERVE floor (same as Execute),
   // with a ceiling catch, via spawn(). A budget-skipped redo drops from redoResults
   // (filter(Boolean)); the original result stays in the merged re-verify set below.
-  const redo = await parallel(targets.map(r => () => spawn(RESERVE, `Remediate:${rung(r)}`, r.subtask.id, async () => {
-    const id = r.subtask.id
+  const redo = await parallel(targets.map(r => () => {
     const step = redoStep(r, a.isEscalate)
-    if (rung(step) !== rung(r)) escalations.push({ id, from: rung(r), to: rung(step), reason: step.reason })
-    const prefix = step.owesFable ? 'redo:deep@max:' : 'redo:'
-    const out = await runOn(r.subtask, step, brief(r.subtask, extra), 'Verify', prefix, ranMax(r))
-    return out ? { subtask: r.subtask, ...out, attempts: r.attempts + 1, owesFable: !!step.owesFable } : null
-  })))
+    // A noFable stop spawns nothing (so needs no budget): the subtask keeps its last output.
+    if (step.stop) { stopForUser(r.subtask.id); return null }
+    return spawn(RESERVE, `Remediate:${rung(r)}`, r.subtask.id, async () => {
+      const id = r.subtask.id
+      if (rung(step) !== rung(r)) escalations.push({ id, from: rung(r), to: rung(step), reason: step.reason })
+      const prefix = step.owesFable ? 'redo:deep@max:' : 'redo:'
+      const out = await runOn(r.subtask, step, brief(r.subtask, extra), 'Verify', prefix, ranMax(r))
+      return out ? { subtask: r.subtask, ...out, attempts: r.attempts + 1, owesFable: !!step.owesFable } : null
+    })
+  }))
   const redoResults = redo.filter(Boolean)
   // Re-verify the WHOLE task, not just the re-run subset: merge latest output per subtask
   // (remediated where re-run, original otherwise) so danger flags and file focus reflect
@@ -1125,7 +1182,8 @@ async function remediate(pool, a, round) {
 // subtasks whose round-1 step was deep@max (owesFable) and only when the re-verify still
 // fails: they go on to Fable. It re-verifies only if something new ran — Fable unavailable
 // after deep@max (runFable() skips the fallback) leaves the round-1 verification standing.
-// Nothing sets owesFable in round 2, so there is never a round 3.
+// Nothing sets owesFable in round 2, so there is never a round 3. Under noFable, round 2
+// spawns nothing: every owed subtask it implicates stops for the user (redoStep()).
 const first = assess(verification)
 let remediation = null
 if (first.failed && results.length) {
@@ -1179,6 +1237,9 @@ if (finalAssessment.incomplete) {
   log('⚠ VERIFICATION INCOMPLETE — a gate could not run (or nothing gated the work); this result is NOT a confirmed pass.')
 }
 if (withheld.size) log(`⚠ INCOMPLETE — bake-off subtask(s) withheld, never run: ${[...withheld].join(', ')} (see bakeoffs[].reason).`)
+// A subtask stopped for the user (noFable) is unfinished work whatever the final gates say
+// (its deep@max fallback may have produced nothing for them to check): never a clean run.
+if (needsUser.size) log(`⚠ INCOMPLETE — needs the user (noFable): ${[...needsUser].join(', ')}.`)
 
 const reviewText = verification.verdict == null ? '' : String(verification.verdict)
 const out = report({
@@ -1190,7 +1251,7 @@ const out = report({
     text: reviewText.slice(0, 1200),
   },
   remediation,
-  incomplete: finalAssessment.incomplete || withheld.size > 0,
+  incomplete: finalAssessment.incomplete || withheld.size > 0 || needsUser.size > 0,
   failed: finalAssessment.failed,
 })
 if (crossReview) out.crossReview = crossReview
