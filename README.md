@@ -100,7 +100,7 @@ Two flags, composable: `./install.sh --dry-run` prints the full mutation plan (e
 |---|---|
 | Override its routing | "send this to triage-deep-reasoner" / "just use triage-quick-task" |
 | A full top-tier session | `/model fable` — the rubric still delegates cheap work down |
-| Run a plan you wrote yourself | `Workflow({name:'triage-exec', args:{subtasks:[…], checks:['make test']}})` |
+| Run a plan you wrote yourself | `Workflow({name:'triage-exec', args:{subtasks:[…], checks:['make test']}})` — full args: [Workflow arguments](#workflow-arguments) |
 | A cheap session | `/model sonnet` |
 | One-turn deep reasoning | include `ultrathink` in your prompt |
 | Spend tally | say `usage report` (also printed after each task) |
@@ -130,6 +130,86 @@ Google's Antigravity (`agy`) was an external vendor until 2026-09-24, when it wa
 **Parity (ranks models and efforts; proposals only)**: `Workflow({name:'triage-parity', args:{suite, outDir, candidates:[...]}})` runs every candidate `{vendor, level, model?, effort?}` up a private task suite (kept outside this repo; format and tooling in `scripts/README.md` › `parity-suite.sh`) in four difficulty bands, grading build tasks with nested `triage-compare` bake-offs, rubric tasks with two blind judges from different vendors, and review tasks by seeded-defect recall/precision; weak candidates stop early. Confinement: checks name tools only as `$PARITY_` variables (env map, never a real path in anything a candidate sees), judges get only the staged patch + key, and every git task source is fingerprinted before and after its task (`SOURCE_CHANGED` voids that task). The result is a ranking and the band where each candidate plateaus; proposals come from `scripts/parity-report.sh` (ingest the result into the parity ledger, then `report`: a **proposed** `config/tiers.json` change only past a min-n + margin rule, with its evidence). Nothing edits tiers.json; the user approves before `make tiers`. `scripts/parity-cost.sh` attributes the run's Claude usage to each candidate afterwards.
 
 **FORCE warning**: if `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` is set (in your environment or in `settings.json`), it silently overrides every tier agent's `model:` — including the external-CLI tiers' Haiku wrapper — collapsing all routing onto one model. `install.sh` and `drift.sh` both warn loudly when they see it set but never edit it: if it's set, it was set on purpose, and only you should unset it.
+
+## Workflow arguments
+
+The full argument spec for the three workflows. Each workflow's `meta.whenToUse` carries only the minimal args shape (the skill listing truncates long strings) and points here. Model ids are never written here or in the workflows: defaults come from `config/tiers.json`. `agy` was retired on 2026-09-24 and is refused by name everywhere (as a vendor, candidate, reviewer or judge).
+
+### triage-exec
+
+`Workflow({name:'triage-exec', args})` runs a plan the orchestrator has **already** classified. It never classifies: a malformed plan throws before any spawn. It executes, verifies, re-runs only the implicated subtasks on failure (always on Claude), and escalates one rung up on `ESCALATE` (deep below max effort gets one deep@max attempt before Fable).
+
+- `subtasks` — `[{brief, level, vendor, files, acceptance, danger, effort, checks?}]`.
+  - `level`: `quick|builder|deep|top`; `tier` is an alias; `fable` = top on Claude, `overflow` = builder on codex.
+  - `vendor`: `claude|codex`.
+  - `checks: [cmd]`: the subtask's own objective checks, used as an inline bake-off's grade; the plan `checks` stay the verify gate.
+- `checks` — `[shell commands]`, the plan's verify gate.
+- `review` — reviewer mode: `auto` (default: reviewer when there are no checks or a subtask is `danger`), `always`, `never`.
+- `crossReview` — `true` (= codex) or a vendor name; adds a cross-vendor second opinion.
+- `overflow` — boolean; `true` = codex on builder subtasks.
+- `vendor` — plan-level vendor (`claude|codex`).
+- `bakeoff` — **inline build bake-offs, on by default**: the orchestrator passes it on every plan unless `triage.md` rule 10 excludes the work (the user said no bake-offs, PHI/clinical, classifier-sensitive, or a project boundary that keeps the material from external vendors). Shape `{config, seed, repo, outDir, weeklyPct, rates?}`:
+  - `config`: the `scripts/triage-tiers.sh --bakeoff-json` object.
+  - `seed`: string (`"<session id>:<plan #>"`).
+  - `repo`: absolute path of the session repo.
+  - `outDir`: absolute, outside `repo` (globally unique; ledger run ids derive from it).
+  - `weeklyPct`: the weekly usage %; missing = sampling paused.
+  - `rates`: `scripts/parity-report.sh rates --json` `.rates` (`{level: rate in [0, 1]}`: explore, maintain or 0 per level), used in place of `sampleRate` for its level and recorded on each `bakeoffs`/`bakeoffSkipped` entry that reached the draw.
+
+Bake-off sampling and apply rules:
+
+- **Eligible** subtask: has its own checks, or the plan checks when it is the only subtask; non-empty `files`; a tuning challenger that differs from its planned vendor/model/effort; not a planned top/claude (Fable) subtask; danger work only on the danger floor (`DANGER_FAMILIES`: the Claude Opus/Fable families, the codex family listed there at effort >= high).
+- **Sampled** deterministically: FNV-1a of seed+id+brief < `rates[level]`, else `sampleRate`; none at `weeklyPct >= pauseAtWeeklyPct`.
+- A sampled subtask runs **first**, one at a time, as a planned-vs-challenger `triage-compare`, only if `git status` shows its files unmodified.
+- **Apply** via `stage-worktree.sh apply --require-clean`, counting only a real (non-empty), in-scope diff: the planned patch if it passed, else a passing challenger (logged as a fallback), else a failing planned diff (normal verify + remediation), else the subtask runs in place.
+- A **LEAK** aborts the run. An unknown leak state, a failed compare, or an unknown/tree-modifying apply **withholds** the subtask (never run in place; returned in `withheld`; the run is incomplete).
+- Returns `bakeoffs`, `bakeoffSkipped` and `ingest`: for each `ingest` entry the orchestrator writes `result` as JSON to `file`, then runs `cmd` (`parity-report.sh ingest-compare`).
+
+### triage-compare
+
+`Workflow({name:'triage-compare', args})` is a bake-off. It never applies anything; the real repo is never a candidate's or reviewer's workdir. Overview and confinement: "External CLI tiers" above.
+
+**Build (`kind` omitted or `"build"`)** — args `{repo, base?, brief, files, acceptance, checks:[cmd...], outDir, overlay?, selfCheckEnv?, parallel?, candidates:[{vendor:claude|codex, level:quick|builder|deep|top, model?, effort?, label?}]}`:
+
+- `repo`: any absolute git repo path (not necessarily the session repo); may be dirty. `base` (default `HEAD`) is resolved to ONE sha up front, and each candidate works in its own detached worktree at that sha under `<outDir>/stage` (`scripts/stage-worktree.sh`), never in `repo`.
+- `outDir` and `overlay` must be OUTSIDE `repo`; `<outDir>/stage` must not already exist.
+- External (non-claude) candidates require `files`.
+- `checks` may name tools only as `$PARITY_<NAME>` variables (exported at grading by `patch-check.sh` from the parity env map; candidates see them unexpanded). Several checks are graded each in its own `bash -c` (one check's `||` never masks another's failure).
+- `selfCheckEnv: true` copies `<repo>/.parity-env` into each CLAUDE candidate's worktree and tells it to source it (external candidates cannot self-check; recorded per candidate as `selfCheckEnv`).
+- Candidates run one at a time; `parallel: true` runs them concurrently (Claude `outTokens` is then null).
+- The grade is `scripts/patch-check.sh` on each worktree diff at the sha (plus the hidden `overlay`), never the candidate's self-report.
+- A leakcheck then proves `repo` did not change. Only `leak:false` lets a grade stand: leak true OR unknown => every candidate invalid, `graded:false`. Also invalid: a patch `patch-check` could not grade (e.g. overlay-failed or a harness fault); every graded candidate when the relayed `PATCHCHECK` line is missing, garbled or not for this sha and patch set; a candidate whose ext-run line shows another model/effort than it asked for.
+- Returns `sha`/`leak`/`baseMoved` and per candidate `status`/`applies`/`rc`/`diffstat`/`patch`/`tokens`/`model`/`effort`/`modelFrom` (`candidate|runner|null`)/`changedFiles`/`outOfScope` (a changed path outside `files`; null without `files`)/`captureWarnings`/`selfCheckEnv`. Check output stays in `<outDir>/tails` (`tail` names the file). The orchestrator picks and applies.
+
+**Review (`kind:"review"`)** — args `{kind:"review", repo, repoName, base, head?, include:[globs], exclude?, context?, extras?:[{src,dest}], hardExclude?, groundTruth, accepted?, conventions?, outDir, reviewers:[...], adjudicators?, batchSize?, reviewerTimeout?, adjudicatorTimeout?, extendResult?, supersedes?}`:
+
+- `outDir`: fresh, outside `repo`.
+- `reviewers`: `[{vendor:claude|codex, level, model?, effort?, label?}]`; codex reviewers need `model` + `effort`.
+- `adjudicators`: at least two; default = `config/tiers.json` `levels.deep` for each vendor (one Claude, one codex, at that level's model and effort).
+- `batchSize` (default 10); `reviewerTimeout` (default `"30m"`), `adjudicatorTimeout` (default `"15m"`): codex spawns only, passed as `TIMEOUT=` to the `ext-run.sh` watchdog.
+- `scripts/review-stage.sh` snapshots commit `head` (never the live tree; `context/` and `PROJECT_MEMORY*.md` always hard-excluded) plus the `base..head` range diff under `outDir`. Reviewers read ONLY those (Claude: `cd <snap>` on every command; codex: `INPUT_DIR`, OS-confined).
+- One deep agent merges duplicates (provenance kept in the workflow, anonymized). Every merged item is judged by each adjudicator BLIND to reviewers and provenance: all real = real; all not-real/accepted-deviation = rejected; else disputed (for the user).
+- Precision/recall per reviewer over non-disputed items; a failed or invalid reviewer is unavailable, never zero.
+- Every codex prompt carries `PROMPT_BYTES` (the UTF-8 byte length of its prompt-file body); the wrapper refuses a prompt file that is not verbatim.
+- **Extend**: `extendResult` = the result OBJECT a prior run of this workflow returned, passed inline (the path form `extend:"/file"` is refused; a prior result never passes through an LLM). Re-pass the prior run's args with ONLY the new reviewers, `base`/`head` resolving to the prior shas, and the prior `outDir`. The prior result is validated in code; then one quick task only checks that its snapshot still exists (manifest base/head = the prior shas) and re-asks the codex deny (`review-stage.sh deny-refresh`: a marker or deny-list entry added since the original run, or a failed re-check, makes codex reviewers/adjudicators unavailable). Only the new reviewers run (labels must not collide with prior ones). The merge attaches each new finding to an existing item (provenance only, never re-adjudicated) or makes a new item (next id); only new items are adjudicated, blind, by the same panel. Every non-superseded reviewer is rescored over the combined set; `supersedes:[labels]` keeps those prior runs as status `superseded`, unscored, their findings intact.
+- Returns `{kind, base, head, reviewers, items, disputed, sourceChanged, flags, markdown}` (+ `extendedFrom {base, head, outDir, reviewers, items}`, `newItems`, `superseded` when extending). Ingest with `scripts/parity-report.sh ingest-review`.
+
+### triage-parity
+
+`Workflow({name:'triage-parity', args})` re-ranks models and efforts when a model ships or on request. Args:
+
+- `suite`: `"/abs task suite dir"`.
+- `outDir`: `"/abs fresh dir outside any source repo"`.
+- `candidates`: `[{vendor:claude|codex, level:quick|builder|deep|top, model?, effort?, label?}]`.
+- `bands?` (default `[1,2,3,4]`), `reps?` (default 1), `stopAfterFailedBands?` (default 2), `bandPassRate?` (default 0.5), `judges?: [{vendor, level, label?}]`, `taskFilter?: [ids]`, `desk?: true`.
+
+Behaviour:
+
+- Adaptive: a candidate stops after `stopAfterFailedBands` consecutive failed bands.
+- unavailable/denied/invalid/unresolved never count as pass or fail; a compare LEAK aborts the run.
+- Every task with a git source (build, rubric, review) is fingerprinted (`parity-suite.sh fingerprint`) before its candidates run and after grading: a change voids that task (invalid, flag `SOURCE_CHANGED <repo>: HEAD moved|tree changed|ignored files changed|refs/config/hooks changed`) and the run continues. A generator task has no source repo and is marked `guarded:false` in `tasks[]`.
+- Rubric judges get only the staged patch + key.
+- Afterwards: `parity-report.sh ingest-parity --result <saved result>`, then `parity-report.sh report` proposes any `config/tiers.json` change (min-n + margin rule; the user approves). Claude cost per candidate comes from `scripts/parity-cost.sh` on the run transcript.
 
 ## Security and data flow
 

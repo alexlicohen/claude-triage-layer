@@ -50,12 +50,16 @@ run_pr() { OUT=$("$PR" "$@" 2>"$T/err"); RC=$?; ERR=$(cat "$T/err"); }
 j() { printf '%s\n' "$OUT" | jq -r "$1"; }
 nlines() { if [ -f "$1" ]; then wc -l < "$1" | tr -d ' '; else echo 0; fi; }
 
-# The shipped levels, with a FROZEN tuning block (test/fixtures/parity/tuning-rules.json:
-# sampleRate 0.2, builder claude sonnet@high, deep claude opus@medium + sonnet@high): the
-# rule and rate tests below assert against these values, so retuning config/tiers.json
-# (Alex's call) never breaks them. RT checks the SHIPPED tuning separately.
+# A FROZEN tuning block (test/fixtures/parity/tuning-rules.json: sampleRate 0.2, builder
+# claude sonnet@high, deep claude opus@medium + sonnet@high) AND FROZEN levels
+# (test/fixtures/parity/levels-pinned.json: builder claude = claude-sonnet-5/medium, same
+# shape as the levels config/tiers.json shipped as of the pin): the rule, rate and
+# resolution tests below assert against these values, so retuning or upgrading the model
+# in config/tiers.json (Alex's call) never breaks them. RT and MV0 check the SHIPPED
+# tuning/levels separately, against the live file.
 TIERS="$T/tiers.json"
-jq --slurpfile tu "$REPO_DIR/test/fixtures/parity/tuning-rules.json" '.tuning = $tu[0]' "$REPO_DIR/config/tiers.json" > "$TIERS"
+jq --slurpfile tu "$REPO_DIR/test/fixtures/parity/tuning-rules.json" --slurpfile lv "$REPO_DIR/test/fixtures/parity/levels-pinned.json" \
+  '.tuning = $tu[0] | .levels = $lv[0]' "$REPO_DIR/config/tiers.json" > "$TIERS"
 TIERS_SUM=$(cksum < "$TIERS")
 DEFAULT_LEDGER="$HOME/.agents/parity/ledger.jsonl"
 
@@ -510,7 +514,7 @@ chk "RA9 Wilson 95% upper bounds reuse the one formula: 5/10 = 0.7634, 0/10 = 0.
 # --- MV: model-version tracking — modelId per candidate, alias history, backfill,
 # grouping by concrete id, family cheapness, the history view -------------------
 chk "MV0 the shipped tiers pin concrete Claude ids (no alias left at levels.*.claude)" \
-  '[ "$(jq -r "[.levels[].claude.model] | join(\",\")" "$TIERS")" = "claude-haiku-4-5-20251001,claude-sonnet-5,claude-opus-5-5,claude-fable-5-1" ]'
+  '[ "$(jq -r "[.levels[].claude.model] | join(\",\")" "$REPO_DIR/config/tiers.json")" = "claude-haiku-4-5-20251001,claude-sonnet-5-5,claude-opus-5-5,claude-fable-5-1" ]'
 cat > "$T/mv-compare.json" <<'EOF'
 {"candidates":[
  {"label":"c-null","vendor":"claude","level":"builder","model":null,"effort":null,"status":"pass"},

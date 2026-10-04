@@ -4,6 +4,26 @@ Reverse-chronological. Each entry cites the commit(s) it corresponds to and,
 where known, the test-count delta. See `test/roundtrip.sh` and `test/lint.sh`
 for the current check catalog.
 
+## Wave 19 — CC 2.1.288 review + prompt audit (branch wave19-audit)
+
+- Builder level → `claude-sonnet-5-5` (Sonnet 5.5, CC ≥ 2.1.284; `aliasHistory` sonnet from
+  2026-09-28). Builder ledger groups restart at n=0 (grouping is by modelId). Rule/resolution
+  tests in `test/parity-report.sh` now read `test/fixtures/parity/levels-pinned.json`, so a
+  model upgrade no longer breaks them; MV0 checks the shipped file.
+- triage.md: main-loop-only header (subagents without `omitClaudeMd` load it); reviewer scope
+  matches `reviewWanted()` (danger subtasks at any level, `review: 'always'`); delegation
+  rules 1–2 no longer send every small task through a workflow; ext-run internals, the
+  ingest-compare recipe and uninstall steps moved to scripts/README.md / README.md (absolute
+  pointers); overhead figure ~25k.
+- `triage-cross-reviewer` gets `omitClaudeMd: true` (thin wrapper, like triage-external).
+- Workflow `whenToUse` strings cut to ≤ ~500 chars (the listing truncated them); full arg
+  specs in README.md › Workflow arguments; no model ids (tiers.json owns them); triage-exec
+  no longer calls bake-offs opt-in.
+- Checks: parity-report 204 (unchanged count); make verify green. Inline bake-offs: s2
+  (claude opus@medium challenger) and s3 (codex astra@high) both pass, planned applied.
+- Deferred: `AGY_BOUNDARY_CLEARED` rename (danger-zone env var, low value); `make mutate`
+  not re-run (no guard logic changed; CI runs it).
+
 ## triage-usage.sh counts workflow transcripts (branch usage-tally-workflows)
 
 - `scripts/triage-usage.sh` tallied only `subagents/agent-*.jsonl`; agents spawned inside a
