@@ -13,6 +13,12 @@
 #     marker itself always goes. No marker (a value you set, or an install made before
 #     the marker existed) = left alone, with a note.
 #   subagentPromptCacheTtl is removed only while it still holds the value install wrote.
+# The SessionStart hook: only THIS install's hook (a command hook running exactly the
+# command install.sh pins to the current CLAUDE_DIR) is deleted (a group it leaves empty
+# goes too); your other SessionStart hooks, and hooks pinned to another CLAUDE_DIR,
+# stay. This install's CLAUDE.md pointer line and any legacy `@triage.md` import are
+# removed, every other byte kept; the kill switch
+# file ($CLAUDE_DIR/triage.disabled) is moved to the backup dir, never deleted.
 # Settings are rewritten (in a temp file) BEFORE any file is touched, so a jq failure
 # aborts with nothing changed.
 set -euo pipefail
@@ -28,6 +34,18 @@ AGENTS="triage-quick-task triage-builder triage-deep-reasoner triage-reviewer tr
 # case N asserts it), and the env key install.sh writes to record subagent-model ownership.
 SUBAGENT_CACHE_TTL="1h"
 OWNER_MARK="TRIAGE_LAYER_OWNS_SUBAGENT_MODEL"
+# Copies of install.sh's pointer line (POINTER_HEAD + CLAUDE_DIR + POINTER_TAIL), hook
+# command and ownership predicate — test/roundtrip.sh case N8 asserts every copy is
+# identical. Only THIS install's hook goes: a command hook (.type "command") whose
+# command is exactly triage_hook_command for the current CLAUDE_DIR. A hook pinned to
+# another CLAUDE_DIR, an unpinned or otherwise different command, or a non-command entry
+# carrying our command is yours and stays.
+POINTER_HEAD="The triage routing rubric ("
+POINTER_TAIL="/triage.md) reaches the main session through a SessionStart hook; subagents don't receive it."
+TRIAGE_HOOK_SCRIPT="scripts/triage-context.sh"
+TRIAGE_HOOK_OWNED_JQ='type == "object" and .type == "command" and .command == $cmd'
+triage_hook_command() { printf 'CLAUDE_DIR=%q bash %q/%s' "$CLAUDE_DIR" "$CLAUDE_DIR" "$TRIAGE_HOOK_SCRIPT"; }
+pointer_line() { printf '%s%s%s' "$POINTER_HEAD" "$CLAUDE_DIR" "$POINTER_TAIL"; }
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 BACKUP_DIR="$CLAUDE_DIR/triage-uninstall-backup-$STAMP"
@@ -53,6 +71,18 @@ fi
 # symlink (a plain mv would replace it with a detached regular file).
 apply_file() { # $1 = tmp, $2 = dest
   if [ -L "$2" ]; then cat "$1" > "$2" && rm -f "$1"; else mv "$1" "$2"; fi
+}
+
+# File $1 without its lines equal to $2 or $3 (a trailing CR ignored), on stdout. Every
+# other byte is kept exactly: each kept line keeps its own terminator (CRLF included),
+# and an unterminated last line stays unterminated (awk's print would add a newline).
+drop_lines() { # $1 = file, $2 $3 = lines
+  local nl=1
+  if [ -s "$1" ] && [ -n "$(tail -c1 "$1")" ]; then nl=0; fi
+  awk -v imp="$2" -v ptr="$3" -v nl="$nl" '
+    NR > 1 && keep { printf "%s\n", prev }
+    { prev = $0; l = $0; sub(/\r$/, "", l); keep = (l != imp && l != ptr) }
+    END { if (NR > 0 && keep) printf "%s%s", prev, (nl ? "\n" : "") }' "$1"
 }
 
 # Move $1 (a path under CLAUDE_DIR) into BACKUP_DIR, keeping its relative path.
@@ -82,11 +112,15 @@ remove_installed() { # $1 = repo-relative source, $2 = installed path
 #    the retired verify hook (for older local checkouts that wired one).
 #    2c. The subagent model goes only while it equals the ownership marker; the TTL
 #    only while it holds our value. An `env` object left empty is deleted.
+#    2d. SessionStart: only hook entries matching TRIAGE_HOOK_OWNED_JQ are
+#    deleted; a group that held one and is left empty is dropped, then an empty
+#    SessionStart / hooks key. Every other SessionStart group is left exactly as is.
 if [ -f "$SETTINGS" ]; then
   tmp=$(mktemp)
   SETTINGS_TMP="$tmp"
   jq --arg hook "$CLAUDE_DIR/hooks/triage-verify.sh" \
-     --arg ttl "$SUBAGENT_CACHE_TTL" --arg k "$OWNER_MARK" '
+     --arg ttl "$SUBAGENT_CACHE_TTL" --arg k "$OWNER_MARK" --arg cmd "$(triage_hook_command)" "
+    def ours: $TRIAGE_HOOK_OWNED_JQ;"'
     if type != "object" then error("settings.json is not an object") else . end
     | ["Agent(triage-quick-task)","Agent(triage-builder)","Agent(triage-deep-reasoner)","Agent(triage-reviewer)","Agent(triage-cross-reviewer)","Agent(triage-external)","Agent(triage-overflow)"] as $workers
     | ["Agent(triage-fable-architect)"] as $fable
@@ -99,6 +133,8 @@ if [ -f "$SETTINGS" ]; then
     | (if (.permissions // {}) == {} then del(.permissions) else . end)
     | (if .hooks.SubagentStop then .hooks.SubagentStop |= map(select((.hooks // [] | map(.command) | index($hook)) | not)) else . end)
     | (if (.hooks.SubagentStop // []) == [] then del(.hooks.SubagentStop) else . end)
+    | (if (.hooks.SessionStart | type) == "array" then .hooks.SessionStart |= [.[] | if type == "object" and (.hooks | type) == "array" and any(.hooks[]; ours) then (.hooks |= map(select(ours | not))) | (if .hooks == [] then empty else . end) else . end] else . end)
+    | (if (.hooks.SessionStart // null) == [] then del(.hooks.SessionStart) else . end)
     | (if (.hooks // {}) == {} then del(.hooks) else . end)
     | (.env[$k] // null) as $mark
     | (if $mark != null and (.env.CLAUDE_CODE_SUBAGENT_MODEL // null) == $mark then del(.env.CLAUDE_CODE_SUBAGENT_MODEL) else . end)
@@ -109,10 +145,13 @@ if [ -f "$SETTINGS" ]; then
   SUB_LEFT=$(jq -r '.env.CLAUDE_CODE_SUBAGENT_MODEL // ""' "$tmp")
 fi
 
-# 2. Unwire the rubric from CLAUDE.md
+# 2. Unwire the rubric from CLAUDE.md: the pointer line and any legacy import (a
+#    trailing CR is ignored, so a CRLF file is unwired too). Fails CLOSED: a read or
+#    filter error dies here, before CLAUDE.md, settings or any file is touched.
 if [ -f "$CLAUDE_DIR/CLAUDE.md" ]; then
   tmp=$(mktemp)
-  grep -vxF '@triage.md' "$CLAUDE_DIR/CLAUDE.md" > "$tmp" || true
+  drop_lines "$CLAUDE_DIR/CLAUDE.md" "@triage.md" "$(pointer_line)" > "$tmp" \
+    || die "could not filter $CLAUDE_DIR/CLAUDE.md (awk failed) — nothing was changed."
   apply_file "$tmp" "$CLAUDE_DIR/CLAUDE.md" || die "could not rewrite $CLAUDE_DIR/CLAUDE.md."
 fi
 
@@ -133,11 +172,15 @@ for w in triage-exec.js triage-compare.js triage-parity.js triage-run.js; do
 done
 for s in triage-usage.sh triage-stats.sh triage-cache-segment.sh ext-run.sh patch-check.sh \
          stage-worktree.sh review-stage.sh parity-suite.sh parity-cost.sh parity-report.sh \
-         triage-tiers.sh agy-run.sh; do
+         triage-tiers.sh triage-context.sh agy-run.sh; do
   remove_installed "scripts/$s" "$CLAUDE_DIR/scripts/$s"
 done
 remove_installed "config/tiers.json" "$CLAUDE_DIR/scripts/triage-tiers.json"
 remove_installed "hooks/triage-verify.sh" "$CLAUDE_DIR/hooks/triage-verify.sh"
+# The kill switch is yours: moved aside with the backups, never deleted.
+if [ -e "$CLAUDE_DIR/triage.disabled" ] || [ -L "$CLAUDE_DIR/triage.disabled" ]; then
+  backup_move "$CLAUDE_DIR/triage.disabled"
+fi
 
 # 4. Apply the settings rewrite computed in step 1.
 if [ -n "$SETTINGS_TMP" ]; then

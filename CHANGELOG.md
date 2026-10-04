@@ -4,6 +4,31 @@ Reverse-chronological. Each entry cites the commit(s) it corresponds to and,
 where known, the test-count delta. See `test/roundtrip.sh` and `test/lint.sh`
 for the current check catalog.
 
+## Wave 21 — triage.md via SessionStart hook; noFable (branch wave21-triage-hook)
+
+- triage.md trimmed 12,511 → 9,289 B (4a63148, approved): restated AGENTS.md rules → pointers;
+  an independent rule-by-rule check found 15/~153 rules weakened (qualifiers, paths) — all
+  restored. Label + file = 9,430 ≤ the 10,000-char hook cap (lint: `triage-context.sh --check`).
+- New `scripts/triage-context.sh`: SessionStart hook delivering triage.md to the MAIN session
+  only (SessionStart doesn't fire for subagents; re-injects on clear/compact). Silent on
+  `triage.disabled` (new kill switch), a legacy `@triage.md` import, or `agent_id`; notice on a
+  missing/oversize rubric. Saves ~3.6k input tokens per subagent spawn (measured, Haiku A/B).
+- install.sh (bare): `triage_hook_action()` appends one CLAUDE_DIR-pinned command hook
+  (matcher startup|resume|clear|compact; ownership = exact `TRIAGE_HOOK_OWNED_JQ`, type
+  command; foreign hooks untouched), then migrates `@triage.md` → pointer line, byte-exact;
+  no migration when hooks are disabled or the installed rubric fails `--check`; fails closed.
+  uninstall.sh removes only that hook (parity test N8). drift reports pending migration.
+- triage-exec plan flag `noFable`: no path spawns Fable (redoStep stops at deep@max →
+  `report.needsUser`; runFable refuses; claude top subtasks rejected up front). Rule 7: set it
+  for 7(a)/(b) material.
+- Checks: roundtrip 192 → 254, workflow-scenarios 382 → 412, new triage-context 22.
+  Reviewer PASS each round; codex cross-review 3 rounds on the hook (round-3 edge cases —
+  managed hook policy, hand-edited hook fields, inherited TRIAGE_MD, nested imports in forks —
+  accepted under the accidents-not-adversary threat model; README notes managed settings), 1
+  manual round on noFable (no Fable escape; 2 reporting gaps fixed).
+- Live migration: Alex runs a bare `./install.sh`, then `make verify-live` + one probe.
+  Unverified: hooks in Desktop / IDE / Remote Control surfaces.
+
 ## Wave 20 — audit residue (branch wave20-audit-residue)
 
 - `CODEX_BOUNDARY_CLEARED=1` is the boundary attestation in `scripts/ext-run.sh`;

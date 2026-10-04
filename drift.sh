@@ -2,7 +2,7 @@
 # Compare the installed copies under ~/.claude (or $CLAUDE_DIR) against this
 # repo, file-by-file, for: the 7 agents, statusline.sh, workflows/triage-exec.js
 # triage-compare.js and triage-parity.js, the scripts (incl. ext-run.sh, patch-check.sh, stage-worktree.sh, review-stage.sh,
-# parity-suite.sh, parity-cost.sh and parity-report.sh), config/tiers.json (installed as
+# parity-suite.sh, parity-cost.sh, parity-report.sh and the triage-context.sh SessionStart hook), config/tiers.json (installed as
 # scripts/triage-tiers.json), triage.md. Prints one of `same` / `MISSING (not installed)` / `FORKED` per
 # file (or `forked (expected)` for files listed in .driftignore), then a warn-only
 # "settings migration pending" line for each settings.json change a bare install
@@ -80,6 +80,7 @@ check_file "scripts/parity-suite.sh" "$CLAUDE_DIR/scripts/parity-suite.sh"
 check_file "scripts/parity-cost.sh" "$CLAUDE_DIR/scripts/parity-cost.sh"
 check_file "scripts/parity-report.sh" "$CLAUDE_DIR/scripts/parity-report.sh"
 check_file "scripts/triage-tiers.sh" "$CLAUDE_DIR/scripts/triage-tiers.sh"
+check_file "scripts/triage-context.sh" "$CLAUDE_DIR/scripts/triage-context.sh"
 check_file "config/tiers.json" "$CLAUDE_DIR/scripts/triage-tiers.json"
 check_file "triage.md" "$CLAUDE_DIR/triage.md"
 
@@ -92,15 +93,17 @@ if [ -n "${CLAUDE_CODE_SUBAGENT_MODEL_FORCE:-}" ] || \
   echo "⚠ CLAUDE_CODE_SUBAGENT_MODEL_FORCE is set — every tier collapses onto one model; per-tier routing is inert."
 fi
 
-# Warn-only: settings.json changes a bare ./install.sh would still make but `make sync`
-# (--files-only) never does, e.g. a subagent model left at an earlier installer default.
+# Warn-only: settings.json / CLAUDE.md changes a bare ./install.sh would still make but
+# `make sync` (--files-only) never does: a subagent model left at an earlier installer
+# default, the triage SessionStart hook missing, a legacy @triage.md import present.
 # The decision is install.sh's (--settings-status, read-only); needs jq, like install.
-if [ -f "$CLAUDE_DIR/settings.json" ]; then
-  if command -v jq >/dev/null 2>&1; then
-    CLAUDE_DIR="$CLAUDE_DIR" "$REPO_DIR/install.sh" --settings-status 2>&1 | sed 's/^/⚠ /'
-  else
-    echo "settings check skipped (jq not installed)"
-  fi
+# Runs whether or not settings.json exists: a missing one is an empty one (no hook, no
+# subagent model), never a reason to stay quiet. A status error is printed, still
+# warn-only.
+if command -v jq >/dev/null 2>&1; then
+  CLAUDE_DIR="$CLAUDE_DIR" "$REPO_DIR/install.sh" --settings-status 2>&1 | sed 's/^/⚠ /'
+else
+  echo "settings check skipped (jq not installed)"
 fi
 
 if [ "$UNEXPECTED_DRIFT" -ne 0 ]; then

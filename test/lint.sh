@@ -12,6 +12,9 @@
 #   4b. No agent file references a fixed /tmp/ext-* scratch path.
 #   4c. builder, deep-reasoner and fable-architect keep `disallowedTools: Agent`
 #      in their frontmatter (leaf workers: the harness, not prose, stops a spawn).
+#   4d. triage.md fits the SessionStart hook: label + file under the 10,000-char
+#      additionalContext cap (scripts/triage-context.sh --check), and the file itself
+#      within its 9,500-byte budget (headroom under the cap).
 #   5. Tiers sync: every agent's model:/effort: frontmatter equals
 #      config/tiers.json (scripts/tiers-sync.sh --check).
 #   5b. Tuning: config/tiers.json's tuning block passes triage-tiers.sh --bakeoff-json.
@@ -122,7 +125,7 @@ if [ ! -f "$README" ]; then
   fail "README.md not found — cannot run docs-consistency check"
 else
   # Paths the README's install / manual-install sections claim exist.
-  DOC_PATHS="statusline.sh triage.md workflows/triage-exec.js install.sh uninstall.sh scripts/ext-run.sh"
+  DOC_PATHS="statusline.sh triage.md workflows/triage-exec.js install.sh uninstall.sh scripts/ext-run.sh scripts/triage-context.sh"
   for p in $DOC_PATHS; do
     if [ -e "$p" ]; then
       ok "docs-consistency: $p exists"
@@ -173,6 +176,24 @@ for LEAF in triage-builder triage-deep-reasoner triage-fable-architect; do
     fail "leaf-agent: agents/$LEAF.md frontmatter lacks disallowedTools: Agent (it could spawn subagents)"
   fi
 done
+
+# --- 4d. triage.md fits the SessionStart hook ------------------------------------
+# Over the cap Claude Code delivers only a 2,000-char preview, so the main session
+# would silently lose most of the rubric; the hook prints a notice instead, and this
+# check keeps it from ever shipping that way.
+TRIAGE_MD_MAX=9500
+if CTX_OUT=$(./scripts/triage-context.sh --check triage.md 2>&1); then
+  ok "triage.md: $CTX_OUT"
+else
+  fail "triage.md: scripts/triage-context.sh --check failed"
+  printf '%s\n' "$CTX_OUT" >&2
+fi
+TRIAGE_MD_BYTES=$(wc -c < triage.md | tr -d ' ')
+if [ "$TRIAGE_MD_BYTES" -le "$TRIAGE_MD_MAX" ]; then
+  ok "triage.md: $TRIAGE_MD_BYTES bytes (budget $TRIAGE_MD_MAX)"
+else
+  fail "triage.md: $TRIAGE_MD_BYTES bytes, over its $TRIAGE_MD_MAX-byte budget — trim it (the hook cap is 10,000 chars with the label)"
+fi
 
 # --- 5. tiers sync: agents/*.md model:/effort: must equal config/tiers.json ------
 # tiers.json is the one place a model or effort is edited; `make tiers` writes it

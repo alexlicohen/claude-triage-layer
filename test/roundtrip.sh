@@ -57,7 +57,19 @@
 #   X - .driftignore entries with CRLF / trailing whitespace still protect forks
 #       (fixture .driftignore + repo copy).
 #   Y - tiers-sync.sh: --root without a value, an unclosed frontmatter.
-#   Z - drift.sh warns "settings migration pending" for a legacy subagent model.
+#   Z - drift.sh warns "settings migration pending" for a legacy subagent model,
+#       a missing triage SessionStart hook and a legacy @triage.md import.
+#   SS - the SessionStart hook that delivers triage.md: appended once (never replacing
+#       a foreign SessionStart hook, which survives install AND uninstall), a legacy
+#       @triage.md import migrated to the pointer line, the pointer removed on
+#       uninstall, and a failed settings merge leaving settings.json and CLAUDE.md
+#       byte-identical (one settings write, after the whole merge succeeded).
+#   OWN/PIN/TYPE - ownership: only a command hook pinned to THIS CLAUDE_DIR counts as
+#       installed or is removed (other-dir, unpinned, prompt-type entries are foreign).
+#   MATCH - matcher coverage: all four of startup, resume, clear, compact.
+#   RUB - the legacy import goes only when the installed rubric passes --check.
+#   FALSE/BYTE/NL - false-valued settings keys refused; CLAUDE.md bytes kept exactly
+#       (cmp); a CLAUDE_DIR with a line break refused.
 #   Plus two direct statusline.sh checks (non-numeric / numeric pct).
 set -u
 
@@ -78,6 +90,16 @@ unset CLAUDE_CODE_SUBAGENT_MODEL_FORCE
 PASS_COUNT=0
 FAIL_COUNT=0
 ALL_TMP=""
+# The one line install appends to CLAUDE.md for CLAUDE_DIR $1 (install.sh pointer_line;
+# N8 pins both scripts' copies): it names that install's triage.md.
+pointer_for() { printf 'The triage routing rubric (%s/triage.md) reaches the main session through a SessionStart hook; subagents don'"'"'t receive it.' "$1"; }
+# The hook command install pins to CLAUDE_DIR $1 (an ordinary path: no %q escaping).
+hook_cmd_for() { printf 'CLAUDE_DIR=%s bash %s/scripts/triage-context.sh' "$1" "$1"; }
+# Number of SessionStart hook commands in settings file $1 in install's canonical form
+# (`CLAUDE_DIR=<dir> bash <dir>/scripts/triage-context.sh`, nothing before or after).
+# Written independently of install.sh's TRIAGE_HOOK_OWNED_RE, so a broken predicate
+# there cannot also blind this count.
+triage_hooks() { jq '[.hooks.SessionStart // [] | .[] | .hooks // [] | .[] | (.command // "") | strings | select(startswith("CLAUDE_DIR=") and endswith("/scripts/triage-context.sh") and (split(" ") | length == 3) and (split(" ")[1] == "bash"))] | length' "$1"; }
 # The subagent default install writes = the deep level's Claude model (config/tiers.json).
 DEEP_MODEL=$(jq -r '.levels.deep.claude.model' "$REPO_DIR/config/tiers.json")
 
@@ -136,10 +158,14 @@ run_install "$A_DIR" >/dev/null 2>&1
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 A_INSTALL_RC=$?
 chk "A1: install exits 0" '[ "$A_INSTALL_RC" -eq 0 ]'
-chk "A2: @triage.md appended on its own line" 'grep -qxF "@triage.md" "$A_DIR/CLAUDE.md"'
+chk "A2: the pointer line is appended on its own line, and no @triage.md import" \
+  'grep -qxF "$(pointer_for "$A_DIR")" "$A_DIR/CLAUDE.md" && ! grep -qxF "@triage.md" "$A_DIR/CLAUDE.md"'
+chk "A2b: exactly one SessionStart hook runs scripts/triage-context.sh, with the full matcher and timeout" \
+  '[ "$(triage_hooks "$A_DIR/settings.json")" -eq 1 ] && jq -e ".hooks.SessionStart[0] == {matcher: \"startup|resume|clear|compact\", hooks: [{type: \"command\", command: \"CLAUDE_DIR=$A_DIR bash $A_DIR/scripts/triage-context.sh\", timeout: 10}]}" "$A_DIR/settings.json" >/dev/null'
+chk "A2c: the hook's script is installed and executable" '[ -x "$A_DIR/scripts/triage-context.sh" ]'
 chk "A3: original CLAUDE.md content preserved as its own first line" \
   '[ "$(sed -n 1p "$A_DIR/CLAUDE.md")" = "existing global rules, no trailing newline" ]'
-chk "A4: CLAUDE.md has exactly 2 lines (orig + @triage.md)" \
+chk "A4: CLAUDE.md has exactly 2 lines (orig + pointer)" \
   '[ "$(wc -l < "$A_DIR/CLAUDE.md" | tr -d " ")" -eq 2 ]'
 chk "A5: model left exactly as the user had it (never written)" \
   '[ "$(jq -r ".model" "$A_DIR/settings.json")" = "sonnet" ]'
@@ -163,8 +189,10 @@ run_install "$A_DIR" >/dev/null 2>&1
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 A_REINSTALL_RC=$?
 chk "A10: re-install exits 0" '[ "$A_REINSTALL_RC" -eq 0 ]'
-chk "A11: re-install does not duplicate @triage.md" \
-  '[ "$(grep -cxF "@triage.md" "$A_DIR/CLAUDE.md")" -eq 1 ]'
+chk "A11: re-install does not duplicate the pointer line" \
+  '[ "$(grep -cxF "$(pointer_for "$A_DIR")" "$A_DIR/CLAUDE.md")" -eq 1 ] && [ "$(wc -l < "$A_DIR/CLAUDE.md" | tr -d " ")" -eq 2 ]'
+chk "A11b: re-install does not add a second SessionStart hook (still exactly one group)" \
+  '[ "$(triage_hooks "$A_DIR/settings.json")" -eq 1 ] && [ "$(jq ".hooks.SessionStart | length" "$A_DIR/settings.json")" -eq 1 ]'
 chk "A12: re-install does not duplicate permissions.allow entries (still 7)" \
   '[ "$(jq ".permissions.allow | length" "$A_DIR/settings.json")" -eq 7 ]'
 
@@ -187,8 +215,10 @@ chk "A16: permissions.allow back to original single entry" \
   '[ "$(jq ".permissions.allow | length" "$A_DIR/settings.json")" -eq 1 ] && jq -e ".permissions.allow | index(\"Bash(ls:*)\")" "$A_DIR/settings.json" >/dev/null'
 chk "A17: unrelated key (customKey) preserved through the whole round-trip" \
   '[ "$(jq -r ".customKey" "$A_DIR/settings.json")" = "keepme" ]'
-chk "A18: @triage.md removed from CLAUDE.md on uninstall" \
-  '! grep -qxF "@triage.md" "$A_DIR/CLAUDE.md"'
+chk "A18: the pointer line is removed from CLAUDE.md on uninstall (the original line stays)" \
+  '! grep -qxF "$(pointer_for "$A_DIR")" "$A_DIR/CLAUDE.md" && [ "$(cat "$A_DIR/CLAUDE.md")" = "existing global rules, no trailing newline" ]'
+chk "A18b: the SessionStart hook is removed, and the emptied hooks key with it" \
+  '[ "$(jq "has(\"hooks\")" "$A_DIR/settings.json")" = "false" ]'
 
 # =============================================================================
 # Case B — empty CLAUDE_DIR round-trip
@@ -250,7 +280,7 @@ CLAUDE_DIR="$D_DIR" "$REPO_DIR/install.sh" >/dev/null 2>"$D_STDERR_FILE"
 D_RC=$?
 chk "D1: install exits non-zero on invalid settings.json" '[ "$D_RC" -ne 0 ]'
 chk "D2: stderr mentions 'not valid JSON'" 'grep -q "not valid JSON" "$D_STDERR_FILE"'
-chk "D3: CLAUDE.md left byte-for-byte unmodified (no @triage.md appended)" \
+chk "D3: CLAUDE.md left byte-for-byte unmodified (no pointer appended)" \
   '[ "$(cat "$D_DIR/CLAUDE.md")" = "$D_CLAUDE_MD_BEFORE" ]'
 chk "D4: agents were NOT copied (no mutation at all)" \
   '[ ! -f "$D_DIR/agents/triage-quick-task.md" ]'
@@ -316,7 +346,8 @@ chk "F8: plan output mentions the subagent-model env key" \
   'grep -q "env.CLAUDE_CODE_SUBAGENT_MODEL" "$F_OUT_FILE"'
 chk "F9: plan output mentions the subagent prompt-cache TTL key" \
   'grep -q "subagentPromptCacheTtl" "$F_OUT_FILE"'
-chk "F10: plan output mentions the @triage.md append" 'grep -q "@triage.md" "$F_OUT_FILE"'
+chk "F10: plan output reports the missing triage hook and the pointer-line append" \
+  'grep -qF "hooks.SessionStart: triage hook missing" "$F_OUT_FILE" && grep -qF "would append pointer line: $(pointer_for "$F_DIR")" "$F_OUT_FILE"'
 chk "F11: --dry-run writes no preinstall snapshot and no settings backup" \
   '[ ! -f "$F_DIR/triage-preinstall.json" ] && [ ! -f "$F_DIR/settings.json.triage-preinstall.bak" ]'
 
@@ -706,13 +737,15 @@ chk "N7: uninstall leaves an unmarked subagent model (even a previous default) a
 
 # The TTL is the one value both scripts own by value: they must agree. The subagent
 # model is a literal in neither (it comes from config/tiers.json; ownership is the marker).
-owned_lines() { grep -E '^(SUBAGENT_CACHE_TTL|OWNER_MARK)=' "$1" | sort; }
+owned_lines() { grep -E '^((SUBAGENT_CACHE_TTL|OWNER_MARK|POINTER_HEAD|POINTER_TAIL|TRIAGE_HOOK_SCRIPT|TRIAGE_HOOK_OWNED_JQ)=|(triage_hook_command|pointer_line)\(\) )' "$1" | sort; }
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 N_INSTALL_OWNED=$(owned_lines "$REPO_DIR/install.sh")
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 N_UNINSTALL_OWNED=$(owned_lines "$REPO_DIR/uninstall.sh")
-chk "N8: install.sh and uninstall.sh define identical SUBAGENT_CACHE_TTL / OWNER_MARK" \
-  '[ "$(printf "%s\n" "$N_INSTALL_OWNED" | grep -c .)" -eq 2 ] && [ "$N_INSTALL_OWNED" = "$N_UNINSTALL_OWNED" ]'
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+N8_PTR=$(CLAUDE_DIR=/n8/dir bash -c "$(grep -E '^(POINTER_HEAD|POINTER_TAIL)=|^pointer_line\(\) ' "$REPO_DIR/install.sh"); pointer_line")
+chk "N8: install.sh and uninstall.sh define identical SUBAGENT_CACHE_TTL / OWNER_MARK / POINTER_HEAD / POINTER_TAIL / TRIAGE_HOOK_SCRIPT / TRIAGE_HOOK_OWNED_JQ (the hook ownership predicate) / triage_hook_command / pointer_line" \
+  '[ "$(printf "%s\n" "$N_INSTALL_OWNED" | grep -c .)" -eq 8 ] && [ "$N_INSTALL_OWNED" = "$N_UNINSTALL_OWNED" ] && [ "$N8_PTR" = "$(pointer_for /n8/dir)" ]'
 chk "N9: neither script hard-codes a subagent model id (config/tiers.json owns it)" \
   '! grep -qE "^SUBAGENT_MODEL=\"claude-" "$REPO_DIR/install.sh" "$REPO_DIR/uninstall.sh"'
 
@@ -778,8 +811,8 @@ chk "P2: a BARE install over an existing fork exits 0 and leaves the fork byte-f
   '[ "$P_RC" -eq 0 ] && [ "$(cat "$P_DIR/triage.md")" = "my personal triage.md fork" ]'
 chk "P3: the bare install announces the skip and writes no .bak-triage copy" \
   'grep -qF "skipped (expected fork): triage.md" "$P_OUT" && ! ls "$P_DIR"/triage.md.bak-triage* >/dev/null 2>&1'
-chk "P4: the rest of the bare install still happened (agents, workflows, @triage.md wiring)" \
-  '[ -f "$P_DIR/agents/triage-quick-task.md" ] && [ -f "$P_DIR/workflows/triage-compare.js" ] && grep -qxF "@triage.md" "$P_DIR/CLAUDE.md"'
+chk "P4: the rest of the bare install still happened (agents, workflows, hook + pointer wiring)" \
+  '[ -f "$P_DIR/agents/triage-quick-task.md" ] && [ -f "$P_DIR/workflows/triage-compare.js" ] && grep -qxF "$(pointer_for "$P_DIR")" "$P_DIR/CLAUDE.md" && [ "$(triage_hooks "$P_DIR/settings.json")" -eq 1 ]'
 P2_DIR=$(new_sandbox)
 run_install "$P2_DIR" >/dev/null 2>&1
 chk "P5: a first bare install (no triage.md yet) writes the repo copy" 'cmp -s "$REPO_DIR/triage.md" "$P2_DIR/triage.md"'
@@ -962,7 +995,7 @@ FAILJQ_MATCH='-= $workers' PATH="$W_BIN:$PATH" CLAUDE_DIR="$W2_DIR" "$REPO_DIR/u
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 W2_RC=$?
 chk "W2: a failing settings rewrite fails uninstall BEFORE any file is removed" \
-  '[ "$W2_RC" -ne 0 ] && ! grep -q "^Uninstalled" "$W2_OUT" && [ -f "$W2_DIR/agents/triage-builder.md" ] && grep -qxF "@triage.md" "$W2_DIR/CLAUDE.md"'
+  '[ "$W2_RC" -ne 0 ] && ! grep -q "^Uninstalled" "$W2_OUT" && [ -f "$W2_DIR/agents/triage-builder.md" ] && grep -qxF "$(pointer_for "$W2_DIR")" "$W2_DIR/CLAUDE.md" && [ "$(triage_hooks "$W2_DIR/settings.json")" -eq 1 ]'
 W3_DIR=$(new_sandbox)
 printf 'keep me\n' > "$W3_DIR/CLAUDE.md"
 echo '{"env": "not-an-object"}' > "$W3_DIR/settings.json"
@@ -1045,6 +1078,444 @@ CLAUDE_DIR="$Z_DIR" "$REPO_DIR/drift.sh" >"$Z_OUT" 2>&1
 Z_RC=$?
 chk "Z2: a legacy subagent model prints 'settings migration pending' naming it, and drift still exits 0" \
   '[ "$Z_RC" -eq 0 ] && grep -q "settings migration pending: env.CLAUDE_CODE_SUBAGENT_MODEL is claude-opus-5" "$Z_OUT"'
+# A synced install whose settings predate the hook (make sync never edits settings), still
+# wired by the legacy import: drift names both pending migrations and still exits 0.
+jq 'del(.hooks)' "$Z_DIR/settings.json" > "$Z_DIR/s.tmp" && mv "$Z_DIR/s.tmp" "$Z_DIR/settings.json"
+printf '@triage.md\n' >> "$Z_DIR/CLAUDE.md"
+CLAUDE_DIR="$Z_DIR" "$REPO_DIR/drift.sh" >"$Z_OUT" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+Z3_RC=$?
+chk "Z3: a missing triage hook prints 'settings migration pending: triage hook missing', drift exits 0" \
+  '[ "$Z3_RC" -eq 0 ] && grep -q "settings migration pending: triage hook missing" "$Z_OUT"'
+chk "Z4: a legacy @triage.md import prints 'settings migration pending: legacy @triage.md import present'" \
+  'grep -q "settings migration pending: legacy @triage.md import present" "$Z_OUT"'
+
+# =============================================================================
+# Case SS — the SessionStart hook that delivers triage.md to the main session only.
+# A foreign SessionStart hook (live settings hold others) survives install AND
+# uninstall; a legacy `@triage.md` import is migrated (backed up, removed, pointer
+# added) only after the settings write succeeded.
+# =============================================================================
+SS_FOREIGN='{"matcher":"startup","hooks":[{"type":"command","command":"bash ~/.claude/cc-status.sh"}]}'
+SS_DIR=$(new_sandbox)
+printf 'my rules\n@triage.md\nmore rules\n' > "$SS_DIR/CLAUDE.md"
+printf '{"hooks": {"SessionStart": [%s], "Stop": [{"hooks": [{"type": "command", "command": "echo stop"}]}]}}\n' "$SS_FOREIGN" > "$SS_DIR/settings.json"
+SS_DRY=$(mktemp)
+ALL_TMP="$ALL_TMP $SS_DRY"
+CLAUDE_DIR="$SS_DIR" "$REPO_DIR/install.sh" --dry-run >"$SS_DRY" 2>&1
+chk "SS1: --dry-run plans the hook append and the legacy migration, and writes nothing" \
+  'grep -qF "hooks.SessionStart: triage hook missing" "$SS_DRY" && grep -qF "legacy @triage.md import present" "$SS_DRY" && grep -qxF "@triage.md" "$SS_DIR/CLAUDE.md" && [ "$(triage_hooks "$SS_DIR/settings.json")" -eq 0 ]'
+SS_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $SS_OUT"
+run_install "$SS_DIR" >"$SS_OUT" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+SS_RC=$?
+chk "SS2: install exits 0; the foreign SessionStart group is kept first and ours appended after it" \
+  '[ "$SS_RC" -eq 0 ] && [ "$(jq -c ".hooks.SessionStart[0]" "$SS_DIR/settings.json")" = "$SS_FOREIGN" ] && [ "$(jq ".hooks.SessionStart | length" "$SS_DIR/settings.json")" -eq 2 ] && [ "$(triage_hooks "$SS_DIR/settings.json")" -eq 1 ]'
+chk "SS3: other hook events are untouched" '[ "$(jq -r ".hooks.Stop[0].hooks[0].command" "$SS_DIR/settings.json")" = "echo stop" ]'
+chk "SS4: the legacy import is gone, the pointer added once, the other lines kept in order" \
+  '[ "$(cat "$SS_DIR/CLAUDE.md")" = "$(printf "my rules\nmore rules\n%s" "$(pointer_for "$SS_DIR")")" ]'
+chk "SS5: the pre-migration CLAUDE.md is kept as a timestamped backup" \
+  'grep -qxF "@triage.md" "$SS_DIR"/CLAUDE.md.bak-triage-* && grep -qF "removed the legacy @triage.md import" "$SS_OUT"'
+run_install "$SS_DIR" >/dev/null 2>&1
+chk "SS6: re-install is idempotent (still 2 groups, one triage hook, one pointer)" \
+  '[ "$(jq ".hooks.SessionStart | length" "$SS_DIR/settings.json")" -eq 2 ] && [ "$(triage_hooks "$SS_DIR/settings.json")" -eq 1 ] && [ "$(grep -cxF "$(pointer_for "$SS_DIR")" "$SS_DIR/CLAUDE.md")" -eq 1 ]'
+# A foreign hook sharing OUR group must survive uninstall too (only our command goes).
+jq '.hooks.SessionStart[1].hooks += [{"type": "command", "command": "echo also-mine"}]' "$SS_DIR/settings.json" > "$SS_DIR/s.tmp" && mv "$SS_DIR/s.tmp" "$SS_DIR/settings.json"
+touch "$SS_DIR/triage.disabled"
+SS_UN=$(mktemp)
+ALL_TMP="$ALL_TMP $SS_UN"
+run_uninstall "$SS_DIR" >"$SS_UN" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+SS_UN_RC=$?
+chk "SS7: uninstall deletes only our hook command: the foreign group and a foreign command in our group survive" \
+  '[ "$SS_UN_RC" -eq 0 ] && [ "$(triage_hooks "$SS_DIR/settings.json")" -eq 0 ] && [ "$(jq -c ".hooks.SessionStart[0]" "$SS_DIR/settings.json")" = "$SS_FOREIGN" ] && [ "$(jq -r ".hooks.SessionStart[1].hooks | map(.command) | join(\",\")" "$SS_DIR/settings.json")" = "echo also-mine" ] && [ "$(jq -r ".hooks.Stop[0].hooks[0].command" "$SS_DIR/settings.json")" = "echo stop" ]'
+chk "SS8: uninstall removes the pointer line and keeps the user's lines" \
+  '[ "$(cat "$SS_DIR/CLAUDE.md")" = "$(printf "my rules\nmore rules")" ]'
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+SS_BACKUP=$(find "$SS_DIR" -maxdepth 1 -type d -name 'triage-uninstall-backup-*' | head -n 1)
+chk "SS9: the kill-switch file is moved to the uninstall backup dir, never deleted" \
+  '[ ! -e "$SS_DIR/triage.disabled" ] && [ -n "$SS_BACKUP" ] && [ -e "$SS_BACKUP/triage.disabled" ]'
+# Uninstall over a still-legacy CLAUDE.md (never migrated) removes the import too.
+SS2_DIR=$(new_sandbox)
+printf 'keep\n@triage.md\n' > "$SS2_DIR/CLAUDE.md"
+run_uninstall "$SS2_DIR" >/dev/null 2>&1
+chk "SS10: uninstall removes a legacy @triage.md import" '[ "$(cat "$SS2_DIR/CLAUDE.md")" = "keep" ]'
+
+# One settings write: a jq failure in the LAST transformation (the hook append) fails
+# install with settings.json AND CLAUDE.md byte-for-byte unchanged — no earlier part of
+# the merge (subagent model, TTL, Agent rules) reaches the file first.
+SS3_DIR=$(new_sandbox)
+printf 'mine\n@triage.md\n' > "$SS3_DIR/CLAUDE.md"
+printf '{"customKey": "keepme"}\n' > "$SS3_DIR/settings.json"
+cp "$SS3_DIR/CLAUDE.md" "$SS3_DIR/CLAUDE.md.before"; cp "$SS3_DIR/settings.json" "$SS3_DIR/settings.json.before"
+SS3_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $SS3_OUT"
+FAILJQ_MATCH='(.hooks.SessionStart // []) + [$group]' PATH="$W_BIN:$PATH" CLAUDE_DIR="$SS3_DIR" "$REPO_DIR/install.sh" >"$SS3_OUT" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+SS3_RC=$?
+chk "SS11: a jq failure in the hook part of the settings merge fails install (no Installed.); settings.json and CLAUDE.md are byte-identical (cmp)" \
+  '[ "$SS3_RC" -ne 0 ] && ! grep -q "^Installed" "$SS3_OUT" && grep -q "settings merge (jq) failed" "$SS3_OUT" && cmp -s "$SS3_DIR/CLAUDE.md" "$SS3_DIR/CLAUDE.md.before" && cmp -s "$SS3_DIR/settings.json" "$SS3_DIR/settings.json.before" && ! ls "$SS3_DIR"/CLAUDE.md.bak-triage-* "$SS3_DIR"/settings.json.bak* >/dev/null 2>&1'
+# ... and with NO settings.json, a failed merge leaves none behind (nothing is written
+# to settings.json before the whole merge succeeded).
+SS3B_DIR=$(new_sandbox)
+FAILJQ_MATCH='(.hooks.SessionStart // []) + [$group]' PATH="$W_BIN:$PATH" CLAUDE_DIR="$SS3B_DIR" "$REPO_DIR/install.sh" >/dev/null 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+SS3B_RC=$?
+chk "SS11b: with no settings.json, a failed settings merge creates none (and no CLAUDE.md)" \
+  '[ "$SS3B_RC" -ne 0 ] && [ ! -e "$SS3B_DIR/settings.json" ] && [ ! -e "$SS3B_DIR/CLAUDE.md" ]'
+# The installed hook, run as Claude Code would, injects the installed rubric.
+SS4_DIR=$(new_sandbox)
+run_install "$SS4_DIR" >/dev/null 2>&1
+SS4_CMD=$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$SS4_DIR/settings.json")
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+# CLAUDE_DIR is NOT in the environment and HOME points elsewhere: only the CLAUDE_DIR
+# pinned in the command can lead the hook to the sandbox's files.
+SS4_HOME=$(new_sandbox)
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+SS4_CTX=$(printf '{"session_id":"s","source":"startup"}' | env -u CLAUDE_DIR HOME="$SS4_HOME" bash -c "$SS4_CMD" | jq -r '.hookSpecificOutput.additionalContext' | tail -n +3)
+chk "SS12: the installed hook command (CLAUDE_DIR unset, HOME elsewhere) injects the sandbox's triage.md" \
+  '[ "$SS4_CTX" = "$(cat "$SS4_DIR/triage.md")" ]'
+touch "$SS4_DIR/triage.disabled"
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+SS4_OFF=$(printf '{"session_id":"s","source":"startup"}' | env -u CLAUDE_DIR HOME="$SS4_HOME" bash -c "$SS4_CMD" 2>&1; echo "rc=$?")
+chk "SS13: the installed command honours the sandbox's triage.disabled with HOME elsewhere (prints nothing, rc 0)" \
+  '[ "$SS4_OFF" = "rc=0" ] && [ ! -e "$SS4_HOME/.claude/triage.disabled" ]'
+# A CLAUDE_DIR with a space: the pinned command still runs, and a re-install still
+# recognizes it as ours (exactly one hook, no duplicate group).
+SS5_DIR="$(new_sandbox)/claude dir"
+mkdir -p "$SS5_DIR"
+run_install "$SS5_DIR" >/dev/null 2>&1
+run_install "$SS5_DIR" >/dev/null 2>&1
+SS5_CMD=$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$SS5_DIR/settings.json")
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+SS5_CTX=$(printf '{}' | env -u CLAUDE_DIR HOME="$SS4_HOME" bash -c "$SS5_CMD" | jq -r '.hookSpecificOutput.additionalContext' | tail -n +3)
+chk "SS14: a CLAUDE_DIR with a space: one hook after two installs, and it injects that dir's triage.md" \
+  '[ "$(jq ".hooks.SessionStart | length" "$SS5_DIR/settings.json")" -eq 1 ] && [ "$SS5_CTX" = "$(cat "$SS5_DIR/triage.md")" ]'
+run_uninstall "$SS5_DIR" >/dev/null 2>&1
+chk "SS15: ... and uninstall removes it (hooks key gone)" '[ "$(jq "has(\"hooks\")" "$SS5_DIR/settings.json")" = "false" ]'
+
+# =============================================================================
+# Case OWN — one anchored ownership predicate (install.sh and uninstall.sh copies,
+# N8 pins them equal). Commands that merely CONTAIN the script path are foreign:
+# never counted as installed, never removed.
+# =============================================================================
+OWN_DIR=$(new_sandbox)
+OWN_FOREIGN='[{"type":"command","command":"bash /x/scripts/triage-context.sh.backup"},{"type":"command","command":"echo /x/scripts/triage-context.sh"},{"type":"command","command":"cd /x && bash scripts/triage-context.sh"}]'
+printf '{"hooks":{"SessionStart":[{"matcher":"startup|resume|clear|compact","hooks":%s}]}}\n' "$OWN_FOREIGN" > "$OWN_DIR/settings.json"
+OWN_ST=$(mktemp)
+ALL_TMP="$ALL_TMP $OWN_ST"
+CLAUDE_DIR="$OWN_DIR" "$REPO_DIR/install.sh" --settings-status >"$OWN_ST" 2>&1
+chk "OWN1: foreign commands containing the script path do not count: status says the hook is missing" \
+  'grep -q "settings migration pending: triage hook missing" "$OWN_ST"'
+run_install "$OWN_DIR" >/dev/null 2>&1
+chk "OWN2: install appends our canonical group and keeps the foreign group byte-for-byte first" \
+  '[ "$(jq ".hooks.SessionStart | length" "$OWN_DIR/settings.json")" -eq 2 ] && [ "$(jq -c ".hooks.SessionStart[0].hooks" "$OWN_DIR/settings.json")" = "$(printf "%s" "$OWN_FOREIGN" | jq -c .)" ] && [ "$(triage_hooks "$OWN_DIR/settings.json")" -eq 1 ]'
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+OWN_WANT=$(printf '[{"matcher":"startup|resume|clear|compact","hooks":%s}]' "$OWN_FOREIGN" | jq -c .)
+run_uninstall "$OWN_DIR" >/dev/null 2>&1
+chk "OWN3: uninstall removes only our group; all three foreign commands survive" \
+  '[ "$(jq -c ".hooks.SessionStart" "$OWN_DIR/settings.json")" = "$OWN_WANT" ]'
+# An unpinned form (`bash <dir>/scripts/triage-context.sh`) is not this install's hook:
+# uninstall leaves it.
+OWN2_DIR=$(new_sandbox)
+printf '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"bash %s/scripts/triage-context.sh"}]}]}}\n' "$OWN2_DIR" > "$OWN2_DIR/settings.json"
+cp "$OWN2_DIR/settings.json" "$OWN2_DIR/settings.before"
+run_uninstall "$OWN2_DIR" >/dev/null 2>&1
+chk "OWN4: uninstall leaves an unpinned command (bash <dir>/scripts/triage-context.sh): not this install's hook" \
+  '[ "$(jq -c .hooks "$OWN2_DIR/settings.json")" = "$(jq -c .hooks "$OWN2_DIR/settings.before")" ]'
+
+# =============================================================================
+# Case MATCH — the hook counts as installed only when a group holding OUR command
+# covers startup, clear and compact; otherwise our canonical group is appended and
+# the existing groups are left alone.
+# =============================================================================
+MATCH_DIR=$(new_sandbox)
+MATCH_CMD="CLAUDE_DIR=$MATCH_DIR bash $MATCH_DIR/scripts/triage-context.sh"
+MATCH_RESUME=$(jq -cn --arg c "$MATCH_CMD" '{matcher: "resume", hooks: [{type: "command", command: $c}]}')
+printf '{"hooks":{"SessionStart":[%s]}}\n' "$MATCH_RESUME" > "$MATCH_DIR/settings.json"
+MATCH_ST=$(mktemp)
+ALL_TMP="$ALL_TMP $MATCH_ST"
+CLAUDE_DIR="$MATCH_DIR" "$REPO_DIR/install.sh" --settings-status >"$MATCH_ST" 2>&1
+chk "MATCH1: our command under a resume-only matcher is not installed (status: hook missing)" \
+  'grep -q "triage hook missing" "$MATCH_ST"'
+run_install "$MATCH_DIR" >/dev/null 2>&1
+chk "MATCH2: install appends the full-matcher group and leaves the resume group exactly as it was" \
+  '[ "$(jq ".hooks.SessionStart | length" "$MATCH_DIR/settings.json")" -eq 2 ] && [ "$(jq -c ".hooks.SessionStart[0]" "$MATCH_DIR/settings.json")" = "$MATCH_RESUME" ] && [ "$(jq -r ".hooks.SessionStart[1].matcher" "$MATCH_DIR/settings.json")" = "startup|resume|clear|compact" ]'
+MATCH2_DIR=$(new_sandbox)
+jq -n --arg c "$(hook_cmd_for "$MATCH2_DIR")" '{hooks: {SessionStart: [{matcher: "*", hooks: [{type: "command", command: $c}]}]}}' > "$MATCH2_DIR/settings.json"
+run_install "$MATCH2_DIR" >/dev/null 2>&1
+MATCH3_DIR=$(new_sandbox)
+jq -n --arg c "$(hook_cmd_for "$MATCH3_DIR")" '{hooks: {SessionStart: [{matcher: "compact|clear|resume|startup", hooks: [{type: "command", command: $c}]}]}}' > "$MATCH3_DIR/settings.json"
+run_install "$MATCH3_DIR" >/dev/null 2>&1
+chk "MATCH3: a \"*\" matcher, or all four events in any order, on this install's command counts as installed (no group appended)" \
+  '[ "$(jq ".hooks.SessionStart | length" "$MATCH2_DIR/settings.json")" -eq 1 ] && [ "$(jq ".hooks.SessionStart | length" "$MATCH3_DIR/settings.json")" -eq 1 ]'
+# Each of the four events is required: a matcher missing any ONE of them is not installed.
+for MATCH_EV in startup resume clear compact; do
+  MATCH_EV_DIR=$(new_sandbox)
+  # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+  MATCH_EV_M=$(printf 'startup|resume|clear|compact' | tr '|' '\n' | grep -vxF "$MATCH_EV" | paste -sd'|' -)
+  jq -n --arg c "$(hook_cmd_for "$MATCH_EV_DIR")" --arg m "$MATCH_EV_M" '{hooks: {SessionStart: [{matcher: $m, hooks: [{type: "command", command: $c}]}]}}' > "$MATCH_EV_DIR/settings.json"
+  MATCH_EV_ST=$(mktemp)
+  ALL_TMP="$ALL_TMP $MATCH_EV_ST"
+  CLAUDE_DIR="$MATCH_EV_DIR" "$REPO_DIR/install.sh" --settings-status >"$MATCH_EV_ST" 2>&1
+  run_install "$MATCH_EV_DIR" >/dev/null 2>&1
+  chk "MATCH4-$MATCH_EV: a matcher without $MATCH_EV ($MATCH_EV_M) is not installed: status says missing, install appends the full group" \
+    'grep -q "triage hook missing" "$MATCH_EV_ST" && [ "$(jq ".hooks.SessionStart | length" "$MATCH_EV_DIR/settings.json")" -eq 2 ] && [ "$(jq -r ".hooks.SessionStart[0].matcher" "$MATCH_EV_DIR/settings.json")" = "$MATCH_EV_M" ] && [ "$(jq -r ".hooks.SessionStart[1].matcher" "$MATCH_EV_DIR/settings.json")" = "startup|resume|clear|compact" ]'
+done
+
+# =============================================================================
+# Case OFF — disableAllHooks: true. The hook could never run, so install must NOT
+# migrate: the @triage.md import stays, no pointer, a diagnostic is printed;
+# --settings-status reports it.
+# =============================================================================
+OFF_DIR=$(new_sandbox)
+printf 'mine\n@triage.md\n' > "$OFF_DIR/CLAUDE.md"
+printf '{"disableAllHooks": true}\n' > "$OFF_DIR/settings.json"
+OFF_ST=$(mktemp); OFF_OUT=$(mktemp); OFF_DRY=$(mktemp)
+ALL_TMP="$ALL_TMP $OFF_ST $OFF_OUT $OFF_DRY"
+CLAUDE_DIR="$OFF_DIR" "$REPO_DIR/install.sh" --settings-status >"$OFF_ST" 2>&1
+chk "OFF1: --settings-status reports disableAllHooks (migration blocked), not a pending legacy migration" \
+  'grep -q "settings migration blocked: disableAllHooks is true" "$OFF_ST" && ! grep -q "legacy @triage.md import present" "$OFF_ST"'
+CLAUDE_DIR="$OFF_DIR" "$REPO_DIR/install.sh" --dry-run >"$OFF_DRY" 2>&1
+chk "OFF2: --dry-run plans no CLAUDE.md change and says why" \
+  'grep -q "disableAllHooks is true" "$OFF_DRY" && ! grep -q "would append pointer line" "$OFF_DRY"'
+run_install "$OFF_DIR" >"$OFF_OUT" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+OFF_RC=$?
+chk "OFF3: install exits 0, prints the diagnostic, and leaves CLAUDE.md byte-for-byte (import kept, no pointer, no backup)" \
+  '[ "$OFF_RC" -eq 0 ] && grep -q "WARNING: disableAllHooks is true" "$OFF_OUT" && [ "$(cat "$OFF_DIR/CLAUDE.md")" = "$(printf "mine\n@triage.md")" ] && ! ls "$OFF_DIR"/CLAUDE.md.bak-triage-* >/dev/null 2>&1'
+chk "OFF4: disableAllHooks itself is left as the user set it" '[ "$(jq ".disableAllHooks" "$OFF_DIR/settings.json")" = "true" ]'
+
+# =============================================================================
+# Case CRLF — a CRLF CLAUDE.md: the legacy import is still recognized (status,
+# install, uninstall) and every other line keeps its CR.
+# =============================================================================
+CRLF_DIR=$(new_sandbox)
+printf 'rules\r\n@triage.md\r\nmore\r\n' > "$CRLF_DIR/CLAUDE.md"
+CRLF_ST=$(mktemp)
+ALL_TMP="$ALL_TMP $CRLF_ST"
+CLAUDE_DIR="$CRLF_DIR" "$REPO_DIR/install.sh" --settings-status >"$CRLF_ST" 2>&1
+chk "CRLF1: --settings-status reports a CRLF legacy import" 'grep -q "legacy @triage.md import present" "$CRLF_ST"'
+run_install "$CRLF_DIR" >/dev/null 2>&1
+chk "CRLF2: install removes the CRLF import and keeps the other lines' CRs" \
+  '[ "$(od -An -c "$CRLF_DIR/CLAUDE.md" | tr -d " \n")" = "$(printf "rules\r\nmore\r\n%s\n" "$(pointer_for "$CRLF_DIR")" | od -An -c | tr -d " \n")" ]'
+CRLF2_DIR=$(new_sandbox)
+printf 'keep\r\n@triage.md\r\n' > "$CRLF2_DIR/CLAUDE.md"
+run_uninstall "$CRLF2_DIR" >/dev/null 2>&1
+chk "CRLF3: uninstall removes a CRLF import too (keep\\r stays)" \
+  '[ "$(od -An -c "$CRLF2_DIR/CLAUDE.md" | tr -d " \n")" = "$(printf "keep\r\n" | od -An -c | tr -d " \n")" ]'
+
+# =============================================================================
+# Case FC — fail closed: an evaluation error is never a decision. A jq failure in the
+# hook decision, or an awk failure filtering CLAUDE.md, aborts with settings.json AND
+# CLAUDE.md byte-for-byte unchanged, and no Installed./Uninstalled.
+# =============================================================================
+FC_BIN=$(new_sandbox)
+REAL_AWK=$(command -v awk)
+cat > "$FC_BIN/awk" <<EOF
+#!/bin/bash
+for a in "\$@"; do case "\$a" in *"\$FAILAWK_MATCH"*) exit 2 ;; esac; done
+exec "$REAL_AWK" "\$@"
+EOF
+chmod +x "$FC_BIN/awk"
+FC_SETTINGS='{"customKey": "keepme"}'
+fc_sandbox() { # -> a sandbox with a legacy CLAUDE.md and a small settings.json
+  local d; d=$(new_sandbox)
+  printf 'mine\n@triage.md\nalso mine\n' > "$d/CLAUDE.md"
+  printf '%s\n' "$FC_SETTINGS" > "$d/settings.json"
+  printf '%s' "$d"
+}
+FC1_DIR=$(fc_sandbox)
+FC1_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $FC1_OUT"
+FAILAWK_MATCH='keep = (l != imp)' PATH="$FC_BIN:$PATH" CLAUDE_DIR="$FC1_DIR" "$REPO_DIR/install.sh" >"$FC1_OUT" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+FC1_RC=$?
+chk "FC1: an awk failure filtering CLAUDE.md fails install; CLAUDE.md and settings.json are untouched" \
+  '[ "$FC1_RC" -ne 0 ] && ! grep -q "^Installed" "$FC1_OUT" && grep -q "could not filter" "$FC1_OUT" && [ "$(cat "$FC1_DIR/CLAUDE.md")" = "$(printf "mine\n@triage.md\nalso mine")" ] && [ "$(cat "$FC1_DIR/settings.json")" = "$FC_SETTINGS" ]'
+FC2_DIR=$(fc_sandbox)
+FC2_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $FC2_OUT"
+FAILJQ_MATCH='def covers' PATH="$W_BIN:$PATH" CLAUDE_DIR="$FC2_DIR" "$REPO_DIR/install.sh" >"$FC2_OUT" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+FC2_RC=$?
+chk "FC2: a jq failure in the hook decision fails install (never read as 'add'); nothing changed" \
+  '[ "$FC2_RC" -ne 0 ] && ! grep -q "^Installed" "$FC2_OUT" && grep -q "could not evaluate the SessionStart hooks" "$FC2_OUT" && [ "$(cat "$FC2_DIR/CLAUDE.md")" = "$(printf "mine\n@triage.md\nalso mine")" ] && [ "$(cat "$FC2_DIR/settings.json")" = "$FC_SETTINGS" ]'
+FC2_ST=$(mktemp)
+ALL_TMP="$ALL_TMP $FC2_ST"
+FAILJQ_MATCH='def covers' PATH="$W_BIN:$PATH" CLAUDE_DIR="$FC2_DIR" "$REPO_DIR/install.sh" --settings-status >"$FC2_ST" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+FC2_ST_RC=$?
+chk "FC3: --settings-status reports the jq failure as an error, never as 'triage hook missing'" \
+  '[ "$FC2_ST_RC" -ne 0 ] && grep -q "could not evaluate" "$FC2_ST" && ! grep -q "triage hook missing" "$FC2_ST"'
+FC4_DIR=$(fc_sandbox)
+run_install "$FC4_DIR" >/dev/null 2>&1
+cp "$FC4_DIR/CLAUDE.md" "$FC4_DIR/CLAUDE.md.before"
+FC4_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $FC4_OUT"
+FAILAWK_MATCH='l != imp && l != ptr' PATH="$FC_BIN:$PATH" CLAUDE_DIR="$FC4_DIR" "$REPO_DIR/uninstall.sh" >"$FC4_OUT" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+FC4_RC=$?
+chk "FC4: an awk failure filtering CLAUDE.md fails uninstall before anything is touched" \
+  '[ "$FC4_RC" -ne 0 ] && ! grep -q "^Uninstalled" "$FC4_OUT" && cmp -s "$FC4_DIR/CLAUDE.md" "$FC4_DIR/CLAUDE.md.before" && [ "$(triage_hooks "$FC4_DIR/settings.json")" -eq 1 ] && [ -f "$FC4_DIR/agents/triage-builder.md" ]'
+
+# =============================================================================
+# Case PIN — 'installed' means THIS install's hook: a command pinned to the current
+# CLAUDE_DIR. A hook pinned to another dir, or an unpinned one, neither counts as
+# installed nor allows the legacy import to go before ours is appended; uninstall
+# removes only ours.
+# =============================================================================
+PIN_DIR=$(new_sandbox)
+PIN_FOREIGN=$(jq -cn --arg c "$(hook_cmd_for /elsewhere/claude)" '{matcher: "startup|resume|clear|compact", hooks: [{type: "command", command: $c}]}')
+PIN_UNPINNED=$(jq -cn --arg c "bash $PIN_DIR/scripts/triage-context.sh" '{matcher: "startup|resume|clear|compact", hooks: [{type: "command", command: $c}]}')
+printf '{"hooks":{"SessionStart":[%s,%s]}}\n' "$PIN_FOREIGN" "$PIN_UNPINNED" > "$PIN_DIR/settings.json"
+printf 'mine\n@triage.md\n' > "$PIN_DIR/CLAUDE.md"
+PIN_ST=$(mktemp); PIN_OUT=$(mktemp); PIN_UN=$(mktemp)
+ALL_TMP="$ALL_TMP $PIN_ST $PIN_OUT $PIN_UN"
+CLAUDE_DIR="$PIN_DIR" "$REPO_DIR/install.sh" --settings-status >"$PIN_ST" 2>&1
+chk "PIN1: a hook pinned to another CLAUDE_DIR and an unpinned one: status says this install's hook is missing" \
+  'grep -q "settings migration pending: triage hook missing" "$PIN_ST" && grep -q "legacy @triage.md import present" "$PIN_ST"'
+run_install "$PIN_DIR" >"$PIN_OUT" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+PIN_RC=$?
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+PIN_ADD_AT=$(grep -n "^hooks.SessionStart: added the triage hook" "$PIN_OUT" | cut -d: -f1)
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+PIN_MIG_AT=$(grep -n "^CLAUDE.md: removed the legacy @triage.md import" "$PIN_OUT" | cut -d: -f1)
+chk "PIN2: install appends this install's pinned hook after both foreign groups, and only then migrates CLAUDE.md" \
+  '[ "$PIN_RC" -eq 0 ] && [ -n "$PIN_ADD_AT" ] && [ -n "$PIN_MIG_AT" ] && [ "$PIN_ADD_AT" -lt "$PIN_MIG_AT" ] && [ "$(jq ".hooks.SessionStart | length" "$PIN_DIR/settings.json")" -eq 3 ] && [ "$(jq -c ".hooks.SessionStart[0]" "$PIN_DIR/settings.json")" = "$PIN_FOREIGN" ] && [ "$(jq -c ".hooks.SessionStart[1]" "$PIN_DIR/settings.json")" = "$PIN_UNPINNED" ] && [ "$(jq -r ".hooks.SessionStart[2].hooks[0].command" "$PIN_DIR/settings.json")" = "$(hook_cmd_for "$PIN_DIR")" ]'
+chk "PIN3: ... the legacy import is gone and the pointer names this install's triage.md" \
+  '[ "$(cat "$PIN_DIR/CLAUDE.md")" = "$(printf "mine\n%s" "$(pointer_for "$PIN_DIR")")" ]'
+run_uninstall "$PIN_DIR" >"$PIN_UN" 2>&1
+chk "PIN4: uninstall removes only the hook pinned to this CLAUDE_DIR (the other-dir and unpinned groups stay)" \
+  '[ "$(jq -c ".hooks.SessionStart" "$PIN_DIR/settings.json")" = "$(printf "[%s,%s]" "$PIN_FOREIGN" "$PIN_UNPINNED")" ]'
+# Uninstall run for ANOTHER CLAUDE_DIR leaves this install's hook and pointer alone.
+PIN2_DIR=$(new_sandbox)
+run_install "$PIN2_DIR" >/dev/null 2>&1
+PIN2_OTHER=$(new_sandbox)
+cp "$PIN2_DIR/settings.json" "$PIN2_OTHER/settings.json"
+cp "$PIN2_DIR/CLAUDE.md" "$PIN2_OTHER/CLAUDE.md"
+run_uninstall "$PIN2_OTHER" >/dev/null 2>&1
+chk "PIN5: uninstall with a different CLAUDE_DIR keeps a hook and pointer line that name another install" \
+  '[ "$(jq -r ".hooks.SessionStart[0].hooks[0].command" "$PIN2_OTHER/settings.json")" = "$(hook_cmd_for "$PIN2_DIR")" ] && cmp -s "$PIN2_OTHER/CLAUDE.md" "$PIN2_DIR/CLAUDE.md"'
+
+# =============================================================================
+# Case TYPE — ownership requires .type "command": a prompt-type entry carrying our
+# exact command is not installed and is never removed.
+# =============================================================================
+TYPE_DIR=$(new_sandbox)
+TYPE_GROUP=$(jq -cn --arg c "$(hook_cmd_for "$TYPE_DIR")" '{matcher: "startup|resume|clear|compact", hooks: [{type: "prompt", command: $c}]}')
+printf '{"hooks":{"SessionStart":[%s]}}\n' "$TYPE_GROUP" > "$TYPE_DIR/settings.json"
+TYPE_ST=$(mktemp)
+ALL_TMP="$ALL_TMP $TYPE_ST"
+CLAUDE_DIR="$TYPE_DIR" "$REPO_DIR/install.sh" --settings-status >"$TYPE_ST" 2>&1
+run_install "$TYPE_DIR" >/dev/null 2>&1
+chk "TYPE1: a type:prompt entry with our command is not installed: status says missing, install appends a command hook" \
+  'grep -q "triage hook missing" "$TYPE_ST" && [ "$(jq ".hooks.SessionStart | length" "$TYPE_DIR/settings.json")" -eq 2 ] && [ "$(jq -c ".hooks.SessionStart[0]" "$TYPE_DIR/settings.json")" = "$TYPE_GROUP" ] && [ "$(jq -r ".hooks.SessionStart[1].hooks[0].type" "$TYPE_DIR/settings.json")" = "command" ]'
+run_uninstall "$TYPE_DIR" >/dev/null 2>&1
+chk "TYPE2: uninstall removes our command hook and keeps the type:prompt entry" \
+  '[ "$(jq -c ".hooks.SessionStart" "$TYPE_DIR/settings.json")" = "$(printf "[%s]" "$TYPE_GROUP")" ]'
+
+# =============================================================================
+# Case RUB — the legacy import goes only when the INSTALLED rubric passes
+# triage-context.sh --check. A preserved over-cap fork (fixture .driftignore naming
+# triage.md) blocks the migration: import kept, no pointer, a diagnostic; the hook is
+# still added. Once the fork fits, install migrates.
+# =============================================================================
+RUB_REPO=$(repo_copy)
+printf 'triage.md\n' > "$RUB_REPO/.driftignore"
+RUB_DIR=$(new_sandbox)
+head -c 10001 /dev/zero | tr '\0' 'x' > "$RUB_DIR/triage.md"
+printf 'mine\n@triage.md\n' > "$RUB_DIR/CLAUDE.md"
+cp "$RUB_DIR/CLAUDE.md" "$RUB_DIR/CLAUDE.md.before"
+RUB_ST=$(mktemp); RUB_DRY=$(mktemp); RUB_OUT=$(mktemp); RUB_OUT2=$(mktemp)
+ALL_TMP="$ALL_TMP $RUB_ST $RUB_DRY $RUB_OUT $RUB_OUT2"
+CLAUDE_DIR="$RUB_DIR" "$RUB_REPO/install.sh" --settings-status >"$RUB_ST" 2>&1
+chk "RUB1: --settings-status reports the migration blocked by the over-cap rubric, not pending" \
+  'grep -q "settings migration blocked: the rubric the triage hook would read fails its size check" "$RUB_ST" && grep -qF "$RUB_DIR/triage.md is too big" "$RUB_ST" && ! grep -q "legacy @triage.md import present" "$RUB_ST"'
+CLAUDE_DIR="$RUB_DIR" "$RUB_REPO/install.sh" --dry-run >"$RUB_DRY" 2>&1
+chk "RUB2: --dry-run plans no CLAUDE.md change and says why" \
+  'grep -q "fails its size check" "$RUB_DRY" && ! grep -q "would append pointer line" "$RUB_DRY" && ! grep -q "would remove it" "$RUB_DRY"'
+CLAUDE_DIR="$RUB_DIR" "$RUB_REPO/install.sh" >"$RUB_OUT" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+RUB_RC=$?
+chk "RUB3: install keeps CLAUDE.md byte-for-byte (import kept, no pointer, no backup), warns, and still adds the hook" \
+  '[ "$RUB_RC" -eq 0 ] && grep -q "WARNING: the rubric the triage hook would read fails its size check" "$RUB_OUT" && cmp -s "$RUB_DIR/CLAUDE.md" "$RUB_DIR/CLAUDE.md.before" && ! ls "$RUB_DIR"/CLAUDE.md.bak-triage-* >/dev/null 2>&1 && [ "$(triage_hooks "$RUB_DIR/settings.json")" -eq 1 ]'
+printf 'a small fork\n' > "$RUB_DIR/triage.md"
+CLAUDE_DIR="$RUB_DIR" "$RUB_REPO/install.sh" >"$RUB_OUT2" 2>&1
+chk "RUB4: once the installed fork fits, install migrates (import gone, pointer added, still one hook)" \
+  '[ "$(cat "$RUB_DIR/CLAUDE.md")" = "$(printf "mine\n%s" "$(pointer_for "$RUB_DIR")")" ] && [ "$(triage_hooks "$RUB_DIR/settings.json")" -eq 1 ]'
+
+# =============================================================================
+# Case FALSE — a non-null, non-array hooks.SessionStart (false), or a false env, is
+# refused as wrong-shaped before anything changes (`// []` used to read false as absent).
+# =============================================================================
+for FALSE_JSON in '{"hooks":{"SessionStart":false}}' '{"env":false}'; do
+  FALSE_DIR=$(new_sandbox)
+  printf '%s\n' "$FALSE_JSON" > "$FALSE_DIR/settings.json"
+  printf 'mine\n@triage.md\n' > "$FALSE_DIR/CLAUDE.md"
+  cp "$FALSE_DIR/settings.json" "$FALSE_DIR/settings.before"; cp "$FALSE_DIR/CLAUDE.md" "$FALSE_DIR/CLAUDE.before"
+  FALSE_OUT=$(mktemp)
+  ALL_TMP="$ALL_TMP $FALSE_OUT"
+  run_install "$FALSE_DIR" >"$FALSE_OUT" 2>&1
+  # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+  FALSE_RC=$?
+  chk "FALSE: $FALSE_JSON is refused as wrong-shaped with nothing changed (settings.json and CLAUDE.md cmp-identical, no files copied)" \
+    '[ "$FALSE_RC" -ne 0 ] && grep -q "unexpected shape" "$FALSE_OUT" && cmp -s "$FALSE_DIR/settings.json" "$FALSE_DIR/settings.before" && cmp -s "$FALSE_DIR/CLAUDE.md" "$FALSE_DIR/CLAUDE.before" && [ ! -e "$FALSE_DIR/agents" ]'
+done
+
+# =============================================================================
+# Case BYTE — the migration (install) and the unwiring (uninstall) keep every other
+# byte of CLAUDE.md: CRLF lines, and an unterminated last line, compared with cmp.
+# =============================================================================
+BYTE1_DIR=$(new_sandbox)
+printf '@triage.md\r\n%s\r\nkeep' "$(pointer_for "$BYTE1_DIR")" > "$BYTE1_DIR/CLAUDE.md"
+printf '%s\r\nkeep' "$(pointer_for "$BYTE1_DIR")" > "$BYTE1_DIR/want"
+run_install "$BYTE1_DIR" >/dev/null 2>&1
+chk "BYTE1: CRLF file, pointer already present, no final newline: only the import's bytes go" \
+  'cmp -s "$BYTE1_DIR/CLAUDE.md" "$BYTE1_DIR/want"'
+BYTE2_DIR=$(new_sandbox)
+printf '%s\na\n@triage.md' "$(pointer_for "$BYTE2_DIR")" > "$BYTE2_DIR/CLAUDE.md"
+printf '%s\na\n' "$(pointer_for "$BYTE2_DIR")" > "$BYTE2_DIR/want"
+run_install "$BYTE2_DIR" >/dev/null 2>&1
+chk "BYTE2: an unterminated import as the last line goes; the line before keeps its newline" \
+  'cmp -s "$BYTE2_DIR/CLAUDE.md" "$BYTE2_DIR/want"'
+BYTE3_DIR=$(new_sandbox)
+printf 'x\r\n%s\ny' "$(pointer_for "$BYTE3_DIR")" > "$BYTE3_DIR/CLAUDE.md"
+printf 'x\r\ny' > "$BYTE3_DIR/want"
+run_uninstall "$BYTE3_DIR" >/dev/null 2>&1
+chk "BYTE3: uninstall removes the pointer and keeps every other byte (CRLF line, unterminated last line)" \
+  'cmp -s "$BYTE3_DIR/CLAUDE.md" "$BYTE3_DIR/want"'
+
+# =============================================================================
+# Case NL — a CLAUDE_DIR with a line break is refused before anything changes (the
+# pointer line embeds it and is matched line by line).
+# =============================================================================
+NL_DIR="$(new_sandbox)/a
+b"
+mkdir -p "$NL_DIR"
+NL_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $NL_OUT"
+run_install "$NL_DIR" >"$NL_OUT" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+NL_RC=$?
+chk "NL1: install refuses a CLAUDE_DIR containing a line break, writing nothing" \
+  '[ "$NL_RC" -ne 0 ] && grep -q "CLAUDE_DIR contains a line break" "$NL_OUT" && [ ! -e "$NL_DIR/settings.json" ] && [ ! -e "$NL_DIR/agents" ]'
+
+# =============================================================================
+# Case DS — drift with NO settings.json (a files-only install): the missing hook is
+# still reported (an absent settings.json is an empty one).
+# =============================================================================
+DS_DIR=$(new_sandbox)
+CLAUDE_DIR="$DS_DIR" "$REPO_DIR/install.sh" --files-only >/dev/null 2>&1
+DS_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $DS_OUT"
+CLAUDE_DIR="$DS_DIR" "$REPO_DIR/drift.sh" >"$DS_OUT" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+DS_RC=$?
+chk "DS1: drift without settings.json warns 'triage hook missing' and still exits 0" \
+  '[ "$DS_RC" -eq 0 ] && [ ! -e "$DS_DIR/settings.json" ] && grep -q "settings migration pending: triage hook missing" "$DS_OUT"'
 
 # =============================================================================
 # Statusline checks (direct, no install needed)

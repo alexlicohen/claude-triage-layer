@@ -10,8 +10,22 @@
 #                 Skips CLAUDE.md, settings.json, and permissions entirely.
 #                 This is the "make sync" primitive.
 #   --settings-status  read-only: print one "settings migration pending" line per
-#                 settings.json change a bare install would still make that `make sync`
-#                 never does (drift.sh calls this); prints nothing when there is none.
+#                 settings.json / CLAUDE.md change a bare install would still make that
+#                 `make sync` never does (drift.sh calls this); prints nothing when there
+#                 is none.
+#
+# The rubric (triage.md) reaches the MAIN session through a SessionStart hook
+# (scripts/triage-context.sh), never an `@triage.md` import in CLAUDE.md: SessionStart
+# does not fire for subagents, so they no longer load it. A bare install appends that
+# hook to settings.json (CLAUDE_DIR pinned in the command; never replacing your other
+# SessionStart hooks) and, only after the settings write succeeded, migrates a legacy
+# `@triage.md` line out of CLAUDE.md (backed up first; every other byte kept) and
+# appends one pointer line (pointer_line, naming this install's triage.md) — unless
+# settings.json has disableAllHooks: true, or the installed triage.md fails the hook's
+# size check (`triage-context.sh --check`); either leaves CLAUDE.md alone with a
+# warning. settings.json is written once, after every settings transformation and the
+# CLAUDE.md decision were computed: an evaluation error (jq/awk) aborts with
+# settings.json and CLAUDE.md untouched (the installed files may already be updated).
 #
 # A locally modified installed file is backed up before it is overwritten, to
 # <file>.bak-triage-<UTC timestamp>; the newest BACKUP_KEEP (5) per file are kept.
@@ -55,6 +69,17 @@ OWNER_MARK="TRIAGE_LAYER_OWNS_SUBAGENT_MODEL"
 # NOT remove it without a marker (it says so instead). Frozen: new installs mark.
 LEGACY_SUBAGENT_MODELS="claude-opus-5 claude-opus-5-5"
 BACKUP_KEEP=5
+# The SessionStart hook (single owner of its shape: triage_hook_group; of ownership:
+# TRIAGE_HOOK_OWNED_JQ below, mirrored in uninstall.sh). TRIAGE_HOOK_MATCHER is also the
+# list of events an installed hook must cover (triage_hook_action).
+TRIAGE_HOOK_SCRIPT="scripts/triage-context.sh"
+TRIAGE_HOOK_MATCHER="startup|resume|clear|compact"
+# The one line install appends to CLAUDE.md: POINTER_HEAD + this install's CLAUDE_DIR +
+# POINTER_TAIL (pointer_line, below), so it names the rubric this install's hook reads.
+# uninstall.sh removes the identical line (test/roundtrip.sh N8 pins the copies equal).
+POINTER_HEAD="The triage routing rubric ("
+POINTER_TAIL="/triage.md) reaches the main session through a SessionStart hook; subagents don't receive it."
+LEGACY_IMPORT="@triage.md"
 # TRIAGE_INSTALL_STAMP: test hook only (forces the same-second clash case).
 STAMP="${TRIAGE_INSTALL_STAMP:-$(date -u +%Y%m%dT%H%M%SZ)}"
 
@@ -82,7 +107,9 @@ done
 die() { echo "ERROR: $*" >&2; exit 1; }
 
 tmp=""
-trap 'rm -f "${tmp:-}"' EXIT
+CLAUDE_MD_NEW=""
+SETTINGS_EMPTY=""
+trap 'rm -f "${tmp:-}" "${CLAUDE_MD_NEW:-}" "${SETTINGS_EMPTY:-}"' EXIT
 
 command -v jq >/dev/null || { echo "ERROR: jq is required (brew install jq)" >&2; exit 1; }
 
@@ -94,13 +121,18 @@ if [ -f "$SETTINGS" ]; then
 fi
 # Valid JSON of the wrong shape (a top-level array, a string `env`, ...) would make a
 # later jq filter fail halfway through the install: refuse it here instead.
+# Each key may be absent (or null) or of its type; anything else — `false` included,
+# which `// default` would have read as absent — is refused.
 if [ -f "$SETTINGS" ]; then
-  jq -e 'type == "object"
-    and ((.env // {}) | type == "object")
-    and ((.permissions // {}) | type == "object")
-    and ((.permissions.allow // []) | type == "array")
-    and ((.permissions.ask // []) | type == "array")' "$SETTINGS" >/dev/null 2>&1 \
-    || die "$SETTINGS has an unexpected shape (want an object whose env/permissions are objects and permissions.allow/ask arrays) — fix it before installing (nothing was changed)."
+  jq -e 'def shape(t): . == null or type == t;
+    type == "object"
+    and (.env | shape("object"))
+    and (.permissions | shape("object"))
+    and (.permissions.allow | shape("array"))
+    and (.permissions.ask | shape("array"))
+    and (.hooks | shape("object"))
+    and (.hooks.SessionStart | shape("array"))' "$SETTINGS" >/dev/null 2>&1 \
+    || die "$SETTINGS has an unexpected shape (want an object whose env/permissions/hooks are objects and permissions.allow/ask, hooks.SessionStart arrays) — fix it before installing (nothing was changed)."
 fi
 
 # The subagent default model = the deep level's Claude model (config/tiers.json).
@@ -122,18 +154,180 @@ sub_model_action() {
   fi
 }
 
-# --settings-status: read-only, for drift.sh. Only the settings changes `make sync`
-# (--files-only) never makes; nothing to report without a settings.json.
+# Single owner of the hook OWNERSHIP predicate, a jq condition on one hook entry with
+# $cmd = triage_hook_command (uninstall.sh holds identical copies of it, of
+# triage_hook_command and of pointer_line, like LEGACY_SUBAGENT_MODELS' pattern of one
+# frozen literal per script; test/roundtrip.sh case N8 fails if they differ). An entry
+# is THIS install's hook only when it is a command hook (.type "command") whose command
+# is exactly the one triage_hook_command prints for the current CLAUDE_DIR. Anything
+# else — a command pinned to another CLAUDE_DIR, an unpinned `bash <dir>/scripts/...`,
+# a prompt-type entry carrying our command, `...triage-context.sh.backup` — is foreign:
+# never counted as installed, never removed.
+TRIAGE_HOOK_OWNED_JQ='type == "object" and .type == "command" and .command == $cmd'
+
+# Single owner of the SessionStart hook decision. Settings JSON on stdin -> prints
+# present | add; returns non-zero (prints nothing) when jq itself fails, so a broken
+# evaluation is never mistaken for a decision. present = some group holding THIS
+# install's hook (TRIAGE_HOOK_OWNED_JQ) has a matcher covering every event in
+# TRIAGE_HOOK_MATCHER — startup, resume, clear AND compact (absent, "" and "*" match
+# everything; otherwise the `|`-separated names are compared exactly — a regex matcher
+# is not interpreted, so it never counts). Anything less -> add: our canonical group is
+# appended and your groups are left exactly as they are, never replaced.
+triage_hook_action() {
+  local rc=0
+  jq -e --arg cmd "$(triage_hook_command)" --arg events "$TRIAGE_HOOK_MATCHER" "
+    def owned: $TRIAGE_HOOK_OWNED_JQ;"'
+    def covers: . == null or . == "" or . == "*"
+      or (type == "string" and ((($events | split("|")) - split("|")) == []));
+    [(.hooks.SessionStart // []) | .[] | objects
+     | select((.hooks | type) == "array" and any(.hooks[]; owned)) | .matcher]
+    | any(.[]; covers)' >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    0) echo "present" ;;
+    1) echo "add" ;;
+    *) return 1 ;;
+  esac
+}
+# The one hook command install writes. CLAUDE_DIR is PINNED in it, so a non-default
+# install reads its own kill switch, legacy guard and triage.md, whatever $HOME is.
+# %q leaves an ordinary path as is and escapes anything else (spaces, quotes), so each
+# path stays one shell word.
+triage_hook_command() { printf 'CLAUDE_DIR=%q bash %q/%s' "$CLAUDE_DIR" "$CLAUDE_DIR" "$TRIAGE_HOOK_SCRIPT"; }
+# The pointer line for this install: it names the rubric this install's hook reads.
+pointer_line() { printf '%s%s%s' "$POINTER_HEAD" "$CLAUDE_DIR" "$POINTER_TAIL"; }
+# The SessionStart group install appends (compact JSON).
+triage_hook_group() {
+  jq -cn --arg m "$TRIAGE_HOOK_MATCHER" --arg c "$(triage_hook_command)" '{matcher: $m, hooks: [{type: "command", command: $c, timeout: 10}]}'
+}
+# Does $1 hold the line $2? CRLF-tolerant (a trailing CR is ignored). 0 yes, 1 no (or no
+# file), anything else = could not read it: callers fail closed on that.
+has_line() { # $1 = file, $2 = line
+  [ -e "$1" ] || return 1
+  awk -v want="$2" '{ l = $0; sub(/\r$/, "", l); if (l == want) found = 1 } END { exit found ? 0 : 1 }' "$1"
+}
+# File $1 without its lines equal to $2 (a trailing CR ignored), on stdout. Every other
+# byte is kept exactly: each kept line keeps its own terminator (CRLF included), and an
+# unterminated last line stays unterminated (awk's print would add a newline).
+drop_line() { # $1 = file, $2 = line
+  local nl=1
+  if [ -s "$1" ] && [ -n "$(tail -c1 "$1")" ]; then nl=0; fi
+  awk -v imp="$2" -v nl="$nl" '
+    NR > 1 && keep { printf "%s\n", prev }
+    { prev = $0; l = $0; sub(/\r$/, "", l); keep = (l != imp) }
+    END { if (NR > 0 && keep) printf "%s%s", prev, (nl ? "\n" : "") }' "$1"
+}
+
+# Files where a live ~/.claude fork is EXPECTED (config-as-data, shared with drift.sh) —
+# every mode skips an existing copy instead of clobbering a deliberate personal fork.
+# Entries are normalized (CR, surrounding whitespace stripped), so a CRLF or a trailing
+# space in .driftignore cannot silently switch fork protection off.
+is_ignored() { # $1 = repo-relative path
+  [ -f "$DRIFTIGNORE" ] || return 1
+  tr -d '\r' < "$DRIFTIGNORE" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+    | grep -v '^#' | grep -qxF "$1"
+}
+# The file step 1 leaves at $2 for repo file $1: an expected fork that already exists
+# stays, anything else becomes the repo copy. Used where a mode that copies nothing
+# (--dry-run, --settings-status) must judge what a bare install would install.
+planned_copy() { # $1 = repo-relative src, $2 = installed path
+  if is_ignored "$1" && [ -e "$2" ]; then printf '%s' "$2"; else printf '%s' "$REPO_DIR/$1"; fi
+}
+
+# Single owner of the migration gate on the rubric: the legacy import may go only when
+# the rubric the hook will read passes the hook's own size check (an over-cap rubric
+# would arrive as a notice, not the rubric, where the import loaded all of it).
+# $1 = the triage-context.sh to ask, $2 = the rubric. Sets RUBRIC_DIAG to its output;
+# returns 0 only when the check passed (1 = too big, anything else = could not check).
+RUBRIC_DIAG=""
+rubric_fits() {
+  local rc=0
+  RUBRIC_DIAG=$(bash "$1" --check "$2" 2>&1) || rc=$?
+  [ -n "$RUBRIC_DIAG" ] || RUBRIC_DIAG="$1 --check $2 exited $rc"
+  return "$rc"
+}
+rubric_note() { # the one diagnostic for a blocked migration (uses RUBRIC_DIAG)
+  printf '%s' "the rubric the triage hook would read fails its size check, so CLAUDE.md is NOT migrated (the @triage.md import stays the working wiring; no pointer line): $RUBRIC_DIAG — trim it under the cap, then run ./install.sh."
+}
+
+# Preflight for every mode that reads settings.json / CLAUDE.md (not --files-only): all
+# settings.json / CLAUDE.md decisions but the rubric gate (rubric_fits, which needs the
+# installed rubric) are made HERE, before anything is written, and any evaluation error
+# dies with nothing changed. Sets HOOK_ACTION (present|add), HOOKS_OFF (1 when
+# settings.json has disableAllHooks: true — the hook could never run, so CLAUDE.md is
+# not migrated), LEGACY (1 when CLAUDE.md still has the `@triage.md` import line) and
+# POINTER (1 when the pointer line is already there). An absent settings.json is an
+# empty one.
+# Single owner of "is CLAUDE.md left alone?": sets CLAUDE_MD_BLOCK to the reason it is
+# (disableAllHooks, or a legacy import whose replacement rubric fails rubric_fits), or
+# "" when install migrates it and appends the pointer. $1 = the triage-context.sh, $2 =
+# the rubric that hook will read. Call after hook_preflight.
+CLAUDE_MD_BLOCK=""
+claude_md_decision() {
+  CLAUDE_MD_BLOCK=""
+  if [ "$HOOKS_OFF" -eq 1 ]; then
+    CLAUDE_MD_BLOCK="$HOOKS_OFF_NOTE"
+  elif [ "$LEGACY" -eq 1 ] && ! rubric_fits "$1" "$2"; then
+    CLAUDE_MD_BLOCK="$(rubric_note)"
+  fi
+}
+
+hook_preflight() {
+  local cur="{}" rc=0
+  # The pointer line embeds CLAUDE_DIR and is matched line by line: a line break in it
+  # would split the line, so no install could ever find (or uninstall remove) it again.
+  case "$CLAUDE_DIR" in
+    *$'\n'*|*$'\r'*) die "CLAUDE_DIR contains a line break — nothing was changed." ;;
+  esac
+  if [ -f "$SETTINGS" ]; then cur=$(cat "$SETTINGS") || die "could not read $SETTINGS — nothing was changed."; fi
+  HOOK_ACTION=$(printf '%s' "$cur" | triage_hook_action) \
+    || die "could not evaluate the SessionStart hooks in $SETTINGS (jq failed) — nothing was changed."
+  printf '%s' "$cur" | jq -e '.disableAllHooks == true' >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    0) HOOKS_OFF=1 ;;
+    1) HOOKS_OFF=0 ;;
+    *) die "could not read disableAllHooks from $SETTINGS (jq failed) — nothing was changed." ;;
+  esac
+  rc=0; has_line "$CLAUDE_DIR/CLAUDE.md" "$LEGACY_IMPORT" || rc=$?
+  case "$rc" in
+    0) LEGACY=1 ;;
+    1) LEGACY=0 ;;
+    *) die "could not read $CLAUDE_DIR/CLAUDE.md — nothing was changed." ;;
+  esac
+  rc=0; has_line "$CLAUDE_DIR/CLAUDE.md" "$(pointer_line)" || rc=$?
+  case "$rc" in
+    0) POINTER=1 ;;
+    1) POINTER=0 ;;
+    *) die "could not read $CLAUDE_DIR/CLAUDE.md — nothing was changed." ;;
+  esac
+}
+HOOKS_OFF_NOTE="disableAllHooks is true in $SETTINGS, so the triage SessionStart hook cannot run: CLAUDE.md is NOT migrated (a legacy @triage.md import stays the working wiring; no pointer line). Without that import the rubric is not loaded at all. Remove disableAllHooks (or set it false), then run ./install.sh."
+
+# --settings-status: read-only, for drift.sh. Only the settings.json / CLAUDE.md
+# changes `make sync` (--files-only) never makes. No settings.json = an empty one: a
+# bare install would still set the subagent model and add the hook.
 if [ "$SETTINGS_STATUS" -eq 1 ]; then
-  [ -f "$SETTINGS" ] || exit 0
-  cur_sub=$(jq -r '.env.CLAUDE_CODE_SUBAGENT_MODEL // "null"' "$SETTINGS")
-  cur_mark=$(jq -r --arg k "$OWNER_MARK" '.env[$k] // "null"' "$SETTINGS")
+  hook_preflight
+  cur_sub=null; cur_mark=null
+  if [ -f "$SETTINGS" ]; then
+    cur_sub=$(jq -r '.env.CLAUDE_CODE_SUBAGENT_MODEL // "null"' "$SETTINGS") || die "could not read $SETTINGS (jq failed)."
+    cur_mark=$(jq -r --arg k "$OWNER_MARK" '.env[$k] // "null"' "$SETTINGS") || die "could not read $SETTINGS (jq failed)."
+  fi
   case "$(sub_model_action "$cur_sub" "$cur_mark")" in
     set) echo "settings migration pending: env.CLAUDE_CODE_SUBAGENT_MODEL is unset — run ./install.sh to set it to $SUBAGENT_MODEL (make sync never edits settings.json)" ;;
     upgrade-owned|upgrade-legacy) echo "settings migration pending: env.CLAUDE_CODE_SUBAGENT_MODEL is $cur_sub, an earlier installer default — run ./install.sh to upgrade it to $SUBAGENT_MODEL (make sync never edits settings.json)" ;;
   esac
+  if [ "$HOOK_ACTION" = "add" ]; then
+    echo "settings migration pending: triage hook missing (no hooks.SessionStart group runs this install's command, $(triage_hook_command), for $TRIAGE_HOOK_MATCHER) — run ./install.sh to add it (make sync never edits settings.json)"
+  fi
+  claude_md_decision "$(planned_copy "$TRIAGE_HOOK_SCRIPT" "$CLAUDE_DIR/$TRIAGE_HOOK_SCRIPT")" "$(planned_copy triage.md "$CLAUDE_DIR/triage.md")"
+  if [ -n "$CLAUDE_MD_BLOCK" ]; then
+    echo "settings migration blocked: $CLAUDE_MD_BLOCK"
+  elif [ "$LEGACY" -eq 1 ]; then
+    echo "settings migration pending: legacy @triage.md import present in $CLAUDE_DIR/CLAUDE.md (it loads the rubric into every subagent too) — run ./install.sh to replace it with the SessionStart hook"
+  fi
   exit 0
 fi
+[ "$FILES_ONLY" -eq 1 ] || hook_preflight
 
 # --- version-compat warning (runs in every mode; NEVER fails the install) ---
 # BSD-safe numeric compare of X.Y.Z version strings — no `sort -V` dependency
@@ -193,15 +387,7 @@ check_force_override() {
 }
 check_force_override
 
-# Files where a live ~/.claude fork is EXPECTED (config-as-data, shared with drift.sh) —
-# every mode skips an existing copy instead of clobbering a deliberate personal fork.
-# Entries are normalized (CR, surrounding whitespace stripped), so a CRLF or a trailing
-# space in .driftignore cannot silently switch fork protection off.
-is_ignored() { # $1 = repo-relative path
-  [ -f "$DRIFTIGNORE" ] || return 1
-  tr -d '\r' < "$DRIFTIGNORE" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
-    | grep -v '^#' | grep -qxF "$1"
-}
+# (is_ignored, the expected-fork test, is defined above hook_preflight.)
 
 # create | overwrite | unchanged — read-only, used by the --dry-run plan.
 plan_file_status() { # $1 = src, $2 = dst
@@ -256,7 +442,7 @@ prune_backups() { # $1 = file whose timestamped backups to prune to the newest B
 backup_copy() { # $1 = file -> copy saved to a fresh backup path (printed)
   local b
   b=$(backup_path "$1")
-  cp -p "$1" "$b"
+  cp -p "$1" "$b" || return 1
   prune_backups "$1"
   printf '%s' "$b"
 }
@@ -438,6 +624,7 @@ install_file "scripts/parity-suite.sh" "$CLAUDE_DIR/scripts/parity-suite.sh" x
 install_file "scripts/parity-cost.sh" "$CLAUDE_DIR/scripts/parity-cost.sh" x
 install_file "scripts/parity-report.sh" "$CLAUDE_DIR/scripts/parity-report.sh" x
 install_file "scripts/triage-tiers.sh" "$CLAUDE_DIR/scripts/triage-tiers.sh" x
+install_file "scripts/triage-context.sh" "$CLAUDE_DIR/scripts/triage-context.sh" x
 install_file "config/tiers.json" "$CLAUDE_DIR/scripts/triage-tiers.json"
 retire_triage_run
 retire_agy_run
@@ -451,30 +638,9 @@ if [ "$FILES_ONLY" -eq 1 ]; then
 fi
 
 # =============================================================================
-# 2. Wire the rubric into the global CLAUDE.md (append-only; never overwrites)
-# =============================================================================
-if [ "$DRY_RUN" -eq 1 ]; then
-  echo ""
-  echo "CLAUDE.md ($CLAUDE_DIR/CLAUDE.md):"
-  if [ -f "$CLAUDE_DIR/CLAUDE.md" ] && grep -qxF '@triage.md' "$CLAUDE_DIR/CLAUDE.md"; then
-    echo "  @triage.md already present"
-  else
-    echo "  would append: @triage.md"
-  fi
-else
-  touch "$CLAUDE_DIR/CLAUDE.md"
-  if ! grep -qxF '@triage.md' "$CLAUDE_DIR/CLAUDE.md"; then
-    # Ensure the file ends with a newline first, or '@triage.md' fuses onto the last
-    # line — corrupting that line AND the import — when CLAUDE.md lacks a final newline.
-    if [ -s "$CLAUDE_DIR/CLAUDE.md" ] && [ -n "$(tail -c1 "$CLAUDE_DIR/CLAUDE.md")" ]; then
-      printf '\n' >> "$CLAUDE_DIR/CLAUDE.md"
-    fi
-    printf '@triage.md\n' >> "$CLAUDE_DIR/CLAUDE.md"
-  fi
-fi
-
-# =============================================================================
-# 3. Merge settings (subagent default model + prompt-cache TTL) + 3b. permissions
+# 2. Merge settings (subagent default model + prompt-cache TTL) + 2b. permissions
+#    + 2c. the SessionStart hook that delivers the rubric. 3. CLAUDE.md (pointer line,
+#    legacy @triage.md migration) only after every settings write succeeded.
 #
 #    NOT written, ever: model, effortLevel, statusLine. Your orchestrator model and
 #    your statusline are yours; this layer works with whatever you have chosen.
@@ -518,15 +684,39 @@ if [ "$DRY_RUN" -eq 1 ]; then
   else
     echo "  permissions.ask: would add: $fable_rule"
   fi
+  if [ "$HOOK_ACTION" = "add" ]; then
+    echo "  hooks.SessionStart: triage hook missing — would append (your other SessionStart hooks are kept): $(triage_hook_group)"
+  else
+    echo "  hooks.SessionStart: triage hook already present"
+  fi
+
+  echo ""
+  echo "CLAUDE.md ($CLAUDE_DIR/CLAUDE.md), only after the settings write succeeds:"
+  claude_md_decision "$(planned_copy "$TRIAGE_HOOK_SCRIPT" "$CLAUDE_DIR/$TRIAGE_HOOK_SCRIPT")" "$(planned_copy triage.md "$CLAUDE_DIR/triage.md")"
+  if [ -n "$CLAUDE_MD_BLOCK" ]; then
+    echo "  ⚠ $CLAUDE_MD_BLOCK"
+  else
+    if [ "$LEGACY" -eq 1 ]; then
+      echo "  legacy @triage.md import present — would remove it (backup to CLAUDE.md.bak-triage-<timestamp> first); the SessionStart hook replaces it"
+    fi
+    if [ "$POINTER" -eq 1 ]; then
+      echo "  pointer line already present"
+    else
+      echo "  would append pointer line: $(pointer_line)"
+    fi
+  fi
 
   echo ""
   echo "No changes were made (--dry-run)."
   exit 0
 fi
 
-# 3. Merge the two settings keys this layer owns (settings.json was already validated
-#    as JSON of the right shape upfront, above). Both are set ONLY when absent, so an
-#    existing choice of yours always wins and a re-run never overwrites it:
+# 2. ONE settings write: every settings.json transformation (2a-2c) is computed into a
+#    temp file first, and settings.json is replaced once, only after all of it
+#    succeeded — a jq failure anywhere dies with settings.json (and CLAUDE.md) untouched.
+#    settings.json was already validated as JSON of the right shape upfront, above.
+#    2a. The two keys this layer owns, set ONLY when absent, so an existing choice of
+#    yours always wins and a re-run never overwrites it:
 #      env.CLAUDE_CODE_SUBAGENT_MODEL — the default model for any subagent spawn that
 #        does not pin one (config/tiers.json's deep Claude model). This is what keeps
 #        an un-pinned Agent()/workflow agent() call off the (expensive) orchestrator
@@ -538,44 +728,103 @@ fi
 #        fan-out of workers sharing a brief re-reads a warm cache.
 #    No snapshot is taken: the only value ever overwritten is one this installer
 #    wrote itself. model/effortLevel/statusLine are never written at all.
+#    2b. Harness-level routing rules (idempotent; appends only what's missing and
+#    preserves existing rules + order). Enforces the rubric at the permission layer:
+#      - `ask` before any Fable spawn → confirms the costly tier (the ⚠ rule, enforced)
+#      - `allow` the worker spawns    → fan-out never prompts (a worker's OWN Bash/Edit
+#                                        calls stay gated by your normal permissions)
+#    The pre-Wave-12 Agent(triage-overflow) allow rule is removed: that agent is now
+#    triage-external, and a rule for an agent that no longer exists is only noise.
+#    Gate by agent TYPE, not `model:` — `Agent(type)` enforcement for named subagent
+#    spawns landed in Claude Code 2.1.186; matching a frontmatter-set `model:` is
+#    unverified. Switch the `ask` to `deny` below to hard-block Fable instead.
+#    2c. The SessionStart hook that delivers triage.md to the main session: APPENDED as
+#    its own group when HOOK_ACTION (decided in hook_preflight) is add; existing
+#    SessionStart groups (yours) are never replaced or reordered.
 #    Any jq or write failure aborts with rc 1 — never "Installed." over a skipped merge.
-[ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
-cur_sub=$(jq -r '.env.CLAUDE_CODE_SUBAGENT_MODEL // "null"' "$SETTINGS")
-cur_mark=$(jq -r --arg k "$OWNER_MARK" '.env[$k] // "null"' "$SETTINGS")
+# Before that write, the CLAUDE.md decision (claude_md_decision, on the rubric step 1
+# just installed) and its filtered copy are computed too, so a check/read/filter error
+# dies with settings.json and CLAUDE.md both untouched. Step 3 only backs up and writes
+# the result. A legacy line with a trailing CR (CRLF file) counts; every other byte is
+# kept exactly (drop_line).
+CLAUDE_MD="$CLAUDE_DIR/CLAUDE.md"
+claude_md_decision "$CLAUDE_DIR/$TRIAGE_HOOK_SCRIPT" "$CLAUDE_DIR/triage.md"
+if [ -z "$CLAUDE_MD_BLOCK" ] && [ "$LEGACY" -eq 1 ]; then
+  CLAUDE_MD_NEW=$(mktemp) || die "mktemp failed — nothing was changed."
+  drop_line "$CLAUDE_MD" "$LEGACY_IMPORT" > "$CLAUDE_MD_NEW" \
+    || die "could not filter $CLAUDE_MD (awk failed) — nothing was changed."
+fi
+
+# An absent settings.json is merged as an empty one, from a temp copy: nothing is
+# written to $SETTINGS before the merge has succeeded.
+SETTINGS_SRC="$SETTINGS"
+if [ ! -f "$SETTINGS" ]; then
+  SETTINGS_EMPTY=$(mktemp) || die "mktemp failed — nothing was changed."
+  printf '{}\n' > "$SETTINGS_EMPTY"
+  SETTINGS_SRC="$SETTINGS_EMPTY"
+fi
+cur_sub=$(jq -r '.env.CLAUDE_CODE_SUBAGENT_MODEL // "null"' "$SETTINGS_SRC") || die "could not read $SETTINGS (jq failed) — nothing was changed."
+cur_mark=$(jq -r --arg k "$OWNER_MARK" '.env[$k] // "null"' "$SETTINGS_SRC") || die "could not read $SETTINGS (jq failed) — nothing was changed."
 sub_action=$(sub_model_action "$cur_sub" "$cur_mark")
 upgrade_sub=0
 case "$sub_action" in upgrade-owned|upgrade-legacy) upgrade_sub=1 ;; esac
+add_hook=0
+[ "$HOOK_ACTION" = "add" ] && add_hook=1
+hook_group=$(triage_hook_group) || die "could not build the SessionStart hook group (jq failed) — nothing was changed."
 tmp=$(mktemp)
-jq --arg m "$SUBAGENT_MODEL" --arg ttl "$SUBAGENT_CACHE_TTL" --arg up "$upgrade_sub" --arg k "$OWNER_MARK" '
+jq --arg m "$SUBAGENT_MODEL" --arg ttl "$SUBAGENT_CACHE_TTL" --arg up "$upgrade_sub" --arg k "$OWNER_MARK" \
+   --arg add "$add_hook" --argjson group "$hook_group" '
+  # 2a. subagent model (+ ownership marker) and prompt-cache TTL
   (if (.env.CLAUDE_CODE_SUBAGENT_MODEL // null) == null or $up == "1" then .env.CLAUDE_CODE_SUBAGENT_MODEL = $m | .env[$k] = $m else . end)
   | (if (.env[$k] // null) != null and .env[$k] != .env.CLAUDE_CODE_SUBAGENT_MODEL then del(.env[$k]) else . end)
   | (if (.subagentPromptCacheTtl // null) == null then .subagentPromptCacheTtl = $ttl else . end)
-' "$SETTINGS" > "$tmp" || die "settings merge (jq) failed — $SETTINGS left unchanged."
-apply_settings "$tmp" || die "could not write $SETTINGS."
-case "$sub_action" in
-  upgrade-owned) echo "env.CLAUDE_CODE_SUBAGENT_MODEL: upgraded $cur_sub -> $SUBAGENT_MODEL (set by this installer)" ;;
-  upgrade-legacy) echo "env.CLAUDE_CODE_SUBAGENT_MODEL: upgraded $cur_sub -> $SUBAGENT_MODEL (previous installer default)" ;;
-esac
-
-# 3b. Harness-level routing rules (idempotent; appends only what's missing and
-#     preserves existing rules + order). Enforces the rubric at the permission layer:
-#       - `ask` before any Fable spawn → confirms the costly tier (the ⚠ rule, enforced)
-#       - `allow` the worker spawns    → fan-out never prompts (a worker's OWN Bash/Edit
-#                                         calls stay gated by your normal permissions)
-#     The pre-Wave-12 Agent(triage-overflow) allow rule is removed: that agent is now
-#     triage-external, and a rule for an agent that no longer exists is only noise.
-#     Gate by agent TYPE, not `model:` — `Agent(type)` enforcement for named subagent
-#     spawns landed in Claude Code 2.1.186; matching a frontmatter-set `model:` is
-#     unverified. Switch the `ask` to `deny` below to hard-block Fable instead.
-tmp=$(mktemp)
-jq '
-  ["Agent(triage-quick-task)","Agent(triage-builder)","Agent(triage-deep-reasoner)","Agent(triage-reviewer)","Agent(triage-cross-reviewer)","Agent(triage-external)"] as $workers
+  # 2b. Agent(...) permission rules
+  | ["Agent(triage-quick-task)","Agent(triage-builder)","Agent(triage-deep-reasoner)","Agent(triage-reviewer)","Agent(triage-cross-reviewer)","Agent(triage-external)"] as $workers
   | ["Agent(triage-overflow)"] as $legacy_workers
   | ["Agent(triage-fable-architect)"] as $fable
   | .permissions.allow = (((.permissions.allow // []) - $legacy_workers) + ($workers - (.permissions.allow // [])))
   | .permissions.ask   = ((.permissions.ask   // []) + ($fable   - (.permissions.ask   // [])))
-' "$SETTINGS" > "$tmp" || die "permissions merge (jq) failed — the settings keys above were applied, the Agent(...) rules were not."
-apply_settings "$tmp" || die "could not write $SETTINGS."
+  # 2c. the SessionStart hook, appended
+  | (if $add == "1" then .hooks.SessionStart = ((.hooks.SessionStart // []) + [$group]) else . end)
+' "$SETTINGS_SRC" > "$tmp" || die "settings merge (jq) failed — $SETTINGS and CLAUDE.md left unchanged."
+apply_settings "$tmp" || die "could not write $SETTINGS — CLAUDE.md was not changed."
+case "$sub_action" in
+  upgrade-owned) echo "env.CLAUDE_CODE_SUBAGENT_MODEL: upgraded $cur_sub -> $SUBAGENT_MODEL (set by this installer)" ;;
+  upgrade-legacy) echo "env.CLAUDE_CODE_SUBAGENT_MODEL: upgraded $cur_sub -> $SUBAGENT_MODEL (previous installer default)" ;;
+esac
+if [ "$add_hook" -eq 1 ]; then
+  echo "hooks.SessionStart: added the triage hook ($hook_group)"
+fi
+
+# =============================================================================
+# 3. CLAUDE.md — reached only after the settings write above succeeded (a failure dies
+#    first), so the legacy import is removed only once this install's hook is in
+#    settings.json. A legacy `@triage.md` import (CRLF too) is removed (backed up first:
+#    it would load the rubric into every subagent, and the hook stays silent while it is
+#    there), and the pointer line is appended once. Written through a symlink, never
+#    replacing it. Fails CLOSED: the filtered copy was computed before step 2
+#    (CLAUDE_MD_NEW), and a failed backup dies before the rewrite; a failed rewrite
+#    names the backup. With CLAUDE_MD_BLOCK set (disableAllHooks, or a rubric that fails
+#    its size check) nothing here runs.
+# =============================================================================
+if [ -n "$CLAUDE_MD_BLOCK" ]; then
+  echo "⚠ WARNING: $CLAUDE_MD_BLOCK"
+else
+  touch "$CLAUDE_MD" || die "could not create $CLAUDE_MD."
+  if [ "$LEGACY" -eq 1 ]; then
+    b=$(backup_copy "$CLAUDE_MD") || die "could not back up $CLAUDE_MD — it was not changed."
+    cat "$CLAUDE_MD_NEW" > "$CLAUDE_MD" || die "could not rewrite $CLAUDE_MD (your copy is in $b)."
+    echo "CLAUDE.md: removed the legacy @triage.md import (the SessionStart hook replaces it); previous copy saved to $b"
+  fi
+  if [ "$POINTER" -eq 0 ]; then
+    # Ensure the file ends with a newline first, or the pointer fuses onto the last
+    # line — corrupting that line — when CLAUDE.md lacks a final newline.
+    if [ -s "$CLAUDE_MD" ] && [ -n "$(tail -c1 "$CLAUDE_MD")" ]; then
+      printf '\n' >> "$CLAUDE_MD"
+    fi
+    printf '%s\n' "$(pointer_line)" >> "$CLAUDE_MD"
+  fi
+fi
 
 # 4. Billing-safety warning
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
@@ -589,5 +838,6 @@ echo "  - Your orchestrator model/effortLevel and statusLine were NOT changed."
 echo "    Pick the orchestrator with /model — a frontier model plans best; the tiers do the volume."
 echo "  - statusline.sh was copied but NOT wired. To use it, set in $SETTINGS:"
 echo "      \"statusLine\": {\"type\": \"command\", \"command\": \"$CLAUDE_DIR/statusline.sh\"}"
-echo "  - Kill switch: remove the @triage.md line from $CLAUDE_DIR/CLAUDE.md."
+echo "  - The rubric reaches the main session through a SessionStart hook (scripts/triage-context.sh); subagents don't load it."
+echo "  - Kill switch: touch $CLAUDE_DIR/triage.disabled (takes effect at the next startup, /clear or compaction; rm re-enables)."
 echo "  - Full removal: ./uninstall.sh"

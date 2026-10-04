@@ -1892,6 +1892,241 @@ const BST = (id, level, extra = {}) => LV(id, level, [`src/${id}.js`], Object.as
     logs.some(l => l.includes('codex→claude') && l.includes('codex malformed:') && l.includes(' m ')))
 }
 
+// ---- Scenario 66: noFable (rubric rule 7 material) — deep@max is the ceiling. Where the
+// ladder would go to Fable, triage-exec stops instead: no triage-fable-architect spawn,
+// an escalation deep -> user, the subtask listed in report.needsUser.
+const fableSpawned = calls => calls.some(c => c.opts.agentType === 'triage-fable-architect')
+
+// (a) reviewer ESCALATE at deep → deep@max still runs → it fails too → stop, needs the user.
+{
+  const { result, logs, calls } = await run(
+    { subtasks: [ST('core', 'deep', ['core.js'])], noFable: true },
+    {
+      'deep:': ['did core'],
+      'verify:reviewer': [REVIEW_ESCALATE],
+      'redo:deep@max:': ['redone at max'],
+      'verify:re-review': ['FIX: core.js still drops the edge case'],
+      'redo:fable:': ['MUST NOT RUN'],
+    })
+  chk('S66a: the deep@max step still runs, once', deepMaxCalls(calls).length === 1 && countCalls(calls, 'redo:deep@max:core') === 1)
+  chk('S66a: no Fable spawn and no Fable announcement', !fableSpawned(calls) && !logs.some(l => l.includes('Escalating to Fable')))
+  chk('S66a: escalations = deep->deep@max, then deep->user with the noFable reason',
+    escChain(result) === 'deep->deep@max,deep->user' &&
+    result.escalations[1].reason === 'noFable: Fable excluded for this plan — needs the user')
+  chk('S66a: needsUser lists core; its status is needs-user; noFable echoed; failed loudly',
+    JSON.stringify(result.needsUser) === '["core"]' && statusOf(result, 'core') === 'needs-user' &&
+    result.noFable === true && result.failed === true)
+  chk('S66a: the stop keeps the deep@max output (2 attempts, 2 rounds) and re-verifies nothing new',
+    result.subtasks[0].attempts === 2 && result.remediation.rounds === 2 && countCalls(calls, 'verify:re-review') === 1)
+  chk('S66a: the stop is logged as needing the user', logs.some(l => l.includes('noFable: core') && l.includes('needs the user')))
+
+  // An ESCALATE on the plan's own deep@max attempt stops in round 1 (no extra max step).
+  const { result: r2, calls: c2 } = await run(
+    { subtasks: [ST('core', 'deep', ['core.js'], { effort: 'max' })], noFable: true },
+    {
+      'deep:': ['did core at max'],
+      'verify:reviewer': [REVIEW_ESCALATE],
+      'verify:re-review': [REVIEW_ESCALATE],
+      'redo:': ['MUST NOT RUN'],
+    })
+  chk('S66a: ESCALATE at the plan\'s deep@max → no redo spawn, no Fable, stopped for the user',
+    countCalls(c2, 'redo:') === 0 && !fableSpawned(c2) && escChain(r2) === 'deep->user' &&
+    JSON.stringify(r2.needsUser) === '["core"]' && r2.failed === true)
+}
+
+// (b) the deep@max attempt fails an OBJECTIVE check (reviewer passes) → the same stop.
+{
+  const { result, calls } = await run(
+    { subtasks: [ST('core', 'deep', ['core.js'])], checks: ['make test'], review: 'always', noFable: true },
+    {
+      'deep:': ['did core'],
+      'verify:objective-check': ['ok\nPASS'],
+      'verify:reviewer': [REVIEW_ESCALATE],
+      'redo:deep@max:': ['redone at max'],
+      'verify:recheck': ['core.js: 1 failing\nFAIL'],
+      'verify:re-review': ['PASS'],
+      'redo:fable:': ['MUST NOT RUN'],
+    })
+  chk('S66b: deep@max ran once, then a failed check → no Fable spawn',
+    deepMaxCalls(calls).length === 1 && !fableSpawned(calls))
+  chk('S66b: escalation deep -> user recorded; needsUser = [core]; failed',
+    escChain(result) === 'deep->deep@max,deep->user' && JSON.stringify(result.needsUser) === '["core"]' &&
+    result.failed === true && result.checks[0].pass === false)
+}
+
+// (c) a plan-time claude top subtask (level top, or the alias fable) with noFable throws
+// before any spawn; a codex top subtask is accepted (codex is not Fable).
+{
+  const t1 = await runExpectingThrow({ subtasks: [ST('arch', 'fable', ['x.js'])], noFable: true }, { 'fable:': ['MUST NOT RUN'] })
+  chk('S66c: noFable + tier fable throws before any spawn, naming noFable',
+    t1.threw && t1.calls.length === 0 && t1.message.includes('noFable') && t1.message.includes('"arch"'))
+  const t2 = await runExpectingThrow(
+    { subtasks: [ST('a', 'deep', ['a.js']), { id: 'arch', brief: 'b', level: 'top', acceptance: 'ok', files: ['x.js'] }], noFable: true },
+    { 'deep:': ['MUST NOT RUN'], 'fable:': ['MUST NOT RUN'] })
+  chk('S66c: noFable + level top (claude by default) throws before any spawn', t2.threw && t2.calls.length === 0 && t2.message.includes('noFable'))
+  const t3 = await runExpectingThrow(
+    { subtasks: [{ id: 'arch', brief: 'b', level: 'top', vendor: 'codex', acceptance: 'ok', files: ['x.js'] }], noFable: true, review: 'never', checks: ['make test'] },
+    { 'codex:': [EXT('ok')], 'verify:objective-check': ['ok\nPASS'] })
+  chk('S66c: noFable + a codex top subtask is accepted', !t3.threw)
+}
+
+// (d) a non-boolean noFable throws before any spawn.
+{
+  const t1 = await runExpectingThrow({ subtasks: [ST('a', 'deep', ['a.js'])], noFable: 'yes' }, { 'deep:': ['MUST NOT RUN'] })
+  const t2 = await runExpectingThrow({ subtasks: [ST('a', 'deep', ['a.js'])], noFable: 1 }, { 'deep:': ['MUST NOT RUN'] })
+  chk('S66d: noFable "yes" and 1 both throw before any spawn',
+    t1.threw && t1.calls.length === 0 && t1.message.includes('args.noFable must be a boolean') &&
+    t2.threw && t2.calls.length === 0)
+}
+
+// (e) a codex top subtask coming back to Claude under noFable goes to deep@max, never Fable:
+// when codex produced no work (runFable()'s guard), and when its work failed verification
+// (redoStep()'s guard: deep@max first, then the stop).
+{
+  const { result, logs, calls } = await run(
+    { subtasks: [{ id: 'arch', brief: 'b', level: 'top', vendor: 'codex', acceptance: 'ok', files: ['x.js'] }], noFable: true, checks: ['make test'], review: 'never' },
+    {
+      'codex:': ['UNAVAILABLE: codex exited 4'],
+      'fable←codex:': ['MUST NOT RUN'],
+      'deep@max:': ['did it on deep at max'],
+      'verify:objective-check': ['ok\nPASS'],
+    })
+  const mx = deepMaxCalls(calls)
+  chk('S66e: codex no work → deep-reasoner at max (label deep@max:arch), no Fable spawn or announcement',
+    mx.length === 1 && mx[0].label === 'deep@max:arch' && !fableSpawned(calls) && !logs.some(l => l.includes('Escalating to Fable')))
+  chk('S66e: the diversion is on record (reason says Fable never spawned); the subtask ran deep and passed',
+    escChain(result) === 'codex:top->fable,fable->deep' && result.escalations[1].reason.includes('Fable never spawned') &&
+    result.subtasks[0].tier === 'deep' && result.failed === false && result.needsUser.length === 0)
+
+  const { result: r2, calls: c2 } = await run(
+    { subtasks: [{ id: 'arch', brief: 'b', level: 'top', vendor: 'codex', acceptance: 'ok', files: ['x.js'] }], noFable: true },
+    {
+      'codex:': [EXT('did it')],
+      'verify:reviewer': ['FIX: x.js wrong'],
+      'redo:deep@max:': ['redone at max'],
+      'verify:re-review': ['FIX: x.js still wrong'],
+      'redo:fable:': ['MUST NOT RUN'],
+    })
+  chk('S66e: codex top work failing verification → deep@max (not Fable), then the stop',
+    deepMaxCalls(c2).length === 1 && !fableSpawned(c2) && escChain(r2) === 'codex:top->deep@max,deep->user' &&
+    JSON.stringify(r2.needsUser) === '["arch"]' && r2.failed === true)
+}
+
+// (f) without noFable nothing changes (S26b–d still reach Fable); the report echoes false.
+{
+  const { result } = await run(
+    { subtasks: [ST('t1', 'builder', ['a.js'])], checks: ['make test'] },
+    { 'builder:': ['did t1'], 'verify:objective-check': ['ok\nPASS'] })
+  chk('S66f: default plan echoes noFable false and an empty needsUser',
+    result.noFable === false && Array.isArray(result.needsUser) && result.needsUser.length === 0)
+}
+
+// (g) a deep@max attempt that owes nothing yet (no prior deep → deep@max step) fails with
+// FIX / an objective FAIL: one same-rung retry, then the stop — never a second retry, never
+// `ok` while it still fails. Entry path 1: the plan's own deep@max, reviewer FIX.
+{
+  const { result, logs, calls } = await run(
+    { subtasks: [ST('core', 'deep', ['core.js'], { effort: 'max' })], noFable: true },
+    {
+      'deep:': ['did core at max'],
+      'verify:reviewer': ['FIX: core.js drops the edge case'],
+      'redo:deep@max:': ['retried at max'],
+      'verify:re-review': ['FIX: core.js still drops the edge case'],
+      'redo:': ['MUST NOT RUN'],
+    })
+  chk('S66g: plan deep@max + FIX → exactly one redo, at deep@max; no Fable',
+    countCalls(calls, 'redo:') === 1 && countCalls(calls, 'redo:deep@max:core') === 1 &&
+    deepMaxCalls(calls).length === 2 && !fableSpawned(calls))
+  chk('S66g: the retry stays on its rung (no escalation entry); the second failure stops: deep -> user',
+    escChain(result) === 'deep->user' && result.escalations[0].reason === 'noFable: Fable excluded for this plan — needs the user')
+  chk('S66g: needs-user, not ok: needsUser [core], status needs-user, 2 attempts, 2 rounds, failed and incomplete',
+    JSON.stringify(result.needsUser) === '["core"]' && statusOf(result, 'core') === 'needs-user' &&
+    result.subtasks[0].attempts === 2 && result.remediation.rounds === 2 &&
+    result.failed === true && result.incomplete === true)
+  chk('S66g: the run logs the stop and the INCOMPLETE line',
+    logs.some(l => l.includes('noFable: core failed at deep@max')) && logs.some(l => l.includes('INCOMPLETE — needs the user (noFable): core')))
+
+  // The one retry passes → ok, nobody needs the user, a clean run.
+  const { result: r2, calls: c2 } = await run(
+    { subtasks: [ST('core', 'deep', ['core.js'], { effort: 'max' })], noFable: true },
+    {
+      'deep:': ['did core at max'],
+      'verify:reviewer': ['FIX: core.js drops the edge case'],
+      'redo:deep@max:': ['retried at max'],
+      'verify:re-review': ['PASS'],
+    })
+  chk('S66g: the retry passes → status ok, needsUser empty, not failed, not incomplete, 1 round',
+    countCalls(c2, 'redo:') === 1 && statusOf(r2, 'core') === 'ok' && r2.needsUser.length === 0 &&
+    r2.failed === false && r2.incomplete === false && r2.remediation.rounds === 1 && r2.escalations.length === 0)
+}
+
+// (h) entry path 2: codex top → no work → deep@max in place of Fable (runFable()); its
+// output then fails an OBJECTIVE check twice → one same-rung retry, then the stop.
+{
+  const { result, calls } = await run(
+    { subtasks: [{ id: 'arch', brief: 'b', level: 'top', vendor: 'codex', acceptance: 'ok', files: ['x.js'] }], noFable: true, checks: ['make test'], review: 'never' },
+    {
+      'codex:': ['UNAVAILABLE: codex exited 4'],
+      'deep@max:': ['did it on deep at max'],
+      'verify:objective-check': ['x.js: 1 failing\nFAIL'],
+      'redo:deep@max:': ['retried at max'],
+      'verify:recheck': ['x.js: still 1 failing\nFAIL'],
+      'redo:': ['MUST NOT RUN'],
+    })
+  chk('S66h: codex→deep@max fallback + FAIL → one redo at deep@max, no Fable',
+    countCalls(calls, 'redo:') === 1 && countCalls(calls, 'redo:deep@max:arch') === 1 &&
+    deepMaxCalls(calls).length === 2 && !fableSpawned(calls))
+  chk('S66h: escalations codex:top->fable, fable->deep, deep->user; needs-user; failed + incomplete; the check still fails',
+    escChain(result) === 'codex:top->fable,fable->deep,deep->user' && JSON.stringify(result.needsUser) === '["arch"]' &&
+    statusOf(result, 'arch') === 'needs-user' && result.failed === true && result.incomplete === true &&
+    result.checks[0].pass === false && result.subtasks[0].attempts === 2)
+}
+
+// (i) the deep@max that stands in for Fable (codex top, no work) returns NOTHING → the
+// ladder this plan allows is spent: stopped for the user, never a bare dropped subtask.
+{
+  const { result, logs, calls } = await run(
+    { subtasks: [{ id: 'arch', brief: 'b', level: 'top', vendor: 'codex', acceptance: 'ok', files: ['x.js'] }], noFable: true, checks: ['make test'], review: 'never' },
+    {
+      'codex:': ['UNAVAILABLE: codex exited 4'],
+      'deep@max:': [null],
+      'verify:objective-check': ['ok\nPASS'],
+      'redo:': ['MUST NOT RUN'],
+    })
+  chk('S66i: empty deep@max fallback → no Fable, no redo, escalation deep -> user',
+    !fableSpawned(calls) && countCalls(calls, 'redo:') === 0 && deepMaxCalls(calls).length === 1 &&
+    escChain(result) === 'codex:top->fable,fable->deep,deep->user')
+  chk('S66i: needsUser [arch], status needs-user (not failed/ok), 0 attempts; the run is INCOMPLETE though the gate passed',
+    JSON.stringify(result.needsUser) === '["arch"]' && statusOf(result, 'arch') === 'needs-user' &&
+    result.subtasks[0].attempts === 0 && result.failed === false && result.incomplete === true)
+  chk('S66i: the stop names the empty output', logs.some(l => l.includes('noFable: arch returned no output at deep@max')))
+}
+
+// (j) two subtasks: one stops for the user, the other's redo succeeds (attribution moves
+// from both files in round 1 to core.js alone in round 2). Report fields stay consistent.
+{
+  const { result, calls } = await run(
+    { subtasks: [ST('core', 'deep', ['core.js'], { effort: 'max' }), ST('ui', 'builder', ['ui.js'])], noFable: true, checks: ['make test'], review: 'never' },
+    {
+      'deep:core': ['did core at max'],
+      'builder:ui': ['did ui'],
+      'verify:objective-check': ['core.js: 1 failing\nui.js: 1 failing\nFAIL'],
+      'redo:deep@max:core': ['retried core at max'],
+      'redo:ui': ['redid ui'],
+      'verify:recheck': ['core.js: still 1 failing\nFAIL'],
+    })
+  const st = id => result.subtasks.find(s => s.id === id)
+  chk('S66j: round 1 redoes both (core at deep@max, ui at builder); round 2 spawns nothing',
+    countCalls(calls, 'redo:deep@max:core') === 1 && countCalls(calls, 'redo:ui') === 1 && countCalls(calls, 'redo:') === 2 &&
+    !fableSpawned(calls) && result.remediation.rounds === 2)
+  chk('S66j: needsUser = [core] only; core needs-user, ui ok, both 2 attempts',
+    JSON.stringify(result.needsUser) === '["core"]' && st('core').status === 'needs-user' && st('ui').status === 'ok' &&
+    st('core').attempts === 2 && st('ui').attempts === 2 && st('ui').tier === 'builder')
+  chk('S66j: the only escalation is core deep -> user; the run is failed (check still red) and incomplete',
+    escChain(result) === 'deep->user' && result.escalations[0].id === 'core' &&
+    result.failed === true && result.incomplete === true && result.checks[0].pass === false)
+}
+
 console.log('')
 console.log(`RESULT: ${pass} passed, ${fail} failed`)
 process.exit(fail > 0 ? 1 : 0)
