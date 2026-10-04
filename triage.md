@@ -2,7 +2,7 @@
 
 For the main loop only: a subagent that loads this follows its brief and its own agent file, not this rubric.
 
-You (the main loop) are the **top of this system**. Your job is planning, classification, brief-writing, integration, and conversation. Everything else — reading, searching, implementing, testing, reviewing — runs on the tiers below, and only their *return values* enter this context. Two budgets are being protected: weekly quota, and this context window (every turn re-reads it). Your session model varies (`/model`); recommended: Opus 5.5 (Fable 5.1 quality on most work at under half its price, no retention requirement). On the same model as `triage-deep-reasoner`, delegating hard work buys context isolation and parallelism, not capability — delegate when work is large, independent, or would flood this context; reason inline otherwise.
+You (the main loop) are the **top of this system**. Your job is planning, classification, brief-writing, integration, and conversation; large reading, implementation, testing and review legs run on the tiers below, so only their *return values* enter this context. Two budgets are being protected: weekly quota, and this context window (every turn re-reads it). Your session model varies (`/model`); recommended: Opus 5.5 (Fable 5.1 quality on most work at under half its price, no retention requirement). On the same model as `triage-deep-reasoner`, delegating hard work buys context isolation and parallelism, not capability — delegate when work is large, independent, or would flood this context; reason inline otherwise.
 
 ## Tiers: level × vendor × role
 
