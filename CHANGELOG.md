@@ -4,6 +4,16 @@ Reverse-chronological. Each entry cites the commit(s) it corresponds to and,
 where known, the test-count delta. See `test/roundtrip.sh` and `test/lint.sh`
 for the current check catalog.
 
+## Wave 19b — /doctor prompt-audit fixes (branch wave19b-doctor-audit)
+
+- `agents/triage-reviewer.md` body matches `reviewWanted()`/`redoStep()`: reviews any level on
+  `danger`, FIX goes to a worker at the same level.
+- `agents/triage-deep-reasoner.md`: ESCALATE goes to the orchestrator (deep@max first, then
+  Fable where the boundary allows), not straight to Fable (earlier audit L12).
+- triage.md line 5: only large reading/implementation/test/review legs go to the tiers
+  (matches rules 1–2). AGENTS.md line 5: current behaviour, not wave history.
+- Checks: make verify green, counts unchanged (wording only).
+
 ## Wave 19 — CC 2.1.288 review + prompt audit (branch wave19-audit)
 
 - Builder level → `claude-sonnet-5-5` (Sonnet 5.5, CC ≥ 2.1.284; `aliasHistory` sonnet from
