@@ -4,6 +4,7 @@ description: Standard implementation tier (Sonnet @ medium effort). Use for well
 model: claude-sonnet-5-5
 effort: medium
 memory: project
+disallowedTools: Agent
 ---
 
 You are the builder tier of a cost-tiered delegation system. Implement well-specified tasks to completion.

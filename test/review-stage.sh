@@ -189,9 +189,9 @@ run_rs snapshot --repo "$M" --base HEAD --head HEAD --include 'docs/**' --out "$
 chk "S7b a repo under a .codex-deny marker: the out dir gets .codex-deny (ext-run.sh then refuses the snapshot for codex)" \
   '[ "$RC" -eq 0 ] && [ -f "$T/out-marked/.codex-deny" ] && [ "$(j .codexDenied)" = true ]'
 printf 'review this\n' > "$T/brief.txt"
-OUT=$(AGY_BOUNDARY_CLEARED=1 CODEX_BIN=/nonexistent "$REPO_DIR/scripts/ext-run.sh" read --prompt-file "$T/brief.txt" --input-dir "$T/out-marked/snap" 2>"$T/err"); RC=$?; ERR=$(cat "$T/err")
+OUT=$(CODEX_BOUNDARY_CLEARED=1 CODEX_BIN=/nonexistent "$REPO_DIR/scripts/ext-run.sh" read --prompt-file "$T/brief.txt" --input-dir "$T/out-marked/snap" 2>"$T/err"); RC=$?; ERR=$(cat "$T/err")
 chk "S7b2 ...and ext-run.sh really refuses that snapshot for codex (--input-dir: exit 3, names the marker)" '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "\.codex-deny"'
-OUT=$(AGY_BOUNDARY_CLEARED=1 CODEX_BIN=/nonexistent "$REPO_DIR/scripts/ext-run.sh" read --prompt-file "$T/brief.txt" --input "$T/out-marked/range.diff" 2>"$T/err"); RC=$?; ERR=$(cat "$T/err")
+OUT=$(CODEX_BOUNDARY_CLEARED=1 CODEX_BIN=/nonexistent "$REPO_DIR/scripts/ext-run.sh" read --prompt-file "$T/brief.txt" --input "$T/out-marked/range.diff" 2>"$T/err"); RC=$?; ERR=$(cat "$T/err")
 chk "S7b3 ...and its range.diff (--input: exit 3)" '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "\.codex-deny"'
 M2="$T/m2/repo"
 git -c init.defaultBranch=main init -q "$M2"

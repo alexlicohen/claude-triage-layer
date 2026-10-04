@@ -263,7 +263,7 @@ if [ -x "$EXT_RUN" ]; then
   mkdir -p "$T/bin"
   printf '#!/bin/sh\n: > "%s/stub-called"\nexit 1\n' "$T" > "$T/bin/codex"; chmod +x "$T/bin/codex"
   printf 'Review this.\n' > "$T/brief.txt"
-  ext() { OUT=$(AGY_BOUNDARY_CLEARED=1 CODEX_BIN="$T/bin/codex" "$EXT_RUN" "$@" 2>"$T/err"); RC=$?; ERR=$(cat "$T/err"); }
+  ext() { OUT=$(CODEX_BOUNDARY_CLEARED=1 CODEX_BIN="$T/bin/codex" "$EXT_RUN" "$@" 2>"$T/err"); RC=$?; ERR=$(cat "$T/err"); }
   rm -f "$T/stub-called"
   ext read --prompt-file "$T/brief.txt" --input "$T/ad-out/repo/calc.sh"
   chk "D9: ext-run.sh REFUSES codex on a file in the materialized clone (exit 3) — the propagated marker works" \

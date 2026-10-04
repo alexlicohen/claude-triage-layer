@@ -4,6 +4,20 @@ Reverse-chronological. Each entry cites the commit(s) it corresponds to and,
 where known, the test-count delta. See `test/roundtrip.sh` and `test/lint.sh`
 for the current check catalog.
 
+## Wave 20 — audit residue (branch wave20-audit-residue)
+
+- `CODEX_BOUNDARY_CLEARED=1` is the boundary attestation in `scripts/ext-run.sh`;
+  `AGY_BOUNDARY_CLEARED=1` stays as a deprecated alias (same refusal when neither is set). Both
+  wrapper agents set the new name. ext-run 229 → 232 (R1a–R1c); new mutations for dropping
+  either name.
+- agy history removed from always-loaded text (triage.md vendor line, both wrapper
+  descriptions); refusals stay in code.
+- triage.md rule 1: Ultracode stays off — with its reason.
+- builder, deep-reasoner and fable-architect get `disallowedTools: Agent` (CC 2.1.289 docs +
+  binary schema); lint keeps it, with a mutation.
+- Inline bake-off for this change skipped: the Haiku dirty-check relay returned `rc: null`
+  ("dirty check failed") — see backlog.
+
 ## Wave 19c — Fable boundary points to one list (branch wave19c-phi-pointer)
 
 - triage.md rule 7(a) no longer enumerates its own categories ("clinical/regulated, …"); it

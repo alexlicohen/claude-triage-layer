@@ -429,34 +429,43 @@ chk "S0 the stub codex is first on PATH (no real CLI can be reached)" \
   '[ "$(command -v codex)" = "$STUB_BIN/codex" ]'
 
 # --- V*: agy is retired ---------------------------------------------------------
-AGY_BOUNDARY_CLEARED=1 run_ext review --vendor agy --prompt-file "$BRIEF"
+CODEX_BOUNDARY_CLEARED=1 run_ext review --vendor agy --prompt-file "$BRIEF"
 chk "V1 --vendor agy is REFUSED (exit 3, 'agy retired 2026-09-24'), nothing runs" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "agy retired 2026-09-24" && [ ! -s "$STUB_LOG" ]'
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX_AGY" run_ext review --vendor agy --prompt-file "$BRIEF"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX_AGY" run_ext review --vendor agy --prompt-file "$BRIEF"
 chk "V1b ...even when the tiers file still lists agy entries" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "agy retired 2026-09-24" && [ ! -s "$STUB_LOG" ]'
-AGY_BOUNDARY_CLEARED=1 run_ext build --vendor agy --level builder --prompt-file "$BRIEF" --workdir "$PROMPTS"
+CODEX_BOUNDARY_CLEARED=1 run_ext build --vendor agy --level builder --prompt-file "$BRIEF" --workdir "$PROMPTS"
 chk "V1c ...in build mode too, before any workdir/level validation" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "agy retired" && [ ! -s "$STUB_LOG" ]'
-AGY_BOUNDARY_CLEARED=1 run_ext review --vendor gemini --prompt-file "$BRIEF"
+CODEX_BOUNDARY_CLEARED=1 run_ext review --vendor gemini --prompt-file "$BRIEF"
 chk "V2 an unknown --vendor is a usage error (exit 2)" \
   '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q "unknown --vendor"'
 
 # --- R*: refusals and usage errors ---------------------------------------------
-AGY_BOUNDARY_CLEARED="" run_ext read --prompt-file "$BRIEF"
-chk "R1 missing AGY_BOUNDARY_CLEARED refuses before anything runs (exit 3)" \
+CODEX_BOUNDARY_CLEARED="" AGY_BOUNDARY_CLEARED="" run_ext read --prompt-file "$BRIEF"
+chk "R1 neither CODEX_BOUNDARY_CLEARED nor its alias set refuses before anything runs (exit 3)" \
+  '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "REFUSED: CODEX_BOUNDARY_CLEARED is not set" && [ ! -s "$STUB_LOG" ]'
+CODEX_BOUNDARY_CLEARED=0 AGY_BOUNDARY_CLEARED=yes run_ext read --prompt-file "$BRIEF"
+chk "R1a only the value 1 attests, under either name (exit 3)" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "REFUSED" && [ ! -s "$STUB_LOG" ]'
+CODEX_BOUNDARY_CLEARED=1 AGY_BOUNDARY_CLEARED="" TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF"
+chk "R1b CODEX_BOUNDARY_CLEARED=1 alone attests (the run reaches codex, exit 0)" \
+  '[ "$RC" -eq 0 ] && [ -s "$STUB_LOG" ]'
+CODEX_BOUNDARY_CLEARED="" AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF"
+chk "R1c the deprecated alias AGY_BOUNDARY_CLEARED=1 alone still attests (exit 0)" \
+  '[ "$RC" -eq 0 ] && [ -s "$STUB_LOG" ]'
 
 DENY=$(new_tmp)
 mkdir -p "$DENY/clip-creator/inner"
 new_repo "$DENY/clip-creator/inner"
-AGY_BOUNDARY_CLEARED=1 run_ext build --level builder --prompt-file "$BRIEF" --workdir "$DENY/clip-creator/inner"
+CODEX_BOUNDARY_CLEARED=1 run_ext build --level builder --prompt-file "$BRIEF" --workdir "$DENY/clip-creator/inner"
 chk "R2 a path component equal to a deny-listed repo refuses (exit 3, names clip-creator)" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "clip-creator" && [ ! -s "$STUB_LOG" ]'
 
 mkdir -p "$DENY/clip-creators-lab"
 new_repo "$DENY/clip-creators-lab"
-AGY_BOUNDARY_CLEARED=1 run_ext build --level builder --prompt-file "$BRIEF" --workdir "$DENY/clip-creators-lab" --output "$DENY/out.patch"
+CODEX_BOUNDARY_CLEARED=1 run_ext build --level builder --prompt-file "$BRIEF" --workdir "$DENY/clip-creators-lab" --output "$DENY/out.patch"
 chk "R3 clip-creators-lab is NOT refused — component equality, not substring" \
   '[ "$RC" -ne 3 ] && ! printf "%s" "$ERR" | grep -q "REFUSED"'
 
@@ -464,20 +473,20 @@ chk "R3 clip-creators-lab is NOT refused — component equality, not substring" 
 # Google Drive), so a path under it must now run like any other repo.
 mkdir -p "$DENY/engram/notes"
 new_repo "$DENY/engram/notes"
-AGY_BOUNDARY_CLEARED=1 run_ext build --level builder --prompt-file "$BRIEF" --workdir "$DENY/engram/notes" --output "$DENY/out-engram.patch"
+CODEX_BOUNDARY_CLEARED=1 run_ext build --level builder --prompt-file "$BRIEF" --workdir "$DENY/engram/notes" --output "$DENY/out-engram.patch"
 chk "R3b engram is NOT deny-listed any more (2026-09-15) — a path under it runs" \
   '[ "$RC" -ne 3 ] && ! printf "%s" "$ERR" | grep -q "REFUSED"'
 
 MARKED=$(new_tmp)
 new_repo "$MARKED/repo"
 : > "$MARKED/repo/.codex-deny"
-AGY_BOUNDARY_CLEARED=1 run_ext build --level builder --prompt-file "$BRIEF" --workdir "$MARKED/repo"
+CODEX_BOUNDARY_CLEARED=1 run_ext build --level builder --prompt-file "$BRIEF" --workdir "$MARKED/repo"
 chk "R4 a .codex-deny marker in the tree refuses (exit 3, names the marker)" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "\.codex-deny" && [ ! -s "$STUB_LOG" ]'
 
 mkdir -p "$DENY/clip-creator"
 cp "$DATA" "$DENY/clip-creator/note.txt"
-AGY_BOUNDARY_CLEARED=1 run_ext read --prompt-file "$BRIEF" --input "$DENY/clip-creator/note.txt"
+CODEX_BOUNDARY_CLEARED=1 run_ext read --prompt-file "$BRIEF" --input "$DENY/clip-creator/note.txt"
 chk "R4b --input from a deny-listed repo refuses (exit 3, names clip-creator)" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "clip-creator" && [ ! -s "$STUB_LOG" ]'
 
@@ -485,23 +494,23 @@ AMARK=$(new_tmp)
 new_repo "$AMARK/repo"
 : > "$AMARK/repo/.agy-deny"
 git -C "$AMARK/repo" add .agy-deny && git -C "$AMARK/repo" commit -qm marker
-AGY_BOUNDARY_CLEARED=1 CODEX_STUB_MODE=buildnoop run_ext build --level builder --prompt-file "$BRIEF" --workdir "$AMARK/repo" --output "$AMARK/codex.patch"
+CODEX_BOUNDARY_CLEARED=1 CODEX_STUB_MODE=buildnoop run_ext build --level builder --prompt-file "$BRIEF" --workdir "$AMARK/repo" --output "$AMARK/codex.patch"
 chk "R4c a leftover .agy-deny marker is inert now that agy is retired (codex runs, exit 0)" '[ "$RC" -eq 0 ]'
 
-AGY_BOUNDARY_CLEARED=1 run_ext nonsense --prompt-file "$BRIEF"
+CODEX_BOUNDARY_CLEARED=1 run_ext nonsense --prompt-file "$BRIEF"
 chk "R5 unknown mode is a usage error (exit 2)" \
   '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q "unknown mode"'
 
-AGY_BOUNDARY_CLEARED=1 run_ext review --prompt-file "$BRIEF" --schema '{"type":"object"}'
+CODEX_BOUNDARY_CLEARED=1 run_ext review --prompt-file "$BRIEF" --schema '{"type":"object"}'
 chk "R6 --schema outside read mode is a usage error (exit 2)" '[ "$RC" -eq 2 ]'
 
-AGY_BOUNDARY_CLEARED=1 run_ext read --prompt-file "$BRIEF" --workdir "$PROMPTS"
+CODEX_BOUNDARY_CLEARED=1 run_ext read --prompt-file "$BRIEF" --workdir "$PROMPTS"
 chk "R7 --workdir outside build mode is a usage error (exit 2)" '[ "$RC" -eq 2 ]'
 
-AGY_BOUNDARY_CLEARED=1 run_ext build --level builder --prompt-file "$BRIEF"
+CODEX_BOUNDARY_CLEARED=1 run_ext build --level builder --prompt-file "$BRIEF"
 chk "R8 build without --workdir is a usage error (exit 2)" '[ "$RC" -eq 2 ]'
 
-AGY_BOUNDARY_CLEARED=1 run_ext review --prompt-file "$BRIEF" --model claude-opus-4-6-thinking
+CODEX_BOUNDARY_CLEARED=1 run_ext review --prompt-file "$BRIEF" --model claude-opus-4-6-thinking
 chk "R9 a Claude model is refused — the tier is cross-vendor by definition (exit 2)" \
   '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -qi "claude"'
 
@@ -512,19 +521,19 @@ while [ "$i" -lt 3200 ]; do
   printf '%s\n' "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789" >> "$BIG"
   i=$((i + 1))
 done
-AGY_BOUNDARY_CLEARED=1 run_ext read --prompt-file "$BIG"
+CODEX_BOUNDARY_CLEARED=1 run_ext read --prompt-file "$BIG"
 chk "R10 a >256KB prompt file is refused and names --input (exit 2)" \
   '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q -- "--input"'
 
-AGY_BOUNDARY_CLEARED=1 run_ext read --prompt-file "$BRIEF" --output "$PROMPTS/x.patch"
+CODEX_BOUNDARY_CLEARED=1 run_ext read --prompt-file "$BRIEF" --output "$PROMPTS/x.patch"
 chk "R10b --output outside build mode is a usage error (exit 2)" '[ "$RC" -eq 2 ]'
 
-AGY_BOUNDARY_CLEARED=1 run_ext read --prompt-file "$PROMPTS/no-such-file.txt"
+CODEX_BOUNDARY_CLEARED=1 run_ext read --prompt-file "$PROMPTS/no-such-file.txt"
 chk "R10c a missing prompt file is a usage error (exit 2)" \
   '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q "not found"'
 
 # --- C1: a good read-only run — the flag table and the confinement pairing -------
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok \
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok \
   run_ext read --prompt-file "$BRIEF" --input "$DATA"
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 STUB_PWD=$(grep '^PWD=' "$STUB_LOG" | head -1 | sed 's/^PWD=//')
@@ -556,16 +565,16 @@ chk "C1j a clean read-only run prints NO staging-write note" \
 # symlink is followed to its target.
 codex() { : > "$ROOT/function-ran"; }
 export -f codex
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF"
 unset -f codex
 chk "C0b an exported shell function named codex is never what runs (the PATH file is)" \
   '[ "$RC" -eq 0 ] && [ ! -e "$ROOT/function-ran" ] && grep -qx "SELF=$STUB_BIN/codex" "$STUB_LOG"'
 LINKS="$ROOT/.codex/links"; mkdir -p "$LINKS"; ln -s "$STUB_BIN/codex" "$LINKS/codex-link"
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok CODEX_BIN="$LINKS/codex-link" run_ext read --prompt-file "$BRIEF"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok CODEX_BIN="$LINKS/codex-link" run_ext read --prompt-file "$BRIEF"
 chk "C0c CODEX_BIN is honored and resolved to its real file (a symlink runs its target)" \
   '[ "$RC" -eq 0 ] && grep -qx "SELF=$STUB_BIN/codex" "$STUB_LOG"'
 
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=write run_ext review --prompt-file "$BRIEF"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=write run_ext review --prompt-file "$BRIEF"
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 STUB_PWD=$(grep '^PWD=' "$STUB_LOG" | head -1 | sed 's/^PWD=//')
 chk "R19c a read-only run that writes is contained AND reported, never silent" \
@@ -573,7 +582,7 @@ chk "R19c a read-only run that writes is contained AND reported, never silent" \
 chk "R19d the staging dir is gone after exit (nothing codex wrote survives)" \
   '[ ! -e "$STUB_PWD" ]'
 
-AGY_BOUNDARY_CLEARED=1 AGY_STAGE_KEEP=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input "$DATA"
+CODEX_BOUNDARY_CLEARED=1 AGY_STAGE_KEEP=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input "$DATA"
 KEPT=$(kept_stage)
 chk "R21b AGY_STAGE_KEEP=1 keeps the stage and its meta/prompt.txt for inspection" \
   '[ -n "$KEPT" ] && [ -f "$KEPT/meta/prompt.txt" ] && grep -q -- "--- Workspace ---" "$KEPT/meta/prompt.txt"'
@@ -586,7 +595,7 @@ printf 'REFOK\n' > "$ROOT/refdata/ok.txt"
 printf 'ORIGINAL\n' > "$OUTSIDE/target.txt"
 TMPPROBE="/private/tmp/ext-run-probe.$$.$(date +%s)"
 SHARED_PROBE="/Users/Shared/.ext-run-probe.$$"
-AGY_BOUNDARY_CLEARED=1 AGY_STAGE_KEEP=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=probe \
+CODEX_BOUNDARY_CLEARED=1 AGY_STAGE_KEEP=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=probe \
   CODEX_STUB_TMPPROBE="$TMPPROBE" CODEX_STUB_ALLOWED="$ROOT/refdata" CODEX_STUB_OUTSIDE="$OUTSIDE" CODEX_STUB_RUNTAG="$$" \
   run_ext read --prompt-file "$BRIEF" --allow-read "$ROOT/refdata"
 KEPT=$(kept_stage)
@@ -641,7 +650,7 @@ HB="$ROOT/hb"; mkdir -p "$HB/.codex"
 HB_BIN=$(stub_home "$HB")
 PB="$OUTSIDE/pb"; mkdir -p "$PB"
 new_repo "$PB/xrepo"
-AGY_BOUNDARY_CLEARED=1 HOME="$HB" CODEX_BIN="$HB_BIN" CODEX_STUB_LOG="$HB/.codex/stub.log" CODEX_STUB_PROMPT="$HB/.codex/stub-prompt.txt" \
+CODEX_BOUNDARY_CLEARED=1 HOME="$HB" CODEX_BIN="$HB_BIN" CODEX_STUB_LOG="$HB/.codex/stub.log" CODEX_STUB_PROMPT="$HB/.codex/stub-prompt.txt" \
   CODEX_STUB_MODE=probebuild CODEX_STUB_REPO="$PB/xrepo" TRIAGE_TIERS="$FIX" \
   run_ext build --level builder --prompt-file "$BRIEF" --workdir "$PB/xrepo" --patch-out "$PB/probe.patch"
 if [ "$REAL_SANDBOX" -eq 1 ]; then
@@ -676,7 +685,7 @@ path_without() { # $1 = command name -> PATH with every dir holding it replaced 
   printf '%s' "$out"
 }
 NO_SBX_PATH=$(path_without sandbox-exec)
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok PATH="$NO_SBX_PATH" run_ext read --prompt-file "$BRIEF"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok PATH="$NO_SBX_PATH" run_ext read --prompt-file "$BRIEF"
 chk "P8 no sandbox-exec: exit 4 (UNAVAILABLE, names sandbox-exec) and codex never ran" \
   '[ "$RC" -eq 4 ] && printf "%s" "$ERR" | grep -q "sandbox-exec not found" && [ ! -s "$STUB_LOG" ]'
 
@@ -693,7 +702,7 @@ is_outside_canary() {
 
 PASS_DIR="$HARNESS/passthrough-sbx"; mkdir -p "$PASS_DIR"
 printf '#!/bin/sh\nshift 2\nexec "$@"\n' > "$PASS_DIR/sandbox-exec"; chmod +x "$PASS_DIR/sandbox-exec"
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok PATH="$PASS_DIR:$PATH" run_ext read --prompt-file "$BRIEF"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok PATH="$PASS_DIR:$PATH" run_ext read --prompt-file "$BRIEF"
 LANDED=$(landed_canaries)
 # shellcheck disable=SC2034  # L1/L2 are read inside chk's eval'd condition strings
 { L1=${LANDED%% *}; L2=${LANDED#* }; }
@@ -704,7 +713,7 @@ chk "P9b ...it names BOTH canaries (the stage root's and the one outside \$HOME 
 
 BADSBX_DIR="$HARNESS/bad-sbx"; mkdir -p "$BADSBX_DIR"
 printf '#!/bin/sh\necho "sandbox-exec: syntax error" >&2\nexit 65\n' > "$BADSBX_DIR/sandbox-exec"; chmod +x "$BADSBX_DIR/sandbox-exec"
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok PATH="$BADSBX_DIR:$PATH" run_ext read --prompt-file "$BRIEF"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok PATH="$BADSBX_DIR:$PATH" run_ext read --prompt-file "$BRIEF"
 chk "P10 a profile that does not apply (sandbox-exec exits 65): exit 4, codex never ran" \
   '[ "$RC" -eq 4 ] && printf "%s" "$ERR" | grep -q "did not apply" && [ ! -s "$STUB_LOG" ]'
 
@@ -724,7 +733,7 @@ done
 exec "$@"
 ONESBX
 chmod +x "$ONESBX_DIR/sandbox-exec"
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok PATH="$ONESBX_DIR:$PATH" run_ext read --prompt-file "$BRIEF"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok PATH="$ONESBX_DIR:$PATH" run_ext read --prompt-file "$BRIEF"
 LANDED=$(landed_canaries)
 chk "P12 a sandbox that stops the stage canary but not a write outside \$HOME and the temp dirs: exit 4, only the OUTSIDE canary landed, codex never ran" \
   '[ "$RC" -eq 4 ] && printf "%s" "$ERR" | grep -q "did not enforce" && is_outside_canary "$LANDED" && [ ! -s "$STUB_LOG" ]'
@@ -744,7 +753,7 @@ exec "@REAL_SBX@" -f "$p.old" "$@"
 OLDSBX
   sed -e "s|@ROOT@|$ROOT|g" -e "s|@REAL_SBX@|$(type -P sandbox-exec)|g" "$OLDSBX_DIR/sandbox-exec.in" > "$OLDSBX_DIR/sandbox-exec"
   chmod +x "$OLDSBX_DIR/sandbox-exec"
-  AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok PATH="$OLDSBX_DIR:$PATH" run_ext read --prompt-file "$BRIEF"
+  CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok PATH="$OLDSBX_DIR:$PATH" run_ext read --prompt-file "$BRIEF"
   LANDED=$(landed_canaries)
   chk "P12b the real sandbox on the old allow-by-default write rule passes the stage canary and is caught by the outside one: exit 4, codex never ran, canary removed" \
     '[ "$RC" -eq 4 ] && printf "%s" "$ERR" | grep -q "did not enforce" && is_outside_canary "$LANDED" && [ ! -e "$LANDED" ] && [ ! -s "$STUB_LOG" ]'
@@ -773,7 +782,7 @@ if [ -n "$VFD" ] && [ -d "$VFD" ] && VF=$(mktemp -d "${VFD%/}/ext-run-test.XXXXX
   VF_FILE="$VF/secret.txt"
 fi
 PY_OK=""; python3 -c 'import os' >/dev/null 2>&1 && PY_OK=1
-AGY_BOUNDARY_CLEARED=1 AGY_STAGE_KEEP=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=probetmp HOME="$HT" TMPDIR="$TP" CODEX_BIN="$HT_BIN" \
+CODEX_BOUNDARY_CLEARED=1 AGY_STAGE_KEEP=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=probetmp HOME="$HT" TMPDIR="$TP" CODEX_BIN="$HT_BIN" \
   CODEX_STUB_LOG="$HT/.codex/stub.log" CODEX_STUB_PROMPT="$HT/.codex/stub-prompt.txt" \
   CODEX_STUB_SIBLING="$TP/ext-run.sibling/ws/secret.txt" CODEX_STUB_SIBPATCH="$TP/cand-b.patch" \
   CODEX_STUB_SCRATCH="$TP/claude-501/-Users-x-proj/0000-sess/scratchpad/secret.txt" \
@@ -807,33 +816,33 @@ cat "$HT/.codex/stub.log" >> "$ALL_STUB_LOG" 2>/dev/null
 [ -n "$KEPT" ] && rm -rf "$KEPT"
 
 # --- A*: --allow-read ------------------------------------------------------------
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --allow-read "$DENY/clip-creator/inner"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --allow-read "$DENY/clip-creator/inner"
 chk "A1 --allow-read of a deny-listed repo is REFUSED (exit 3), codex never runs" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "clip-creator" && [ ! -s "$STUB_LOG" ]'
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --allow-read "$ROOT"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --allow-read "$ROOT"
 chk "A2 --allow-read \$HOME is REFUSED (exit 3)" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "re-open all of" && [ ! -s "$STUB_LOG" ]'
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --allow-read "$(dirname "$ROOT")"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --allow-read "$(dirname "$ROOT")"
 chk "A3 --allow-read of an ancestor of \$HOME is REFUSED (exit 3)" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "ancestor of" && [ ! -s "$STUB_LOG" ]'
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --allow-read "$DENY"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --allow-read "$DENY"
 chk "A4 --allow-read of a dir with a deny-listed repo beneath it is REFUSED (exit 3, names it)" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "contains .*clip-creator" && [ ! -s "$STUB_LOG" ]'
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --allow-read "$MARKED"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --allow-read "$MARKED"
 chk "A5 --allow-read of a dir with a .codex-deny marker beneath it is REFUSED (exit 3)" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "contains .*\.codex-deny" && [ ! -s "$STUB_LOG" ]'
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --allow-read "$ROOT/no-such-dir"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --allow-read "$ROOT/no-such-dir"
 chk "A6 a missing --allow-read path is a usage error (exit 2)" '[ "$RC" -eq 2 ] && [ ! -s "$STUB_LOG" ]'
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --allow-read "$ROOT/refdata"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --allow-read "$ROOT/refdata"
 chk "A7 an allowed --allow-read path is named in the prompt footer" \
   '[ "$RC" -eq 0 ] && grep -q "^Also readable (read-only):" "$STUB_PROMPT" && grep -qx "  $ROOT/refdata" "$STUB_PROMPT"'
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --allow-read
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --allow-read
 chk "A8 a trailing --allow-read with no value is exit 2" \
   '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q -- "--allow-read needs a value"'
 
 # --- L*: the command audit log --------------------------------------------------
 AUD="$ROOT/audit/a.jsonl"
-AGY_BOUNDARY_CLEARED=1 AGY_STAGE_KEEP=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=cmds EXT_RUN_AUDIT_LOG="$AUD" \
+CODEX_BOUNDARY_CLEARED=1 AGY_STAGE_KEEP=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=cmds EXT_RUN_AUDIT_LOG="$AUD" \
   run_ext review --prompt-file "$BRIEF"
 KEPT=$(kept_stage)
 chk "L1 one audit line per command_execution item (started+completed collapse to one), run passes" \
@@ -847,80 +856,80 @@ chk "L1e NEVER the command output: no aggregated_output key, no output text" \
   '! grep -q "aggregated_output" "$AUD" && ! grep -q "SECRET-OUTPUT" "$AUD"'
 [ -n "$KEPT" ] && rm -rf "$KEPT"
 
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=cmds run_ext review --prompt-file "$BRIEF"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=cmds run_ext review --prompt-file "$BRIEF"
 chk "L2 the default audit log is \$HOME/.claude/logs/ext-run/codex-commands.jsonl" \
   '[ "$RC" -eq 0 ] && [ "$(wc -l < "$ROOT/.claude/logs/ext-run/codex-commands.jsonl" | tr -d " ")" -eq 2 ]'
 
 AUD3="$ROOT/audit/failed.jsonl"
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=cmdsfail EXT_RUN_AUDIT_LOG="$AUD3" run_ext review --prompt-file "$BRIEF"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=cmdsfail EXT_RUN_AUDIT_LOG="$AUD3" run_ext review --prompt-file "$BRIEF"
 chk "L3 a run that fails its gates (exit 4) is still audited" \
   '[ "$RC" -eq 4 ] && [ "$(wc -l < "$AUD3" | tr -d " ")" -eq 2 ]'
 
 AUD4="$ROOT/audit/prune.jsonl"
 printf '%s\n' '{"ts":"2000-01-01T00:00:00Z","runId":"old","mode":"read","model":"m","cwd":"/x","command":"old","exitCode":0}' \
   '{"ts":"2099-01-01T00:00:00Z","runId":"future","mode":"read","model":"m","cwd":"/x","command":"kept","exitCode":0}' > "$AUD4"
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=cmds EXT_RUN_AUDIT_LOG="$AUD4" run_ext review --prompt-file "$BRIEF"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=cmds EXT_RUN_AUDIT_LOG="$AUD4" run_ext review --prompt-file "$BRIEF"
 chk "L4 lines older than 30 days are pruned; recent ones kept; the new ones appended" \
   '[ "$RC" -eq 0 ] && ! grep -q "\"runId\":\"old\"" "$AUD4" && grep -q "\"runId\":\"future\"" "$AUD4" && [ "$(wc -l < "$AUD4" | tr -d " ")" -eq 3 ]'
 
 RO="$ROOT/ro-audit"; mkdir -p "$RO"; chmod 500 "$RO"
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=cmds EXT_RUN_AUDIT_LOG="$RO/sub/a.jsonl" run_ext review --prompt-file "$BRIEF"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=cmds EXT_RUN_AUDIT_LOG="$RO/sub/a.jsonl" run_ext review --prompt-file "$BRIEF"
 chmod 700 "$RO"
 chk "L5 an audit log dir that cannot be created is UNAVAILABLE (exit 4) and codex never ran" \
   '[ "$RC" -eq 4 ] && printf "%s" "$ERR" | grep -q "audit log" && [ ! -s "$STUB_LOG" ]'
 
 # --- C2-C9: the flag table per mode, gates, watchdog -------------------------------
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext verify --prompt-file "$BRIEF"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext verify --prompt-file "$BRIEF"
 chk "C2 verify adds -c web_search=\"live\" on the fixture verify model/effort" \
   '[ "$RC" -eq 0 ] && grep -qx "CFG=web_search=\"live\"" "$STUB_LOG" && grep -qx "MODEL=gpt-fx-verify" "$STUB_LOG" && grep -qx "CFG=model_reasoning_effort=medium" "$STUB_LOG"'
 
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext review --vendor codex --prompt-file "$BRIEF" --effort xhigh
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext review --vendor codex --prompt-file "$BRIEF" --effort xhigh
 chk "C3 review uses the fixture review model; --effort overrides the tiers effort (--vendor codex accepted)" \
   '[ "$RC" -eq 0 ] && grep -qx "MODEL=gpt-fx-review" "$STUB_LOG" && grep -qx "CFG=model_reasoning_effort=xhigh" "$STUB_LOG" && ! grep -q "CFG=model_reasoning_effort=high" "$STUB_LOG"'
 
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext review --prompt-file "$BRIEF" --effort max
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext review --prompt-file "$BRIEF" --effort max
 chk "C3a codex accepts --effort max and passes it through unchanged" \
   '[ "$RC" -eq 0 ] && grep -qx "CFG=model_reasoning_effort=max" "$STUB_LOG"'
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext review --prompt-file "$BRIEF" --effort ultra
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext review --prompt-file "$BRIEF" --effort ultra
 chk "C3a2 codex refuses --effort ultra (auto-delegating mode) as a usage error" '[ "$RC" -eq 2 ] && [ ! -s "$STUB_LOG" ]'
 
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext review --prompt-file "$BRIEF" --effort ludicrous
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext review --prompt-file "$BRIEF" --effort ludicrous
 chk "C3b an invalid codex --effort is a usage error (exit 2)" '[ "$RC" -eq 2 ] && [ ! -s "$STUB_LOG" ]'
 
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext critique --prompt-file "$BRIEF"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext critique --prompt-file "$BRIEF"
 chk "C3c a codex tiers entry with no effort (and no --effort) is a usage error, never a default" \
   '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q "no effort" && [ ! -s "$STUB_LOG" ]'
 
-AGY_BOUNDARY_CLEARED=1 CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF"
+CODEX_BOUNDARY_CLEARED=1 CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF"
 chk "C4 without TRIAGE_TIERS the repo seed is used (codex read -> gpt-6-sol, low)" \
   '[ "$RC" -eq 0 ] && grep -qx "MODEL=gpt-6-sol" "$STUB_LOG" && grep -qx "CFG=model_reasoning_effort=low" "$STUB_LOG"'
 
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=empty run_ext read --prompt-file "$BRIEF"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=empty run_ext read --prompt-file "$BRIEF"
 chk "C5a an empty -o final message with rc 0 is UNAVAILABLE (exit 4), not a pass" \
   '[ "$RC" -eq 4 ] && printf "%s" "$ERR" | grep -q "no final message" && [ -z "$OUT" ]'
 
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=failed run_ext read --prompt-file "$BRIEF"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=failed run_ext read --prompt-file "$BRIEF"
 chk "C5b turn.failed + error event, rc 1, no -o file is UNAVAILABLE (exit 4) with the reason" \
   '[ "$RC" -eq 4 ] && printf "%s" "$ERR" | grep -q "exited 1" && printf "%s" "$ERR" | grep -q "stream disconnected"'
 
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=failedrc0 run_ext read --prompt-file "$BRIEF"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=failedrc0 run_ext read --prompt-file "$BRIEF"
 chk "C5c a failure event is UNAVAILABLE even with rc 0 and a non-empty -o file" \
   '[ "$RC" -eq 4 ] && printf "%s" "$ERR" | grep -q "turn.failed event"'
 
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=exit7 run_ext read --prompt-file "$BRIEF"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=exit7 run_ext read --prompt-file "$BRIEF"
 chk "C5d a non-zero codex exit is UNAVAILABLE (exit 4) even with a final message" \
   '[ "$RC" -eq 4 ] && printf "%s" "$ERR" | grep -q "exited 7"'
 
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=schemaok run_ext read --prompt-file "$BRIEF" --schema '{"type":"object"}'
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=schemaok run_ext read --prompt-file "$BRIEF" --schema '{"type":"object"}'
 chk "C5e --schema: a JSON final message exits 0; the inline schema reaches codex as --output-schema FILE" \
   '[ "$RC" -eq 0 ] && [ "$(printf "%s" "$OUT" | jq -r .verdict)" = "clean" ] && grep -qx "OSCHEMA={\"type\":\"object\"}" "$STUB_LOG"'
 
 mkdir -p "$ROOT/schemas"; printf '{"type":"object","title":"from-home"}' > "$ROOT/schemas/s.json"
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=schemaok run_ext read --prompt-file "$BRIEF" --schema "$ROOT/schemas/s.json"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=schemaok run_ext read --prompt-file "$BRIEF" --schema "$ROOT/schemas/s.json"
 chk "C5e2 a --schema FILE under \$HOME is copied where the sandboxed codex can read it" \
   '[ "$RC" -eq 0 ] && grep -qx "OSCHEMA={\"type\":\"object\",\"title\":\"from-home\"}" "$STUB_LOG" && ! grep -q "^ARG=$ROOT/schemas/s.json$" "$STUB_LOG"'
 
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=schemabad run_ext read --prompt-file "$BRIEF" --schema '{"type":"object"}'
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=schemabad run_ext read --prompt-file "$BRIEF" --schema '{"type":"object"}'
 chk "C5f --schema with a non-JSON final message is exit 5 (SCHEMA)" '[ "$RC" -eq 5 ]'
 
 # codex --output-schema is OpenAI STRICT: a caller's ordinary schema (optional
@@ -942,7 +951,7 @@ cat > "$NS" <<'NSJ'
 NSJ
 cp "$NS" "$NS.orig"
 rm -f "$STUB_SCHEMA"
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=schemanull run_ext read --prompt-file "$BRIEF" --schema "$NS"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=schemanull run_ext read --prompt-file "$BRIEF" --schema "$NS"
 # shellcheck disable=SC2016,SC2034  # jq programs, read inside chk's eval'd conditions
 STRICT_ALL='[.. | objects | select((.properties | type) == "object") | (.additionalProperties == false and ((.required | sort) == (.properties | keys)))] | (length == 3 and all)'
 # shellcheck disable=SC2016,SC2034
@@ -960,17 +969,17 @@ chk "C5k3 ...while the caller's schema file is left as it was" 'cmp -s "$NS" "$N
 chk "C5l the reply's nulls for originally-optional properties are dropped (the caller gets its own shape)" \
   '[ "$(printf "%s" "$OUT" | jq -c .)" = "{\"findings\":[{\"file\":\"a.py\",\"loc\":{\"start\":1}}]}" ]'
 
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=apierr run_ext read --prompt-file "$BRIEF" --schema "$NS"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=apierr run_ext read --prompt-file "$BRIEF" --schema "$NS"
 chk "C5m an API error (pretty-printed JSON in the error event) is surfaced whole in the UNAVAILABLE reason" \
   '[ "$RC" -eq 4 ] && printf "%s" "$ERR" | grep -q "exited 1" && printf "%s" "$ERR" | grep -q "invalid_json_schema" && printf "%s" "$ERR" | grep -q "additionalProperties is required to be supplied"'
 chk "C5m2 the skills-loader noise is not relayed; other stderr still is" \
   '! printf "%s" "$ERR" | grep -q "failed to walk skills root" && printf "%s" "$ERR" | grep -q "stub: other stderr line"'
 
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=schemaok run_ext read --prompt-file "$BRIEF" --schema '{"type":'
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=schemaok run_ext read --prompt-file "$BRIEF" --schema '{"type":'
 chk "C5n a --schema that is not JSON is a usage error (exit 2) before codex runs" '[ "$RC" -eq 2 ] && [ ! -s "$STUB_LOG" ]'
 
 T_START=$SECONDS
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=hang run_ext read --prompt-file "$BRIEF" --timeout 1s
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=hang run_ext read --prompt-file "$BRIEF" --timeout 1s
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 T_TOOK=$((SECONDS - T_START))
 chk "C5g the wall-clock watchdog kills a hung codex: exit 4, says timed out, well before the hang ends" \
@@ -982,26 +991,26 @@ chk "C5g the wall-clock watchdog kills a hung codex: exit 4, says timed out, wel
 export CODEX_STUB_GC="$ROOT/.codex/codex-gc.pid"
 alive() { [ -n "$1" ] && kill -0 "$1" 2>/dev/null; }
 rm -f "$CODEX_STUB_GC"
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=hanggc run_ext read --prompt-file "$BRIEF" --timeout 1s
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=hanggc run_ext read --prompt-file "$BRIEF" --timeout 1s
 GC1=$(cat "$CODEX_STUB_GC" 2>/dev/null)
 chk "K1 a timed-out codex's TERM-ignoring grandchild is killed and reaped before ext-run exits (exit 4, timed out)" \
   '[ "$RC" -eq 4 ] && printf "%s" "$ERR" | grep -q "timed out" && [ -n "$GC1" ] && ! alive "$GC1"'
 alive "$GC1" && kill -9 "$GC1" 2>/dev/null
 rm -f "$CODEX_STUB_GC"
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=okgc run_ext read --prompt-file "$BRIEF"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=okgc run_ext read --prompt-file "$BRIEF"
 GC2=$(cat "$CODEX_STUB_GC" 2>/dev/null)
 chk "K2 a background grandchild left by a codex run that exited normally is killed too (exit 0, answer intact)" \
   '[ "$RC" -eq 0 ] && [ "$OUT" = "hello from codex" ] && [ -n "$GC2" ] && ! alive "$GC2"'
 alive "$GC2" && kill -9 "$GC2" 2>/dev/null
 
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --timeout 1m30s
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --timeout 1m30s
 chk "C5h a --timeout the watchdog cannot parse is a usage error (exit 2)" '[ "$RC" -eq 2 ]'
 
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --raw
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --raw
 chk "C5i --raw relays the codex JSONL event stream" \
   '[ "$RC" -eq 0 ] && printf "%s" "$OUT" | grep -q "\"type\":\"turn.completed\""'
 
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_BIN="$HARNESS/no-such-codex" run_ext read --prompt-file "$BRIEF"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_BIN="$HARNESS/no-such-codex" run_ext read --prompt-file "$BRIEF"
 chk "C5j a missing codex binary is UNAVAILABLE (exit 4)" '[ "$RC" -eq 4 ] && [ ! -s "$STUB_LOG" ]'
 
 # --- B*: build mode — the disposable worktree ----------------------------------
@@ -1016,7 +1025,7 @@ git -C "$REPO" add dirty.txt >/dev/null 2>&1          # staged-but-uncommitted
 printf 'new untracked\n' > "$REPO/new.txt"
 PATCH="$BUILD/result.patch"
 
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildedit \
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildedit \
   run_ext build --level builder --prompt-file "$BRIEF" --workdir "$REPO" --output "$PATCH" --input "$DATA"
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 STUB_PWD=$(grep '^PWD=' "$STUB_LOG" | head -1 | sed 's/^PWD=//')
@@ -1059,14 +1068,14 @@ chk "B5 the worktree is removed on exit — the caller's repo has one worktree a
 REPO7="$BUILD/repo7"
 new_repo "$REPO7"
 rm -f "$ROOT/.codex/h7-started" "$ROOT/.codex/h7-go"
-( AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildwait CODEX_STUB_LOG="$ROOT/.codex/h7a.log" \
+( CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildwait CODEX_STUB_LOG="$ROOT/.codex/h7a.log" \
     "$EXT_RUN" build --level builder --prompt-file "$BRIEF" --workdir "$REPO7" --output "$BUILD/h7a.patch" > "$BUILD/h7a.out" 2> "$BUILD/h7a.err"
   echo "$?" > "$BUILD/h7a.rc" ) &
 H7_PID=$!
 i=0; while [ ! -e "$ROOT/.codex/h7-started" ] && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
 # shellcheck disable=SC2034  # read inside chk's eval'd condition strings
 H7_LOCKED=$(git -C "$REPO7" worktree list --porcelain | grep -c '^locked')
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildedit \
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildedit \
   run_ext build --level builder --prompt-file "$BRIEF" --workdir "$REPO7" --output "$BUILD/h7b.patch"
 # shellcheck disable=SC2034  # read inside chk's eval'd condition strings
 H7B_RC=$RC
@@ -1085,7 +1094,7 @@ REPO2="$BUILD/repo2"
 new_repo "$REPO2"
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 BEFORE2=$(git -C "$REPO2" status --porcelain)
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildnoop \
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildnoop \
   run_ext build --level builder --prompt-file "$BRIEF" --workdir "$REPO2" --output "$BUILD/noop.patch"
 chk "B6 a build that changes nothing exits 0, says so, and leaves the tree alone" \
   '[ "$RC" -eq 0 ] && printf "%s" "$ERR" | grep -q "NO changes" && [ "$(git -C "$REPO2" status --porcelain)" = "$BEFORE2" ]'
@@ -1096,7 +1105,7 @@ new_repo "$REPO3"
 printf 'untouched\n' > "$REPO3/dirty.txt"
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 BEFORE3=$(git -C "$REPO3" status --porcelain)
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=empty \
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=empty \
   run_ext build --level builder --prompt-file "$BRIEF" --workdir "$REPO3" --output "$BUILD/empty.patch"
 chk "B7 an empty final message in build mode is exit 4 and the real tree is untouched" \
   '[ "$RC" -eq 4 ] && [ "$(git -C "$REPO3" status --porcelain)" = "$BEFORE3" ] && [ "$(cat "$REPO3/dirty.txt")" = "untouched" ]'
@@ -1109,7 +1118,7 @@ chk "B7c the worktree is removed even when the run failed its gates" \
 # outside the sandbox between capture and apply, stands in for that drift).
 REPO4="$BUILD/repo4"
 new_repo "$REPO4"
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildconflict \
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildconflict \
   run_ext build --level builder --prompt-file "$BRIEF" --workdir "$REPO4" --output "$BUILD/conflict.patch" \
   --check "printf 'line1\nREAL-DRIFT\nline3\n' > '$REPO4/conflict.txt'"
 chk "B8 a patch that does not apply is exit 6 (APPLY), distinct from 4" \
@@ -1124,13 +1133,13 @@ chk "B8d the worktree is still removed after an apply failure" \
 # B9: --workdir must be a git repo, and the default --output path works.
 NOTGIT="$BUILD/plain"
 mkdir -p "$NOTGIT"
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext build --level builder --prompt-file "$BRIEF" --workdir "$NOTGIT"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext build --level builder --prompt-file "$BRIEF" --workdir "$NOTGIT"
 chk "B9 build against a non-git directory is a usage error (exit 2)" \
   '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q "not a git work tree"'
 
 REPO5="$BUILD/repo5"
 new_repo "$REPO5"
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildedit \
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildedit \
   run_ext build --level builder --prompt-file "$BRIEF" --workdir "$REPO5"
 DEFAULT_PATCH=$(printf '%s' "$ERR" | sed -n 's/.*applied the build patch to [^ ]* (\(.*\))$/\1/p' | head -1)
 chk "B9b --output is optional: the patch goes to a temp file whose path is printed" \
@@ -1141,7 +1150,7 @@ chk "B9b --output is optional: the patch goes to a temp file whose path is print
 # .git restored, the patch still captured and applied.
 REPO6="$BUILD/repo6"
 new_repo "$REPO6"
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildmkgit run_ext build --level builder --prompt-file "$BRIEF" --workdir "$REPO6" --output "$BUILD/mkgit.patch"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildmkgit run_ext build --level builder --prompt-file "$BRIEF" --workdir "$REPO6" --output "$BUILD/mkgit.patch"
 chk "B10 a .git the CLI created is discarded; the worktree's own .git is restored and the patch captured + applied" \
   '[ "$RC" -eq 0 ] && grep -q "^+CODEX WAS HERE$" "$BUILD/mkgit.patch" && ! grep -q "\.git/" "$BUILD/mkgit.patch" && tail -1 "$REPO6/calc.txt" | grep -qx "CODEX WAS HERE" && [ "$(wt_count "$REPO6")" -eq 1 ] && [ -z "$(ls -A "$REPO6/.git/worktrees" 2>/dev/null)" ]'
 
@@ -1149,7 +1158,7 @@ chk "B10 a .git the CLI created is discarded; the worktree's own .git is restore
 # 3-way merge conflict; the pre-check refuses it, exit 6, tree byte-identical.
 REPO7="$BUILD/repo7"
 new_repo "$REPO7"
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildconflict \
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildconflict \
   run_ext build --level builder --prompt-file "$BRIEF" --workdir "$REPO7" --output "$BUILD/conflict7.patch" \
   --check "printf 'line1\nREAL-DRIFT\nline3\n' > '$REPO7/conflict.txt' && git -C '$REPO7' add conflict.txt && { git -C '$REPO7' status --porcelain; cksum < '$REPO7/.git/index'; cksum < '$REPO7/conflict.txt'; } > '$BUILD/repo7.state'"
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
@@ -1164,7 +1173,7 @@ REPO8="$BUILD/repo8"
 new_repo "$REPO8"
 printf 'l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\n' > "$REPO8/long.txt"
 git -C "$REPO8" add long.txt && git -C "$REPO8" commit -qm long
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=build3way \
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=build3way \
   run_ext build --level builder --prompt-file "$BRIEF" --workdir "$REPO8" --output "$BUILD/3way.patch" \
   --check "printf 'l1\nl2\nl3\nDRIFT4\nl5\nl6\nl7\nl8\n' > '$REPO8/long.txt' && git -C '$REPO8' add long.txt"
 chk "B12 a non-conflicting drift is applied by the clean 3-way path (both changes land, exit 0)" \
@@ -1176,7 +1185,7 @@ DREPO="$BUILD/drepo"; DECOY="$BUILD/decoy"
 new_repo "$DREPO"; new_repo "$DECOY"
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 DECOY_BEFORE=$({ git -C "$DECOY" status --porcelain; git -C "$DECOY" rev-parse HEAD; git -C "$DECOY" worktree list; })
-GIT_DIR="$DECOY/.git" GIT_WORK_TREE="$DECOY" GIT_INDEX_FILE="$DECOY/.git/index" AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildedit \
+GIT_DIR="$DECOY/.git" GIT_WORK_TREE="$DECOY" GIT_INDEX_FILE="$DECOY/.git/index" CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildedit \
   run_ext build --level builder --prompt-file "$BRIEF" --workdir "$DREPO" --output "$BUILD/d1.patch"
 chk "D1 inherited GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE are cleared: the build lands in --workdir, the decoy repo is untouched" \
   '[ "$RC" -eq 0 ] && tail -1 "$DREPO/calc.txt" | grep -qx "CODEX WAS HERE" && [ -f "$DREPO/gen.txt" ] && [ ! -e "$DECOY/gen.txt" ] && [ "$(git -C "$DECOY" status --porcelain; git -C "$DECOY" rev-parse HEAD; git -C "$DECOY" worktree list)" = "$DECOY_BEFORE" ]'
@@ -1193,30 +1202,30 @@ printf 'secret\n' > "$MARKED/repo/secret.txt"
 ln -s "$MARKED/repo/secret.txt" "$SYM/marked-link.txt"
 ln -s "$DATA" "$SYM/ok-link.txt"
 ln -s "$DENY/clip-creator" "$SYM/allow-link"
-AGY_BOUNDARY_CLEARED=1 run_ext read --prompt-file "$BRIEF" --input "$SYM/link-note.txt"
+CODEX_BOUNDARY_CLEARED=1 run_ext read --prompt-file "$BRIEF" --input "$SYM/link-note.txt"
 chk "E1 an --input symlink in an allowed dir pointing into clip-creator is REFUSED (exit 3), codex never runs" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "clip-creator" && [ ! -s "$STUB_LOG" ]'
-AGY_BOUNDARY_CLEARED=1 run_ext read --prompt-file "$BRIEF" --input "$SYM/link2.txt"
+CODEX_BOUNDARY_CLEARED=1 run_ext read --prompt-file "$BRIEF" --input "$SYM/link2.txt"
 chk "E2 a symlink CHAIN (link -> link -> denied file) is followed to the end and refused (exit 3)" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "clip-creator" && [ ! -s "$STUB_LOG" ]'
-AGY_BOUNDARY_CLEARED=1 run_ext read --prompt-file "$SYM/brief-link.txt"
+CODEX_BOUNDARY_CLEARED=1 run_ext read --prompt-file "$SYM/brief-link.txt"
 chk "E3 a --prompt-file symlink into clip-creator is refused (exit 3)" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "clip-creator" && [ ! -s "$STUB_LOG" ]'
-AGY_BOUNDARY_CLEARED=1 run_ext read --prompt-file "$BRIEF" --schema "$SYM/schema-link.json"
+CODEX_BOUNDARY_CLEARED=1 run_ext read --prompt-file "$BRIEF" --schema "$SYM/schema-link.json"
 chk "E4 a --schema symlink into clip-creator is refused (exit 3)" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "clip-creator" && [ ! -s "$STUB_LOG" ]'
-AGY_BOUNDARY_CLEARED=1 run_ext build --level builder --prompt-file "$BRIEF" --workdir "$SYM/wd-link"
+CODEX_BOUNDARY_CLEARED=1 run_ext build --level builder --prompt-file "$BRIEF" --workdir "$SYM/wd-link"
 chk "E5 a --workdir symlink to a clip-creator repo is refused (exit 3)" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "clip-creator" && [ ! -s "$STUB_LOG" ]'
-AGY_BOUNDARY_CLEARED=1 run_ext read --prompt-file "$BRIEF" --input "$SYM/marked-link.txt"
+CODEX_BOUNDARY_CLEARED=1 run_ext read --prompt-file "$BRIEF" --input "$SYM/marked-link.txt"
 chk "E6 a symlink into a .codex-deny tree is refused by the marker at its TARGET (exit 3)" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "\.codex-deny" && [ ! -s "$STUB_LOG" ]'
-AGY_BOUNDARY_CLEARED=1 CODEX_STUB_MODE=ok AGY_STAGE_KEEP=1 run_ext read --prompt-file "$BRIEF" --input "$SYM/ok-link.txt"
+CODEX_BOUNDARY_CLEARED=1 CODEX_STUB_MODE=ok AGY_STAGE_KEEP=1 run_ext read --prompt-file "$BRIEF" --input "$SYM/ok-link.txt"
 KEPT=$(kept_stage)
 chk "E7 an allowed symlink runs: staged under the caller's name with the TARGET's content (a copy, not a link)" \
   '[ "$RC" -eq 0 ] && [ -n "$KEPT" ] && [ -f "$KEPT/ws/inputs/ok-link.txt" ] && [ ! -L "$KEPT/ws/inputs/ok-link.txt" ] && [ "$(cat "$KEPT/ws/inputs/ok-link.txt")" = needle ]'
 [ -n "$KEPT" ] && rm -rf "$KEPT"
-AGY_BOUNDARY_CLEARED=1 run_ext read --prompt-file "$BRIEF" --allow-read "$SYM/allow-link"
+CODEX_BOUNDARY_CLEARED=1 run_ext read --prompt-file "$BRIEF" --allow-read "$SYM/allow-link"
 chk "E8 an --allow-read symlink into clip-creator is refused at its target (exit 3)" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "clip-creator" && [ ! -s "$STUB_LOG" ]'
 
@@ -1226,7 +1235,7 @@ HMP=$(cd "$HM" && pwd -P)
 new_repo "$HMP/proj"
 cp "$BRIEF" "$HMP/brief.txt"   # every checked path under this case's HOME (hermetic)
 : > "$HMP/.codex-deny"
-HOME="$HMP" AGY_BOUNDARY_CLEARED=1 CODEX_STUB_MODE=buildnoop run_ext build --level builder --prompt-file "$HMP/brief.txt" --workdir "$HMP/proj" --output "$HMP/j1.patch"
+HOME="$HMP" CODEX_BOUNDARY_CLEARED=1 CODEX_STUB_MODE=buildnoop run_ext build --level builder --prompt-file "$HMP/brief.txt" --workdir "$HMP/proj" --output "$HMP/j1.patch"
 chk "J1 a .codex-deny marker at \$HOME itself refuses (exit 3) — the walk checks \$HOME before stopping" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "$HMP/.codex-deny" && [ ! -s "$STUB_LOG" ]'
 HA=$(new_tmp)
@@ -1237,7 +1246,7 @@ new_repo "$HAP/home/proj"
 cp "$BRIEF" "$HAP/home/brief.txt"
 : > "$HAP/.codex-deny"
 HOME="$HAP/home" CODEX_BIN="$HAP_BIN" CODEX_STUB_LOG="$HAP/home/.codex/stub.log" CODEX_STUB_PROMPT="$HAP/home/.codex/stub-prompt.txt" \
-  AGY_BOUNDARY_CLEARED=1 CODEX_STUB_MODE=buildnoop run_ext build --level builder --prompt-file "$HAP/home/brief.txt" --workdir "$HAP/home/proj" --output "$HAP/j2.patch"
+  CODEX_BOUNDARY_CLEARED=1 CODEX_STUB_MODE=buildnoop run_ext build --level builder --prompt-file "$HAP/home/brief.txt" --workdir "$HAP/home/proj" --output "$HAP/j2.patch"
 chk "J2 a marker ABOVE \$HOME is not consulted (the walk still stops at \$HOME)" '[ "$RC" -eq 0 ]'
 cat "$HAP/home/.codex/stub.log" >> "$ALL_STUB_LOG" 2>/dev/null
 
@@ -1245,28 +1254,28 @@ cat "$HAP/home/.codex/stub.log" >> "$ALL_STUB_LOG" 2>/dev/null
 # bounded RC-capturing run: perl's alarm kills a regressed (looping) parser.
 # shellcheck disable=SC2034  # OUT is read inside chk's eval'd condition strings
 run_bounded() { OUT=$(perl -e 'alarm shift; exec @ARGV' 20 "$EXT_RUN" "$@" 2>"$ERRF"); RC=$?; ERR=$(cat "$ERRF"); }
-AGY_BOUNDARY_CLEARED=1 run_bounded review --prompt-file "$BRIEF" --vendor
+CODEX_BOUNDARY_CLEARED=1 run_bounded review --prompt-file "$BRIEF" --vendor
 chk "G1 a trailing --vendor with no value is exit 2 (needs a value), not an endless loop" \
   '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q -- "--vendor needs a value"'
-AGY_BOUNDARY_CLEARED=1 run_bounded review --prompt-file
+CODEX_BOUNDARY_CLEARED=1 run_bounded review --prompt-file
 chk "G2 a trailing --prompt-file is exit 2 too" \
   '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q -- "--prompt-file needs a value"'
 
 # --- T*: tiers.json — the ONLY source of external model ids ----------------------
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$HARNESS/no-such-tiers.json" run_ext read --prompt-file "$BRIEF"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$HARNESS/no-such-tiers.json" run_ext read --prompt-file "$BRIEF"
 chk "T2 a missing tiers file is a usage error (exit 2) and nothing runs" \
   '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q "tiers file not found" && [ ! -s "$STUB_LOG" ]'
 
 printf '{"levels": {' > "$HARNESS/bad-tiers.json"
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$HARNESS/bad-tiers.json" run_ext read --prompt-file "$BRIEF"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$HARNESS/bad-tiers.json" run_ext read --prompt-file "$BRIEF"
 chk "T3 an unparseable tiers file is a usage error (exit 2)" \
   '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q "not valid tiers JSON" && [ ! -s "$STUB_LOG" ]'
 
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext fuzz --prompt-file "$BRIEF"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext fuzz --prompt-file "$BRIEF"
 chk "T4 a mode absent for codex in the tiers file is REFUSED (exit 3), never a default model" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "modes.codex.fuzz" && [ ! -s "$STUB_LOG" ]'
 
-AGY_BOUNDARY_CLEARED=1 run_ext review --level deep --prompt-file "$BRIEF"
+CODEX_BOUNDARY_CLEARED=1 run_ext review --level deep --prompt-file "$BRIEF"
 chk "T7 --level outside build mode is a usage error (exit 2)" '[ "$RC" -eq 2 ]'
 
 # Lookup order: an installed triage-tiers.json next to the script wins over the
@@ -1276,22 +1285,22 @@ cp "$EXT_RUN" "$INST/ext-run.sh"
 jq '.modes.codex.read.model = "gpt-installed"' "$REPO_DIR/config/tiers.json" > "$INST/triage-tiers.json"
 REAL_EXT_RUN="$EXT_RUN"
 EXT_RUN="$INST/ext-run.sh"
-AGY_BOUNDARY_CLEARED=1 CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF"
+CODEX_BOUNDARY_CLEARED=1 CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF"
 chk "T10 an installed triage-tiers.json next to the script is used" \
   '[ "$RC" -eq 0 ] && grep -qx "MODEL=gpt-installed" "$STUB_LOG"'
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF"
 chk "T10b TRIAGE_TIERS overrides the installed copy" \
   'grep -qx "MODEL=gpt-fx-read" "$STUB_LOG"'
 EXT_RUN="$REAL_EXT_RUN"
 
 # --- C6: the deny-list; clip-creator is denied whatever the environment says ----
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_DENY_REPOS="something-else" run_ext build --level builder --prompt-file "$BRIEF" --workdir "$DENY/clip-creator/inner"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_DENY_REPOS="something-else" run_ext build --level builder --prompt-file "$BRIEF" --workdir "$DENY/clip-creator/inner"
 chk "C6c clip-creator stays hard-denied even when CODEX_DENY_REPOS is overridden" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "clip-creator" && [ ! -s "$STUB_LOG" ]'
 
 mkdir -p "$DENY/codex-only"
 new_repo "$DENY/codex-only/proj"
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_DENY_REPOS="codex-only" \
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_DENY_REPOS="codex-only" \
   run_ext build --level builder --prompt-file "$BRIEF" --workdir "$DENY/codex-only/proj"
 chk "C6d a CODEX_DENY_REPOS name refuses codex (exit 3, component match)" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "codex-only"'
@@ -1324,90 +1333,90 @@ new_linked_wt() { # $1 = main repo (created), $2 = linked worktree path (outside
 }
 LWD=$(new_tmp); LWO=$(new_tmp)
 new_linked_wt "$LWD/clip-creator/proj" "$LWO/wt"
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildnoop \
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildnoop \
   run_ext build --level builder --prompt-file "$BRIEF" --workdir "$LWO/wt" --output "$LWO/codex.patch"
 chk "C6k a linked worktree outside a clip-creator repo is REFUSED (exit 3, names the main worktree), codex never runs" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "clip-creator" && printf "%s" "$ERR" | grep -q "main worktree" && [ ! -s "$STUB_LOG" ]'
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --input "$LWO/wt/calc.txt"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --input "$LWO/wt/calc.txt"
 chk "C6m an --input file inside that linked worktree is REFUSED (exit 3)" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "clip-creator" && [ ! -s "$STUB_LOG" ]'
 
 LAM=$(new_tmp); LAO=$(new_tmp)
 new_linked_wt "$LAM/repo" "$LAO/wt"
 : > "$LAM/repo/.agy-deny"
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildnoop \
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildnoop \
   run_ext build --level builder --prompt-file "$BRIEF" --workdir "$LAO/wt" --output "$LAO/codex.patch"
 chk "C6o a leftover .agy-deny in the MAIN repo does not refuse codex (inert)" '[ "$RC" -eq 0 ]'
 
 LCM=$(new_tmp); LCO=$(new_tmp)
 new_linked_wt "$LCM/repo" "$LCO/wt"
 : > "$LCM/repo/.codex-deny"
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildnoop \
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildnoop \
   run_ext build --level builder --prompt-file "$BRIEF" --workdir "$LCO/wt" --output "$LCO/codex.patch"
 chk "C6p a .codex-deny marker in the MAIN repo refuses its linked worktree (exit 3, names the marker)" \
   '[ ! -e "$LCO/wt/.codex-deny" ] && [ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "\.codex-deny" && [ ! -s "$STUB_LOG" ]'
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --input "$LCO/wt/calc.txt"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --input "$LCO/wt/calc.txt"
 chk "C6p2 an --input file in that linked worktree is refused by the main repo's .codex-deny (exit 3)" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "\.codex-deny"'
 
 LOM=$(new_tmp); LOO=$(new_tmp)
 new_linked_wt "$LOM/repo" "$LOO/wt"
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildedit \
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildedit \
   run_ext build --level builder --prompt-file "$BRIEF" --workdir "$LOO/wt" --patch-out "$LOO/codex.patch"
 chk "C6s a normal linked worktree builds (--patch-out written, the linked worktree left clean, main repo untouched)" \
   '[ "$RC" -eq 0 ] && grep -q "^+CODEX WAS HERE$" "$LOO/codex.patch" && [ -z "$(git -C "$LOO/wt" status --porcelain)" ] && ! grep -q "CODEX WAS HERE" "$LOM/repo/calc.txt"'
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input "$LOO/wt/calc.txt"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input "$LOO/wt/calc.txt"
 chk "C6t an --input file from a normal linked worktree is staged and runs (exit 0)" '[ "$RC" -eq 0 ]'
 
 # --- C7-C9: levels, fixture edits, vendor/model mismatch ------------------------
 CREPO="$BUILD/crepo"
 new_repo "$CREPO"
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext build --level quick --prompt-file "$BRIEF" --workdir "$CREPO"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext build --level quick --prompt-file "$BRIEF" --workdir "$CREPO"
 chk "C7 a level missing from the tiers file is REFUSED (exit 3); codex never runs on a default model" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "levels.quick.codex" && [ ! -s "$STUB_LOG" ]'
 
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext build --prompt-file "$BRIEF" --workdir "$CREPO"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext build --prompt-file "$BRIEF" --workdir "$CREPO"
 chk "C7b codex build without --level is REFUSED (no modes.codex.build entry)" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "modes.codex.build" && [ ! -s "$STUB_LOG" ]'
 
 FIX2="$HARNESS/tiers-fixture2.json"
 jq '.levels.deep.codex.model = "gpt-fx-deep-v2" | .levels.deep.codex.effort = "xhigh"' "$FIX" > "$FIX2"
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX2" CODEX_STUB_MODE=buildnoop \
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX2" CODEX_STUB_MODE=buildnoop \
   run_ext build --level deep --prompt-file "$BRIEF" --workdir "$CREPO" --output "$BUILD/c8.patch"
 chk "C8 a model/effort change in the tiers file is picked up with no code edit" \
   '[ "$RC" -eq 0 ] && grep -qx "MODEL=gpt-fx-deep-v2" "$STUB_LOG" && grep -qx "CFG=model_reasoning_effort=xhigh" "$STUB_LOG"'
 
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext review --prompt-file "$BRIEF" --model gemini-3.1-pro-high
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext review --prompt-file "$BRIEF" --model gemini-3.1-pro-high
 chk "C9a codex refuses a Gemini model (vendor/model mismatch, exit 2)" \
   '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q "does not belong" && [ ! -s "$STUB_LOG" ]'
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext review --prompt-file "$BRIEF" --model gpt-claude-bridge
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext review --prompt-file "$BRIEF" --model gpt-claude-bridge
 chk "C9b anything naming claude is refused for codex too (exit 2)" \
   '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -qi "claude model"'
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext review --prompt-file "$BRIEF" --model codex-fx-mini
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext review --prompt-file "$BRIEF" --model codex-fx-mini
 chk "C9c a codex-* --model override is accepted and passed through" \
   '[ "$RC" -eq 0 ] && grep -qx "MODEL=codex-fx-mini" "$STUB_LOG"'
 
 # --- C13-C14: compare support — --patch-out and --check ---------------------------
 PO="$BUILD/porepo"
 new_repo "$PO"
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildedit \
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildedit \
   run_ext build --level builder --prompt-file "$BRIEF" --workdir "$PO" --patch-out "$BUILD/po.patch"
 chk "C13 --patch-out writes the patch and does NOT apply it (the caller's tree stays clean)" \
   '[ "$RC" -eq 0 ] && grep -q "^+CODEX WAS HERE$" "$BUILD/po.patch" && [ -z "$(git -C "$PO" status --porcelain)" ] && printf "%s" "$ERR" | grep -q "NOT applied (--patch-out)"'
 
 printf 'dirty\n' > "$PO/wip.txt"
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildedit \
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildedit \
   run_ext build --level builder --prompt-file "$BRIEF" --workdir "$PO" --patch-out "$BUILD/po2.patch"
 chk "C13b --patch-out refuses a dirty tree (exit 3) before anything runs" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "clean tree" && [ ! -s "$STUB_LOG" ]'
 rm -f "$PO/wip.txt"
 
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext build --level builder --prompt-file "$BRIEF" --workdir "$PO" --patch-out "$BUILD/po3.patch" --output "$BUILD/po3b.patch"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext build --level builder --prompt-file "$BRIEF" --workdir "$PO" --patch-out "$BUILD/po3.patch" --output "$BUILD/po3b.patch"
 chk "C13c --patch-out with --output is a usage error (exit 2)" '[ "$RC" -eq 2 ]'
-AGY_BOUNDARY_CLEARED=1 run_ext review --prompt-file "$BRIEF" --patch-out "$BUILD/po4.patch"
+CODEX_BOUNDARY_CLEARED=1 run_ext review --prompt-file "$BRIEF" --patch-out "$BUILD/po4.patch"
 chk "C13d --patch-out outside build mode is a usage error (exit 2)" '[ "$RC" -eq 2 ]'
 
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildedit \
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildedit \
   run_ext build --level builder --prompt-file "$BRIEF" --workdir "$PO" --patch-out "$BUILD/po5.patch" \
   --check 'grep -c "CODEX WAS HERE" calc.txt; echo artifact > check-artifact.txt; echo check-ran; exit 3'
 chk "C14 --check runs in the worktree after the model: CHECK rc=<n> + output tail, exit code unchanged" \
@@ -1415,7 +1424,7 @@ chk "C14 --check runs in the worktree after the model: CHECK rc=<n> + output tai
 chk "C14b check artifacts never enter the captured patch" \
   '! grep -q "check-artifact" "$BUILD/po5.patch" && grep -q "^+CODEX WAS HERE$" "$BUILD/po5.patch"'
 
-AGY_BOUNDARY_CLEARED=1 run_ext review --prompt-file "$BRIEF" --check true
+CODEX_BOUNDARY_CLEARED=1 run_ext review --prompt-file "$BRIEF" --check true
 chk "C14d --check outside build mode is a usage error (exit 2)" '[ "$RC" -eq 2 ]'
 
 # --- I*: --input-dir — a whole tree staged as a copy, never a way out of it -------
@@ -1424,7 +1433,7 @@ mkdir -p "$IDR/snap/sub/deeper"
 printf 'top\n' > "$IDR/snap/top.md"
 printf 'deep\n' > "$IDR/snap/sub/deeper/d.md"
 ln -s ../top.md "$IDR/snap/sub/inside-link.md"
-AGY_BOUNDARY_CLEARED=1 AGY_STAGE_KEEP=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok \
+CODEX_BOUNDARY_CLEARED=1 AGY_STAGE_KEEP=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok \
   run_ext read --prompt-file "$BRIEF" --input-dir "$IDR/snap" --input "$DATA"
 KEPT=$(kept_stage)
 chk "I1 --input-dir stages a COPY of the whole tree at inputs/<basename> (nested files, same bytes), next to --input files" \
@@ -1443,62 +1452,62 @@ ln -s "$ROOT/projects/secret/secret.txt" "$IDR/leaky/s.md"
 printf 'outside\n' > "$IDR/outside.txt"
 ln -s ../../outside.txt "$IDR/leaky-rel/in/o.md"
 ln -s "$ROOT/projects/secret" "$IDR/leaky-dir/secretdir"
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input-dir "$IDR/leaky"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input-dir "$IDR/leaky"
 chk "I2 an --input-dir holding an absolute symlink OUT of the tree is REFUSED (exit 3, names the link), codex never runs" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "holds a symlink that leaves it" && printf "%s" "$ERR" | grep -q "s.md" && [ ! -s "$STUB_LOG" ]'
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input-dir "$IDR/leaky-rel"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input-dir "$IDR/leaky-rel"
 chk "I2b ...and a RELATIVE link climbing out of it (../../) is refused the same way (exit 3)" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "holds a symlink that leaves it" && [ ! -s "$STUB_LOG" ]'
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input-dir "$IDR/leaky-dir"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input-dir "$IDR/leaky-dir"
 chk "I2c ...and a link to a DIRECTORY outside it (exit 3)" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "holds a symlink that leaves it" && [ ! -s "$STUB_LOG" ]'
 
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input-dir "$DENY/clip-creator/inner"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input-dir "$DENY/clip-creator/inner"
 chk "I3 an --input-dir inside a deny-listed repo is REFUSED (exit 3, names clip-creator)" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "clip-creator" && [ ! -s "$STUB_LOG" ]'
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input-dir "$DENY"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input-dir "$DENY"
 chk "I3b an --input-dir with a deny-listed repo BENEATH it is REFUSED (exit 3, names it)" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "contains .*clip-creator" && [ ! -s "$STUB_LOG" ]'
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input-dir "$MARKED"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input-dir "$MARKED"
 chk "I3c an --input-dir with a .codex-deny marker beneath it is REFUSED (exit 3)" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "contains .*\.codex-deny" && [ ! -s "$STUB_LOG" ]'
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input-dir "$LCO/wt"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input-dir "$LCO/wt"
 chk "I3d an --input-dir that is a linked worktree of a .codex-deny repo is REFUSED via its main worktree (exit 3)" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "\.codex-deny" && [ ! -s "$STUB_LOG" ]'
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input-dir "$ROOT"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input-dir "$ROOT"
 chk "I3e --input-dir \$HOME is REFUSED (exit 3)" '[ "$RC" -eq 3 ] && [ ! -s "$STUB_LOG" ]'
 
 mkdir -p "$IDR/big"
 dd if=/dev/zero of="$IDR/big/blob.bin" bs=1024 count=2200 2>/dev/null
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input-dir "$IDR/big" --input-dir-max-mb 1
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input-dir "$IDR/big" --input-dir-max-mb 1
 chk "I4 an --input-dir over --input-dir-max-mb is a usage error (exit 2) naming its size and the cap, codex never runs" \
   '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q "over the 1 MB cap" && printf "%s" "$ERR" | grep -q -- "--input-dir-max-mb" && [ ! -s "$STUB_LOG" ]'
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input-dir "$IDR/big"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input-dir "$IDR/big"
 chk "I4b ...the same tree runs under the default 200 MB cap (exit 0)" '[ "$RC" -eq 0 ]'
 for badmb in 0 abc -3; do
-  AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --input-dir "$IDR/snap" --input-dir-max-mb "$badmb"
+  CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --input-dir "$IDR/snap" --input-dir-max-mb "$badmb"
   chk "I4c --input-dir-max-mb $badmb is a usage error (exit 2)" '[ "$RC" -eq 2 ] && [ ! -s "$STUB_LOG" ]'
 done
 
 new_repo "$IDR/brepo"
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext build --level builder --prompt-file "$BRIEF" --workdir "$IDR/brepo" --input-dir "$IDR/snap"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext build --level builder --prompt-file "$BRIEF" --workdir "$IDR/brepo" --input-dir "$IDR/snap"
 chk "I5 --input-dir in build mode is a usage error (exit 2)" '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q "read-only modes" && [ ! -s "$STUB_LOG" ]'
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --input-dir "$IDR/no-such-dir"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --input-dir "$IDR/no-such-dir"
 chk "I6 a missing --input-dir is a usage error (exit 2)" '[ "$RC" -eq 2 ] && [ ! -s "$STUB_LOG" ]'
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --input-dir "$DATA"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --input-dir "$DATA"
 chk "I6b a FILE given as --input-dir is a usage error (exit 2)" '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q "not a directory"'
 mkdir -p "$IDR/note.txt"
-AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --input "$DATA" --input-dir "$IDR/note.txt"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --input "$DATA" --input-dir "$IDR/note.txt"
 chk "I7 an --input file and an --input-dir with the same name are a usage error (exit 2), never one over the other" \
   '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q "share the name" && [ ! -s "$STUB_LOG" ]'
 mkdir -p "$IDR/fifo"
 if mkfifo "$IDR/fifo/p" 2>/dev/null; then
-  AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --input-dir "$IDR/fifo"
+  CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" run_ext read --prompt-file "$BRIEF" --input-dir "$IDR/fifo"
   chk "I8 an --input-dir holding a special file (a fifo) is a usage error (exit 2)" '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q "special file"'
 else
   skip "I8 an --input-dir holding a special file" "mkfifo unavailable"
 fi
-AGY_BOUNDARY_CLEARED=1 run_bounded read --prompt-file "$BRIEF" --input-dir
+CODEX_BOUNDARY_CLEARED=1 run_bounded read --prompt-file "$BRIEF" --input-dir
 chk "I9 a trailing --input-dir with no value is exit 2, never a hang" \
   '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q -- "--input-dir needs a value"'
 

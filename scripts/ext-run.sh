@@ -93,11 +93,13 @@
 #                         clip-creator is hard-denied whatever this holds (standing
 #                         decision 2026-07-10; engram left the list 2026-09-15 —
 #                         see CHANGELOG.md, Wave 10).
-#   AGY_BOUNDARY_CLEARED  must be 1. The caller attests the data boundary was
+#   CODEX_BOUNDARY_CLEARED  must be 1. The caller attests the data boundary was
 #                         checked (no clinical/BCH/PHI — no BAA; not a deny-listed
 #                         repo). COI material may go (codex training opt-out
-#                         confirmed, Alex 2026-09-25). Absent => REFUSED. The name predates
-#                         agy's retirement; it is the vendor-neutral attestation.
+#                         confirmed, Alex 2026-09-25). Absent => REFUSED.
+#   AGY_BOUNDARY_CLEARED  deprecated alias of CODEX_BOUNDARY_CLEARED (the pre-
+#                         retirement name), accepted identically: either one = 1
+#                         attests; neither => REFUSED.
 #   AGY_STAGE_KEEP        1 = keep the staging dir (debugging). It NEVER keeps
 #                         the build worktree — that is always removed.
 #   EXT_RUN_AUDIT_LOG     the command audit log (default
@@ -692,8 +694,12 @@ fi
 
 # Boundary attestation — mirrors the cross-reviewer tier's rule 1. The caller,
 # not this script, knows whether the material is clinical/PHI or restricted.
-[ "${AGY_BOUNDARY_CLEARED:-}" = "1" ] || \
-  die "REFUSED: AGY_BOUNDARY_CLEARED is not set — the caller must attest the data boundary was checked before anything leaves the machine." "$E_REFUSED"
+# AGY_BOUNDARY_CLEARED is the deprecated alias (the name predates agy's retirement).
+BOUNDARY_OK=0
+[ "${CODEX_BOUNDARY_CLEARED:-}" = "1" ] && BOUNDARY_OK=1
+[ "${AGY_BOUNDARY_CLEARED:-}" = "1" ] && BOUNDARY_OK=1
+[ "$BOUNDARY_OK" -eq 1 ] || \
+  die "REFUSED: CODEX_BOUNDARY_CLEARED is not set — the caller must attest the data boundary was checked before anything leaves the machine." "$E_REFUSED"
 
 deny_check "$PROMPT_FILE"
 if [ -n "$WORKDIR" ]; then deny_check "$WORKDIR"; fi
