@@ -10,6 +10,8 @@
 #      install / manual-install sections must exist on disk, and README's
 #      claim of "seven subagent definitions" must match the real agent count.
 #   4b. No agent file references a fixed /tmp/ext-* scratch path.
+#   4c. builder, deep-reasoner and fable-architect keep `disallowedTools: Agent`
+#      in their frontmatter (leaf workers: the harness, not prose, stops a spawn).
 #   5. Tiers sync: every agent's model:/effort: frontmatter equals
 #      config/tiers.json (scripts/tiers-sync.sh --check).
 #   5b. Tuning: config/tiers.json's tuning block passes triage-tiers.sh --bakeoff-json.
@@ -153,6 +155,24 @@ if FIXED_TMP=$(grep -n '/tmp/ext-' agents/*.md); then
 else
   ok "agents: no fixed /tmp/ext-* path in any agent file"
 fi
+
+# --- 4c. leaf workers cannot spawn subagents -------------------------------------
+# builder, deep-reasoner and fable-architect have no `tools:` allowlist, so they
+# inherit the Agent tool unless their frontmatter denies it. "Leaf worker" in the
+# body is prose; `disallowedTools: Agent` is what the harness enforces.
+for LEAF in triage-builder triage-deep-reasoner triage-fable-architect; do
+  if awk 'NR == 1 && $0 == "---" { infm = 1; next }
+          infm && $0 == "---" { exit }
+          infm && /^disallowedTools:/ {
+            v = $0; sub(/^disallowedTools:[ \t]*/, "", v); n = split(v, t, /[ \t]*,[ \t]*/)
+            for (i = 1; i <= n; i++) { gsub(/^[ \t]+|[ \t]+$/, "", t[i]); if (t[i] == "Agent") found = 1 }
+          }
+          END { exit found ? 0 : 1 }' "agents/$LEAF.md"; then
+    ok "leaf-agent: agents/$LEAF.md frontmatter has disallowedTools: Agent"
+  else
+    fail "leaf-agent: agents/$LEAF.md frontmatter lacks disallowedTools: Agent (it could spawn subagents)"
+  fi
+done
 
 # --- 5. tiers sync: agents/*.md model:/effort: must equal config/tiers.json ------
 # tiers.json is the one place a model or effort is edited; `make tiers` writes it

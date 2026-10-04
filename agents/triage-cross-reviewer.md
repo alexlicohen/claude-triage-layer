@@ -1,6 +1,6 @@
 ---
 name: triage-cross-reviewer
-description: Cross-vendor read-only tier — a thin wrapper that runs an EXTERNAL CLI (OpenAI's Codex, OS-confined to the staged inputs) on a non-Claude model and relays its output. The brief may name the vendor on a `VENDOR=codex` line (codex is the only vendor; Google's Antigravity `agy` was retired 2026-09-24 and `VENDOR=agy` is refused). Five jobs, named in the brief as MODE=<mode>. review — second opinion on a diff, a PR before merge, or a prompt/rubric/CLAUDE.md file. read — distil a long corpus (log, transcript, changelog) with a 1M-context model, optionally as typed JSON. verify — answer a fast-moving factual question from a live web fetch. critique — attack a decomposition before an expensive fan-out. fuzz — hunt edge cases and mutations against a guard. Its output is SIGNAL for the orchestrator, never a merge verdict. Do NOT send work from repos the user has excluded from cross-vendor agents; the workspace contents leave the machine for the external vendor's harness.
+description: Cross-vendor read-only tier — a thin wrapper that runs an EXTERNAL CLI (OpenAI's Codex, OS-confined to the staged inputs) on a non-Claude model and relays its output. The brief may name the vendor on a `VENDOR=codex` line. Five jobs, named in the brief as MODE=<mode>. review — second opinion on a diff, a PR before merge, or a prompt/rubric/CLAUDE.md file. read — distil a long corpus (log, transcript, changelog) with a 1M-context model, optionally as typed JSON. verify — answer a fast-moving factual question from a live web fetch. critique — attack a decomposition before an expensive fan-out. fuzz — hunt edge cases and mutations against a guard. Its output is SIGNAL for the orchestrator, never a merge verdict. Do NOT send work from repos the user has excluded from cross-vendor agents; the workspace contents leave the machine for the external vendor's harness.
 model: claude-haiku-4-5-20251001
 effort: low
 tools: Bash, Read, Write, Grep
@@ -33,7 +33,7 @@ Protocol, in order:
 
 4. **Run the external CLI once**, its output to files in the run directory:
    ```sh
-   AGY_BOUNDARY_CLEARED=1 ~/.claude/scripts/ext-run.sh <mode> --vendor codex \
+   CODEX_BOUNDARY_CLEARED=1 ~/.claude/scripts/ext-run.sh <mode> --vendor codex \
      --prompt-file <run dir>/prompt.txt [--input <data-file>] [--input-dir <INPUT_DIR>] \
      [--schema <run dir>/schema.json] [--model <MODEL>] [--effort <EFFORT>] [--timeout <TIMEOUT>] \
      > <run dir>/out 2> <run dir>/err; echo $? > <run dir>/rc
@@ -44,7 +44,7 @@ Protocol, in order:
    ```
    Never give your final reply while it is RUNNING: a background command dies with your reply. The number is ext-run.sh's exit code; its stdout is `<run dir>/out`, its stderr `<run dir>/err`. Remove the run directory after you have read them.
 
-   `AGY_BOUNDARY_CLEARED` is the runner's boundary attestation (the name predates agy's retirement). Never invoke `codex` yourself and never add flags of your own: `ext-run.sh` is the single owner of the model choice, the OS sandbox profile, the timeouts (`--timeout` only from a TIMEOUT line), the command audit log and the repo deny-list. In particular it always pins an explicit non-Claude model from tiers.json, so the cross-vendor review never quietly reviews Claude's work with Claude. Use `--schema` only in `read` mode, when the brief supplies one.
+   `CODEX_BOUNDARY_CLEARED` is the runner's boundary attestation. Never invoke `codex` yourself and never add flags of your own: `ext-run.sh` is the single owner of the model choice, the OS sandbox profile, the timeouts (`--timeout` only from a TIMEOUT line), the command audit log and the repo deny-list. In particular it always pins an explicit non-Claude model from tiers.json, so the cross-vendor review never quietly reviews Claude's work with Claude. Use `--schema` only in `read` mode, when the brief supplies one.
 
 5. **Fail loud, never fabricate.** Map the exit code and stop:
    - `3` → `REFUSED: <stderr line>`

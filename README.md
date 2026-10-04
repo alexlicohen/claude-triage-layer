@@ -115,7 +115,7 @@ Two flags, composable: `./install.sh --dry-run` prints the full mutation plan (e
 - **Routing behavior**: edit `~/.claude/triage.md`. The installer already adds an `ask`-gate before Fable; change it to `deny` in `settings.json` → `permissions` to hard-block, or remove the rule to go back to notify-only.
 - **Per project**: a project's own `CLAUDE.md` (or `AGENTS.md` via an `@AGENTS.md` wrapper — the pattern this repo itself uses) can override or opt out.
 - **Context-warning threshold**: edit the `60` in `~/.claude/statusline.sh`.
-- **Deny-list**: `clip-creator` is hard-denied for the external vendor. `CODEX_DENY_REPOS` (or an empty `.codex-deny` marker anywhere from a repo up to `$HOME`) opts a tree out of `codex`. `AGY_BOUNDARY_CLEARED=1` must also be set by the calling agent — the runner's boundary attestation (the name predates agy's retirement) — attesting the data boundary (no clinical/BCH/PHI: no BAA; COI material is allowed since the codex account's training opt-out was confirmed, 2026-09-25) was checked; its absence refuses the run before anything is sent externally.
+- **Deny-list**: `clip-creator` is hard-denied for the external vendor. `CODEX_DENY_REPOS` (or an empty `.codex-deny` marker anywhere from a repo up to `$HOME`) opts a tree out of `codex`. `CODEX_BOUNDARY_CLEARED=1` must also be set by the calling agent — the runner's boundary attestation — attesting the data boundary (no clinical/BCH/PHI: no BAA; COI material is allowed since the codex account's training opt-out was confirmed, 2026-09-25) was checked; its absence refuses the run before anything is sent externally.
 
 ## External CLI tiers
 
@@ -218,7 +218,7 @@ Behaviour:
 - codex can write only its workspace, its scratch dir and `~/.codex`; it can read its workspace, `~/.codex`, and paths outside `$HOME` and the temp dirs (system directories, mounted volumes). `scripts/README.md` › `ext-run.sh` has the exact profile and its known limits.
 - Its network access is not restricted: anything in its workspace can reach OpenAI.
 - A bake-off's check command and `patch-check.sh`'s grading run candidate code **unsandboxed**, in a disposable worktree, with your user's rights.
-- The data-boundary attestation (`AGY_BOUNDARY_CLEARED=1`) is the caller stating that no clinical/regulated material is involved; nothing verifies it.
+- The data-boundary attestation (`CODEX_BOUNDARY_CLEARED=1`) is the caller stating that no clinical/regulated material is involved; nothing verifies it.
 - The command audit log is an after-the-fact record, not a control.
 
 **What leaves the machine.** Only codex runs, always through `scripts/ext-run.sh`: the two external tiers (`triage-cross-reviewer`, `triage-external`), codex candidates in `triage-compare`/`triage-parity`, and bake-off challengers. Each sends its brief plus whatever is in its staged workspace — for build work, a checkout of the repo at the base commit (a planned codex subtask also carries your uncommitted work in). Everything else runs inside Claude Code on your subscription.

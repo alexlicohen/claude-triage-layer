@@ -221,7 +221,7 @@ accident away from real trees and to keep bake-off measurements honest (no candi
 the answer); they are not built to contain a hostile model. Within that scope, what they do not
 cover: reads outside `$HOME` and the temp dirs (see **Reads** below), `~/.codex` stays writable,
 network egress is unrestricted (the workspace can reach OpenAI), `--check` and `patch-check.sh`
-run candidate code unsandboxed, and the boundary attestation (`AGY_BOUNDARY_CLEARED=1`) is the
+run candidate code unsandboxed, and the boundary attestation (`CODEX_BOUNDARY_CLEARED=1`) is the
 caller's statement, never verified.
 
 **agy (Google Antigravity) was retired on 2026-09-24**: its headless mode let the model set a
@@ -474,8 +474,8 @@ refused, never followed:
 2. refuse if a `.codex-deny` marker exists anywhere from that path up to **and including**
    `$HOME` (or `/` for a path outside it): a per-repo opt-out that needs no edit to this
    script;
-3. refuse unless `AGY_BOUNDARY_CLEARED=1` — clinical/BCH/PHI (no BAA) is not a path pattern,
-   so it stays an explicit caller attestation (the name predates agy's retirement). COI
+3. refuse unless `CODEX_BOUNDARY_CLEARED=1` — clinical/BCH/PHI (no BAA) is not a path pattern,
+   so it stays an explicit caller attestation. COI
    material may go to codex (training opt-out confirmed, 2026-09-25).
 
 A path inside a linked git worktree is also checked as the **main worktree** of its repository
@@ -491,7 +491,8 @@ supplies exactly one value, its own run directory, after that path has passed th
 |---|---|
 | `CODEX_BIN` | the codex executable (default `codex` looked up on PATH); resolved to its real file |
 | `CODEX_DENY_REPOS` | extra space-separated names codex must never see (`clip-creator` is always denied) |
-| `AGY_BOUNDARY_CLEARED` | must be `1`, else REFUSED before anything runs |
+| `CODEX_BOUNDARY_CLEARED` | must be `1`, else REFUSED before anything runs |
+| `AGY_BOUNDARY_CLEARED` | deprecated alias of `CODEX_BOUNDARY_CLEARED` (its pre-retirement name, renamed 2026-10-04); `1` attests identically |
 | `AGY_STAGE_KEEP` | `1` keeps the staging dir (its path is printed on stderr). Never keeps the build worktree |
 | `EXT_RUN_AUDIT_LOG` | the command audit log (default `~/.claude/logs/ext-run/codex-commands.jsonl`) |
 | `TRIAGE_TIERS` | the tiers file to read (overrides the installed and repo copies) |

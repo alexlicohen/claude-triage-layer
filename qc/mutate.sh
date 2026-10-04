@@ -124,7 +124,10 @@ done
 # report().external, and the escalation reason naming the kind and reason.
 # 174-175 cover workflow transcript discovery in triage-usage.sh (recursive scan; a
 # directory argument is never classified by a deep search).
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165 166 167 168 169 170 171 172 173 174 175"
+# 176-177 cover ext-run.sh's boundary attestation under both names: the canonical
+# CODEX_BOUNDARY_CLEARED and the deprecated AGY_BOUNDARY_CLEARED alias. 178 covers
+# lint's leaf-agent check (a leaf worker losing `disallowedTools: Agent`).
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165 166 167 168 169 170 171 172 173 174 175 176 177 178"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -247,6 +250,8 @@ mut_file() {
     170|171|172|173) echo "workflows/triage-exec.js" ;;
     174) echo "scripts/triage-usage.sh" ;;
     175) echo "scripts/triage-usage.sh" ;;
+    176|177) echo "scripts/ext-run.sh" ;;
+    178) echo "agents/triage-deep-reasoner.md" ;;
     *) echo "" ;;
   esac
 }
@@ -383,6 +388,9 @@ mut_desc() {
     173) echo "triage-exec.js: the no-work escalation reason drops the kind and reason text" ;;
     174) echo "triage-usage.sh: transcript scan reverts to direct children only" ;;
     175) echo "triage-usage.sh: a directory argument is classified as a subagents dir by a deep search (a project dir tallies every session)" ;;
+    176) echo "ext-run.sh: the deprecated AGY_BOUNDARY_CLEARED alias no longer attests (an older caller is refused)" ;;
+    177) echo "ext-run.sh: the canonical CODEX_BOUNDARY_CLEARED no longer attests (only the deprecated alias does)" ;;
+    178) echo "triage-deep-reasoner.md: disallowedTools: Agent dropped (the leaf worker can spawn subagents again)" ;;
     91) echo "triage-exec.js (bake-off): an EMPTY diff counts as the passing choice (a no-op 'pass' beats a challenger's real patch)" ;;
     92) echo "triage-exec.js (bake-off): a patch that changes paths outside the subtask's files is inline-applied" ;;
     93) echo "triage-exec.js (bake-off): an unknown leak state runs the subtask in place on an unchecked tree" ;;
@@ -432,7 +440,8 @@ mut_desc() {
 # "compare" (test/compare-scenarios.mjs), "patchcheck" (test/patch-check.sh),
 # "stagewt" (test/stage-worktree.sh), "parity" (test/parity-scenarios.mjs),
 # "paritysuite" (test/parity-suite.sh), "parityreport" (test/parity-report.sh) or
-# "reviewstage" (test/review-stage.sh) or "usage" (test/usage-tally.sh).
+# "reviewstage" (test/review-stage.sh), "usage" (test/usage-tally.sh) or "lint"
+# (test/lint.sh).
 mut_suite() {
   case "$1" in
     1|2|3|4|5|6|10|12|18|19|20|21|33) echo "roundtrip" ;;
@@ -459,6 +468,8 @@ mut_suite() {
     170|171|172|173) echo "scenarios" ;;
     174) echo "usage" ;;
     175) echo "usage" ;;
+    176|177) echo "extrun" ;;
+    178) echo "lint" ;;
     *) echo "" ;;
   esac
 }
@@ -478,6 +489,7 @@ suite_file() {
     parityreport) echo "test/parity-report.sh" ;;
     reviewstage) echo "test/review-stage.sh" ;;
     usage) echo "test/usage-tally.sh" ;;
+    lint) echo "test/lint.sh" ;;
     *) echo "" ;;
   esac
 }
@@ -1494,6 +1506,27 @@ MUT174
 MUT175
       mut_replace_block "$target" '  elif [ "${ARG##*/}" = subagents ] || ls "$ARG"/agent-*.jsonl >/dev/null 2>&1; then' 1 "$rep"
       ;;
+    176)
+      # ext-run.sh: the deprecated alias is no longer read.
+      cat > "$rep" <<'MUT176'
+: # MUTATED: AGY alias dropped
+MUT176
+      mut_replace_block "$target" '[ "${AGY_BOUNDARY_CLEARED:-}" = "1" ] && BOUNDARY_OK=1' 1 "$rep"
+      ;;
+    177)
+      # ext-run.sh: the canonical name is no longer read.
+      cat > "$rep" <<'MUT177'
+: # MUTATED: CODEX name dropped
+MUT177
+      mut_replace_block "$target" '[ "${CODEX_BOUNDARY_CLEARED:-}" = "1" ] && BOUNDARY_OK=1' 1 "$rep"
+      ;;
+    178)
+      # triage-deep-reasoner.md: the Agent deny leaves the frontmatter.
+      cat > "$rep" <<'MUT178'
+# MUTATED: Agent deny dropped
+MUT178
+      mut_replace_block "$target" 'disallowedTools: Agent' 1 "$rep"
+      ;;
     110)
       # parity-report.sh COMMIT: a same-content re-ingest appends all its lines.
       cat > "$rep" <<'MUT110'
@@ -1913,6 +1946,9 @@ verify_mutation() {
     173) grep -qF 'MUTATED: reason drops kind' "$target" && ! grep -qF 'reason: `${what} — same level on Claude`' "$target" ;;
     174) grep -qF 'MUTATED: direct children only' "$target" && ! grep -qF 'done < <(find "$SUBDIR" -name' "$target" ;;
     175) grep -qF 'MUTATED: deep dir classifier' "$target" && ! grep -qF 'ls "$ARG"/agent-*.jsonl >/dev/null 2>&1; then' "$target" ;;
+    176) grep -qF 'MUTATED: AGY alias dropped' "$target" && ! grep -qF '[ "${AGY_BOUNDARY_CLEARED:-}" = "1" ]' "$target" ;;
+    177) grep -qF 'MUTATED: CODEX name dropped' "$target" && ! grep -qF '[ "${CODEX_BOUNDARY_CLEARED:-}" = "1" ]' "$target" ;;
+    178) grep -qF 'MUTATED: Agent deny dropped' "$target" && ! grep -q '^disallowedTools:' "$target" ;;
     110) grep -qF 'MUTATED: dedupe dropped' "$target" && ! grep -qF 'select(okey as $k | any($have[]; . == $k) | not)] as $miss' "$target" ;;
     111) grep -qF 'MUTATED: collision skipped' "$target" && ! grep -qF 'else {action: "refuse", lines: []' "$target" ;;
     112) grep -qF 'MUTATED: UTC offset ignored' "$target" && ! grep -qF '(if $c.sg == null then 0 else' "$target" ;;
@@ -1994,6 +2030,7 @@ run_suite() { # $1 = repo copy dir, $2 = suite name (see suite_file) -> exit cod
     parityreport) ( cd "$copy" && bash test/parity-report.sh ) >"$WORK_ROOT/last-suite.log" 2>&1 ;;
     reviewstage) ( cd "$copy" && bash test/review-stage.sh ) >"$WORK_ROOT/last-suite.log" 2>&1 ;;
     usage) ( cd "$copy" && bash test/usage-tally.sh ) >"$WORK_ROOT/last-suite.log" 2>&1 ;;
+    lint) ( cd "$copy" && bash test/lint.sh ) >"$WORK_ROOT/last-suite.log" 2>&1 ;;
     *) return 1 ;;
   esac
 }
@@ -2020,6 +2057,12 @@ BASELINE_PARITYSUITE_OK=1
 BASELINE_PARITYREPORT_OK=1
 BASELINE_REVIEWSTAGE_OK=1
 BASELINE_USAGE_OK=1
+BASELINE_LINT_OK=1
+if run_suite "$BASELINE_DIR" lint; then
+  BASELINE_LINT_OK=0
+else
+  echo "  ⚠ baseline $(suite_file lint) is already RED on unmutated code — mutations using it will be reported ERROR (baseline-red), not KILLED/SURVIVOR."
+fi
 if run_suite "$BASELINE_DIR" usage; then
   BASELINE_USAGE_OK=0
 else
@@ -2116,6 +2159,7 @@ for id in $RUN_IDS; do
     parityreport) baseline_ok=$BASELINE_PARITYREPORT_OK ;;
     reviewstage) baseline_ok=$BASELINE_REVIEWSTAGE_OK ;;
     usage) baseline_ok=$BASELINE_USAGE_OK ;;
+    lint) baseline_ok=$BASELINE_LINT_OK ;;
     *) baseline_ok=1 ;;
   esac
 
