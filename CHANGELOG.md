@@ -4,6 +4,12 @@ Reverse-chronological. Each entry cites the commit(s) it corresponds to and,
 where known, the test-count delta. See `test/roundtrip.sh` and `test/lint.sh`
 for the current check catalog.
 
+## Wave 19c — Fable boundary points to one list (branch wave19c-phi-pointer)
+
+- triage.md rule 7(a) no longer enumerates its own categories ("clinical/regulated, …"); it
+  points to the adapter's Fable-excluded list, the one definition (Alex 2026-10-03: one term,
+  "clinical patient data/PHI"). make verify green, counts unchanged.
+
 ## Wave 19b — /doctor prompt-audit fixes (branch wave19b-doctor-audit)
 
 - `agents/triage-reviewer.md` body matches `reviewWanted()`/`redoStep()`: reviews any level on
