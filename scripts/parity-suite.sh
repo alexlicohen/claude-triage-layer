@@ -76,8 +76,8 @@
 #              {"id","source":"git","guarded":true,"name":<repo dir name>,
 #               "head":<HEAD sha>, "tree":<hash of `status --porcelain=v1 -uall`
 #               + the content of every modified/untracked non-ignored file>,
-#               "ignored":<hash of the IGNORED files: their count + size/mtime of
-#               the first PARITY_FP_IGNORED_CAP (5000), shallowest first>,
+#               "ignored":<hash of `stage-worktree.sh ignored` — the IGNORED files
+#               by the one leak-fingerprint rule that script owns>,
 #               "refs":<hash of refs/heads, refs/tags, refs/stash, the repo
 #               config and non-sample hooks>}; a generator source prints
 #              {"id","source":"generator","guarded":false} (no source repo: the
@@ -488,28 +488,16 @@ source_tree() {
     done
   } | git -C "$top" hash-object --stdin
 }
-# stat_lines — "<size> <mtime> <path>" per NUL-separated path on stdin (relative
-# to the cwd): BSD stat on macOS, GNU stat elsewhere; mtime with sub-second
-# precision where the platform gives it.
-stat_lines() {
-  if stat --version >/dev/null 2>&1; then xargs -0 stat -c '%s %y %n' 2>/dev/null
-  else xargs -0 stat -f '%z %Fm %N' 2>/dev/null
-  fi
-}
 # ignored_tree TOP — one hash over TOP's IGNORED files (the cache-refresh class: a
-# candidate or a grader regenerating a gitignored cache in the real repo): their
-# count, plus size + mtime (not content: a venv is large) of the first
-# PARITY_FP_IGNORED_CAP (default 5000) in shallow-first order, so small top-level
-# caches are always covered and a huge deep tree (.venv, node_modules) only
-# shifts the count. .DS_Store (Finder) is left out.
+# candidate or a grader regenerating a gitignored cache in the real repo). The rule
+# is NOT here: `stage-worktree.sh ignored` owns it (the same one a compare's
+# leakcheck and a review's fingerprint use — content hash of small files, size +
+# sub-second mtime of the rest, shallowest first, a count past the list cap, and one
+# exclusion list: .claude/, PROJECT_MEMORY*.md, .DS_Store). Missing or failing => rc 1.
 ignored_tree() {
-  local top="$1" cap="${PARITY_FP_IGNORED_CAP:-5000}" list
-  case "$cap" in ''|*[!0-9]*) die "PARITY_FP_IGNORED_CAP must be a whole number" 2 ;; esac
-  list=$(git -C "$top" --no-optional-locks ls-files -o -i --exclude-standard) || return 1
-  list=$(printf '%s\n' "$list" | grep -v -E -e '^$' -e '(^|/)\.DS_Store$' | awk -F/ '{ print NF "\t" $0 }' | sort -t "$(printf '\t')" -k1,1n -k2 | cut -f2-)
-  { printf 'ignored %s\n' "$(printf '%s\n' "$list" | grep -c .)"
-    [ -z "$list" ] || ( cd "$top" && printf '%s\n' "$list" | head -n "$cap" | tr '\n' '\0' | stat_lines )
-  } | git -C "$top" hash-object --stdin
+  local top="$1" lines
+  lines=$("$SCRIPT_DIR/stage-worktree.sh" ignored --repo "$top") || return 1
+  printf '%s\n' "$lines" | git -C "$top" hash-object --stdin
 }
 # refs_tree TOP — one hash over TOP's local refs (branches, tags, the stash), its
 # repo config and its hooks (every non-.sample file): what a stray git command

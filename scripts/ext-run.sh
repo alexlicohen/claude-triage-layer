@@ -795,13 +795,49 @@ CX="$STAGE_ABS/cx"
 # ---------------------------------------------------------------------------
 # Build staging worktree. codex is pointed at $BUILD_WT, never at $BUILD_REPO.
 # ---------------------------------------------------------------------------
+# reap_stale_builds — a run killed by SIGKILL never reaches cleanup(): its build
+# worktree stays registered in the caller's repo AND locked, and no prune ever
+# removes a locked entry. Every entry locked with this script's reason ("ext-run
+# <pid>", below) whose pid no longer exists is unlocked, removed — with its stage
+# dir when it sits at <ext-run.XXXXXX stage>/build next to the stage's meta/ dir —
+# and pruned. A live run's entry (its pid exists, whoever owns it) is never touched;
+# an entry locked without our reason is not ours and stays.
+reap_stale_builds() {
+  local line wt="" pid stage
+  command -v ps >/dev/null 2>&1 || return 0   # no way to tell a live run: reap nothing
+  git -C "$BUILD_REPO" worktree list --porcelain 2>/dev/null > "$STAGE/meta/worktrees.list" || return 0
+  while IFS= read -r line; do
+    case "$line" in
+      "worktree "*) wt="${line#worktree }" ;;
+      "locked ext-run "*)
+        pid="${line#locked ext-run }"
+        case "$pid" in ''|*[!0-9]*) continue ;; esac
+        [ -n "$wt" ] || continue
+        ps -p "$pid" >/dev/null 2>&1 && continue
+        git -C "$BUILD_REPO" worktree unlock "$wt" >/dev/null 2>&1
+        git -C "$BUILD_REPO" worktree remove --force "$wt" >/dev/null 2>&1
+        stage=$(dirname "$wt")
+        case "$wt" in
+          */ext-run.??????/build) [ -d "$stage/meta" ] && rm -rf "${stage:?}" ;;
+        esac
+        echo "ext-run: removed the stale build worktree $wt of a killed run (pid $pid)" >&2 ;;
+    esac
+  done < "$STAGE/meta/worktrees.list"
+  git -C "$BUILD_REPO" worktree prune >/dev/null 2>&1
+  return 0
+}
+
 if mode_writes "$MODE"; then
+  reap_stale_builds
   # --lock: while codex runs, this worktree's .git is hidden (see below), so to
   # `git worktree prune` — run by any parallel ext-run, patch-check or
   # stage-worktree cleanup on the same repo — it looks gone, and an unlocked entry
   # would be pruned mid-run (the patch capture then dies UNAVAILABLE). Locked
-  # entries are never pruned; cleanup unlocks it before removing it.
-  if ! git -C "$BUILD_REPO" worktree add --lock --detach "$STAGE/build" HEAD >"$STAGE/meta/worktree.log" 2>&1; then
+  # entries are never pruned; cleanup unlocks it before removing it, and the
+  # --reason (this pid) lets a later run reap it if this one is SIGKILLed
+  # (reap_stale_builds). Hooks off: the caller's post-checkout / post-commit hooks
+  # must not run for a disposable checkout (core.hooksPath=/dev/null).
+  if ! git -C "$BUILD_REPO" -c core.hooksPath=/dev/null worktree add --lock --reason "ext-run $$" --detach "$STAGE/build" HEAD >"$STAGE/meta/worktree.log" 2>&1; then
     echo "UNAVAILABLE: could not create the disposable build worktree — $(head -c 400 "$STAGE/meta/worktree.log")" >&2
     exit "$E_UNAVAIL"
   fi
@@ -826,7 +862,7 @@ if mode_writes "$MODE"; then
   # `git diff --cached` against it — i.e. the PURE model delta, which is what
   # applies cleanly back onto a repo that already has those carried changes.
   git -C "$BUILD_WT" add -A >/dev/null 2>&1
-  git -C "$BUILD_WT" -c user.email=ext-run@localhost -c user.name=ext-run -c commit.gpgsign=false \
+  git -C "$BUILD_WT" -c user.email=ext-run@localhost -c user.name=ext-run -c commit.gpgsign=false -c core.hooksPath=/dev/null \
       commit -q --no-verify --allow-empty -m "ext-run stage base" >>"$STAGE/meta/carry.err" 2>&1 || \
     die "UNAVAILABLE: could not commit the stage base in the build worktree — $(head -c 400 "$STAGE/meta/carry.err")" "$E_UNAVAIL"
 

@@ -32,6 +32,9 @@
 #   (cache reads are counted because they are part of the context; use /usage for quota).
 #   Each subagent's peak is attributed to the model family of its peak turn, then summed
 #   per family. agentType (tier) is shown in the -v breakdown for readability.
+#   One record per MESSAGE: a message id repeated across lines (one per content block)
+#   counts once (its last line). A corrupt line is skipped with a stderr warning, never
+#   the end of the transcript.
 #
 # FAIL-LOUD
 #   Missing/unreadable input -> explicit error + non-zero exit; NEVER silent zeros.
@@ -167,6 +170,7 @@ family() {
 # ---- accumulate ------------------------------------------------------------
 sum_haiku=0; sum_sonnet=0; sum_opus=0; sum_fable=0; sum_other=0
 n_agents=0; n_bad=0
+WARNINGS=""   # per-file corrupt-line warnings, printed to stderr after the headline
 ROWS=""   # per-agent rows for -v (tab-separated), collected as text
 
 while IFS= read -r f; do
@@ -176,15 +180,26 @@ while IFS= read -r f; do
   atype="unknown"
   [ -f "$meta" ] && atype="$(jq -r '.agentType // "unknown"' "$meta" 2>/dev/null || echo unknown)"
 
-  # Extract usage records in STREAMING mode (2>/dev/null): tolerates a partial trailing
-  # line in a transcript still being appended by a live subagent — complete objects are
-  # emitted before jq errors on the partial tail, and we keep those.
-  records="$(jq -c 'select(.type=="assistant" and (.message.usage!=null)) |
-      {model:(.message.model // "unknown"),
-       in:(.message.usage.input_tokens // 0),
-       out:(.message.usage.output_tokens // 0),
-       cc:(.message.usage.cache_creation_input_tokens // 0),
-       cr:(.message.usage.cache_read_input_tokens // 0)}' "$f" 2>/dev/null)"
+  # Extract usage records LINE BY LINE (jq -R + try fromjson): a corrupt line — e.g. the
+  # partial trailing line of a transcript a live subagent is still appending — is
+  # skipped and COUNTED (warned on stderr after the headline), never the end of the
+  # file: every later record still counts. Each record keeps its message id.
+  parsed="$(jq -R -c 'if test("^[[:space:]]*$") then empty else
+      (try (fromjson
+        | select(type == "object" and .type == "assistant" and (.message | type) == "object" and (.message.usage | type) == "object")
+        | {id: (.message.id // null),
+           model: (.message.model // "unknown"),
+           in: (.message.usage.input_tokens // 0),
+           out: (.message.usage.output_tokens // 0),
+           cc: (.message.usage.cache_creation_input_tokens // 0),
+           cr: (.message.usage.cache_read_input_tokens // 0)})
+       catch "CORRUPT") end' "$f" 2>/dev/null)"
+  bad_lines="$(printf '%s\n' "$parsed" | grep -c '^"CORRUPT"$')"
+  records="$(printf '%s\n' "$parsed" | grep -v '^"CORRUPT"$' | grep -v '^$')"
+  if [ "$bad_lines" -gt 0 ]; then
+    WARNINGS="${WARNINGS}${PROG}: warning: skipped ${bad_lines} unparseable line(s) in ${f}
+"
+  fi
 
   if [ -z "$records" ]; then
     # Non-empty file but no usable assistant/usage records: unparseable or usage-less.
@@ -192,9 +207,14 @@ while IFS= read -r f; do
     continue
   fi
 
-  # Per file: peak context = the turn maximizing (in+cc+cr); attribute to that turn's model.
+  # Per file: one record per MESSAGE — Claude Code writes a message's usage on every
+  # line of it (one per content block), so repeated message ids are deduplicated, the
+  # LAST line of each id kept (its final usage); a record with no id stands alone.
+  # Peak context = the message maximizing (in+cc+cr), attributed to that message's model.
   summ="$(printf '%s\n' "$records" | jq -s -r '
-      (max_by(.in + .cc + .cr)) as $p
+      [to_entries[] | .value + {k: (if .value.id == null then "#\(.key)" else "id:\(.value.id)" end), i: .key}]
+      | group_by(.k) | map(max_by(.i)) | sort_by(.i)
+      | (max_by(.in + .cc + .cr)) as $p
       | [ ($p.in + $p.cc + $p.cr), $p.model, (map(.out)|add), (map(.in)|add), (map(.cr)|add) ]
       | @tsv')"
   [ -n "$summ" ] || { n_bad=$((n_bad + 1)); continue; }
@@ -236,6 +256,7 @@ line="Usage: haiku $(kfmt "$sum_haiku") · sonnet $(kfmt "$sum_sonnet") · opus 
 [ "$sum_other" -gt 0 ] && line="$line · other $(kfmt "$sum_other")"
 line="$line (orchestrator excluded; /usage for quota)"
 printf '%s\n' "$line"
+[ -z "$WARNINGS" ] || printf '%s' "$WARNINGS" >&2
 
 if [ "$VERBOSE" -eq 1 ]; then
   printf '\n'

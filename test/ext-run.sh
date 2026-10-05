@@ -25,7 +25,8 @@
 #   B*      build mode: the disposable worktree, carrying uncommitted and
 #           untracked work in, the patch applied back, the apply-conflict exit
 #           code, worktree/stage removal, an untouched real tree whenever the run
-#           did not pass its gates
+#           did not pass its gates, the caller's hooks off, a killed run's
+#           locked worktree reaped by the next run
 #   P*      OS confinement: sandbox-exec and --dangerously-bypass only together,
 #           real enforcement (workspace r/w, $HOME reads/writes, deny-by-default
 #           writes outside $HOME and the temp dirs, temp-dir reads — sibling
@@ -1075,6 +1076,8 @@ H7_PID=$!
 i=0; while [ ! -e "$ROOT/.codex/h7-started" ] && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
 # shellcheck disable=SC2034  # read inside chk's eval'd condition strings
 H7_LOCKED=$(git -C "$REPO7" worktree list --porcelain | grep -c '^locked')
+# shellcheck disable=SC2034  # read inside chk's eval'd condition strings
+H7_REASON=$(git -C "$REPO7" worktree list --porcelain | grep -c '^locked ext-run [0-9][0-9]*$')
 CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildedit \
   run_ext build --level builder --prompt-file "$BRIEF" --workdir "$REPO7" --output "$BUILD/h7b.patch"
 # shellcheck disable=SC2034  # read inside chk's eval'd condition strings
@@ -1084,6 +1087,7 @@ wait "$H7_PID"
 # shellcheck disable=SC2034  # read inside chk's eval'd condition strings
 H7A_RC=$(cat "$BUILD/h7a.rc" 2>/dev/null)
 chk "B5b a build worktree is LOCKED while codex runs (a parallel prune cannot remove it)" '[ "$H7_LOCKED" -ge 1 ]'
+chk "B5e ...and its lock carries the reason 'ext-run <pid>' (so a later run can reap it after a SIGKILL, L3)" '[ "$H7_REASON" -ge 1 ]'
 chk "B5c two overlapping builds on one repo both succeed: the second's prune leaves the first's worktree alone" \
   '[ -f "$ROOT/.codex/h7-started" ] && [ "$H7B_RC" -eq 0 ] && [ "$H7A_RC" = 0 ] && [ -f "$REPO7/waited.txt" ] && [ -f "$REPO7/gen.txt" ] && ! grep -q UNAVAILABLE "$BUILD/h7a.err"'
 chk "B5d ...and both worktrees are gone afterwards (unlocked, removed, pruned)" '[ "$(wt_count "$REPO7")" -eq 1 ]'
@@ -1189,6 +1193,47 @@ GIT_DIR="$DECOY/.git" GIT_WORK_TREE="$DECOY" GIT_INDEX_FILE="$DECOY/.git/index" 
   run_ext build --level builder --prompt-file "$BRIEF" --workdir "$DREPO" --output "$BUILD/d1.patch"
 chk "D1 inherited GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE are cleared: the build lands in --workdir, the decoy repo is untouched" \
   '[ "$RC" -eq 0 ] && tail -1 "$DREPO/calc.txt" | grep -qx "CODEX WAS HERE" && [ -f "$DREPO/gen.txt" ] && [ ! -e "$DECOY/gen.txt" ] && [ "$(git -C "$DECOY" status --porcelain; git -C "$DECOY" rev-parse HEAD; git -C "$DECOY" worktree list)" = "$DECOY_BEFORE" ]'
+
+# B13: the caller's git hooks never run for the disposable checkout or its stage-base
+# commit (L15: worktree add + commit with core.hooksPath=/dev/null).
+REPO13="$BUILD/repo13"
+new_repo "$REPO13"
+HOOKMARK="$BUILD/hook-ran"
+for h in post-checkout post-commit; do
+  printf '#!/bin/sh\necho %s >> "%s"\n' "$h" "$HOOKMARK" > "$REPO13/.git/hooks/$h"; chmod +x "$REPO13/.git/hooks/$h"
+done
+printf 'dirty\n' >> "$REPO13/calc.txt"   # a carried change, so the stage-base commit is not empty
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildnoop \
+  run_ext build --level builder --prompt-file "$BRIEF" --workdir "$REPO13" --output "$BUILD/b13.patch"
+chk "B13 the caller's post-checkout / post-commit hooks do NOT run for the build worktree or its stage-base commit" \
+  '[ "$RC" -eq 0 ] && [ ! -e "$HOOKMARK" ] && [ "$(wt_count "$REPO13")" -eq 1 ]'
+
+# B14: a run killed by SIGKILL leaves its build worktree registered AND locked (its
+# .git hidden in meta/); the next run on that repo reaps it (L3). A locked entry of
+# a LIVE run, and one locked without ext-run's reason, are left alone.
+REPO14="$BUILD/repo14"
+new_repo "$REPO14"
+DEADSTAGE=$(mktemp -d "$TMPDIR/ext-run.XXXXXX"); mkdir -p "$DEADSTAGE/meta"
+( : ) & DEADPID=$!; wait "$DEADPID"
+git -C "$REPO14" worktree add -q --lock --reason "ext-run $DEADPID" --detach "$DEADSTAGE/build" HEAD
+mv "$DEADSTAGE/build/.git" "$DEADSTAGE/meta/worktree.git"
+LIVESTAGE=$(mktemp -d "$TMPDIR/ext-run.XXXXXX"); mkdir -p "$LIVESTAGE/meta"
+git -C "$REPO14" worktree add -q --lock --reason "ext-run $$" --detach "$LIVESTAGE/build" HEAD
+OTHERWT="$BUILD/other14"
+git -C "$REPO14" worktree add -q --lock --reason "someone else" --detach "$OTHERWT" HEAD
+git -C "$REPO14" worktree prune
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+B14_BEFORE=$(wt_count "$REPO14")
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=buildnoop \
+  run_ext build --level builder --prompt-file "$BRIEF" --workdir "$REPO14" --output "$BUILD/b14.patch"
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+B14_LIST=$(git -C "$REPO14" worktree list --porcelain)
+chk "B14 a stale, locked build worktree of a KILLED run (dead pid) is reaped by the next run: unlocked, its stage removed, pruned" \
+  '[ "$RC" -eq 0 ] && [ "$B14_BEFORE" -eq 4 ] && [ ! -e "$DEADSTAGE" ] && ! printf "%s" "$B14_LIST" | grep -qF "$(basename "$DEADSTAGE")" && printf "%s" "$ERR" | grep -q "stale build worktree"'
+chk "B14b a LIVE run's locked worktree and a worktree locked by someone else are left alone" \
+  'printf "%s" "$B14_LIST" | grep -qF "$(basename "$LIVESTAGE")/build" && printf "%s" "$B14_LIST" | grep -qF "$OTHERWT" && [ "$(wt_count "$REPO14")" -eq 3 ]'
+for w in "$LIVESTAGE/build" "$OTHERWT"; do git -C "$REPO14" worktree unlock "$w"; git -C "$REPO14" worktree remove --force "$w"; done
+rm -rf "$LIVESTAGE"
 
 # --- E*: a symlink is judged — and read — at its target -------------------------
 SYM=$(new_tmp)

@@ -4,6 +4,39 @@ Reverse-chronological. Each entry cites the commit(s) it corresponds to and,
 where known, the test-count delta. See `test/roundtrip.sh` and `test/lint.sh`
 for the current check catalog.
 
+## Wave 22 — deep-review fixes, Waves 16–21 (branch wave22-review-fixes)
+
+Source: code-review-deep wf_4edf6fac-44a over 953a087..main (88 agents; GO-with-fixes; 32
+confirmed) + codex review; private report in dot-agents reviews/claude-triage-layer/2026-10-05-*.
+- Verdict relays fail closed: objective checks print a tagged `CHECKRC <n>` parsed in
+  `assess()` (H1); the reviewer needs a positive PASS|FIX|ESCALATE (H2); crossReview needs a
+  positive `CROSS-REVIEW (` header, else UNAVAILABLE (M11); external `exit 6` / no changed
+  files = unavailable → Claude fallback (M2); triage-compare/triage-parity use lint-pinned
+  copies of `classifyExternal()` (H4).
+- Plan repo: optional `args.repo` — checks run there, briefs carry `Repository:`, WORKDIR is
+  set, bake-off repo defaults to it (H3; the 2026-10-04 worktree incident).
+- Bake-offs: one-command tagged dirty check (M12); any leak ≠ false or a missing compare
+  result stops the whole plan (M5); Fable-family models never enter a bake-off pool (X1); repo-
+  relative `files` (M3); empty/out-of-scope "passes" never ledgered (M6); run ids token-legal
+  and ≤ 80 chars (M1); run-time date/model carried into the ingest result (M8); the
+  model/effort mismatch guard fails closed without accounting (M7).
+- Staging/installer: rename/copy sources covered by `--require-clean` (M4); a failed status
+  query is never clean (L5); `repo_top` failure no longer falls through to the cwd repo (X3,
+  found by a fix worker); one ignored-files fingerprint owner (M10); `sub_model_action` keeps a
+  user's deliberate model change (X2); uninstall writes settings first (L4); one legacy-line
+  normalisation (L10/U1); pointer line tells the session to read the rubric if it is absent
+  (M9); stale locked build worktrees pruned (L3); hooks off in build worktrees (L15).
+- Ledger/tooling: atomic stale-lock takeover (L6); per-session workflow attribution in
+  triage-stats (L7); unsampleable levels say so instead of exploring forever (L9); lint flags
+  hard-coded model ids (L11) and checks the family split against its owner (L12);
+  triage-usage dedupes message ids and skips corrupt lines (L16).
+- Checks: workflow-scenarios 412 → 457, roundtrip 254 → 270, compare 348 → 379,
+  parity-report 204 → 222, review-stage 71 → 79, stage-worktree 54 → 67, usage 30 → 34,
+  triage-context 22 → 25, parity-scenarios 125 → 136; mutations 214 → 298 ids (92 new or
+  re-anchored, each killed with --only).
+- Deferred: codex cross-review of the fix wave timed out (UNAVAILABLE); hooks in Desktop/IDE/
+  Remote Control still unverified.
+
 ## Wave 21 — triage.md via SessionStart hook; noFable (branch wave21-triage-hook)
 
 - triage.md trimmed 12,511 → 9,289 B (4a63148, approved): restated AGENTS.md rules → pointers;

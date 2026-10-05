@@ -19,11 +19,27 @@
 # stay. This install's CLAUDE.md pointer line and any legacy `@triage.md` import are
 # removed, every other byte kept; the kill switch
 # file ($CLAUDE_DIR/triage.disabled) is moved to the backup dir, never deleted.
-# Settings are rewritten (in a temp file) BEFORE any file is touched, so a jq failure
-# aborts with nothing changed.
+# Order, failing CLOSED: the settings and CLAUDE.md rewrites are both computed (in temp
+# files) first — a jq/awk failure aborts with nothing changed; then settings.json is
+# written (the hook goes first), then CLAUDE.md, and only then are files removed — a
+# write failure stops there, naming what was already changed, so the hook can never be
+# left pointing at a removed triage-context.sh.
 set -euo pipefail
 
-CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
+# The ONE spelling of CLAUDE_DIR — identical to install.sh's (test/roundtrip.sh N8).
+canon_dir() {
+  local p="$1" out="" c parts
+  [ "${p#/}" != "$p" ] || return 1
+  case "$p" in *$'\n'*|*$'\r'*) printf '%s' "$p"; return 0 ;; esac
+  IFS=/ read -r -a parts <<< "$p"
+  for c in ${parts[@]+"${parts[@]}"}; do
+    case "$c" in ''|.) continue ;; ..) return 1 ;; esac
+    out="$out/$c"
+  done
+  printf '%s' "${out:-/}"
+}
+CLAUDE_DIR_GIVEN="${CLAUDE_DIR:-$HOME/.claude}"
+CLAUDE_DIR=$(canon_dir "$CLAUDE_DIR_GIVEN") || { echo "ERROR: CLAUDE_DIR must be an absolute path without .. components (got '$CLAUDE_DIR_GIVEN') — nothing was changed." >&2; exit 1; }
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 SETTINGS="$CLAUDE_DIR/settings.json"
 PREINSTALL="$CLAUDE_DIR/triage-preinstall.json"   # legacy artifact of pre-wave-9 installs
@@ -41,11 +57,14 @@ OWNER_MARK="TRIAGE_LAYER_OWNS_SUBAGENT_MODEL"
 # another CLAUDE_DIR, an unpinned or otherwise different command, or a non-command entry
 # carrying our command is yours and stays.
 POINTER_HEAD="The triage routing rubric ("
-POINTER_TAIL="/triage.md) reaches the main session through a SessionStart hook; subagents don't receive it."
+POINTER_TAIL="/triage.md) reaches the main session through a SessionStart hook; if you are the main session and it is not in your context, read that file before planning. Subagents don't need it."
+POINTER_TAILS_OLD="/triage.md) reaches the main session through a SessionStart hook; subagents don't receive it."
+LEGACY_IMPORT_AWK='function is_legacy(l) { sub(/\r$/, "", l); sub(/[ \t]+$/, "", l); return l == "@triage.md" || l == "@./triage.md" || l == "@~/.claude/triage.md" || l == "@" ENVIRON["TRIAGE_DIR"] "/triage.md" }'
 TRIAGE_HOOK_SCRIPT="scripts/triage-context.sh"
 TRIAGE_HOOK_OWNED_JQ='type == "object" and .type == "command" and .command == $cmd'
 triage_hook_command() { printf 'CLAUDE_DIR=%q bash %q/%s' "$CLAUDE_DIR" "$CLAUDE_DIR" "$TRIAGE_HOOK_SCRIPT"; }
 pointer_line() { printf '%s%s%s' "$POINTER_HEAD" "$CLAUDE_DIR" "$POINTER_TAIL"; }
+old_pointer_line() { printf '%s%s%s' "$POINTER_HEAD" "$CLAUDE_DIR" "$POINTER_TAILS_OLD"; }
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 BACKUP_DIR="$CLAUDE_DIR/triage-uninstall-backup-$STAMP"
@@ -55,7 +74,8 @@ BACKED_UP=""
 
 tmp=""
 SETTINGS_TMP=""
-trap 'rm -f "${tmp:-}" "${SETTINGS_TMP:-}"' EXIT
+CLAUDE_MD_TMP=""
+trap 'rm -f "${tmp:-}" "${SETTINGS_TMP:-}" "${CLAUDE_MD_TMP:-}"' EXIT
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -73,15 +93,16 @@ apply_file() { # $1 = tmp, $2 = dest
   if [ -L "$2" ]; then cat "$1" > "$2" && rm -f "$1"; else mv "$1" "$2"; fi
 }
 
-# File $1 without its lines equal to $2 or $3 (a trailing CR ignored), on stdout. Every
-# other byte is kept exactly: each kept line keeps its own terminator (CRLF included),
-# and an unterminated last line stays unterminated (awk's print would add a newline).
+# File $1 without its legacy import lines (LEGACY_IMPORT_AWK) and its lines equal to $2
+# or $3 (a trailing CR ignored), on stdout. Every other byte is kept exactly: each kept
+# line keeps its own terminator (CRLF included), and an unterminated last line stays
+# unterminated (awk's print would add a newline).
 drop_lines() { # $1 = file, $2 $3 = lines
   local nl=1
   if [ -s "$1" ] && [ -n "$(tail -c1 "$1")" ]; then nl=0; fi
-  awk -v imp="$2" -v ptr="$3" -v nl="$nl" '
+  TRIAGE_DIR="$CLAUDE_DIR" awk -v p1="$2" -v p2="$3" -v nl="$nl" "$LEGACY_IMPORT_AWK"'
     NR > 1 && keep { printf "%s\n", prev }
-    { prev = $0; l = $0; sub(/\r$/, "", l); keep = (l != imp && l != ptr) }
+    { prev = $0; l = $0; sub(/\r$/, "", l); keep = !is_legacy($0) && l != p1 && l != p2 }
     END { if (NR > 0 && keep) printf "%s%s", prev, (nl ? "\n" : "") }' "$1"
 }
 
@@ -145,17 +166,33 @@ if [ -f "$SETTINGS" ]; then
   SUB_LEFT=$(jq -r '.env.CLAUDE_CODE_SUBAGENT_MODEL // ""' "$tmp")
 fi
 
-# 2. Unwire the rubric from CLAUDE.md: the pointer line and any legacy import (a
-#    trailing CR is ignored, so a CRLF file is unwired too). Fails CLOSED: a read or
-#    filter error dies here, before CLAUDE.md, settings or any file is touched.
+# 2. Compute the CLAUDE.md unwiring: the pointer line (current and earlier spellings)
+#    and any legacy import (LEGACY_IMPORT_AWK; a trailing CR is ignored, so a CRLF file
+#    is unwired too). Fails CLOSED: a read or filter error dies here, before anything is
+#    written.
 if [ -f "$CLAUDE_DIR/CLAUDE.md" ]; then
-  tmp=$(mktemp)
-  drop_lines "$CLAUDE_DIR/CLAUDE.md" "@triage.md" "$(pointer_line)" > "$tmp" \
+  CLAUDE_MD_TMP=$(mktemp)
+  drop_lines "$CLAUDE_DIR/CLAUDE.md" "$(pointer_line)" "$(old_pointer_line)" > "$CLAUDE_MD_TMP" \
     || die "could not filter $CLAUDE_DIR/CLAUDE.md (awk failed) — nothing was changed."
-  apply_file "$tmp" "$CLAUDE_DIR/CLAUDE.md" || die "could not rewrite $CLAUDE_DIR/CLAUDE.md."
 fi
 
-# 3. Remove installed files (agents, rubric, statusline, workflows, scripts) and move
+# 3. Write settings.json FIRST (the hook goes before the script it runs), then
+#    CLAUDE.md. A failure stops here, before any file is removed.
+if [ -n "$SETTINGS_TMP" ]; then
+  apply_file "$SETTINGS_TMP" "$SETTINGS" || die "could not write $SETTINGS — nothing was changed."
+  SETTINGS_TMP=""
+fi
+if [ -n "$CLAUDE_MD_TMP" ]; then
+  if cmp -s "$CLAUDE_MD_TMP" "$CLAUDE_DIR/CLAUDE.md"; then
+    rm -f "$CLAUDE_MD_TMP"
+  else
+    apply_file "$CLAUDE_MD_TMP" "$CLAUDE_DIR/CLAUDE.md" \
+      || die "could not rewrite $CLAUDE_DIR/CLAUDE.md — settings.json was already updated (the triage hook is gone); no file was removed. Fix it and re-run ./uninstall.sh."
+  fi
+  CLAUDE_MD_TMP=""
+fi
+
+# 4. Remove installed files (agents, rubric, statusline, workflows, scripts) and move
 #    per-agent memory aside. The seven agents are removed by name — never
 #    `rm triage-*.md` by glob, which would also delete any unrelated triage-* agents
 #    you authored yourself. Retired files an older install may have left
@@ -182,12 +219,8 @@ if [ -e "$CLAUDE_DIR/triage.disabled" ] || [ -L "$CLAUDE_DIR/triage.disabled" ];
   backup_move "$CLAUDE_DIR/triage.disabled"
 fi
 
-# 4. Apply the settings rewrite computed in step 1.
-if [ -n "$SETTINGS_TMP" ]; then
-  apply_file "$SETTINGS_TMP" "$SETTINGS" || die "could not write $SETTINGS."
-  if [ -n "$SUB_LEFT" ]; then
-    echo "note: env.CLAUDE_CODE_SUBAGENT_MODEL ($SUB_LEFT) was left in place: it carries no installer ownership marker (you set it, or an install older than the marker did) — remove it by hand if you don't want it."
-  fi
+if [ -n "${SUB_LEFT:-}" ]; then
+  echo "note: env.CLAUDE_CODE_SUBAGENT_MODEL ($SUB_LEFT) was left in place: it carries no installer ownership marker (you set it, or an install older than the marker did) — remove it by hand if you don't want it."
 fi
 
 # 5. statusLine / model / effortLevel are NEVER touched — the installer no longer

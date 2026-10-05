@@ -330,6 +330,35 @@ chk "F4c fingerprint without --path is a usage error (exit 2)" '[ "$RC" -eq 2 ]'
 run_rs frobnicate
 chk "F4d an unknown subcommand is a usage error (exit 2)" '[ "$RC" -eq 2 ]'
 
+# --- F5: the IGNORED part (M10): the repo's ignored files by the ONE rule --------------
+printf 'cache.csv\nbuild/\n.claude/\ncontext/\n' >> "$R/.git/info/exclude"
+printf 'v1\n' > "$R/cache.csv"; mkdir -p "$R/build"; printf 'o\n' > "$R/build/out.bin"
+fp ign0
+chk "F5 fingerprint carries ignored = a hash over the repo's ignored files" '[ "$RC" -eq 0 ] && printf "%s" "$(j .ignored)" | grep -Eq "^[0-9a-f]{40}$"'
+printf 'v2-refreshed\n' > "$R/cache.csv"
+fp ign1
+cmpfp ign0 ign1
+chk "F5b a rewritten gitignored cache ANYWHERE in the repo is a change (exit 7: ignored, IGNORED_CHANGED)" \
+  '[ "$RC" -eq 7 ] && [ "$(j ".changed | join(\",\")")" = ignored ] && printf "%s" "$(j .detail)" | grep -q "^IGNORED_CHANGED"'
+mkdir -p "$R/.claude/agent-memory" "$R/context"; printf 'note\n' > "$R/.claude/agent-memory/m.md"; printf 'ctx\n' > "$R/context/scratch.md"; : > "$R/.DS_Store"
+fp ign2
+cmpfp ign1 ign2
+chk "F5c ignored agent bookkeeping (.claude/), Finder's .DS_Store and a hard-excluded ignored path (context/) are not a change" '[ "$RC" -eq 0 ] && [ "$(j .same)" = true ]'
+jq -c 'del(.ignored)' "$FP/ign0.json" > "$FP/old.json"
+cmpfp old ign1
+chk "F5d a fingerprint taken before ignored existed compares on the other three only (same)" '[ "$RC" -eq 0 ] && [ "$(j .same)" = true ]'
+IGN_HASH=$("$REPO_DIR/scripts/stage-worktree.sh" ignored --repo "$R" | awk -F "$(printf '\t')" -v OFS="$(printf '\t')" '{ p = $1; $1 = ""; print substr($0, 2), p }' | grep -v "	context/" | git -C "$R" hash-object --stdin)
+chk "F5e ignored is stage-worktree.sh ignored (hard excludes out) — one owner of the rule" '[ "$(jq -r .ignored "$FP/ign2.json")" = "$IGN_HASH" ]'
+rm -rf "$R/cache.csv" "$R/build" "$R/.claude" "$R/context/scratch.md" "$R/.DS_Store"
+
+# --- U2: one repo-root resolver; a non-repo --repo never falls back to the cwd ----------
+chk "U2 review-stage.sh resolves the repo root in ONE place (resolve_top); deny-refresh uses it" \
+  '[ "$(grep -c "rev-parse --show-toplevel" "$RS")" -eq 1 ] && grep -q "if R=\$(resolve_top \"\$REPO\")" "$RS"'
+OUT=$(cd "$R" && "$RS" fingerprint --repo "$T/not-a-repo" --path docs 2>"$T/err"); RC=$?
+chk "U2b fingerprint with a --repo that is not a git work tree is exit 2 from INSIDE another repo (never the cwd's repo)" '[ "$RC" -eq 2 ] && [ -z "$OUT" ]'
+OUT=$(cd "$R" && "$RS" snapshot --repo "$T/not-a-repo" --base HEAD~1 --head HEAD --include docs --out "$T/out-u2c" 2>"$T/err"); RC=$?
+chk "U2c snapshot with a --repo that is not a git work tree is exit 2 from INSIDE another repo, nothing written" '[ "$RC" -eq 2 ] && [ -z "$OUT" ] && [ ! -e "$T/out-u2c" ]'
+
 echo ""
 echo "RESULT: $PASS_COUNT passed, $FAIL_COUNT failed"
 [ "$FAIL_COUNT" -eq 0 ]

@@ -27,7 +27,15 @@
 #      config/tiers.json levels.<level>.<vendor> model/effort.
 #   6c. Danger floor: config/tiers.json levels.deep and levels.top name, for every
 #      vendor, a model of a family triage-exec.js's DANGER_FAMILIES allows (danger
-#      work is lifted to >= deep, so planned danger routing always meets the floor).
+#      work is lifted to >= deep, so planned danger routing always meets the floor),
+#      tokenized by the owner's own modelTokens (evaluated, not copied).
+#   6d. One family-token split: parity-report.sh id_tokens splits on the same
+#      separators as triage-exec.js modelTokens, the owner.
+#   6e. External-reply rule: triage-compare.js / triage-parity.js carry pinned copies of
+#      triage-exec.js's classifyExternal() (+ EXTERNAL_REASON_MAX) and
+#      classifyCrossReview() (+ CROSS_HEADER); each block must be byte-identical.
+#   7. No hard-coded model id outside config/tiers.json (code, config and agent
+#      files; an explicit allowlist names each legitimate place and its guard).
 #
 # Fail-loud: accumulates all failures, exits non-zero if any hard failure
 # occurred (shellcheck's absence is NOT a hard failure — it's an explicit,
@@ -283,13 +291,18 @@ if command -v node >/dev/null 2>&1; then
     const m = src.match(/^const DANGER_FAMILIES = (\{[^\n]*\})$/m);
     if (!m) { console.error("no single-line `const DANGER_FAMILIES = {...}` in workflows/triage-exec.js"); process.exit(1); }
     const fam = Function(`"use strict"; return (${m[1]})`)();
+    // The family-token split is the OWNER\x27s (triage-exec.js modelTokens), evaluated
+    // here, never a copy that could drift from what the workflow enforces.
+    const t = src.match(/^const modelTokens = (m => [^\n]*)$/m);
+    if (!t) { console.error("no single-line `const modelTokens = m => ...` in workflows/triage-exec.js"); process.exit(1); }
+    const modelTokens = Function(`"use strict"; return (${t[1]})`)();
     const tiers = JSON.parse(fs.readFileSync("config/tiers.json", "utf8"));
     const bad = [];
     for (const level of ["deep", "top"]) {
       const byV = (tiers.levels || {})[level];
       if (!byV || typeof byV !== "object") { bad.push(`levels.${level} missing`); continue; }
       for (const [v, e] of Object.entries(byV)) {
-        const toks = String((e && e.model) || "").toLowerCase().split(/[-._:+@]/).filter(Boolean);
+        const toks = modelTokens(e && e.model);
         if (!(fam[v] || []).some(f => toks.includes(f))) bad.push(`levels.${level}.${v}.model ${e && e.model} is not a danger-floor family (${(fam[v] || []).join("|") || "none for this vendor"})`);
       }
     }
@@ -299,6 +312,48 @@ if command -v node >/dev/null 2>&1; then
   else
     fail "danger-floor: config/tiers.json levels.deep/top name a model below triage-exec.js DANGER_FAMILIES"
     printf '%s\n' "$DF_OUT" >&2
+  fi
+
+  # 6d. ONE family-token split. Owner: workflows/triage-exec.js `modelTokens` (the
+  # danger floor's notion of a model family token). scripts/parity-report.sh cannot
+  # import JS, so its jq `id_tokens` (cheapness by family) must split on exactly the
+  # same separator set: checked here against the owner, never against a copy.
+  if SPLIT_OUT=$(node -e '
+    const fs = require("fs");
+    const own = fs.readFileSync("workflows/triage-exec.js", "utf8").match(/^const modelTokens = m => [^\n]*\.split\(\/(\[[^\]\n]+\])\/\)/m);
+    const pr = fs.readFileSync("scripts/parity-report.sh", "utf8").match(/^def id_tokens: [^\n]*splits\("(\[[^\]\n]+\])"\)/m);
+    if (!own) { console.error("no `const modelTokens = m => ....split(/[...]/)` in workflows/triage-exec.js (the owner)"); process.exit(1); }
+    if (!pr) { console.error("no `def id_tokens: ... splits(\"[...]\")` in scripts/parity-report.sh"); process.exit(1); }
+    const set = c => [...new Set(c.slice(1, -1).replace(/\\/g, ""))].sort().join("");
+    if (set(own[1]) !== set(pr[1])) { console.error(`parity-report.sh id_tokens splits on ${pr[1]}, the owner triage-exec.js modelTokens on ${own[1]}`); process.exit(1); }
+  ' 2>&1); then
+    ok "family-split: parity-report.sh id_tokens splits on the same separators as triage-exec.js modelTokens (the owner)"
+  else
+    fail "family-split: parity-report.sh id_tokens and triage-exec.js modelTokens (the owner) split model ids differently"
+    printf '%s\n' "$SPLIT_OUT" >&2
+  fi
+
+  # 6e. One external-reply rule: triage-compare.js and triage-parity.js carry PINNED
+  # copies of triage-exec.js's classifyExternal() (with EXTERNAL_REASON_MAX) and
+  # classifyCrossReview() (with CROSS_HEADER); each block must be byte-identical.
+  if CLS_OUT=$(node -e '
+    const fs = require("fs");
+    const block = (src, start) => { const i = src.indexOf(`\n${start}`); if (i < 0) return null;
+      const j = src.indexOf("\n}\n", i); return j < 0 ? null : src.slice(i + 1, j + 2); };
+    const starts = ["const EXTERNAL_REASON_MAX = ", "const CROSS_HEADER = "];
+    const files = ["workflows/triage-exec.js", "workflows/triage-compare.js", "workflows/triage-parity.js"];
+    const bad = [];
+    for (const s of starts) {
+      const [own, ...copies] = files.map(f => [f, block(fs.readFileSync(f, "utf8"), s)]);
+      if (!own[1]) { bad.push(`${own[0]}: no block starting "${s}"`); continue; }
+      for (const [f, b] of copies) if (b !== own[1]) bad.push(`${f}: the block starting "${s}" ${b ? "differs from" : "is missing; owner is"} ${own[0]}`);
+    }
+    if (bad.length) { console.error(bad.join("\n")); process.exit(1); }
+  ' 2>&1); then
+    ok "external-reply rule: classifyExternal/classifyCrossReview copies in triage-compare.js and triage-parity.js match triage-exec.js"
+  else
+    fail "external-reply rule: classifyExternal/classifyCrossReview copies drifted from triage-exec.js"
+    printf '%s\n' "$CLS_OUT" >&2
   fi
 
   # Workflow-DSL constraints (the runtime throws on these at run time, so catch them
@@ -330,6 +385,55 @@ if command -v node >/dev/null 2>&1; then
       printf '%s\n' "$DSL_OUT" >&2
     fi
   done
+fi
+
+# --- 7. no hard-coded model ids outside config/tiers.json --------------------------
+# config/tiers.json is the one owner of every model id (AGENTS.md › Single owners);
+# an id typed into code goes stale silently when a tier is upgraded. Scanned: every
+# code/config file (*.sh *.js *.mjs *.json *.yml Makefile), agents/*.md and triage.md
+# (the installed rubric: an id there is routing policy, so it names DANGER_FAMILIES or
+# tiers.json instead); full-line code comments are skipped (an example in prose is not
+# configuration). Not scanned: the owner itself, test/ (fixtures pin ids on purpose),
+# qc/ (mutations plant them) and prose docs (README, CHANGELOG, AGENTS.md, scripts/README).
+# ALLOWLIST: places an id legitimately lives outside the owner, each with its guard:
+#   agents/*.md          `model: ` frontmatter     written by make tiers (check 5)
+#   install.sh           LEGACY_SUBAGENT_MODELS=   frozen pre-marker defaults, never upgraded
+#   triage-compare.js    DEFAULT_ADJUDICATORS =    tied to tiers levels (check 6b); its
+#                        help text (REVIEW_USAGE) is built from it, never typed
+MODEL_ID_RE='(claude-[a-z]+-[0-9][0-9a-z-]*|gpt-[0-9]+(\.[0-9]+)?-[a-z][a-z0-9-]*)'
+model_id_allowed() { # FILE LINE -> 0 when the allowlist covers it
+  case "$1" in
+    agents/*.md) printf '%s' "$2" | grep -q '^model: ' ;;
+    install.sh) printf '%s' "$2" | grep -q '^LEGACY_SUBAGENT_MODELS=' ;;
+    workflows/triage-compare.js) printf '%s' "$2" | grep -q '^const DEFAULT_ADJUDICATORS = ' ;;
+    *) return 1 ;;
+  esac
+}
+MID_HITS=""
+MID_FILES=$( { find . \( -path ./.git -o -path ./test -o -path ./qc -o -path './.?*' \) -prune -o -type f \
+    \( -name '*.sh' -o -name '*.js' -o -name '*.mjs' -o -name '*.json' -o -name '*.yml' -o -name Makefile \) -print
+  find ./agents -maxdepth 1 -type f -name '*.md' -print 2>/dev/null; echo ./triage.md; } | sed 's#^\./##' | grep -vx 'config/tiers.json' | sort -u)
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  case "$f" in *.js|*.mjs) cmt='^[[:space:]]*(//|\*|/\*)' ;; *.json|*.md) cmt='^$' ;; *) cmt='^[[:space:]]*#' ;; esac
+  while IFS= read -r hit; do
+    [ -n "$hit" ] || continue
+    n="${hit%%:*}"; line="${hit#*:}"
+    printf '%s' "$line" | grep -Eq "$cmt" && continue
+    model_id_allowed "$f" "$line" && continue
+    MID_HITS="${MID_HITS}${f}:${n}: $(printf '%s' "$line" | grep -Eo "$MODEL_ID_RE" | head -n 1)
+"
+  done <<MIDHITS
+$(grep -nE "$MODEL_ID_RE" "$f" 2>/dev/null)
+MIDHITS
+done <<MIDFILES
+$MID_FILES
+MIDFILES
+if [ -z "$MID_HITS" ]; then
+  ok "model-ids: no hard-coded model id outside config/tiers.json (allowlist: agents model:, LEGACY_SUBAGENT_MODELS, DEFAULT_ADJUDICATORS)"
+else
+  fail "model-ids: hard-coded model id(s) outside config/tiers.json; read it from tiers.json (or allowlist it here with its guard):"
+  printf '%s' "$MID_HITS" >&2
 fi
 
 echo ""

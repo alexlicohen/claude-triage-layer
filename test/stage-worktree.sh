@@ -12,7 +12,10 @@
 # BASE_MOVED (a commit, including a commit of pre-existing work); cleanup leaving
 # no worktree registered; the caller's tree, index bytes and HEAD untouched; and
 # apply: clean / 3-way-recoverable / conflicting (exit 6, tree byte-identical) /
-# empty patches.
+# empty patches; --require-clean seeing the SOURCE of a rename (quoted header paths
+# too), and a failed status / path listing never read as clean; a non-repo --repo
+# never falling back to the cwd's repo; the `ignored` fingerprint rule (one owner,
+# sub-second mtimes, shallowest first, the one exclusion list).
 # shellcheck disable=SC2034  # *_BEFORE etc. are read inside chk's eval'd conditions
 set -u
 
@@ -272,6 +275,8 @@ cat > "$SHIM/git" <<SHIMEOF
 #!/bin/bash
 ap=0 ck=0 tw=0 ns=0
 for a in "\$@"; do case "\$a" in apply) ap=1 ;; --check) ck=1 ;; --3way) tw=1 ;; --numstat) ns=1 ;; esac; done
+if [ "\${SHIM_MODE:-}" = statusfail ]; then for a in "\$@"; do [ "\$a" = status ] && { echo "fatal: shim status failure" >&2; exit 128; }; done; fi
+if { [ "\${SHIM_MODE:-}" = numstatfail ] || [ "\${SHIM_NUMSTAT_FAIL:-}" = 1 ]; } && [ \$ns = 1 ]; then echo "fatal: shim numstat failure" >&2; exit 128; fi
 if [ \$ap = 1 ] && [ \$ck = 0 ] && [ \$ns = 0 ]; then
   if [ "\${SHIM_MODE:-}" = markers ] && [ \$tw = 1 ]; then printf '<<<<<<< ours\n' >> "\$SHIM_FILE"; exit 1; fi
   if [ "\${SHIM_MODE:-}" = plainfail ] && [ \$tw = 0 ]; then exit 1; fi
@@ -288,6 +293,52 @@ git -C "$AR" reset -q --hard "$A_BASE"
 OUT=$(PATH="$SHIM:$PATH" SHIM_MODE=plainfail "$SW" apply --repo "$AR" --patch "$T/out/apply.patch" 2>"$T/err"); RC=$?
 chk "S13g a plain write that fails without writing: exit 1, treeModified:false (measured, not assumed)" \
   '[ "$RC" -eq 1 ] && [ "$(j .method)" = plain ] && [ "$(j .treeModified)" = false ] && ! grep -q l5-patched "$AR/f.txt"'
+
+# --- S15: --require-clean sees the SOURCE of a rename; a failed listing is never clean (M4, L5)
+git -C "$AR" reset -q --hard "$A_BASE"
+( cd "$AR" && git mv g.txt renamed.txt && git diff --cached -M HEAD > "$T/out/rename.patch" && git reset -q --hard )
+printf 'uncommitted edit to the rename source\n' >> "$AR/g.txt"
+B15=$(tree_sum "$AR")
+run_sw apply --repo "$AR" --patch "$T/out/rename.patch" --require-clean
+chk "S15 --require-clean: a rename whose SOURCE has uncommitted work is exit 6, the source named, the tree byte-identical" \
+  '[ "$RC" -eq 6 ] && [ "$(j .applied)" = false ] && [ "$(j .treeModified)" = false ] && j .error | grep -q "g.txt" && [ "$(tree_sum "$AR")" = "$B15" ] && [ ! -e "$AR/renamed.txt" ]'
+git -C "$AR" checkout -q -- g.txt
+run_sw apply --repo "$AR" --patch "$T/out/rename.patch" --require-clean
+chk "S15b ...and with a clean source the same rename applies, treeModified:true" \
+  '[ "$RC" -eq 0 ] && [ "$(j .treeModified)" = true ] && [ -f "$AR/renamed.txt" ] && [ ! -e "$AR/g.txt" ]'
+git -C "$AR" reset -q --hard "$A_BASE"; git -C "$AR" clean -fdq
+( cd "$AR" && git mv g.txt "sp ace\303\251.txt" 2>/dev/null || git mv g.txt "$(printf 'sp ace\303\251.txt')"; git -c core.quotePath=true diff --cached -M HEAD > "$T/out/rename-q.patch"; git reset -q --hard )
+printf 'edit\n' >> "$AR/g.txt"
+run_sw apply --repo "$AR" --patch "$T/out/rename-q.patch" --require-clean
+chk "S15c a rename with QUOTED header paths (space, non-ASCII) still has its dirty source refused" \
+  'grep -q "^rename from g.txt" "$T/out/rename-q.patch" && [ "$RC" -eq 6 ] && j .error | grep -q "g.txt"'
+git -C "$AR" reset -q --hard "$A_BASE"; git -C "$AR" clean -fdq
+B15D=$(tree_sum "$AR")
+OUT=$(PATH="$SHIM:$PATH" SHIM_MODE=statusfail "$SW" apply --repo "$AR" --patch "$T/out/apply.patch" --require-clean 2>"$T/err"); RC=$?
+chk "S15d --require-clean: a git status that FAILS is exit 6, treeModified:false, nothing written (never read as clean)" \
+  '[ "$RC" -eq 6 ] && [ "$(j .applied)" = false ] && [ "$(j .treeModified)" = false ] && j .error | grep -q "git status failed" && [ "$(tree_sum "$AR")" = "$B15D" ]'
+OUT=$(PATH="$SHIM:$PATH" SHIM_MODE=numstatfail "$SW" apply --repo "$AR" --patch "$T/out/apply.patch" --require-clean 2>"$T/err"); RC=$?
+chk "S15e --require-clean: a path listing that FAILS is exit 6, treeModified:false, nothing written" \
+  '[ "$RC" -eq 6 ] && [ "$(j .treeModified)" = false ] && j .error | grep -q "could not list" && [ "$(tree_sum "$AR")" = "$B15D" ]'
+
+OUT=$(PATH="$SHIM:$PATH" SHIM_MODE=plainfail SHIM_NUMSTAT_FAIL=1 "$SW" apply --repo "$AR" --patch "$T/out/apply.patch" 2>"$T/err"); RC=$?
+chk "S15g a failed write whose paths could not be listed reports treeModified:true (unknown is never clean)" \
+  '[ "$RC" -eq 1 ] && [ "$(j .applied)" = false ] && [ "$(j .treeModified)" = true ]'
+git -C "$AR" reset -q --hard "$A_BASE"; git -C "$AR" clean -fdq
+# A perl shim that fails only the rename/copy header parse: numstat still lists the
+# new side, so the list is PARTIAL — never treated as clean.
+PSHIM="$T/pshim"; mkdir -p "$PSHIM"; REALPERL=$(command -v perl)
+printf '#!/bin/bash\ncase "$*" in *"rename|copy) from"*) exit 2 ;; esac\nexec "%s" "$@"\n' "$REALPERL" > "$PSHIM/perl"; chmod +x "$PSHIM/perl"
+printf 'uncommitted edit to the rename source\n' >> "$AR/g.txt"
+B15H=$(tree_sum "$AR")
+OUT=$(PATH="$PSHIM:$PATH" "$SW" apply --repo "$AR" --patch "$T/out/rename.patch" --require-clean 2>"$T/err"); RC=$?
+chk "S15h --require-clean: a FAILED header parse (numstat still listing the new side) is never clean: exit 6, the dirty source untouched" \
+  '[ "$RC" -eq 6 ] && [ "$(j .applied)" = false ] && [ "$(tree_sum "$AR")" = "$B15H" ] && [ ! -e "$AR/renamed.txt" ]'
+git -C "$AR" reset -q --hard "$A_BASE"; git -C "$AR" clean -fdq
+B15F=$(tree_sum "$AR")
+OUT=$(cd "$AR" && "$SW" apply --repo "$T/not-a-repo" --patch "$T/out/apply.patch" 2>"$T/err"); RC=$?
+chk "S15f a --repo that is not a git work tree is exit 2 even from INSIDE another repo — never applied to the cwd's repo" \
+  '[ "$RC" -eq 2 ] && [ -z "$OUT" ] && [ "$(tree_sum "$AR")" = "$B15F" ] && ! grep -qx l5-patched "$AR/f.txt"'
 
 # --- S14: leakcheck --line, ignored paths (H4 reduced, H5) ---------------------
 IR="$T/ign-repo"
@@ -326,6 +377,34 @@ run_sw diff --worktree "$D4/wt-1" --base "$(git -C "$IR" rev-parse HEAD)" --out 
 chk "S14e diff reports ignoredNew (build/new.bin; the harness's .parity-env not counted) and the nested repo as a gitlink" \
   '[ "$RC" -eq 0 ] && [ "$(j .ignoredNew)" = 1 ] && [ "$(j ".gitlinks | join(\",\")")" = vendored ]'
 run_sw cleanup --repo "$IR" --dir "$D4"
+
+# --- S16: the IGNORED fingerprint — one owner, sub-second mtimes (M10, L1) -----
+mkdir -p "$IR/build/deep/er"
+head -c 300000 /dev/zero | tr '\000' a > "$IR/build/big.bin"     # over the 256 KiB hash limit: size + mtime
+touch -d 2020-01-01T00:00:00.1 "$IR/build/big.bin"
+printf 'd\n' > "$IR/build/deep/er/d.bin"; printf 'mac\n' > "$IR/build/.DS_Store"
+D5="$T/out/stage5"
+run_sw create --repo "$IR" --base HEAD --count 1 --dir "$D5"
+head -c 300000 /dev/zero | tr '\000' b > "$IR/build/big.bin"     # same size, rewritten "within the same second"
+touch -d 2020-01-01T00:00:00.7 "$IR/build/big.bin"
+run_sw leakcheck --repo "$IR" --dir "$D5"
+chk "S16 a same-size rewrite of a large ignored file within one second is a LEAK (sub-second mtime, L1)" \
+  '[ "$RC" -eq 7 ] && [ "$(j .status)" = LEAK ] && [ "$(j ".paths | index(\"build/big.bin\") != null")" = true ]'
+run_sw cleanup --repo "$IR" --dir "$D5"
+run_sw ignored --repo "$IR"
+chk "S16b ignored prints the rule: content hash for small files, size+mtime for big ones, .DS_Store / .claude/ / PROJECT_MEMORY*.md left out" \
+  '[ "$RC" -eq 0 ] && printf "%s\n" "$OUT" | grep -q "^build/out.bin	ign:[0-9a-f]\{40\}$" && printf "%s\n" "$OUT" | grep -q "^build/big.bin	ign-meta:300000:" && ! printf "%s" "$OUT" | grep -q "DS_Store"'
+IGN0="$OUT"
+STAGE_WT_IGN_LIST_MAX=2 run_sw ignored --repo "$IR"
+chk "S16c past the list cap, paths are taken shallowest first and the rest only counted (ign-count)" \
+  '[ "$RC" -eq 0 ] && printf "%s\n" "$OUT" | grep -q "ign-count:3" && ! printf "%s" "$OUT" | grep -q "deep/er/d.bin"'
+run_sw ignored --repo "$T/nope"
+chk "S16d ignored on a non-repo is a usage error (exit 2)" '[ "$RC" -eq 2 ]'
+# ONE owner: the two other leak fingerprints call `stage-worktree.sh ignored`, never
+# list ignored files themselves.
+uses_owner() { grep -q "stage-worktree.sh" "$1" && grep -q "ignored --repo" "$1" && ! grep -qE "ls-files[^|]* -(o -i|i -o)|ls-files[^|]*--ignored" "$1"; }
+chk "S16e review-stage.sh and parity-suite.sh take the IGNORED fingerprint from stage-worktree.sh ignored (no copy of the rule)" \
+  'uses_owner "$REPO_DIR/scripts/review-stage.sh" && uses_owner "$REPO_DIR/scripts/parity-suite.sh"'
 
 echo ""
 echo "RESULT: $PASS_COUNT passed, $FAIL_COUNT failed"

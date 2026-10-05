@@ -94,6 +94,23 @@ run_hook "$D3" "$START" "$O3"
 # shellcheck disable=SC2034
 RC3C=$HOOK_RC
 chk "L3: a CRLF legacy import line also counts (no output, exit 0)" '[ "$RC3C" -eq 0 ] && [ ! -s "$O3" ]'
+# L10/U1: the ONE normalisation (LEGACY_IMPORT_AWK, shared with install.sh/uninstall.sh):
+# the other spellings of the same import count; ONE trailing CR is stripped, not every CR.
+# shellcheck disable=SC2034  # read inside chk's eval'd condition string
+L4_OK=1
+for imp in '@./triage.md' '@~/.claude/triage.md' "@$D3/triage.md" '@triage.md  ' "$(printf '@triage.md \t\r')"; do
+  printf 'my rules\n%s\n' "$imp" > "$D3/CLAUDE.md"
+  run_hook "$D3" "$START" "$O3"
+  # shellcheck disable=SC2034  # read inside chk's eval'd condition string
+  { [ "$HOOK_RC" -eq 0 ] && [ ! -s "$O3" ]; } || { L4_OK=0; echo "      L4 injected for: $imp"; }
+done
+chk "L4: @./triage.md, @~/.claude/triage.md, @<CLAUDE_DIR>/triage.md and trailing blanks (+ one CR) are the legacy import too (no output)" '[ "$L4_OK" -eq 1 ]'
+printf 'my rules\n@triage.md\r\r\n' > "$D3/CLAUDE.md"
+run_hook "$D3" "$START" "$O3"
+chk "L5: a line with TWO trailing CRs is not the import (only one CR is stripped, as install.sh does): the rubric is injected" \
+  'context "$O3" | tail -n +3 | cmp -s - "$REPO_DIR/triage.md"'
+chk "L6: triage-context.sh carries the identical LEGACY_IMPORT_AWK line as install.sh and uninstall.sh" \
+  '[ "$(grep "^LEGACY_IMPORT_AWK=" "$REPO_DIR/scripts/triage-context.sh")" = "$(grep "^LEGACY_IMPORT_AWK=" "$REPO_DIR/install.sh")" ] && [ "$(grep "^LEGACY_IMPORT_AWK=" "$REPO_DIR/install.sh")" = "$(grep "^LEGACY_IMPORT_AWK=" "$REPO_DIR/uninstall.sh")" ] && [ -n "$(grep "^LEGACY_IMPORT_AWK=" "$REPO_DIR/install.sh")" ]'
 
 D4=$(new_sandbox)
 cp "$REPO_DIR/triage.md" "$D4/triage.md"

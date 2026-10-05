@@ -80,8 +80,8 @@ run_pr ingest-compare --tiers "$TIERS" --result "$T/compare.json" --repo-name my
 L1=$(head -n 1 "$DEFAULT_LEDGER" 2>/dev/null)
 chk "R1 ingest-compare appends ONE line to the tiers file's tuning.ledger (~ = HOME) and says so" \
   '[ "$RC" -eq 0 ] && [ "$(nlines "$DEFAULT_LEDGER")" = 1 ] && [ "$(j .ledger)" = "$DEFAULT_LEDGER" ] && [ "$(j .graded)" = 2 ]'
-chk "R1b the line has exactly the schema keys, with the passed ts/source/repoName/level/task/applied" \
-  '[ "$(printf "%s" "$L1" | jq -c "keys")" = "[\"applied\",\"candidates\",\"level\",\"repoName\",\"run\",\"runHash\",\"source\",\"task\",\"ts\",\"v\"]" ] &&
+chk "R1b the line has exactly the schema keys, with the passed ts/source/repoName/level/task/applied (tsSource option: --ts was given)" \
+  '[ "$(printf "%s" "$L1" | jq -c "keys")" = "[\"applied\",\"candidates\",\"level\",\"repoName\",\"run\",\"runHash\",\"source\",\"task\",\"ts\",\"tsSource\",\"v\"]" ] && [ "$(printf "%s" "$L1" | jq -r .tsSource)" = option ] &&
    [ "$(printf "%s" "$L1" | jq -r "[.v,.ts,.source,.repoName,.level,.task,.applied] | map(tostring) | join(\" \")")" = "1 2026-09-24T10:00:00Z inline myrepo builder sub-1 claude-builder" ]'
 chk "R1c each candidate has exactly label/vendor/model/effort/status/totalTokens/seconds + modelId/modelIdSource" \
   '[ "$(printf "%s" "$L1" | jq -c "[.candidates[] | keys] | unique")" = "[[\"effort\",\"label\",\"model\",\"modelId\",\"modelIdSource\",\"seconds\",\"status\",\"totalTokens\",\"vendor\"]]" ]'
@@ -291,7 +291,7 @@ run_pr ingest-review --tiers "$TIERS" --ledger "$VL" --result "$T/review.json" -
 V1=$(head -n 1 "$VL" 2>/dev/null)
 rv() { printf '%s' "$V1" | jq -r --arg l "$1" ".reviewers[] | select(.label == \$l) | $2"; }
 chk "RV1 ingest-review appends ONE inline-review line with exactly the review schema keys (no candidates: never a build row)" \
-  '[ "$RC" -eq 0 ] && [ "$(nlines "$VL")" = 1 ] && [ "$(printf "%s" "$V1" | jq -c "keys")" = "[\"disputed\",\"items\",\"real\",\"repoName\",\"resolved\",\"reviewers\",\"revision\",\"run\",\"runHash\",\"source\",\"ts\",\"v\"]" ] &&
+  '[ "$RC" -eq 0 ] && [ "$(nlines "$VL")" = 1 ] && [ "$(printf "%s" "$V1" | jq -c "keys")" = "[\"disputed\",\"items\",\"real\",\"repoName\",\"resolved\",\"reviewers\",\"revision\",\"run\",\"runHash\",\"source\",\"ts\",\"tsSource\",\"v\"]" ] &&
    [ "$(printf "%s" "$V1" | jq -r "[.source,.repoName,.run,.items,.real,.disputed,.resolved] | map(tostring) | join(\" \")")" = "inline-review voron rv-run-1 7 2 2 0" ]'
 chk "RV1b each reviewer has exactly label/vendor/level/model/effort/status/precision/recall/n/real/rejected/disputed/findings/totalTokens/seconds" \
   '[ "$(printf "%s" "$V1" | jq -c "[.reviewers[] | keys] | unique")" = "[[\"disputed\",\"effort\",\"findings\",\"label\",\"level\",\"model\",\"modelId\",\"modelIdSource\",\"n\",\"precision\",\"real\",\"recall\",\"rejected\",\"seconds\",\"status\",\"totalTokens\",\"vendor\"]]" ]'
@@ -426,12 +426,12 @@ chk "TT an unknown argument is exit 2" '[ "$RC" -eq 2 ] && printf "%s" "$OUT" | 
 rstate() { printf '%s' "$OUT" | jq -r --arg l "$1" '.levels[$l] | .state + ":" + (.rate | tostring)'; }
 rwhy() { printf '%s' "$OUT" | jq -r --arg l "$1" '.levels[$l].reason'; }
 run_pr rates --json --tiers "$TIERS" --ledger "$T/none.jsonl"
-chk "RA1 no data: quick none (no challenger configured) at 0; builder/deep/top explore at sampleRate 0.2" \
-  '[ "$RC" -eq 0 ] && [ "$(rstate quick)" = "none:0" ] && [ "$(rstate builder)" = "explore:0.2" ] && [ "$(rstate deep)" = "explore:0.2" ] && [ "$(rstate top)" = "explore:0.2" ]'
+chk "RA1 no data: quick none (no challenger configured) at 0; builder/deep explore at sampleRate 0.2; top unsampleable at 0 (L9)" \
+  '[ "$RC" -eq 0 ] && [ "$(rstate quick)" = "none:0" ] && [ "$(rstate builder)" = "explore:0.2" ] && [ "$(rstate deep)" = "explore:0.2" ] && [ "$(rstate top)" = "unsampleable:0" ]'
 chk "RA1b the reason names what is missing, per incumbent AND configured challenger (builder: claude sonnet@medium, sonnet@high, codex gpt-6-sol@medium)" \
   '[ "$(rwhy builder)" = "claude claude-sonnet-5@high n=0 < 8; claude claude-sonnet-5@medium n=0 < 8; codex gpt-6-sol@medium n=0 < 8" ]'
 chk "RA1c .rates is the {level: rate} map triage-exec takes; asOf is the tiers file's; params echo the tuning" \
-  '[ "$(printf "%s" "$OUT" | jq -c .rates)" = "{\"quick\":0,\"builder\":0.2,\"deep\":0.2,\"top\":0.2}" ] && [ "$(printf "%s" "$OUT" | jq -r .asOf)" = "$(jq -r .asOf "$TIERS")" ] &&
+  '[ "$(printf "%s" "$OUT" | jq -c .rates)" = "{\"quick\":0,\"builder\":0.2,\"deep\":0.2,\"top\":0}" ] && [ "$(printf "%s" "$OUT" | jq -r .asOf)" = "$(jq -r .asOf "$TIERS")" ] &&
    [ "$(printf "%s" "$OUT" | jq -c .params)" = "{\"explore\":0.2,\"maintain\":0.05,\"maxWidth\":0.35,\"minN\":8}" ]'
 
 # Settled builder level: every incumbent + configured challenger at 40/40 (CI width .088), no proposal.
@@ -525,8 +525,8 @@ EOF
 mvc() { run_pr ingest-compare --tiers "$TIERS" --ledger "$1" --result "$T/mv-compare.json" --repo-name r --level deep --source inline --run mv --ts "$2"; }
 mc() { jq -r --arg l "$2" '.candidates[] | select(.label == $l) | "\(.modelId)/\(.modelIdSource)"' "$1"; }
 mvc "$T/mv-a.jsonl" 2026-09-24T09:00:00Z
-chk "MV1 ingest fills modelId + modelIdSource per case: tiers default -> pinned, alias -> inferred-by-date, candidate id -> pinned, runner-reported -> observed" \
-  '[ "$RC" -eq 0 ] && [ "$(mc "$T/mv-a.jsonl" c-null)" = "claude-sonnet-5/pinned" ] && [ "$(mc "$T/mv-a.jsonl" c-alias)" = "claude-opus-5-5/inferred-by-date" ] &&
+chk "MV1 ingest fills modelId + modelIdSource per case: tiers default (the result carried no model) -> inferred-at-ingest, alias -> inferred-by-date, candidate id -> pinned, runner-reported -> observed" \
+  '[ "$RC" -eq 0 ] && [ "$(mc "$T/mv-a.jsonl" c-null)" = "claude-sonnet-5/inferred-at-ingest" ] && [ "$(j .inferredModels[0])" = c-null ] && [ "$(mc "$T/mv-a.jsonl" c-alias)" = "claude-opus-5-5/inferred-by-date" ] &&
    [ "$(mc "$T/mv-a.jsonl" x-cand)" = "gpt-6-sol/pinned" ] && [ "$(mc "$T/mv-a.jsonl" x-run)" = "gpt-6-astra/observed" ]'
 chk "MV1b model keeps what was configured (the alias); only modelId is resolved" \
   '[ "$(jq -r ".candidates[] | select(.label == \"c-alias\") | .model" "$T/mv-a.jsonl")" = opus ]'
@@ -536,12 +536,12 @@ mvc "$T/mv-d.jsonl" 2026-08-01T00:00:00Z
 chk "MV2 inferred-by-date boundary: opus on 2026-09-22 (its from date) = claude-opus-5-5, one second earlier = claude-opus-5" \
   '[ "$(mc "$T/mv-b.jsonl" c-alias)" = "claude-opus-5-5/inferred-by-date" ] && [ "$(mc "$T/mv-c.jsonl" c-alias)" = "claude-opus-5/inferred-by-date" ]'
 chk "MV2b an alias before its first history entry stays unresolved (null/null), never guessed" \
-  '[ "$(mc "$T/mv-d.jsonl" c-alias)" = "null/null" ] && [ "$(mc "$T/mv-d.jsonl" c-null)" = "claude-sonnet-5/pinned" ]'
+  '[ "$(mc "$T/mv-d.jsonl" c-alias)" = "null/null" ] && [ "$(mc "$T/mv-d.jsonl" c-null)" = "claude-sonnet-5/inferred-at-ingest" ]'
 run_pr ingest-review --tiers "$TIERS" --ledger "$T/mv-rv.jsonl" --result "$T/review.json" --repo-name voron --ts 2026-09-24T12:00:00Z
-chk "MV3 ingest-review gives every reviewer a modelId too (opus alias inferred, tiers default pinned, codex pinned)" \
-  '[ "$(jq -r "[.reviewers[] | \"\(.label)=\(.modelId)/\(.modelIdSource)\"] | join(\",\")" "$T/mv-rv.jsonl")" = "rv-sonnet=claude-sonnet-5/pinned,rv-opus=claude-opus-5-5/inferred-by-date,rv-sol=gpt-6-sol/pinned,rv-astra=gpt-6-astra/pinned" ]'
-chk "MV3b ingest-parity lines carry modelId (a = tiers default claude-sonnet-5 pinned, x = gpt-6-astra pinned)" \
-  '[ "$(jq -r ".candidates[0] | .label + \"=\" + .modelId + \"/\" + .modelIdSource" "$PL" | paste -sd, -)" = "a=claude-sonnet-5/pinned,a-r2=claude-sonnet-5/pinned,x=gpt-6-astra/pinned" ]'
+chk "MV3 ingest-review gives every reviewer a modelId too (opus alias inferred, tiers default inferred-at-ingest, codex pinned)" \
+  '[ "$(jq -r "[.reviewers[] | \"\(.label)=\(.modelId)/\(.modelIdSource)\"] | join(\",\")" "$T/mv-rv.jsonl")" = "rv-sonnet=claude-sonnet-5/inferred-at-ingest,rv-opus=claude-opus-5-5/inferred-by-date,rv-sol=gpt-6-sol/pinned,rv-astra=gpt-6-astra/pinned" ]'
+chk "MV3b ingest-parity lines carry modelId (a = tiers default claude-sonnet-5 inferred-at-ingest, x = gpt-6-astra pinned)" \
+  '[ "$(jq -r ".candidates[0] | .label + \"=\" + .modelId + \"/\" + .modelIdSource" "$PL" | paste -sd, -)" = "a=claude-sonnet-5/inferred-at-ingest,a-r2=claude-sonnet-5/inferred-at-ingest,x=gpt-6-astra/pinned" ]'
 
 # backfill-modelid: old lines get modelId; filled rows, malformed lines and order stay.
 BL="$T/mv-backfill.jsonl"
@@ -728,6 +728,53 @@ for i in 1 2 3 4 5 6; do
 done
 wait
 chk "LI7d six concurrent ingests of one run leave exactly ONE line (check + append is one locked step), no lock left behind" '[ "$(nlines "$CC")" = 1 ] && [ ! -e "$CC.lock" ]'
+# L6 (Wave 22): a stale lock is taken over only under the <lock>.takeover mutex, and
+# only if it is still the same dir with the same dead pid — never a fresh lock.
+LT="$T/li-take.jsonl"
+mkdir "$LT.lock" "$LT.lock.takeover"; echo "$DEAD" > "$LT.lock/pid"
+PARITY_LOCK_TRIES=10 run_pr ingest-compare --tiers "$TIERS" --ledger "$LT" --result "$T/compare.json" --repo-name myrepo --level builder --source inline --run lt-1
+chk "LI7e a stale lock is NOT taken over while another waiter holds the takeover mutex (exit 1 after the tries, the stale lock left, nothing written)" \
+  '[ "$RC" -eq 1 ] && [ "$(cat "$LT.lock/pid")" = "$DEAD" ] && [ ! -e "$LT" ]'
+run_pr ingest-compare --tiers "$TIERS" --ledger "$LT" --result "$T/compare.json" --repo-name myrepo --level builder --source inline --run lt-1
+chk "LI7f a takeover mutex held ~5 s is orphaned: cleared, the stale lock taken over, the ingest lands, no lock or mutex left" \
+  '[ "$RC" -eq 0 ] && [ "$(nlines "$LT")" = 1 ] && [ ! -e "$LT.lock" ] && [ ! -e "$LT.lock.takeover" ]'
+LP="$T/li-nopid.jsonl"
+mkdir "$LP.lock"
+run_pr ingest-compare --tiers "$TIERS" --ledger "$LP" --result "$T/compare.json" --repo-name myrepo --level builder --source inline --run lp-1
+chk "LI7g a lock dir that never got a pid (holder killed before its pid write) is stale after ~5 s: taken over, the ingest lands" \
+  '[ "$RC" -eq 0 ] && [ "$(nlines "$LP")" = 1 ] && [ ! -e "$LP.lock" ] && [ ! -e "$LP.lock.takeover" ]'
+# The race itself, made deterministic with a FIFO pid file: the waiter reads a dead
+# pid, enters take_over, and blocks re-reading it; meanwhile the stale lock is
+# replaced by a FRESH live one (what a faster waiter's takeover + mkdir leaves). The
+# re-check must see a different lock dir and leave it alone.
+LR="$T/li-race.jsonl"
+mkdir "$LR.lock"; mkfifo "$LR.lock/pid"
+( PARITY_LOCK_TRIES=5 "$PR" ingest-compare --tiers "$TIERS" --ledger "$LR" --result "$T/compare.json" --repo-name myrepo --level builder --source inline --run lr-1 >/dev/null 2>&1; echo $? > "$T/race.rc" ) &
+RACE_W=$!
+(
+  exec >/dev/null 2>&1
+  printf '%s\n' "$DEAD" > "$LR.lock/pid"
+  i=0; while [ ! -d "$LR.lock.takeover" ] && [ "$i" -lt 200 ]; do sleep 0.05; i=$((i + 1)); done
+  mv "$LR.lock" "$LR.lock.old"; mkdir "$LR.lock"; echo "$$" > "$LR.lock/pid"
+  printf '%s\n' "$DEAD" > "$LR.lock.old/pid"
+) &
+RACE_F=$!
+# The watchdog never holds the suite's stdout (a pipe reader would wait for its sleep).
+( sleep 30; kill "$RACE_W" "$RACE_F" ) >/dev/null 2>&1 </dev/null & RACE_WD=$!
+wait "$RACE_W"
+kill "$RACE_F" 2>/dev/null; wait "$RACE_F" 2>/dev/null
+kill "$RACE_WD" 2>/dev/null; wait "$RACE_WD" 2>/dev/null
+chk "LI7h a takeover never removes a fresh lock that replaced the stale one it saw (re-checked under the mutex): exit 1, the live lock intact, nothing written" \
+  '[ "$(cat "$T/race.rc" 2>/dev/null)" = 1 ] && [ -f "$LR.lock/pid" ] && [ "$(cat "$LR.lock/pid")" = "$$" ] && [ ! -e "$LR" ] && [ ! -e "$LR.lock.takeover" ]'
+rm -rf "$LR.lock" "$LR.lock.old"
+CS="$T/li-conc-stale.jsonl"
+mkdir "$CS.lock"; echo "$DEAD" > "$CS.lock/pid"
+for i in 1 2 3 4 5 6 7 8; do
+  "$PR" ingest-compare --tiers "$TIERS" --ledger "$CS" --result "$T/compare.json" --repo-name myrepo --level builder --source inline --run "cs-$i" --ts 2026-09-24T10:00:00Z >/dev/null 2>&1 &
+done
+wait
+chk "LI7i eight concurrent ingests (distinct runs) racing one stale lock all land exactly once; no lock or mutex left" \
+  '[ "$(nlines "$CS")" = 8 ] && [ "$(jq -r .run "$CS" | sort -u | wc -l | tr -d " ")" = 8 ] && [ ! -e "$CS.lock" ] && [ ! -e "$CS.lock.takeover" ]'
 
 SLT="$T/li-target.jsonl"; SLN="$T/li-link.jsonl"
 head -n 3 "$BL" | jq -c 'del(.candidates[].modelId, .candidates[].modelIdSource)' > "$SLT"
@@ -875,6 +922,53 @@ jq '.items[1].verdict = "real"' "$T/review.json" > "$T/review-other.json"
 RVL_SUM=$(cksum < "$RVL")
 run_pr ingest-review --tiers "$TIERS" --ledger "$RVL" --result "$T/review-other.json" --repo-name voron
 chk "RR4 a different review result under an ingested run id, neither extended nor --resolved, is refused (exit 2)" '[ "$RC" -eq 2 ] && [ "$(cksum < "$RVL")" = "$RVL_SUM" ]'
+
+# --- W22: run-id refusals say why (M1), run-time date/model from the result (M8),
+# unsampleable levels (L9) ---------------------------------------------------------
+WL="$T/w22-ids.jsonl"
+run_pr ingest-compare --tiers "$TIERS" --ledger "$WL" --result "$T/compare.json" --repo-name myrepo --level builder --source inline --run "bakeoff-s-1~1a2b3c4d:s1"
+chk "M1a a run id with a character outside the token set is refused (exit 2, nothing written) and the message names the character" \
+  '[ "$RC" -eq 2 ] && [ ! -e "$WL" ] && printf "%s" "$ERR" | grep -qF "outside [A-Za-z0-9._:+-]: '"'"'~'"'"'"'
+run_pr ingest-compare --tiers "$TIERS" --ledger "$WL" --result "$T/compare.json" --repo-name myrepo --level builder --source inline --run "$(printf 'r%.0s' $(seq 1 81))"
+chk "M1b an 81-character run id is refused (exit 2) and the message gives its length and the limit" \
+  '[ "$RC" -eq 2 ] && [ ! -e "$WL" ] && printf "%s" "$ERR" | grep -q "is 81 characters (the limit is 80)"'
+run_pr ingest-compare --tiers "$TIERS" --ledger "$WL" --result "$T/compare.json" --repo-name myrepo --level builder --source inline --task "a b" --run ok-1
+chk "M1c a --task refusal says why too (the space)" '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q "^parity-report: USAGE: --task must be an id token.*outside"'
+for sep in + .; do
+  run_pr ingest-compare --tiers "$TIERS" --ledger "$WL" --result "$T/compare.json" --repo-name myrepo --level builder --source inline --run "bakeoff-s-1${sep}1a2b3c4d:s1"
+  chk "M1d a hashed run id joined with '$sep' (triage-exec's long-basename form) is accepted" '[ "$RC" -eq 0 ] && [ "$(j .lines)" = 1 ]'
+done
+
+ML="$T/w22-m8.jsonl"
+jq '.ts = "2026-09-20T08:00:00-04:00" | .candidates[0].model = "claude-sonnet-4" | .candidates[0].effort = "high" | .candidates[0].modelFrom = "tiers"' "$T/compare.json" > "$T/m8-carried.json"
+run_pr ingest-compare --tiers "$TIERS" --ledger "$ML" --result "$T/m8-carried.json" --repo-name myrepo --level builder --source inline --run m8-1
+chk "M8a the run-time ts the result carries is the line's ts (UTC), tsSource result" \
+  '[ "$RC" -eq 0 ] && [ "$(jq -r ".ts + \" \" + .tsSource" "$ML")" = "2026-09-20T12:00:00Z result" ] && [ "$(j .tsSource)" = result ]'
+chk "M8b the run-time model the result carries is ledgered as is (pinned), never replaced by today's tiers default" \
+  '[ "$(jq -r ".candidates[0] | .model + \"@\" + .effort + \"/\" + .modelIdSource" "$ML")" = "claude-sonnet-4@high/pinned" ] && [ "$(j .inferredModels)" = null ]'
+jq 'del(.ts)' "$T/compare.json" > "$T/m8-bare.json"
+run_pr ingest-compare --tiers "$TIERS" --ledger "$ML" --result "$T/m8-bare.json" --repo-name myrepo --level builder --source inline --run m8-2
+chk "M8c a result with no ts and no model: today's behaviour (now, tiers default), FLAGGED: tsSource and modelIdSource inferred-at-ingest" \
+  '[ "$RC" -eq 0 ] && [ "$(tail -n 1 "$ML" | jq -r ".tsSource + \" \" + .candidates[0].modelIdSource")" = "inferred-at-ingest inferred-at-ingest" ] && [ "$(j .inferredModels[0])" = claude-builder ] && [ "$(j .tsSource)" = inferred-at-ingest ]'
+run_pr report --json --tiers "$TIERS" --ledger "$ML"
+chk "M8d inferred-at-ingest rows still count (they are flagged, not dropped)" \
+  '[ "$RC" -eq 0 ] && [ "$(printf "%s" "$OUT" | jq -r "[.groups[] | select(.modelId == \"claude-sonnet-5\") | .n] | add")" = 1 ]'
+
+run_pr rates --json --tiers "$TIERS" --ledger "$T/none.jsonl"
+chk "L9a top (claude is never a top bake-off, the only codex challenger IS the codex incumbent) is unsampleable at rate 0, and the reason says why" \
+  '[ "$(rstate top)" = "unsampleable:0" ] && rwhy top | grep -q "runFable" && rwhy top | grep -q "claude claude-fable-5-1@xhigh, codex gpt-6-astra@xhigh"'
+jq '.tuning.challengers.top.codex = [{"model": "gpt-6-astra", "effort": "high"}]' "$TIERS" > "$T/tiers-top2.json"
+RL="$T/w22-top.jsonl"; : > "$RL"
+gen top codex gpt-6-astra xhigh pass 40; gen top codex gpt-6-astra high pass 40
+run_pr rates --json --tiers "$T/tiers-top2.json" --ledger "$RL"
+chk "L9b a reachable top (a codex challenger other than the incumbent) settles to maintain: fable (no inline path) is no gap, only named as unreachable" \
+  '[ "$(rstate top)" = "maintain:0.05" ] && rwhy top | grep -q "^settled" && rwhy top | grep -q "not reachable by inline bake-offs (suite runs only): claude claude-fable-5-1@xhigh$"'
+: > "$RL"; gen top codex gpt-6-astra xhigh pass 40
+run_pr rates --json --tiers "$T/tiers-top2.json" --ledger "$RL"
+chk "L9c ...while a reachable config is short it explores, naming only reachable gaps" \
+  '[ "$(rstate top)" = "explore:0.2" ] && rwhy top | grep -q "^codex gpt-6-astra@high n=0 < 8 — not reachable" && ! rwhy top | grep -q "fable-5-1@xhigh n="'
+run_pr report --tiers "$TIERS" --ledger "$T/none.jsonl"
+chk "L9d the markdown report shows the unsampleable state in the sampling table" 'printf "%s" "$OUT" | grep -q "^| top | unsampleable | 0 | no inline bake-off can run at top"'
 
 echo ""
 echo "RESULT: $PASS_COUNT passed, $FAIL_COUNT failed"

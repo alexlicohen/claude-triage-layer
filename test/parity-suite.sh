@@ -16,7 +16,8 @@
 # verify-task (ok, pre-solved base, broken solution, non-applying solution,
 # review keys); the $HOME-path lint; the PARITY_ env map (verify-task export,
 # unmapped => exit 2, .parity-env only with selfCheckEnv and never in a diff);
-# fingerprint (HEAD move, tree/content change, ignored files incl. the cap,
+# fingerprint (HEAD move, tree/content change, ignored files incl. the cap and
+# the shared exclusion list, pinned to stage-worktree.sh ignored,
 # refs/stash/config/hooks, generator marked unguarded, refusals);
 # score-review math; parity-cost.sh on a synthetic transcript (a corrupt line skipped).
 # shellcheck disable=SC2034  # values are read inside chk's eval'd conditions
@@ -417,15 +418,21 @@ fpf; FI2="$OUT"
 chk "F11b: a new ignored file changes ignored" '[ "$(j .ignored)" != "$(printf "%s" "$FI1" | jq -r .ignored)" ]'
 : > "$FI/.DS_Store"
 fpf; chk "F11c: a (gitignored) Finder .DS_Store is not a change" '[ "$OUT" = "$FI2" ]'
-export PARITY_FP_IGNORED_CAP=3
+export STAGE_WT_IGN_LIST_MAX=3
 fpf; FIC="$OUT"
 printf 'x2\n' > "$FI/.venv/lib/m5.py"
-fpf; chk "F11d: past PARITY_FP_IGNORED_CAP (3, shallowest first) a deep file edit is not seen..." '[ "$OUT" = "$FIC" ]'
+fpf; chk "F11d: past the shared list cap (STAGE_WT_IGN_LIST_MAX 3, shallowest first) a deep file edit is not seen..." '[ "$OUT" = "$FIC" ]'
 printf 'v3\n' > "$FI/run.log"
 fpf; chk "F11e: ...but a shallow cache file still is (it sorts before the deep ones)" '[ "$(j .ignored)" != "$(printf "%s" "$FIC" | jq -r .ignored)" ]'
 FIC="$OUT"; printf 'n\n' > "$FI/.venv/lib/m6.py"
 fpf; chk "F11f: ...and a new file anywhere changes the count" '[ "$(j .ignored)" != "$(printf "%s" "$FIC" | jq -r .ignored)" ]'
-unset PARITY_FP_IGNORED_CAP
+unset STAGE_WT_IGN_LIST_MAX
+fpf; FIG="$OUT"
+printf '.claude/\nPROJECT_MEMORY*.md\n' >> "$FI/.git/info/exclude"
+mkdir -p "$FI/.claude/agent-memory"; printf 'note\n' > "$FI/.claude/agent-memory/m.md"; printf 'e\n' > "$FI/PROJECT_MEMORY.md"
+fpf; chk "F11g: ignored agent bookkeeping (.claude/, PROJECT_MEMORY*.md) is not a change — the ONE exclusion list a compare's leakcheck uses too" '[ "$OUT" = "$FIG" ]'
+chk "F11h: ignored IS the hash of stage-worktree.sh ignored (one owner of the rule, M10)" \
+  '[ "$(j .ignored)" = "$("$SCRIPT_DIR/../scripts/stage-worktree.sh" ignored --repo "$FI" | git hash-object --stdin)" ]'
 fpf; FR0="$OUT"
 git -C "$FI" branch side
 fpf; FR1="$OUT"

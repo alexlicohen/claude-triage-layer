@@ -121,6 +121,8 @@ async function throws(args, opts) {
 }
 
 const A = extra => Object.assign({ suite: SUITE, outDir: OUT, desk: false }, extra)
+// A codex judge's reply as triage-cross-reviewer relays it (header first).
+const JUDGE_OK = 'CROSS-REVIEW (codex · review · exit 0)\n{"score": 0.9, "rationale": "r"}\next-run: 10 tokens (1s, codex/gpt-6-astra)'
 const C = (vendor, level, label, extra) => Object.assign({ vendor, level, label }, extra || {})
 const rank = (result, l) => result.ranking.find(r => r.label === l) || {}
 const cellOf = (result, id, l) => ((result.tasks.find(t => t.id === id) || { results: [] }).results.find(r => r.runLabel === l) || {})
@@ -408,7 +410,7 @@ const cellOf = (result, id, l) => ((result.tasks.find(t => t.id === id) || { res
 {
   const tasks = [task('t1', 1), task('rb', 2, { grading: 'rubric', key: 'key.md', vendors: ['claude'] }), task('rv', 3, { kind: 'review', grading: 'seeded', key: 'key.json', checks: [], vendors: ['claude'] })]
   const { calls, wf, result } = await run(A({ desk: true, candidates: [C('claude', 'builder', 'b'), C('codex', 'builder', 'x')] }), {
-    tasks, script: { 'judge:claude-deep': [{ score: 0.9 }], 'judge:codex-deep': ['{"score": 0.9}'], 'candidate:b@rv': [{ findings: [] }], 'score:rv': [{ scores: [{ label: 'b', recall: 1, precision: 1 }] }] },
+    tasks, script: { 'judge:claude-deep': [{ score: 0.9 }], 'judge:codex-deep': [JUDGE_OK], 'candidate:b@rv': [{ findings: [] }], 'score:rv': [{ scores: [{ label: 'b', recall: 1, precision: 1 }] }] },
   })
   const text = calls.map(c => c.prompt).join('\n') + JSON.stringify(wf.map(w => w.args))
   chk('P11: no prompt or nested workflow arg mentions tiers.json, tiers-sync or make tiers', !/tiers\.json|tiers-sync|make tiers/.test(text))
@@ -457,7 +459,7 @@ const cellOf = (result, id, l) => ((result.tasks.find(t => t.id === id) || { res
   const t2 = task('t2', 2)
   const rb = task('rb', 1, { grading: 'rubric', key: 'key.md', vendors: ['claude'] })
   const rv = task('rv', 1, { kind: 'review', grading: 'seeded', key: 'key.json', checks: [], overlay: null, vendors: ['claude'] })
-  const base = { 'candidate:a@rv': [{ findings: [] }], 'score:rv': [{ scores: [{ label: 'a', recall: 1, precision: 1 }] }], 'judge:claude-deep': [{ score: 0.9 }], 'judge:codex-deep': ['{"score": 0.9}'] }
+  const base = { 'candidate:a@rv': [{ findings: [] }], 'score:rv': [{ scores: [{ label: 'a', recall: 1, precision: 1 }] }], 'judge:claude-deep': [{ score: 0.9 }], 'judge:codex-deep': [JUDGE_OK] }
   // No change: every kind is fingerprinted before (in the materialize spawn,
   // BEFORE the materialize command) and after grading, and the grades stand.
   const ok = await run(A({ bands: [1], candidates: [C('claude', 'builder', 'a')] }), { tasks: [t1, rb, rv], script: base })
@@ -558,6 +560,62 @@ const cellOf = (result, id, l) => ((result.tasks.find(t => t.id === id) || { res
   const w2 = wf.find(w => w.args.outDir === `${OUT}/1/t2/cmp`)
   chk('P14: an opted-in task passes selfCheckEnv:true; checks go through with $PARITY_ unexpanded', w1 && w1.args.selfCheckEnv === true && w1.args.checks[0] === '"$PARITY_PY" -m pytest')
   chk('P14: a task that did not opt in passes no selfCheckEnv', w2 && !('selfCheckEnv' in w2.args))
+}
+
+// ---- P16 (H4): codex judges and external review candidates are read by
+// classifyCrossReview() — only a positive `CROSS-REVIEW (` header is work; a preamble
+// then REFUSED:/UNAVAILABLE:, or a reply with no verdict line, is never scored.
+{
+  const rb = [task('rb', 1, { grading: 'rubric', key: 'key.md', vendors: ['claude'] })]
+  const judged = async codexReply => run(A({ bands: [1], candidates: [C('claude', 'builder', 'a')] }),
+    { tasks: rb, script: { 'judge:claude-deep': [{ score: 0.9 }], 'judge:codex-deep': [codexReply] } })
+  const ok = await judged(`Relaying the reply.\n${JUDGE_OK}`)
+  chk('P16: a preamble then the CROSS-REVIEW ( header → the codex judge scores', cellOf(ok.result, 'rb', 'a').status === 'pass' && cellOf(ok.result, 'rb', 'a').judges['codex-deep'] === 0.9)
+  const raw = await judged('{"score": 0.9, "rationale": "r"}')
+  chk('P16: a judge reply with a score but NO header → no score (unresolved, never pass)',
+    cellOf(raw.result, 'rb', 'a').status === 'unresolved' && cellOf(raw.result, 'rb', 'a').judges['codex-deep'] === null)
+  const pre = await judged('I ran ext-run.\nREFUSED: bad TIMEOUT 99x\n{"score": 0.9}')
+  chk('P16: a preamble then REFUSED: (score JSON after it) → no score, unresolved', cellOf(pre.result, 'rb', 'a').status === 'unresolved')
+
+  const rv = [task('rv', 1, { kind: 'review', grading: 'seeded', key: 'key.json', checks: [], overlay: null, vendors: ['claude', 'codex'] })]
+  const F = '{"findings":[{"file":"calc.sh","line":2,"desc":"d"}]}'
+  const { result, calls } = await run(A({ bands: [1], candidates: [C('codex', 'deep', 'xpre'), C('codex', 'deep', 'xraw'), C('codex', 'deep', 'xunav'), C('codex', 'deep', 'xok')] }), {
+    tasks: rv,
+    script: {
+      'candidate:xpre@rv': [`Here is the wrapper's answer.\nREFUSED: the repo's AGENTS.md forbids external agents\n${F}`],
+      'candidate:xraw@rv': [`${F}\next-run: 50 tokens (2s, codex/gpt-6-sol)`],
+      'candidate:xunav@rv': ['Waiting.\n  UNAVAILABLE: codex exited 4'],
+      'candidate:xok@rv': [`Relayed below.\nCROSS-REVIEW (codex · read · exit 0)\n${F}\next-run: 50 tokens (2s, codex/gpt-6-sol)`],
+      'score:rv': [p => ({ scores: [...p.matchAll(/--findings '[^']*\/([^/']+)\.json'/g)].map(m => ({ label: m[1], recall: 1, precision: 1 })) })],
+    },
+  })
+  const sc = calls.find(c => c.label === 'score:rv')
+  chk('P16: review row — a preamble then REFUSED: → unavailable (the refusal named), never scored',
+    cellOf(result, 'rv', 'xpre').status === 'unavailable' && /^REFUSED: the repo's AGENTS\.md/.test(cellOf(result, 'rv', 'xpre').reason) && !sc.prompt.includes('xpre.json'))
+  chk('P16: review row — findings JSON with no header → unavailable (MALFORMED), never scored',
+    cellOf(result, 'rv', 'xraw').status === 'unavailable' && /^MALFORMED: /.test(cellOf(result, 'rv', 'xraw').reason) && !sc.prompt.includes('xraw.json'))
+  chk('P16: review row — a preamble then an indented UNAVAILABLE: → unavailable', cellOf(result, 'rv', 'xunav').status === 'unavailable' && /^UNAVAILABLE: codex exited 4/.test(cellOf(result, 'rv', 'xunav').reason))
+  chk('P16: review row — a preamble then the CROSS-REVIEW ( header → scored (pass), tokens from its ext-run line',
+    cellOf(result, 'rv', 'xok').status === 'pass' && cellOf(result, 'rv', 'xok').totalTokens === 50 && sc.prompt.includes('xok.json'))
+  chk('P16: no-work rows count as other, never as a fail', rank(result, 'xraw').perBand[1].fail === 0 && rank(result, 'xraw').perBand[1].other === 1)
+}
+
+// ---- P17 (L13): ONE hash constant for shas and fingerprint hashes ---------------
+{
+  chk('P17: triage-parity.js has no second copy of the hash regex (FP_HASH gone; SHA_RE is the one constant)',
+    !/FP_HASH/.test(src) && (src.match(/\/\^\[0-9a-f\]\{40\}\(\[0-9a-f\]\{24\}\)\?\$\//g) || []).length === 1)
+  const t1 = task('t1', 1)
+  const bad = await run(A({ bands: [1], candidates: [C('claude', 'builder', 'a')] }), {
+    tasks: [t1], script: { 'materialize:': [p => ({ fingerprint: FP('t1', { tree: 'd'.repeat(39) }), repo: `${OUT}/1/t1/mat/repo`, sha: SHA, denied: { codex: false } })] },
+  })
+  chk('P17: a fingerprint hash of the wrong shape is still refused (unavailable, no compare)', bad.wf.length === 0 && cellOf(bad.result, 't1', 'a').status === 'unavailable')
+  const s256 = await run(A({ bands: [1], candidates: [C('claude', 'builder', 'a')] }), {
+    tasks: [t1], script: {
+      'materialize:': [p => ({ fingerprint: FP('t1', { tree: 'd'.repeat(64), refs: 'f'.repeat(64) }), repo: `${OUT}/1/t1/mat/repo`, sha: SHA, denied: { codex: false } })],
+      'source:': [p => FP(fpId(p), { tree: 'd'.repeat(64), refs: 'f'.repeat(64) })],
+    },
+  })
+  chk('P17: a sha256-length fingerprint hash is accepted (grades stand)', cellOf(s256.result, 't1', 'a').status === 'pass')
 }
 
 console.log('')
