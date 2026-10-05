@@ -78,6 +78,12 @@ every turn).
   the headline; check `CUM_OUT` in `-v` when output cost matters.
 - **Live sessions grow.** Running mid-session counts subagents in progress; totals rise as
   those agents append. The result is deterministic for a given on-disk state.
+- **One record per message.** Claude Code writes a message's usage on every line of it (one
+  per content block); repeated message ids are deduplicated (the last line of each id kept), so
+  `CUM_*` count each message once. Records without an id stand alone.
+- **A corrupt line is skipped, not the end of the file** (e.g. the partial trailing line of a
+  transcript still being written): each transcript is parsed line by line, the later records
+  still count, and the skip is warned on stderr after the headline (stdout stays the one line).
 - **Per-family attribution uses the transcript's `model` field** (ground truth), so a
   read-only reviewer running on Opus is counted under `opus`, matching its actual model.
 
@@ -128,7 +134,10 @@ Usage: triage-stats.sh [--project DIR | --all] [--weeks N]
 
 The **same** on-disk layout `triage-usage.sh` documents (see above): each spawned subagent's
 `agent-<id>.jsonl` transcript and its `agent-<id>.meta.json` sidecar, under
-`~/.claude/projects/<slug>/<session-id>/subagents/`. The orchestrator's own `<session-id>.jsonl`
+`~/.claude/projects/<slug>/<session-id>/subagents/` — workflow subagents included
+(`subagents/workflows/wf_*/…`, at any depth), each attributed to its own `<session-id>` (the dir
+holding the last `/subagents/` in its path), never to `workflows` or a `wf_*` run id. The
+orchestrator's own `<session-id>.jsonl`
 is **never** opened — *orchestrator excluded*, exactly as in `triage-usage.sh`. Read-only; counts
 only, never message content. One `jq` pass per transcript and one per sidecar — no file is re-read.
 
@@ -656,7 +665,12 @@ stage-worktree.sh diff      --worktree W --base SHA --out FILE
 stage-worktree.sh leakcheck --repo R --dir D [--line]
 stage-worktree.sh cleanup   --repo R --dir D
 stage-worktree.sh apply     --repo R --patch P [--require-clean]
+stage-worktree.sh ignored   --repo R
 ```
+
+`ignored` lists R's gitignored files with size and sub-second mtime, shallowest first: the one owner of
+the real-repo leak fingerprint's IGNORED part. `leakcheck`, `review-stage.sh fingerprint` (its `ignored`
+field) and `parity-suite.sh fingerprint` all call it.
 
 `workflows/triage-compare.js` never gives a candidate the real repo as its working directory.
 `create` resolves REV to a sha **once**, fingerprints R (HEAD, `status --porcelain=v1 -uall`,
@@ -672,9 +686,10 @@ refuses a main working tree, so it can never stage into R's index. `leakcheck` c
 the fingerprint: `CLEAN` (exit 0); `LEAK` (exit 7) when, with HEAD unchanged, the status or any
 path's content changed, or, with HEAD moved, any path's content changed; `BASE_MOVED` (exit 0,
 flagged) when someone committed and nothing else changed — grading stays at the recorded sha.
-The fingerprint's IGNORED-path coverage (bounded — content hash for the first 2000 up to 256
+The fingerprint's IGNORED-path coverage (`stage-worktree.sh ignored`, the one owner: sub-second mtimes,
+shallowest first, `STAGE_WT_IGN_LIST_MAX` a test knob; bounded — content hash for the first 2000 up to 256
 KiB, size+mtime for the rest, at most 100000 listed) catches a candidate's accidental cache or
-build-output write too, but always excludes `.claude/` and `PROJECT_MEMORY*.md`: agent
+build-output write too, but always excludes `.claude/`, `PROJECT_MEMORY*.md` and `.DS_Store`: agent
 bookkeeping writes them by design while a bake-off runs, so they are never a leak. `--line`
 prints the same object plus `rc` as ONE line `LEAKCHECK {json}` — the single line a relay copies
 verbatim (`workflows/triage-compare.js` parses it and cross-checks it, alongside `patch-check.sh
@@ -689,8 +704,8 @@ candidate's patch P. Only an apply proven clean first is written: `git apply --c
 --3way --check`, which exits 0 even when the merge WOULD conflict, so it counts as clean only
 with rc 0 **and** no `conflict` in its output, then `git apply --3way`; else nothing is written
 and the exit is **6** with R byte-identical. `--require-clean` checks first that every path P
-touches (`git apply --numstat`, both sides of a rename) is unmodified and not untracked in R,
-else exit 6 with nothing written — a patch never lands on top of the caller's own uncommitted
+touches (`git apply --numstat` plus every rename/copy source from the patch headers) is unmodified and
+not untracked in R, else exit 6 with nothing written (a failed status or path listing is exit 6 too) — a patch never lands on top of the caller's own uncommitted
 work; `triage-exec`'s inline bake-offs always pass it. An empty P is a no-op success. It prints
 `{step:"apply", repo, patch, ok, applied, method: plain|3way|empty|none, treeModified, error?}`.
 `treeModified` is whether the paths P touches (index entries and files) differ from before the
@@ -769,7 +784,8 @@ manifest, a missing or erroring `ext-run.sh` => `codexDenied: true`); when denie
 `fingerprint` is the review's SOURCE_CHANGED guard, scoped to its paths: `{step, head, paths,
 status (git status --porcelain=v1 -uall --no-renames -- paths), tree (a hash over the content of
 every changed/untracked path there, so a second edit to a dirty file counts), committed (a hash
-over HEAD's blobs at the paths)}`, hard-excluded paths left out of all three, read-only
+over HEAD's blobs at the paths), ignored (the hash of `stage-worktree.sh ignored`, compared only when
+both fingerprints carry it; a difference is `IGNORED_CHANGED`)}`, hard-excluded paths left out of all three, read-only
 (`--no-optional-locks`). `compare` exits 0 when status, tree and committed are equal — a change
 outside the paths, or HEAD moving by a commit outside them, is no change (`headMoved` says so) —
 and **7** otherwise, printing `{step, same, changed, headMoved, detail}`.
@@ -955,8 +971,7 @@ Without the opt-in, candidates are told the checks run only at grading.
 directory's name (never its path), `head` its HEAD sha, `tree` one hash over `git status
 --porcelain=v1 -uall` and the content of every modified or untracked non-ignored file (so a
 second edit to an already-dirty file changes it too); `ignored` is one hash over the IGNORED
-files — their count plus size/mtime of the first `PARITY_FP_IGNORED_CAP` (default 5000,
-shallowest paths first) — catching a candidate or a grader regenerating a gitignored cache
+files — the hash of `stage-worktree.sh ignored` (the one leak-fingerprint rule) — catching a candidate or a grader regenerating a gitignored cache
 (e.g. grant-forge's) in the real source repo; `refs` is one hash over `refs/heads`, `refs/tags`
 and `refs/stash` (a branch/tag/stash change that touches no tree and no HEAD). Everything runs
 with `--no-optional-locks`, so not even the index is refreshed. A generator source has no source
@@ -1012,7 +1027,9 @@ orchestrator saves a result as JSON, ingests it here, then runs `report`. It nev
 tiers.json (a `--ledger` that is the tiers file is refused) — Alex approves every change.
 `ingest-compare` **requires** `--run` (a globally unique run id — its own idempotence key,
 since a compare result carries no run id of its own); `ingest-parity` and `ingest-review` still
-default it to the result's outDir basename.
+default it to the result's outDir basename. Every run id (and `--task`) is an id token: letters,
+digits, `. _ : + -`, 1–80 characters; a refusal says why (the offending characters, e.g. `'~'`,
+or the length) so the caller that built the id can be fixed from the message.
 
 **After a manual `triage-compare` (orchestrator recipe).** The compare never applies anything:
 pick a candidate (or ask the user), `git apply` its patch, re-run the checks, then ingest — the
@@ -1023,8 +1040,12 @@ Inline bake-offs inside `triage-exec` apply on their own; the orchestrator only 
 
 **Concurrency and idempotence.** Every ledger write (`ingest-*`, `migrate`, `backfill-modelid`)
 holds ONE lock, `<real ledger>.lock` (a `mkdir` lock recording the holder's pid; a lock whose pid
-is dead is taken over), across its read-check-append or its snapshot-validate-replace — so two
-writers never interleave. `PARITY_LOCK_TRIES` (default 300 tries × 0.1s) bounds the wait; still
+is dead, or that has no pid ~5 s after it appeared, is taken over), across its read-check-append
+or its snapshot-validate-replace — so two writers never interleave. The takeover is atomic: it
+runs under a second mutex, `<lock>.takeover`, and removes the lock only if it is still the same
+lock dir (inode) with the same stale pid — two waiters that saw one stale lock never both take it,
+and a takeover never removes the fresh lock another waiter has just made. A mutex older than ~5 s
+is orphaned and cleared; a holder releases only a lock whose pid is its own. `PARITY_LOCK_TRIES` (default 300 tries × 0.1s) bounds the wait; still
 locked after that is exit 1 with nothing written. A symlinked ledger is written through to its
 target (`real_path()` follows the symlink chain; the link itself is never replaced) — `backfill-
 modelid`'s rename lands on the target, not the link. Each new line carries `runHash` — a hash of
@@ -1050,7 +1071,7 @@ checks, tails, diffstats or paths from the target repo (`repoName` is a bare nam
 and labels are id tokens; anything else is refused with exit 2 and nothing written):
 
 ```
-{"v":1, "ts":"<ISO>", "source":"inline|suite", "run":<id|null>, "repoName":"<name>",
+{"v":1, "ts":"<ISO>", "tsSource":"option|result|inferred-at-ingest", "source":"inline|suite", "run":<id|null>, "repoName":"<name>",
  "level":"quick|builder|deep|top", "band":<1-4, suite lines only>, "task":<id|null>,
  "candidates":[{"label","vendor","model","effort","status","totalTokens","seconds","modelId","modelIdSource"}],
  "applied":<label|null>, "migrated":"vendor-parity.jsonl" (migrated lines only), "runHash":<hex>}
@@ -1058,14 +1079,19 @@ and labels are id tokens; anything else is refused with exit 2 and nothing writt
 
 `ts` is always stored as UTC (`YYYY-MM-DDTHH:MM:SSZ`): an offset in `--ts` or the result's own
 `ts` is honored and converted, no zone means UTC, a bare date means midnight UTC, fractions are
-dropped. The run's time is `--ts`, else the result's own top-level `ts`, else now; a `--ts` that
-disagrees with the result's own `ts` is refused. `PARITY_TODAY=YYYY-MM-DD` overrides "today" for
+dropped. The run's time is `--ts`, else the result's own top-level `ts` (the run-time date the
+result carries), else now; `tsSource` records which (`option`, `result`, or `inferred-at-ingest`
+when the ingest time stood in for the run time); a `--ts` that disagrees with the result's own
+`ts` is refused. `PARITY_TODAY=YYYY-MM-DD` overrides "today" for
 alias resolution and `tuning.rejected` expiry (tests only; unset in normal use uses the real UTC
 date).
 
 **Model versions** (Wave 15). `model` keeps what was configured; `modelId` is the concrete
 version it ran on and `modelIdSource` says how that is known: `pinned` (a concrete id was
-configured — the tiers entry or the candidate), `observed` (the runner reported it: a
+configured for the run — the result carried it), `inferred-at-ingest` (the result carried no
+model, so the tiers default as it is at INGEST time was filled in — wrong if tiers changed since
+the run; the row still counts, flagged; `ingest-*` lists such candidates in `inferredModels`),
+`observed` (the runner reported it: a
 triage-compare candidate with `modelFrom: "runner"`, from ext-run's `vendor/model` line) or
 `inferred-by-date` (a bare alias resolved through the tiers file's `aliasHistory`
 `{vendor: {alias: [{id, from: "YYYY-MM-DD"}]}}`: the last entry with `from` ≤ the line's UTC
@@ -1172,8 +1198,15 @@ sampling rate per **level**, from the same groups and proposals:
 | State | When | Rate |
 |---|---|---|
 | `none` | no challenger configured at the level (`tuning.challengers`; quick today) | 0 |
-| `maintain` | for every vendor with a `levels` entry or configured challengers there: the incumbent and every configured challenger have n ≥ minN, each Wilson 95% interval is ≤ `maintain.maxWidth` wide, and no proposal is pending for that level × vendor | `maintain.rate` |
+| `unsampleable` | challengers are configured but no inline bake-off can ever run there (top today: claude never runs a top bake-off — Fable spawns only via `runFable()` — nor challenges at top, and the only codex challenger is the codex incumbent itself); `reason` says so | 0 |
+| `maintain` | for every vendor with a `levels` entry or configured challengers there: the incumbent and every configured challenger that inline bake-offs can reach have n ≥ minN, each Wilson 95% interval is ≤ `maintain.maxWidth` wide, and no proposal is pending for that level × vendor | `maintain.rate` |
 | `explore` | otherwise; `reason` names every gap (`codex gpt-6-sol@medium n=3 < 8`, a CI width, a pending proposal) | `sampleRate` |
+
+Reachability mirrors triage-exec's `bakeoffPick()`: a config gets inline data only as a planner
+(an incumbent with at least one other drawable challenger) or as a challenger (drawable against
+some planner; never claude at top, never equal to the planned config). A config no inline
+bake-off can reach is never a gap — it would hold its level at `explore` forever — and the reason
+names it as "not reachable by inline bake-offs (suite runs only)".
 
 A `rejected` challenger (`tuning.rejected`) is no proposal, so it is no gap either — it does not
 by itself force `explore`.

@@ -22,6 +22,8 @@
 #         agent-<agentId>.jsonl        <- one subagent transcript (assistant lines carry
 #                                         .message.model, .message.usage, and .timestamp)
 #         agent-<agentId>.meta.json    <- {agentType, description, toolUseId, spawnDepth}
+#         workflows/wf_*/agent-<agentId>.jsonl (+ .meta.json)  <- workflow subagents, same
+#                                         session: attributed to <session-id>, not wf_*
 #   Only subagent transcripts are read; the orchestrator's own <session-id>.jsonl is never
 #   opened ("orchestrator excluded"), matching triage-usage.sh.
 #
@@ -213,8 +215,11 @@ while IFS= read -r f; do
     fi
   fi
 
-  # session id = the dir two levels up from the transcript (.../<sess>/subagents/agent-*.jsonl)
-  sess="$(basename "$(dirname "$(dirname "$f")")")"
+  # session id = the dir that holds the transcript's subagents/ dir: direct agents are
+  # .../<sess>/subagents/agent-*.jsonl, workflow agents .../<sess>/subagents/workflows/
+  # wf_*/[...]/agent-*.jsonl — so the LAST "/subagents/" in the path marks the session
+  # at any depth (never "workflows" or a wf_* run id standing in for one).
+  sess="${f%/subagents/*}"; sess="${sess##*/}"
 
   # meta.json: ONE jq pass returns agentType + two booleans (has-description, matches an
   # escalation marker). The description text is tested INSIDE jq and never enters the shell.

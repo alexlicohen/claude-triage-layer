@@ -50,7 +50,7 @@ const STAGED = (prompt, over = {}) => {
 // The grade reply, built from the grade prompt itself: one diff line per
 // `stage-worktree.sh diff` command (ok unless the label is in opts.badDiff), the
 // PATCHCHECK line — one result per patch patch-check was given, in that order, for
-// each label in {label: [applies, rc, error?, files?]} (a label left out makes the
+// each label in {label: [applies, rc, error?, files?, diffstat?]} (a label left out makes the
 // line not match the graded patches) — and the LEAKCHECK line. opts: base (the sha
 // patch-check reports), pcLine / lkLine (a raw line instead), diffExtra {label: {…}}.
 const FIN = (rows, { leak = 'CLEAN', rc, badDiff = [], leakField, baseMoved, base = SHA, pcLine, lkLine, diffExtra = {}, lkSha = SHA } = {}) => prompt => {
@@ -64,8 +64,8 @@ const FIN = (rows, { leak = 'CLEAN', rc, badDiff = [], leakField, baseMoved, bas
   const results = given.map((p, i) => {
     const label = p.replace(/^.*\//, '').replace(/\.patch$/, '')
     if (!(label in rows)) return null
-    const [applies, rc2, error, fl] = rows[label]
-    return Object.assign({ patch: p, applies, rc: rc2, diffstat: applies ? '1 file changed, 1 insertion(+)' : '', files: fl || (applies ? ['calc.txt'] : []), filesTruncated: false,
+    const [applies, rc2, error, fl, ds] = rows[label]
+    return Object.assign({ patch: p, applies, rc: rc2, diffstat: ds != null ? ds : applies ? '1 file changed, 1 insertion(+)' : '', files: fl || (applies ? ['calc.txt'] : []), filesTruncated: false,
       tailFile: `/o/out/tails/${i + 1}.tail` }, error != null ? { error } : {})
   }).filter(Boolean)
   const patchcheckLine = pcLine != null ? pcLine : given.length ? `PATCHCHECK ${JSON.stringify({ base, results })}` : ''
@@ -667,8 +667,9 @@ const repoAsWorkdir = p => /(^|\s)cd\s+'?\/r\/repo'?(\s|$|\/)/.test(p) || /WORKD
   const { result, logs } = await run(A({ files: ['calc.txt', 'lib'], candidates: [
     { vendor: 'claude', level: 'builder', label: 'in' }, { vendor: 'claude', level: 'deep', label: 'out' }, { vendor: 'claude', level: 'deep', label: 'dir' }] }),
   { 'candidate:': ['done'], 'grade:': [FIN({ in: [true, 0, null, ['calc.txt']], out: [true, 0, null, ['calc.txt', 'Makefile']], dir: [true, 0, null, ['lib/x.js']] })] })
-  chk('C22: a patch within files is in scope; one touching another path is outOfScope (grade still stands)',
-    byLabel(result, 'in').outOfScope === false && byLabel(result, 'out').outOfScope === true && byLabel(result, 'out').status === 'pass' &&
+  chk('C22: a patch within files is in scope; one touching another path is outOfScope (M6: its checks-green "pass" is invalid, never a ledger pass)',
+    byLabel(result, 'in').outOfScope === false && byLabel(result, 'out').outOfScope === true && byLabel(result, 'out').status === 'invalid' &&
+    /^OUT OF SCOPE/.test(byLabel(result, 'out').tail) && byLabel(result, 'in').status === 'pass' &&
     JSON.stringify(byLabel(result, 'out').changedFiles) === '["calc.txt","Makefile"]')
   chk('C22: a path under a listed directory is in scope', byLabel(result, 'dir').outOfScope === false)
   chk('C22: the out-of-scope path is logged', logs.some(l => l.startsWith('⚠ out: its patch changes paths outside') && l.includes('Makefile')))
@@ -707,6 +708,94 @@ const repoAsWorkdir = p => /(^|\s)cd\s+'?\/r\/repo'?(\s|$|\/)/.test(p) || /WORKD
   chk('C24: ignoredNew / gitlinks from the diff reach captureWarnings and the log; a clean capture has none',
     JSON.stringify(byLabel(result, 'a').captureWarnings) === JSON.stringify(['2 new ignored file(s) not in the patch', 'gitlink(s) without content: vendored']) &&
     byLabel(result, 'b').captureWarnings === null && logs.some(l => l.startsWith('⚠ a: 2 new ignored')))
+}
+
+// ---- C25 (H4): an external candidate's reply is read by classifyExternal() — only a
+// positive `EXTERNAL (` header is work; a preamble before REFUSED:/UNAVAILABLE:, no
+// verdict line, or an empty reply is unavailable: never diffed, graded or ledgered.
+{
+  const XOK = 'EXTERNAL (codex · build · exit 0)\nCHANGED FILES: calc.txt\nDONE exit=0\next-run: 100 tokens (2s, codex/gpt-6-sol) out=10 effort=medium'
+  const { result, calls } = await run(A({ candidates: [
+    { vendor: 'codex', level: 'builder', label: 'prerefused' },
+    { vendor: 'codex', level: 'builder', label: 'preunavail' },
+    { vendor: 'codex', level: 'builder', label: 'noheader' },
+    { vendor: 'codex', level: 'builder', label: 'blank' },
+    { vendor: 'codex', level: 'builder', label: 'preok' },
+    { vendor: 'codex', level: 'builder', label: 'laterefused' },
+  ] }), {
+    'candidate:prerefused': ['I ran the wrapper steps; the result follows.\nREFUSED: brief is not self-contained (no check command)\next-run: 5 tokens (1s, codex/gpt-6-sol) out=1'],
+    'candidate:preunavail': ['Checking the header first.\n  UNAVAILABLE: codex exited 4 (empty result)'],
+    'candidate:noheader': ['CHANGED FILES: calc.txt\nDONE exit=0\next-run: 100 tokens (2s, codex/gpt-6-sol) out=10'],
+    'candidate:blank': ['  \n'],
+    'candidate:preok': [`Running ext-run.sh now.\n${XOK}`],
+    'candidate:laterefused': [`${XOK.replace('DONE exit=0', 'worker log: REFUSED: not a verdict\nDONE exit=0')}`],
+    'grade:': [FIN({ prerefused: [true, 0], preunavail: [true, 0], noheader: [true, 0], blank: [true, 0], preok: [true, 0], laterefused: [true, 0] })],
+  })
+  chk('C25: a preamble then REFUSED: → unavailable (the refusal named), never graded', byLabel(result, 'prerefused').status === 'unavailable' && /^REFUSED: brief is not self-contained/.test(byLabel(result, 'prerefused').tail))
+  chk('C25: a preamble then an indented UNAVAILABLE: → unavailable', byLabel(result, 'preunavail').status === 'unavailable' && /^UNAVAILABLE: codex exited 4/.test(byLabel(result, 'preunavail').tail))
+  chk('C25: no EXTERNAL/REFUSED/UNAVAILABLE line (even with an ext-run line) → unavailable, MALFORMED', byLabel(result, 'noheader').status === 'unavailable' && /^MALFORMED: no EXTERNAL\/REFUSED\/UNAVAILABLE line/.test(byLabel(result, 'noheader').tail))
+  chk('C25: an empty reply → unavailable, MALFORMED: empty reply', byLabel(result, 'blank').status === 'unavailable' && /^MALFORMED: empty reply/.test(byLabel(result, 'blank').tail))
+  chk('C25: a preamble then the EXTERNAL ( header → work, graded normally', byLabel(result, 'preok').status === 'pass' && byLabel(result, 'preok').model === 'gpt-6-sol')
+  chk('C25: a REFUSED: line AFTER the header is relayed worker output, not a verdict → graded', byLabel(result, 'laterefused').status === 'pass')
+  const grade = calls.find(c => c.label.startsWith('grade:'))
+  chk('C25: no-work candidates are never diffed or sent to patch-check (wt-1..4 absent; wt-5, wt-6 graded)',
+    grade && !/wt-[1-4]'/.test(grade.prompt) && !/(prerefused|preunavail|noheader|blank)\.patch/.test(grade.prompt) && grade.prompt.includes(`'${STAGE}/wt-5'`) && grade.prompt.includes(`'${STAGE}/wt-6'`))
+  chk('C25: the tally counts 4 unavailable', result.candidates.filter(c => c.status === 'unavailable').length === 4)
+}
+
+// ---- C26 (M7): no ext-run accounting line → the model/effort guard fails closed --
+{
+  const noLine = 'EXTERNAL (codex · build · exit 0)\nCHANGED FILES: calc.txt\nDONE exit=0\nall done'
+  const { result, logs } = await run(A({ candidates: [
+    { vendor: 'codex', level: 'deep', model: 'gpt-6-astra', effort: 'high', label: 'pinned' },
+    { vendor: 'codex', level: 'builder', label: 'unpinned' },
+    { vendor: 'claude', level: 'builder', label: 'claude' },
+    { vendor: 'codex', level: 'deep', model: 'gpt-6-astra', effort: 'high', label: 'withline' },
+  ] }), {
+    'candidate:pinned': [noLine], 'candidate:unpinned': [noLine], 'candidate:claude': ['done\nCHECK rc=0'],
+    'candidate:withline': [`${noLine}\next-run: 100 tokens (2s, codex/gpt-6-astra) out=10 effort=high`],
+    'grade:': [FIN({ pinned: [true, 0], unpinned: [true, 0], claude: [true, 0], withline: [true, 0] })],
+  })
+  chk('C26: a pinned external candidate with no ext-run line → invalid (MODEL/EFFORT UNVERIFIED), never a pass',
+    byLabel(result, 'pinned').status === 'invalid' && /^MODEL\/EFFORT UNVERIFIED — no ext-run accounting line/.test(byLabel(result, 'pinned').tail) && /gpt-6-astra@high/.test(byLabel(result, 'pinned').tail))
+  chk('C26: …an unpinned one too (nothing says which model/effort ran)', byLabel(result, 'unpinned').status === 'invalid' && /UNVERIFIED/.test(byLabel(result, 'unpinned').tail))
+  chk('C26: a Claude candidate needs no ext-run line; an external one with it grades normally',
+    byLabel(result, 'claude').status === 'pass' && byLabel(result, 'withline').status === 'pass')
+  chk('C26: graded:false and the tally names them INVALID', result.graded === false && logs.some(l => /2 INVALID/.test(l)))
+}
+
+// ---- C27 (M3): brief files given absolute (under repo) or as ./x are normalized --
+{
+  const { result, calls } = await run(A({ files: ['./calc.txt', `${REPO}/lib/`, '/elsewhere/x.txt', 'docs//./guide.md'], candidates: [
+    { vendor: 'claude', level: 'builder', label: 'a' }, { vendor: 'claude', level: 'deep', label: 'b' }, { vendor: 'claude', level: 'deep', label: 'c' },
+  ] }), { 'candidate:': ['done'], 'grade:': [FIN({ a: [true, 1, null, ['calc.txt', 'lib/x.js', 'docs/guide.md']], b: [true, 1, null, ['calc.txt', 'other.txt']], c: [true, 1, null, ['elsewhere/x.txt']] })] })
+  chk('C27: ./calc.txt, <repo>/lib/ and docs//./guide.md cover calc.txt, lib/x.js and docs/guide.md (in scope)', byLabel(result, 'a').outOfScope === false)
+  chk('C27: a path none of them covers is still outOfScope', byLabel(result, 'b').outOfScope === true)
+  chk('C27: an absolute path OUTSIDE the repo covers nothing (fail closed)', byLabel(result, 'c').outOfScope === true)
+  const cand = calls.filter(c => c.label.startsWith('candidate:'))
+  chk('C27: the brief every candidate reads names the files repo-relative (never the real <repo>/ path, never ./)',
+    cand.length === 3 && cand.every(c => c.prompt.includes('Relevant files: calc.txt, lib, /elsewhere/x.txt, docs/guide.md') && !c.prompt.includes(`${REPO}/lib`)))
+  const { result: r2 } = await run(A({ repo: `${REPO}/`, files: [`${REPO}/calc.txt`], candidates: [{ vendor: 'claude', level: 'builder', label: 'a' }] }),
+    { 'candidate:': ['done'], 'grade:': [FIN({ a: [true, 0, null, ['calc.txt']] })] })
+  chk('C27: a repo given with a trailing slash normalizes the same way (in scope, pass)', byLabel(r2, 'a').outOfScope === false && byLabel(r2, 'a').status === 'pass')
+  const { result: r3, calls: c3 } = await run(A({ files: [REPO], candidates: [{ vendor: 'claude', level: 'builder', label: 'a' }] }),
+    { 'candidate:': ['done'], 'grade:': [FIN({ a: [true, 0, null, ['any/where.txt']] })] })
+  chk('C27: the repo itself as a file covers every path, and the brief shows it as "."',
+    byLabel(r3, 'a').outOfScope === false && c3.find(c => c.label === 'candidate:a').prompt.includes('Relevant files: .\n'))
+}
+
+// ---- C28 (M6): an EMPTY-diff or out-of-scope "pass" never reaches the ledger as a pass
+{
+  const { result, logs } = await run(A({ candidates: [
+    { vendor: 'claude', level: 'builder', label: 'emptypass' }, { vendor: 'claude', level: 'deep', label: 'emptyfail' },
+    { vendor: 'claude', level: 'deep', label: 'oospass' }, { vendor: 'claude', level: 'deep', label: 'oosfail' }, { vendor: 'claude', level: 'deep', label: 'real' },
+  ] }), { 'candidate:': ['done'], 'grade:': [FIN({ emptypass: [true, 0, null, [], ''], emptyfail: [true, 1, null, [], ''],
+    oospass: [true, 0, null, ['Makefile']], oosfail: [true, 1, null, ['Makefile']], real: [true, 0] })] })
+  chk('C28: an empty diff whose checks pass → invalid (EMPTY DIFF), never pass', byLabel(result, 'emptypass').status === 'invalid' && /^EMPTY DIFF/.test(byLabel(result, 'emptypass').tail) && byLabel(result, 'emptypass').rc === 0)
+  chk('C28: an empty diff whose checks fail stays a fail', byLabel(result, 'emptyfail').status === 'fail')
+  chk('C28: an out-of-scope patch whose checks pass → invalid (OUT OF SCOPE)', byLabel(result, 'oospass').status === 'invalid' && /^OUT OF SCOPE/.test(byLabel(result, 'oospass').tail))
+  chk('C28: an out-of-scope patch whose checks fail stays a fail (still flagged outOfScope)', byLabel(result, 'oosfail').status === 'fail' && byLabel(result, 'oosfail').outOfScope === true)
+  chk('C28: a real in-scope diff still passes; graded:false (two grades do not stand)', byLabel(result, 'real').status === 'pass' && result.graded === false && logs.some(l => /1 pass, 2 fail, 0 unavailable, 2 INVALID/.test(l)))
 }
 
 // ═══ kind:'review' — the review bake-off ════════════════════════════════════════
@@ -1500,6 +1589,42 @@ const EX = await run(XA({}), XS())
   } finally {
     rmSync(tmp, { recursive: true, force: true })
   }
+}
+
+// ---- RV25 (H4): codex reviewers and adjudicators are read by classifyCrossReview():
+// only a positive `CROSS-REVIEW (` header is work; a preamble then REFUSED: /
+// UNAVAILABLE:, or a reply with no verdict line, is unavailable — never scored.
+{
+  const raw = JSON.stringify({ findings: [RF('docs/z.md', 4, 'REAL UNIQUE-RAW finding')] })
+  const pre = await run(RA({}), RV_SCRIPT({ 'reviewer:rv-sol': [`I will relay the wrapper's reply.\nREFUSED: prompt not verbatim (10 bytes, PROMPT_BYTES=12)\n${raw}`] }))
+  chk('RV25: a preamble then REFUSED: → the codex reviewer is unavailable (reason names the refusal), its findings never merged',
+    rvRev(pre.result, 'rv-sol').status === 'unavailable' && /^REFUSED: prompt not verbatim/.test(rvRev(pre.result, 'rv-sol').reason) &&
+    rvRev(pre.result, 'rv-sol').recall === null && !pre.result.items.some(it => /UNIQUE-RAW/.test(it.claim)))
+  const noHdr = await run(RA({}), RV_SCRIPT({ 'reviewer:rv-sol': [`${raw}\next-run: 10 tokens (1s, codex/gpt-6-sol)`] }))
+  chk('RV25: valid findings JSON with NO CROSS-REVIEW header → unavailable (MALFORMED), never scored',
+    rvRev(noHdr.result, 'rv-sol').status === 'unavailable' && /^MALFORMED: /.test(rvRev(noHdr.result, 'rv-sol').reason) && !noHdr.result.items.some(it => /UNIQUE-RAW/.test(it.claim)))
+  const stray = await run(RA({}), RV_SCRIPT({ 'reviewer:rv-sol': [`EXTERNAL (codex · build · exit 0)\n${raw}`] }))
+  chk('RV25: a triage-external-style EXTERNAL ( header is not a cross-review verdict → unavailable', rvRev(stray.result, 'rv-sol').status === 'unavailable')
+  const ok = await run(RA({}), RV_SCRIPT({ 'reviewer:rv-sol': [`Here is the relayed reply.\n${CX(JSON.parse(raw))}`] }))
+  chk('RV25: a preamble then the CROSS-REVIEW ( header → scored normally', rvRev(ok.result, 'rv-sol').status === 'ok' && ok.result.items.some(it => /UNIQUE-RAW/.test(it.claim)))
+  const adjRaw = prompt => JSON.stringify({ verdicts: blindItems(prompt).map(it => ({ id: it.id, verdict: 'real', evidence: 'x' })) })
+  const adj = await run(RA({}), RV_SCRIPT({ 'adjudicate:codex': [adjRaw] }))
+  chk('RV25: an adjudicator reply with verdicts but no CROSS-REVIEW header counts as no verdicts (retried, then disputed)',
+    adj.calls.filter(c => c.label.startsWith('adjudicate:codex')).length === 2 && adj.result.items.every(it => it.verdict === 'disputed') &&
+    adj.result.items.every(it => it.adjudication.find(x => x.vendor === 'codex').verdict === null))
+  const adjPre = await run(RA({}), RV_SCRIPT({ 'adjudicate:codex': [p => `Waiting for ext-run.\nUNAVAILABLE: codex exited 5 (timeout)\n${adjRaw(p)}`] }))
+  chk('RV25: a preamble then UNAVAILABLE: from an adjudicator is no verdicts, even with JSON after it', adjPre.result.items.every(it => it.verdict === 'disputed'))
+}
+
+// ---- C29 (L11): no model id is hard-coded outside DEFAULT_ADJUDICATORS (lint-pinned
+// to config/tiers.json); the review usage text is derived from it.
+{
+  const idLines = src.split('\n').filter(l => /claude-(opus|sonnet|haiku|fable)-\d|gpt-6-[a-z]/.test(l) && !/^\s*\/\//.test(l))
+  chk('C29: the only code line naming a model id is the DEFAULT_ADJUDICATORS line', idLines.length === 1 && idLines[0].startsWith('const DEFAULT_ADJUDICATORS = ['))
+  const adj = Function(`return (${src.match(/^const DEFAULT_ADJUDICATORS = (\[[^\n]*\])$/m)[1]})`)()
+  const r = await throws(RA({ repoName: 'bad name' }))
+  chk('C29: the review usage names the default adjudicators from DEFAULT_ADJUDICATORS',
+    r.threw && r.message.includes(`default ${adj.map(j => `${j.vendor} ${j.level} ${j.model}·${j.effort}`).join(' + ')} (config/tiers.json levels.deep)`))
 }
 
 console.log('')

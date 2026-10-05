@@ -45,7 +45,26 @@
 # --dry-run and --files-only compose: --dry-run --files-only plans only the file ops.
 set -euo pipefail
 
-CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
+# canon_dir PATH — the ONE spelling of CLAUDE_DIR (an identical copy is in uninstall.sh;
+# test/roundtrip.sh N8 pins them): absolute, no trailing slash, no empty or `.`
+# component; a relative path or a `..` component prints nothing (rc 1). The hook command
+# and the pointer line embed CLAUDE_DIR, so `~/.claude/` and `~/.claude` must be ONE
+# install, not two hooks injecting the rubric twice. Lexical only: resolving symlinks
+# would re-spell the pinned hook of an existing install under a symlinked ~/.claude and
+# orphan it. A line break is left for hook_preflight to refuse.
+canon_dir() {
+  local p="$1" out="" c parts
+  [ "${p#/}" != "$p" ] || return 1
+  case "$p" in *$'\n'*|*$'\r'*) printf '%s' "$p"; return 0 ;; esac
+  IFS=/ read -r -a parts <<< "$p"
+  for c in ${parts[@]+"${parts[@]}"}; do
+    case "$c" in ''|.) continue ;; ..) return 1 ;; esac
+    out="$out/$c"
+  done
+  printf '%s' "${out:-/}"
+}
+CLAUDE_DIR_GIVEN="${CLAUDE_DIR:-$HOME/.claude}"
+CLAUDE_DIR=$(canon_dir "$CLAUDE_DIR_GIVEN") || { echo "ERROR: CLAUDE_DIR must be an absolute path without .. components (got '$CLAUDE_DIR_GIVEN') — nothing was changed." >&2; exit 1; }
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 SETTINGS="$CLAUDE_DIR/settings.json"
 DRIFTIGNORE="$REPO_DIR/.driftignore"
@@ -77,9 +96,19 @@ TRIAGE_HOOK_MATCHER="startup|resume|clear|compact"
 # The one line install appends to CLAUDE.md: POINTER_HEAD + this install's CLAUDE_DIR +
 # POINTER_TAIL (pointer_line, below), so it names the rubric this install's hook reads.
 # uninstall.sh removes the identical line (test/roundtrip.sh N8 pins the copies equal).
+# The pointer also tells the main session what to do when the hook did NOT run (a
+# disableAllHooks elsewhere, a deleted script): read the rubric itself (M9).
 POINTER_HEAD="The triage routing rubric ("
-POINTER_TAIL="/triage.md) reaches the main session through a SessionStart hook; subagents don't receive it."
-LEGACY_IMPORT="@triage.md"
+POINTER_TAIL="/triage.md) reaches the main session through a SessionStart hook; if you are the main session and it is not in your context, read that file before planning. Subagents don't need it."
+# Every earlier POINTER_TAIL (frozen): install replaces such a line with the current
+# one, uninstall removes it. Wave 21 shipped the first.
+POINTER_TAILS_OLD="/triage.md) reaches the main session through a SessionStart hook; subagents don't receive it."
+# The ONE legacy-import normalisation (identical in uninstall.sh and
+# scripts/triage-context.sh; test/roundtrip.sh N8 pins the three copies): an awk
+# function, is_legacy(line) — with ONE trailing CR, then trailing blanks dropped, the
+# line is @triage.md, @./triage.md, @~/.claude/triage.md or @<TRIAGE_DIR>/triage.md
+# (TRIAGE_DIR in awk's environment = CLAUDE_DIR). Anything else is not the import.
+LEGACY_IMPORT_AWK='function is_legacy(l) { sub(/\r$/, "", l); sub(/[ \t]+$/, "", l); return l == "@triage.md" || l == "@./triage.md" || l == "@~/.claude/triage.md" || l == "@" ENVIRON["TRIAGE_DIR"] "/triage.md" }'
 # TRIAGE_INSTALL_STAMP: test hook only (forces the same-second clash case).
 STAMP="${TRIAGE_INSTALL_STAMP:-$(date -u +%Y%m%dT%H%M%SZ)}"
 
@@ -144,12 +173,15 @@ esac
 
 # Single owner of the subagent-model decision. $1 = current value, $2 = the ownership
 # marker (both "null" when unset). Prints: set | current | upgrade-owned |
-# upgrade-legacy | user.
+# upgrade-legacy | user. upgrade-legacy only while there is NO marker: a pre-marker
+# install. A marker that is present but differs means you repointed the model after
+# this installer marked it — even back to an old default — so it is yours (user; the
+# stale marker is dropped).
 sub_model_action() {
   if [ "$1" = "null" ]; then echo "set"
   elif [ "$1" = "$SUBAGENT_MODEL" ]; then echo "current"
   elif [ "$1" = "$2" ]; then echo "upgrade-owned"
-  elif is_legacy_subagent_model "$1"; then echo "upgrade-legacy"
+  elif [ "$2" = "null" ] && is_legacy_subagent_model "$1"; then echo "upgrade-legacy"
   else echo "user"
   fi
 }
@@ -195,6 +227,8 @@ triage_hook_action() {
 triage_hook_command() { printf 'CLAUDE_DIR=%q bash %q/%s' "$CLAUDE_DIR" "$CLAUDE_DIR" "$TRIAGE_HOOK_SCRIPT"; }
 # The pointer line for this install: it names the rubric this install's hook reads.
 pointer_line() { printf '%s%s%s' "$POINTER_HEAD" "$CLAUDE_DIR" "$POINTER_TAIL"; }
+# The previous pointer line for this install (POINTER_TAILS_OLD), replaced by the above.
+old_pointer_line() { printf '%s%s%s' "$POINTER_HEAD" "$CLAUDE_DIR" "$POINTER_TAILS_OLD"; }
 # The SessionStart group install appends (compact JSON).
 triage_hook_group() {
   jq -cn --arg m "$TRIAGE_HOOK_MATCHER" --arg c "$(triage_hook_command)" '{matcher: $m, hooks: [{type: "command", command: $c, timeout: 10}]}'
@@ -205,15 +239,22 @@ has_line() { # $1 = file, $2 = line
   [ -e "$1" ] || return 1
   awk -v want="$2" '{ l = $0; sub(/\r$/, "", l); if (l == want) found = 1 } END { exit found ? 0 : 1 }' "$1"
 }
-# File $1 without its lines equal to $2 (a trailing CR ignored), on stdout. Every other
-# byte is kept exactly: each kept line keeps its own terminator (CRLF included), and an
+# Does CLAUDE.md $1 hold the legacy import (LEGACY_IMPORT_AWK)? 0 yes, 1 no (or no
+# file), anything else = could not read it: callers fail closed on that.
+has_legacy() { # $1 = file
+  [ -e "$1" ] || return 1
+  TRIAGE_DIR="$CLAUDE_DIR" awk "$LEGACY_IMPORT_AWK"' is_legacy($0) { found = 1 } END { exit found ? 0 : 1 }' "$1"
+}
+# File $1 without its legacy import lines (LEGACY_IMPORT_AWK) and without lines equal
+# to $2 (a trailing CR ignored; "" = none), on stdout. Every other byte is kept
+# exactly: each kept line keeps its own terminator (CRLF included), and an
 # unterminated last line stays unterminated (awk's print would add a newline).
 drop_line() { # $1 = file, $2 = line
   local nl=1
   if [ -s "$1" ] && [ -n "$(tail -c1 "$1")" ]; then nl=0; fi
-  awk -v imp="$2" -v nl="$nl" '
+  TRIAGE_DIR="$CLAUDE_DIR" awk -v drop="$2" -v nl="$nl" "$LEGACY_IMPORT_AWK"'
     NR > 1 && keep { printf "%s\n", prev }
-    { prev = $0; l = $0; sub(/\r$/, "", l); keep = (l != imp) }
+    { prev = $0; l = $0; sub(/\r$/, "", l); keep = !is_legacy($0) && (drop == "" || l != drop) }
     END { if (NR > 0 && keep) printf "%s%s", prev, (nl ? "\n" : "") }' "$1"
 }
 
@@ -254,8 +295,9 @@ rubric_note() { # the one diagnostic for a blocked migration (uses RUBRIC_DIAG)
 # installed rubric) are made HERE, before anything is written, and any evaluation error
 # dies with nothing changed. Sets HOOK_ACTION (present|add), HOOKS_OFF (1 when
 # settings.json has disableAllHooks: true — the hook could never run, so CLAUDE.md is
-# not migrated), LEGACY (1 when CLAUDE.md still has the `@triage.md` import line) and
-# POINTER (1 when the pointer line is already there). An absent settings.json is an
+# not migrated), LEGACY (1 when CLAUDE.md still has the `@triage.md` import line,
+# LEGACY_IMPORT_AWK), OLD_POINTER (1 when it has an earlier pointer line) and POINTER
+# (1 when the current pointer line is already there). An absent settings.json is an
 # empty one.
 # Single owner of "is CLAUDE.md left alone?": sets CLAUDE_MD_BLOCK to the reason it is
 # (disableAllHooks, or a legacy import whose replacement rubric fails rubric_fits), or
@@ -287,10 +329,16 @@ hook_preflight() {
     1) HOOKS_OFF=0 ;;
     *) die "could not read disableAllHooks from $SETTINGS (jq failed) — nothing was changed." ;;
   esac
-  rc=0; has_line "$CLAUDE_DIR/CLAUDE.md" "$LEGACY_IMPORT" || rc=$?
+  rc=0; has_legacy "$CLAUDE_DIR/CLAUDE.md" || rc=$?
   case "$rc" in
     0) LEGACY=1 ;;
     1) LEGACY=0 ;;
+    *) die "could not read $CLAUDE_DIR/CLAUDE.md — nothing was changed." ;;
+  esac
+  rc=0; has_line "$CLAUDE_DIR/CLAUDE.md" "$(old_pointer_line)" || rc=$?
+  case "$rc" in
+    0) OLD_POINTER=1 ;;
+    1) OLD_POINTER=0 ;;
     *) die "could not read $CLAUDE_DIR/CLAUDE.md — nothing was changed." ;;
   esac
   rc=0; has_line "$CLAUDE_DIR/CLAUDE.md" "$(pointer_line)" || rc=$?
@@ -324,6 +372,8 @@ if [ "$SETTINGS_STATUS" -eq 1 ]; then
     echo "settings migration blocked: $CLAUDE_MD_BLOCK"
   elif [ "$LEGACY" -eq 1 ]; then
     echo "settings migration pending: legacy @triage.md import present in $CLAUDE_DIR/CLAUDE.md (it loads the rubric into every subagent too) — run ./install.sh to replace it with the SessionStart hook"
+  elif [ "$OLD_POINTER" -eq 1 ]; then
+    echo "settings migration pending: outdated pointer line in $CLAUDE_DIR/CLAUDE.md (it does not say what to do when the hook did not run) — run ./install.sh to replace it"
   fi
   exit 0
 fi
@@ -699,6 +749,9 @@ if [ "$DRY_RUN" -eq 1 ]; then
     if [ "$LEGACY" -eq 1 ]; then
       echo "  legacy @triage.md import present — would remove it (backup to CLAUDE.md.bak-triage-<timestamp> first); the SessionStart hook replaces it"
     fi
+    if [ "$OLD_POINTER" -eq 1 ]; then
+      echo "  outdated pointer line present — would replace it (backup to CLAUDE.md.bak-triage-<timestamp> first)"
+    fi
     if [ "$POINTER" -eq 1 ]; then
       echo "  pointer line already present"
     else
@@ -749,9 +802,9 @@ fi
 # kept exactly (drop_line).
 CLAUDE_MD="$CLAUDE_DIR/CLAUDE.md"
 claude_md_decision "$CLAUDE_DIR/$TRIAGE_HOOK_SCRIPT" "$CLAUDE_DIR/triage.md"
-if [ -z "$CLAUDE_MD_BLOCK" ] && [ "$LEGACY" -eq 1 ]; then
+if [ -z "$CLAUDE_MD_BLOCK" ] && { [ "$LEGACY" -eq 1 ] || [ "$OLD_POINTER" -eq 1 ]; }; then
   CLAUDE_MD_NEW=$(mktemp) || die "mktemp failed — nothing was changed."
-  drop_line "$CLAUDE_MD" "$LEGACY_IMPORT" > "$CLAUDE_MD_NEW" \
+  drop_line "$CLAUDE_MD" "$(old_pointer_line)" > "$CLAUDE_MD_NEW" \
     || die "could not filter $CLAUDE_MD (awk failed) — nothing was changed."
 fi
 
@@ -811,10 +864,15 @@ if [ -n "$CLAUDE_MD_BLOCK" ]; then
   echo "⚠ WARNING: $CLAUDE_MD_BLOCK"
 else
   touch "$CLAUDE_MD" || die "could not create $CLAUDE_MD."
-  if [ "$LEGACY" -eq 1 ]; then
+  if [ "$LEGACY" -eq 1 ] || [ "$OLD_POINTER" -eq 1 ]; then
     b=$(backup_copy "$CLAUDE_MD") || die "could not back up $CLAUDE_MD — it was not changed."
     cat "$CLAUDE_MD_NEW" > "$CLAUDE_MD" || die "could not rewrite $CLAUDE_MD (your copy is in $b)."
-    echo "CLAUDE.md: removed the legacy @triage.md import (the SessionStart hook replaces it); previous copy saved to $b"
+    if [ "$LEGACY" -eq 1 ]; then
+      echo "CLAUDE.md: removed the legacy @triage.md import (the SessionStart hook replaces it); previous copy saved to $b"
+    fi
+    if [ "$OLD_POINTER" -eq 1 ]; then
+      echo "CLAUDE.md: replaced the outdated pointer line; previous copy saved to $b"
+    fi
   fi
   if [ "$POINTER" -eq 0 ]; then
     # Ensure the file ends with a newline first, or the pointer fuses onto the last

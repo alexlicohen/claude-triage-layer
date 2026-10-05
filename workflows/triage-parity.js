@@ -111,9 +111,43 @@ if (args.incumbents != null) bad('args.incumbents is no longer accepted: the inc
 // ─── Helpers ────────────────────────────────────────────────────────────────
 const shq = s => `'${String(s).replace(/'/g, `'\\''`)}'`
 const errText = e => String((e && e.message) || e).slice(0, 300)
+// A git object id (sha1 or sha256) — also the shape of every source-fingerprint hash
+// (tree, ignored, refs): ONE constant for both.
 const SHA_RE = /^[0-9a-f]{40}([0-9a-f]{24})?$/
-const producedNothing = out => out == null || /^\s*(UNAVAILABLE|REFUSED)\b/i.test(String(out).trimStart())
-const firstLine = out => String(out || '').trimStart().split('\n')[0]
+// classifyExternal(out) — a PINNED COPY of triage-exec.js's classifyExternal() (the
+// one rule for reading an external wrapper's reply; test/lint.sh checks the copies
+// are identical): the FIRST line that starts with a verdict token decides, a preamble
+// before it is ignored, and only a positive header means work. Refused, unavailable,
+// malformed (no token line) or no reply is never scored or ledgered.
+const EXTERNAL_REASON_MAX = 160
+function classifyExternal(out) {
+  const cut = s => s.trim().slice(0, EXTERNAL_REASON_MAX)
+  if (out == null) return { work: false, kind: 'no-reply', reason: 'spawn returned nothing' }
+  const lines = String(out).split('\n')
+  for (const raw of lines) {
+    const line = raw.trimStart()
+    if (line.startsWith('EXTERNAL (')) return { work: true, kind: 'work', reason: '' }
+    if (line.startsWith('REFUSED:')) return { work: false, kind: 'refused', reason: cut(line.slice('REFUSED:'.length)) || '(no reason given)' }
+    if (line.startsWith('UNAVAILABLE:')) return { work: false, kind: 'unavailable', reason: cut(line.slice('UNAVAILABLE:'.length)) || '(no reason given)' }
+  }
+  const first = lines.map(l => l.trim()).find(Boolean)
+  return { work: false, kind: 'malformed', reason: cut(first ? `no EXTERNAL/REFUSED/UNAVAILABLE line; reply began: ${first}` : 'empty reply') }
+}
+// classifyCrossReview(out) — the SAME rule for a triage-cross-reviewer reply (codex
+// judges and review candidates): its positive header is `CROSS-REVIEW (`, which takes
+// `EXTERNAL (`'s place; a stray `EXTERNAL (` line in it is no verdict. Pinned copy,
+// identical in triage-compare.js (test/lint.sh).
+const CROSS_HEADER = 'CROSS-REVIEW ('
+function classifyCrossReview(out) {
+  if (out == null) return classifyExternal(out)
+  return classifyExternal(String(out).split('\n').map(raw => {
+    const line = raw.trimStart()
+    return line.startsWith(CROSS_HEADER) ? `EXTERNAL (${line.slice(CROSS_HEADER.length)}` : line.startsWith('EXTERNAL (') ? `- ${line}` : raw
+  }).join('\n'))
+}
+// The reason a no-work external reply is reported with.
+const noWorkReason = cls => (cls.kind === 'no-reply' ? cls.reason
+  : `${cls.kind === 'refused' ? 'REFUSED' : cls.kind === 'unavailable' ? 'UNAVAILABLE' : 'MALFORMED'}: ${cls.reason}`)
 const flags = []
 const flag = msg => { flags.push(msg); log(`⚠ ${msg}`) }
 // Deterministic, label-blind ordering for anonymized patch ids (FNV-1a).
@@ -237,14 +271,13 @@ const row = (c, runLabel, status, extra) => Object.assign({ label: c.label, runL
 // can reach: each git source.repo is fingerprinted before the task's candidates
 // run (in the materialize spawn, BEFORE materializing) and again after grading.
 const fpCmd = t => `${PARITY_SUITE} fingerprint --task ${shq(taskDirOf(t))}`
-const FP_HASH = /^[0-9a-f]{40}([0-9a-f]{24})?$/
 function fpOk(fp, t) {
   if (!fp || typeof fp !== 'object') return false
   // The loaded task says which kind of source it has; a reply may not downgrade it.
   if (t.source && isStr(t.source.type) && t.source.type !== fp.source) return false
   if (fp.source === 'generator') return true
   return fp.source === 'git' && isStr(fp.name) && typeof fp.head === 'string' && (fp.head === '' || SHA_RE.test(fp.head)) &&
-    FP_HASH.test(String(fp.tree || '')) && FP_HASH.test(String(fp.ignored || '')) && FP_HASH.test(String(fp.refs || ''))
+    SHA_RE.test(String(fp.tree || '')) && SHA_RE.test(String(fp.ignored || '')) && SHA_RE.test(String(fp.refs || ''))
 }
 
 async function materialize(t, b) {
@@ -348,7 +381,9 @@ async function judgeTask(t, b, rows) {
     const o = outs[i]
     let s = null
     if (x.j.vendor === 'claude') s = o && typeof o.score === 'number' ? o.score : null
-    else if (!producedNothing(o)) { const p = parseJsonObject(o); s = p && typeof p.score === 'number' ? p.score : null }
+    // classifyCrossReview(): only a `CROSS-REVIEW (` header is a judgement; anything
+    // else (a preamble then REFUSED:, no verdict line) is no score.
+    else if (classifyCrossReview(o).work) { const p = parseJsonObject(o); s = p && typeof p.score === 'number' ? p.score : null }
     if (s != null && (s < 0 || s > 1)) s = null
     x.r.judges = x.r.judges || {}
     x.r.judges[x.j.label] = s
@@ -464,7 +499,10 @@ async function reviewTask(t, b, runnable) {
       toScore.push({ c, findings: o.findings })
       return
     }
-    if (producedNothing(o)) { rows.push(row(c, c.label, 'unavailable', { reason: firstLine(o).slice(0, 200) || 'no reply' })); return }
+    // classifyCrossReview(): only a `CROSS-REVIEW (` header is a review; a refusal,
+    // an unavailable run or a reply with no verdict line is unavailable, never scored.
+    const cls = classifyCrossReview(o)
+    if (!cls.work) { rows.push(row(c, c.label, 'unavailable', { reason: noWorkReason(cls) })); return }
     const p = parseJsonObject(o)
     if (!p || !Array.isArray(p.findings)) {
       rows.push(row(c, c.label, 'invalid', { reason: 'the external reply held no {"findings": [...]} JSON' }))

@@ -24,7 +24,7 @@ You ──► Main loop: your session model (your choice — the installer never
               │     ← triage rubric (triage.md): classify + decompose INLINE
               │       level (quick/builder/deep/top) x vendor (claude/codex) x role
               │
-              └──► Workflow triage-exec  ← the plan: {subtasks, checks, review, crossReview, vendor}
+              └──► Workflow triage-exec  ← the plan: {repo, subtasks, checks, review, crossReview, vendor}
                      │  executes, verifies, remediates, escalates — models come from config/tiers.json
                      ├──► triage-quick-task      Claude  quick   renames, lookups, boilerplate
                      ├──► triage-builder         Claude  builder well-specified features/fixes
@@ -151,28 +151,32 @@ The full argument spec for the three workflows. Each workflow's `meta.whenToUse`
   - `level`: `quick|builder|deep|top`; `tier` is an alias; `fable` = top on Claude, `overflow` = builder on codex.
   - `vendor`: `claude|codex`.
   - `checks: [cmd]`: the subtask's own objective checks, used as an inline bake-off's grade; the plan `checks` stay the verify gate.
-- `checks` — `[shell commands]`, the plan's verify gate.
+  - `files`: normalised at entry to repo-relative (`./` and empty components dropped; an absolute path under `repo` made relative). With `bakeoff`, a path that cannot be made repo-relative (absolute elsewhere, `..`, the repo itself) is refused before any spawn.
+- `repo` — optional absolute path of the plan's tree. Set: every check runs as `cd <repo> && …`, the reviewer and the cross-review read `git -C <repo>`, each worker brief opens with `Repository: <repo>`, external workers get `WORKDIR=<repo>`, and `bakeoff.repo` defaults to it (both given and different = refused). Unset: everything runs in the session's working directory (a session in the main tree with a plan aimed at a linked worktree then edits one tree and checks another).
+- `checks` — `[shell commands]`, the plan's verify gate. Each runs as ONE command whose shell prints `CHECKRC <exit status>` after the command's last 40 lines; only that tag counts (the last one wins). A reply without it (`**FAIL**`, prose, a refusal, an untagged `PASS`) is a dead gate: retried once, then `pass: null` and the run `incomplete`.
 - `review` — reviewer mode: `auto` (default: reviewer when there are no checks or a subtask is `danger`), `always`, `never`.
-- `crossReview` — `true` (= codex) or a vendor name; adds a cross-vendor second opinion.
+- `crossReview` — `true` (= codex) or a vendor name; adds a cross-vendor second opinion (`MODE=review`). Only a reply with a `CROSS-REVIEW (` header is findings; `crossReview.refused` / `.unavailable` list the rest, and `ran` is true only when findings came back.
+- The reviewer's verdict needs a positive `PASS`, `FIX` or `ESCALATE` on its first line (`**FIX**` counts); anything else is a dead gate: retried once, then `review.verdict: null` and the run `incomplete`.
+- A codex build reply is work only with `exit 0` in its `EXTERNAL (` header and a `CHANGED FILES:` line that is not `none`; `exit 6` (patch not applied) or no change takes the same-level Claude fallback, listed in `external.codex.unavailable`.
 - `overflow` — boolean; `true` = codex on builder subtasks.
 - `vendor` — plan-level vendor (`claude|codex`).
 - `noFable` — boolean (default `false`); set for material `triage.md` rule 7 keeps from Fable. A Claude `top` subtask (or `fable`) is then refused before any spawn; codex `top` is allowed. Deep@max is the ceiling: a `FIX` or failed check on a deep@max attempt (planned at `effort: 'max'`, or deep@max in place of top) gets one same-rung retry; where the ladder would then go to Fable (that retry failing, a failed deep@max step, or `ESCALATE` at deep@max) the subtask keeps its last output, gets an escalation `{from: 'deep', to: 'user'}`, status `needs-user`, and is listed in `needsUser`; the run reports `incomplete` (and `failed` while a gate still fails). A codex `top` subtask that comes back to Claude gets deep@max instead of Fable; if that deep@max attempt returns nothing, it stops for the user the same way. The report echoes `noFable` (and `needsUser`, empty otherwise) on every run.
-- `bakeoff` — **inline build bake-offs, on by default**: the orchestrator passes it on every plan unless `triage.md` rule 10 excludes the work (the user said no bake-offs, PHI/clinical, classifier-sensitive, or a project boundary that keeps the material from external vendors). Shape `{config, seed, repo, outDir, weeklyPct, rates?}`:
+- `bakeoff` — **inline build bake-offs, on by default**: the orchestrator passes it on every plan unless `triage.md` rule 10 excludes the work (the user said no bake-offs, PHI/clinical, classifier-sensitive, or a project boundary that keeps the material from external vendors). Shape `{config, seed, repo?, outDir, weeklyPct, rates?}`:
   - `config`: the `scripts/triage-tiers.sh --bakeoff-json` object.
   - `seed`: string (`"<session id>:<plan #>"`).
-  - `repo`: absolute path of the session repo.
+  - `repo`: absolute path of the repo; defaults to the plan's `repo`, and must equal it when both are given.
   - `outDir`: absolute, outside `repo` (globally unique; ledger run ids derive from it).
   - `weeklyPct`: the weekly usage %; missing = sampling paused.
   - `rates`: `scripts/parity-report.sh rates --json` `.rates` (`{level: rate in [0, 1]}`: explore, maintain or 0 per level), used in place of `sampleRate` for its level and recorded on each `bakeoffs`/`bakeoffSkipped` entry that reached the draw.
 
 Bake-off sampling and apply rules:
 
-- **Eligible** subtask: has its own checks, or the plan checks when it is the only subtask; non-empty `files`; a tuning challenger that differs from its planned vendor/model/effort; not a planned top/claude (Fable) subtask; danger work only on the danger floor (`DANGER_FAMILIES`: the Claude Opus/Fable families, the codex family listed there at effort >= high).
+- **Eligible** subtask: has its own checks, or the plan checks when it is the only subtask; non-empty `files`; a tuning challenger that differs from its planned vendor/model/effort; not a planned top/claude (Fable) subtask, and no Fable-family model as planned model or challenger at any level (Fable runs only through its announced escalation path); danger work only on the danger floor (`DANGER_FAMILIES`: the Claude Opus/Fable families, the codex family listed there at effort >= high).
 - **Sampled** deterministically: FNV-1a of seed+id+brief < `rates[level]`, else `sampleRate`; none at `weeklyPct >= pauseAtWeeklyPct`.
-- A sampled subtask runs **first**, one at a time, as a planned-vs-challenger `triage-compare`, only if `git status` shows its files unmodified.
+- A sampled subtask runs **first**, one at a time, as a planned-vs-challenger `triage-compare`, only if a clean check — one command printing tagged `CLEANCHECK` lines (`git status` exit and porcelain, both top levels, the time) — proves its files unmodified in the plan's tree. A reply that does not parse strictly is retried once, then the subtask runs in place (`dirty check unavailable`).
 - **Apply** via `stage-worktree.sh apply --require-clean`, counting only a real (non-empty), in-scope diff: the planned patch if it passed, else a passing challenger (logged as a fallback), else a failing planned diff (normal verify + remediation), else the subtask runs in place.
-- A **LEAK** aborts the run. An unknown leak state, a failed compare, or an unknown/tree-modifying apply **withholds** the subtask (never run in place; returned in `withheld`; the run is incomplete).
-- Returns `bakeoffs`, `bakeoffSkipped` and `ingest`: for each `ingest` entry the orchestrator writes `result` as JSON to `file`, then runs `cmd` (`parity-report.sh ingest-compare`).
+- A **LEAK**, an unknown leak state, or a compare that failed or returned no result **stops the whole plan** (`error` starting `LEAK` / `LEAK STATE UNKNOWN`; nothing further runs on an unchecked tree). An unknown or tree-modifying apply **withholds** the subtask (never run in place; returned in `withheld`; the run is incomplete).
+- Returns `bakeoffs`, `bakeoffSkipped` and `ingest`: for each `ingest` entry the orchestrator writes `result` as JSON to `file`, then runs `cmd` (`parity-report.sh ingest-compare`). The result is recorded at run time: `ts` from the clean check's clock, and a candidate model/effort the compare left null filled from `config`, the plan-time tiers file (`modelFrom: "tiers"`); a `pass` with no real in-scope diff is ingested `invalid`. The `--run` id is `<outDir basename>:<id>`, shortened with FNV-1a hashes (`.` separators) to a parity-report id token of at most 80 characters.
 
 ### triage-compare
 

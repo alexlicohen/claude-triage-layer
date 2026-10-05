@@ -28,7 +28,8 @@
 #                 level (B1 quick, B2 builder, B3 deep, B4 top), run = --run, else
 #                 the basename of its outDir.
 # Run ids (every ingest): a run id must be globally unique (e.g. carry the session
-#                 id). Each new line stores runHash = a hash of the canonical result
+#                 id) and an id token: letters, digits, . _ : + -, 1-80 characters
+#                 (a refusal names the offending characters or the length). Each new line stores runHash = a hash of the canonical result
 #                 JSON + the options that shape its lines. Re-ingesting a run whose
 #                 lines carry the SAME runHash appends only the observations (run,
 #                 task, candidate labels) still missing — a no-op normally, the
@@ -36,15 +37,19 @@
 #                 there with a DIFFERENT runHash is refused (exit 2: a collision,
 #                 never silently skipped or double-counted); lines written before
 #                 runHash existed are skipped as before. The run's time: --ts, else
-#                 the result's own top-level ts, else now (a --ts that disagrees with
-#                 the result's ts is refused); every ts is stored as UTC
+#                 the result's own top-level ts (the run-time date it carries), else
+#                 now — recorded in the line's tsSource: option | result |
+#                 inferred-at-ingest (a --ts that disagrees with the result's ts is
+#                 refused); every ts is stored as UTC
 #                 (YYYY-MM-DDTHH:MM:SSZ; an offset is honored, no zone = UTC, a bare
 #                 date = midnight UTC, fractions dropped).
 # Lock: every ledger writer (ingest-*, migrate, backfill-modelid) holds ONE lock,
 #                 <real ledger>.lock (a mkdir lock with the holder's pid; a lock
 #                 whose pid is gone, or that never got a pid within ~5 s, is stale
-#                 and taken over), across its read-check-append or snapshot-validate-
-#                 replace. A symlinked ledger is written through to its target (the
+#                 and taken over — atomically: under the <lock>.takeover mutex, and
+#                 only if it is still the same lock dir with the same stale pid, so
+#                 two waiters never both take it, nor remove a fresh lock), across its
+#                 read-check-append or snapshot-validate-replace. A symlinked ledger is written through to its target (the
 #                 link stays). PARITY_LOCK_TRIES (default 300 x 0.1 s) bounds the wait;
 #                 still locked => exit 1, nothing written.
 # ingest-review   FILE = a triage-compare kind:"review" result. Appends ONE ledger line
@@ -96,7 +101,8 @@
 # Ledger: JSON lines, default tuning.ledger of the tiers file (~ expanded). Schema
 # (v 1), scores and metadata ONLY — never patch contents, briefs, checks or paths
 # from the target repo (repoName is a bare name; task/run/labels are id tokens):
-#   {"v":1, "ts":"<ISO>", "source":"inline|suite", "run":<id|null>, "repoName":"<name>",
+#   {"v":1, "ts":"<ISO>", "tsSource":"option|result|inferred-at-ingest", "source":"inline|suite",
+#    "run":<id|null>, "repoName":"<name>",
 #    "level":"quick|builder|deep|top", "band":<1-4, suite only>, "task":<id|null>,
 #    "candidates":[{"label","vendor","model","effort","status","totalTokens","seconds",
 #                   "modelId","modelIdSource"}],
@@ -109,7 +115,7 @@
 #      "modelId","modelIdSource"}],
 #    "items":<merged items>, "real":<real items>, "disputed":<still disputed>, "resolved":<by Alex>,
 #    "revision":<1, 2, ...>, "runHash"}
-#   Schema stays v 1: runHash/revision/superseded are additive (older lines lack them).
+#   Schema stays v 1: runHash/revision/superseded/tsSource are additive (older lines lack them).
 #   status: pass | fail (GRADED) | unavailable | invalid | denied | unresolved |
 #   ungraded | skipped | unknown — only pass/fail ever count. A candidate's null
 #   model/effort is filled at ingest from the tiers file's levels.<its level>.<vendor>
@@ -117,7 +123,9 @@
 #
 # Model ids (Wave 15; model_id in DEFS is the one resolver): `model` keeps what was
 # configured; `modelId` is the concrete version and `modelIdSource` says how it is
-# known: pinned (a concrete id was configured: tiers entry or candidate), observed
+# known: pinned (a concrete id was configured for the run: the result carried it),
+# inferred-at-ingest (the result carried NO model: the tiers default as it is at
+# ingest time was filled in, which a tiers edit since the run makes wrong), observed
 # (the runner reported it: a triage-compare candidate with modelFrom "runner", i.e.
 # ext-run's vendor/model line), inferred-by-date (a bare alias resolved through the
 # tiers file's aliasHistory at the line's UTC date: the last entry with from <=
@@ -163,8 +171,15 @@
 # Rates (tuning.sampleRate = explore, tuning.maintain {rate, maxWidth}), per LEVEL
 # (sampling is decided per subtask at its level), from the same groups/proposals:
 #   none      no challenger configured at the level (tuning.challengers) -> rate 0
+#   unsampleable  challengers are configured, but no inline bake-off can ever run
+#             there (mirrors triage-exec bakeoffPick: claude never runs a top bake-off
+#             nor challenges at top; a challenger equal to the planned config is
+#             dropped), e.g. top with only the codex incumbent as its challenger -> rate 0
+#             and the reason says why (instead of explore forever)
 #   maintain  iff for EVERY vendor with a levels.<level> entry or configured
-#             challengers there: the incumbent and every configured challenger have
+#             challengers there: the incumbent and every configured challenger that
+#             inline bake-offs can REACH (a planner with a drawable challenger, or a
+#             drawable challenger; the rest are named "not reachable", never gaps) have
 #             n >= minN, each Wilson 95% interval (UB - LB) is <= maxWidth, and there
 #             is no proposal for that level x vendor -> maintain.rate
 #   explore   otherwise, the reason naming every gap -> sampleRate
@@ -279,6 +294,9 @@ def BAND_LEVEL: {"1":"quick","2":"builder","3":"deep","4":"top"};
 # FAMILY_ORDER — cheapness by model FAMILY, matched as a whole token of the id
 # (split on - . _ : + @), so every version of a family ranks: claude-opus-5 and
 # claude-opus-5-5 are both "opus". An id with no known family token is unranked.
+# The SPLIT is not owned here: workflows/triage-exec.js modelTokens owns it (the
+# family tokens of the danger floor); id_tokens must split on the same separators, which
+# test/lint.sh (family-split) checks against that owner.
 def FAMILY_ORDER: {"claude":["haiku","sonnet","opus","fable"],"codex":["luna","sol","astra"],"agy":["flash","pro"]};
 def id_base: sub("\\[[^\\]]*\\]$"; "");
 def id_tokens: ascii_downcase | [splits("[-._:+@]")];
@@ -324,18 +342,26 @@ def norm: (if type == "string" then ascii_downcase else "unknown" end) as $s
     elif $s == "fail" then "fail"
     else (if (KNOWN | index($s)) != null then $s else "unknown" end) end;
 def num_or_null: if type == "number" then . else null end;
-# cand($lvl) — one ledger candidate from a result candidate; null model/effort
-# default to the tiers entry of the level it ran at; modelId/modelIdSource via
-# model_id at the line date $date (observed iff the result says modelFrom "runner").
+# at_ingest($filled) — a row whose model the result did NOT carry was filled from
+# the tiers file as it is at INGEST time, which may not be what ran (a tiers edit
+# between the run and its ingest): its modelIdSource says so, never "pinned".
+def at_ingest($filled): if $filled and .modelId != null then .modelIdSource = "inferred-at-ingest" else . end;
+# cand($lvl) — one ledger candidate from a result candidate. The model the result
+# carries (what ran, recorded at run time) is used as is; a null model/effort
+# defaults to the tiers entry of the level it ran at, flagged inferred-at-ingest;
+# modelId/modelIdSource via model_id at the line date $date (observed iff the result
+# says modelFrom "runner").
 def cand($levels; $ah; $date; $lvl):
   (if (.level | type) == "string" and (.level as $x | LEVELS | index($x)) != null then .level else $lvl end) as $cl
   | ($levels[$cl][.vendor] // {}) as $def
   | (.modelFrom == "runner" and .model != null) as $obs
+  | (.model == null) as $filled
   | {label, vendor,
      model: (if .model == null then ($def.model // null) else .model end),
      effort: (if .effort == null then ($def.effort // null) else .effort end),
      status: (.status | norm), totalTokens: (.totalTokens | num_or_null), seconds: (.seconds | num_or_null)}
-  | . + model_id($ah; .vendor; .model; $date; $obs);
+  | . + model_id($ah; .vendor; .model; $date; $obs)
+  | at_ingest($filled);
 def cand_ok: (.label | safe) and ((.vendor as $x | VENDORS | index($x)) != null)
   and (.model == null or (.model | model_ok)) and (.effort == null or ((.effort as $x | EFFORTS | index($x)) != null))
   and (.modelId == null or (.modelId | safe));
@@ -347,10 +373,30 @@ check_ts() {
     usage "--ts must be an ISO date/time (got '$1')"
 }
 is_token() { printf '%s' "$1" | grep -Eq '^[A-Za-z0-9._:+-]{1,80}$'; }
+# token_why VALUE — why VALUE is not an id token (empty when it is one): the refusal
+# names the rule it broke, so a caller that built the id (triage-exec's run ids) can
+# be fixed from the message alone. The token rule itself stays is_token's.
+token_why() {
+  local v="$1" bad
+  is_token "$v" && return 0
+  if [ -z "$v" ]; then echo "it is empty"; return 0; fi
+  bad=$(printf '%s' "$v" | LC_ALL=C tr -d 'A-Za-z0-9._:+-' | LC_ALL=C fold -w1 | sort -u | tr -d '\n')
+  if [ -n "$bad" ]; then echo "'$v' contains character(s) outside [A-Za-z0-9._:+-]: '$bad'"
+  else echo "'$v' is ${#v} characters (the limit is 80)"; fi
+}
+# need_token FLAG VALUE — usage-refuse unless VALUE is an id token, saying why.
+need_token() {
+  local why
+  why=$(token_why "$2")
+  [ -z "$why" ] || usage "$1 must be an id token (letters, digits, . _ : + -, at most 80 characters, never text from the repo): $why"
+}
 # utc_of TS — TS (already check_ts-valid) normalized by the one jq utc.
 utc_of() { jq -rn --arg t "$1" "$DEFS"' $t | utc // empty'; }
-# run_ts FILE — sets TS: --ts, else FILE's own top-level ts, else now; always UTC.
-# A --ts that disagrees with the result's own ts is refused.
+# run_ts FILE — sets TS: --ts, else FILE's own top-level ts (the run-time date the
+# result carries), else now; always UTC. A --ts that disagrees with the result's own
+# ts is refused. TS_SRC says which (the line's tsSource): option | result |
+# inferred-at-ingest (neither was given: the ingest time stands in for the run time).
+TS_SRC=""
 run_ts() {
   local own
   own=$(jq -r 'if (.ts | type) == "string" then .ts else empty end' "$1" 2>/dev/null)
@@ -362,10 +408,11 @@ run_ts() {
     check_ts "$TS"
     TS=$(utc_of "$TS")
     [ -z "$own" ] || [ "$own" = "$TS" ] || usage "--ts $TS disagrees with the result's own ts $own (omit --ts to use the result's)"
+    TS_SRC=option
   elif [ -n "$own" ]; then
-    TS="$own"
+    TS="$own"; TS_SRC=result
   else
-    TS=$(now_ts)
+    TS=$(now_ts); TS_SRC=inferred-at-ingest
   fi
   [ -n "$TS" ] || usage "could not normalize the timestamp to UTC"
 }
@@ -385,23 +432,51 @@ run_hash() {
 }
 
 # --- the ONE ledger lock (every writer) --------------------------------------
+# A mkdir lock dir holding the holder's pid. TAKEOVER of a stale lock (its pid gone,
+# or no pid ~5 s after it appeared) is serialized by a second mkdir mutex,
+# <lock>.takeover: under it the waiter re-reads the lock and removes it only if it is
+# still the SAME lock dir (inode) with the SAME stale pid — so two waiters that both
+# saw one stale lock can never both remove it, and a takeover never removes the fresh
+# lock another waiter has just made (the race of a bare check-then-rm). The mutex is
+# held for microseconds; one older than ~5 s is orphaned (its holder was killed
+# inside that window) and is cleared. A holder releases only a lock whose pid is its own.
 LOCK_HELD=""
+TAKEOVER_WAIT=0
+lock_ino() { ls -di "$1" 2>/dev/null | awk '{print $1}'; }
+# take_over LOCK PID INO — remove LOCK iff, under the takeover mutex, it is still the
+# dir INO whose pid file reads PID (empty = none) and PID (if any) is not running.
+# Returns 1 while another waiter holds the mutex (the caller waits and retries).
+take_over() {
+  local lock="$1" want="$2" ino="$3" m="$1.takeover" got
+  if ! mkdir "$m" 2>/dev/null; then
+    TAKEOVER_WAIT=$((TAKEOVER_WAIT + 1))
+    if [ "$TAKEOVER_WAIT" -ge 50 ]; then rmdir "$m" 2>/dev/null; TAKEOVER_WAIT=0; fi
+    return 1
+  fi
+  TAKEOVER_WAIT=0
+  got=$(cat "$lock/pid" 2>/dev/null || true)
+  if [ -n "$ino" ] && [ "$(lock_ino "$lock")" = "$ino" ] && [ "$got" = "$want" ]; then
+    if [ -z "$want" ] || ! kill -0 "$want" 2>/dev/null; then rm -rf "$lock"; fi
+  fi
+  rmdir "$m" 2>/dev/null
+  return 0
+}
 lock_ledger() {
-  local lock="$REAL_LEDGER.lock" tries=0 nopid=0 max="${PARITY_LOCK_TRIES:-300}" pid seen
+  local lock="$REAL_LEDGER.lock" tries=0 nopid=0 nopid_ino="" max="${PARITY_LOCK_TRIES:-300}" pid ino
   case "$max" in ''|*[!0-9]*) usage "PARITY_LOCK_TRIES must be a whole number (got '$max')" ;; esac
   mkdir -p "$(dirname "$REAL_LEDGER")" 2>/dev/null || { echo "parity-report: could not create $(dirname "$REAL_LEDGER")" >&2; exit 1; }
   while ! mkdir "$lock" 2>/dev/null; do
+    ino=$(lock_ino "$lock")
     pid=$(cat "$lock/pid" 2>/dev/null || true)
     if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
-      # Stale: its holder is gone. Take it over only if it is still that holder's.
-      seen=$(cat "$lock/pid" 2>/dev/null || true)
-      [ "$seen" = "$pid" ] && rm -rf "$lock"
-      continue
-    fi
-    if [ -z "$pid" ]; then
-      nopid=$((nopid + 1))
-      # A holder killed between its mkdir and its pid write never releases it.
-      if [ "$nopid" -ge 50 ]; then rm -rf "$lock"; nopid=0; continue; fi
+      # Stale: its holder is gone. Take it over atomically (take_over), then retry.
+      nopid=0
+      take_over "$lock" "$pid" "$ino" && continue
+    elif [ -z "$pid" ] && [ -n "$ino" ]; then
+      # A holder killed between its mkdir and its pid write never releases it: the
+      # SAME lock dir still pid-less after ~5 s is stale.
+      if [ "$ino" = "$nopid_ino" ]; then nopid=$((nopid + 1)); else nopid_ino="$ino"; nopid=1; fi
+      if [ "$nopid" -ge 50 ]; then take_over "$lock" "" "$ino" && { nopid=0; continue; }; fi
     else
       nopid=0
     fi
@@ -415,7 +490,13 @@ lock_ledger() {
   printf '%s\n' "$$" > "$lock/pid"
   LOCK_HELD="$lock"
 }
-unlock_ledger() { if [ -n "$LOCK_HELD" ]; then rm -rf "$LOCK_HELD"; LOCK_HELD=""; fi; }
+# Release only our own lock (a lock taken over meanwhile is someone else's now).
+unlock_ledger() {
+  if [ -n "$LOCK_HELD" ]; then
+    [ "$(cat "$LOCK_HELD/pid" 2>/dev/null)" = "$$" ] && rm -rf "$LOCK_HELD"
+    LOCK_HELD=""
+  fi
+}
 
 append() { # $1 file of JSON lines to append (the caller holds the lock)
   [ -n "$LOCK_HELD" ] || { echo "parity-report: internal: append without the ledger lock" >&2; exit 1; }
@@ -475,26 +556,28 @@ do_ingest_compare() {
   printf '%s' "$REPO_NAME" | grep -Eq '^[A-Za-z0-9._-]{1,64}$' || usage "--repo-name must be a bare name (letters, digits, . _ -), never a path"
   case "$LEVEL" in quick|builder|deep|top) ;; *) usage "--level must be quick|builder|deep|top" ;; esac
   case "$SOURCE" in inline|suite) ;; *) usage "--source must be inline|suite" ;; esac
-  [ -z "$TASK" ] || is_token "$TASK" || usage "--task must be an id token (letters, digits, . _ : + -), not text from the repo"
+  [ -z "$TASK" ] || need_token --task "$TASK"
   [ -n "$RUN" ] || usage "ingest-compare needs --run (a globally unique run id: the idempotence key)"
-  is_token "$RUN" || usage "--run must be an id token"
+  need_token --run "$RUN"
   jq -e 'type == "object" and (.candidates | type == "array" and length > 0)' "$RESULT" >/dev/null 2>&1 ||
     usage "--result is not a triage-compare result (no candidates array): $RESULT"
   run_ts "$RESULT"
   local h
   h=$(run_hash "$RESULT" compare "$REPO_NAME" "$LEVEL" "$SOURCE" "$TASK" "$APPLIED")
-  jq -c --argjson cfg "$CFG" --argjson ah "$AH" --arg ts "$TS" --arg src "$SOURCE" --arg repo "$REPO_NAME" --arg lvl "$LEVEL" \
+  jq -c --argjson cfg "$CFG" --argjson ah "$AH" --arg ts "$TS" --arg tsSrc "$TS_SRC" --arg src "$SOURCE" --arg repo "$REPO_NAME" --arg lvl "$LEVEL" \
      --arg task "$TASK" --arg applied "$APPLIED" --arg run "$RUN" --arg h "$h" "$DEFS"'
     [.candidates[] | cand($cfg.levels; $ah; ($ts | date_of); $lvl)] as $c
     | if ($c | all(cand_ok)) | not then error("a candidate has an invalid label/vendor/model/effort")
       elif $applied != "" and ([$c[].label] | index($applied)) == null then error("--applied \($applied) is not a candidate label")
-      else {v: 1, ts: $ts, source: $src, run: $run, repoName: $repo, level: $lvl,
+      else {v: 1, ts: $ts, tsSource: $tsSrc, source: $src, run: $run, repoName: $repo, level: $lvl,
             task: (if $task == "" then null else $task end), candidates: $c,
             applied: (if $applied == "" then null else $applied end), runHash: $h} end' "$RESULT" > "$TMP/line" 2>"$TMP/err" ||
     usage "could not ingest $RESULT: $(sed 's/^jq: error[^:]*: //' "$TMP/err" | head -c 300)"
   commit_lines build "$TMP/line" > "$TMP/c" || exit $?
   jq -c --slurpfile c "$TMP/c" '{step:"ingest-compare", ledger:$l, run, lines:$c[0].appended, candidates:(.candidates | length),
-     graded:([.candidates[] | select(.status == "pass" or .status == "fail")] | length)}
+     graded:([.candidates[] | select(.status == "pass" or .status == "fail")] | length), tsSource}
+     + ([.candidates[] | select(.modelIdSource == "inferred-at-ingest") | .label] as $inf
+        | if ($inf | length) > 0 then {inferredModels: $inf} else {} end)
      + (if $c[0].appended == 0 then {skipped: $c[0].reason} elif $c[0].reason != null then {note: $c[0].reason} else {} end)' --arg l "$LEDGER" "$TMP/line"
 }
 
@@ -507,13 +590,13 @@ do_ingest_parity() {
   run_ts "$RESULT"
   local run="$RUN" h
   if [ -n "$run" ]; then
-    is_token "$run" || usage "--run must be an id token"
+    need_token --run "$run"
   else
     run=$(jq -r '(.outDir // "") | tostring | sub("/+$"; "") | split("/") | last // ""' "$RESULT")
-    is_token "$run" || usage "the parity result's outDir basename is not an id token: '$run' (pass --run)"
+    is_token "$run" || usage "the parity result's outDir basename is not an id token: $(token_why "$run") (pass --run)"
   fi
   h=$(run_hash "$RESULT" parity)
-  jq -c --argjson cfg "$CFG" --argjson ah "$AH" --arg ts "$TS" --arg run "$run" --arg h "$h" "$DEFS"'
+  jq -c --argjson cfg "$CFG" --argjson ah "$AH" --arg ts "$TS" --arg tsSrc "$TS_SRC" --arg run "$run" --arg h "$h" "$DEFS"'
     (reduce .ranking[] as $r ({}; .[$r.label] = $r)) as $rank
     | .tasks[] as $t
     | (BAND_LEVEL[($t.band | tostring)]) as $lvl
@@ -527,7 +610,7 @@ do_ingest_parity() {
         totalTokens: $row.totalTokens, seconds: $row.seconds} | cand($cfg.levels; $ah; ($ts | date_of); $rk.level)) as $c
     | select(GRADED | index($c.status) != null)
     | if ($c | cand_ok) | not then error("candidate \($row.label) has an invalid label/vendor/model/effort")
-      else {v: 1, ts: $ts, source: "suite", run: $run, repoName: "parity-suite", level: $lvl, band: $t.band,
+      else {v: 1, ts: $ts, tsSource: $tsSrc, source: "suite", run: $run, repoName: "parity-suite", level: $lvl, band: $t.band,
             task: (if ($t.id | safe) then $t.id else null end), candidates: [$c], applied: null, runHash: $h} end' "$RESULT" > "$TMP/lines" 2>"$TMP/err" ||
     usage "could not ingest $RESULT: $(sed 's/^jq: error[^:]*: //' "$TMP/err" | head -c 300)"
   if [ ! -s "$TMP/lines" ]; then
@@ -535,8 +618,8 @@ do_ingest_parity() {
     return 0
   fi
   commit_lines build "$TMP/lines" > "$TMP/c" || exit $?
-  jq -c --arg l "$LEDGER" --arg r "$run" --argjson n "$(wc -l < "$TMP/lines" | tr -d ' ')" \
-    '{step:"ingest-parity", ledger:$l, run:$r, lines:.appended, graded:$n}
+  jq -c --arg l "$LEDGER" --arg r "$run" --arg s "$TS_SRC" --argjson n "$(wc -l < "$TMP/lines" | tr -d ' ')" \
+    '{step:"ingest-parity", ledger:$l, run:$r, lines:.appended, graded:$n, tsSource:$s}
      + (if .appended == 0 then {skipped: .reason} elif .reason != null then {note: .reason} else {} end)' "$TMP/c"
 }
 
@@ -545,7 +628,7 @@ do_ingest_review() {
   [ -n "$RESULT" ] && [ -n "$REPO_NAME" ] || usage "ingest-review needs --result --repo-name"
   [ -f "$RESULT" ] || usage "--result is not a file: $RESULT"
   printf '%s' "$REPO_NAME" | grep -Eq '^[A-Za-z0-9._-]{1,64}$' || usage "--repo-name must be a bare name (letters, digits, . _ -), never a path"
-  [ -z "$RUN" ] || is_token "$RUN" || usage "--run must be an id token"
+  [ -z "$RUN" ] || need_token --run "$RUN"
   jq -e 'type == "object" and .kind == "review" and (.reviewers | type == "array" and length > 0) and (.items | type == "array")' "$RESULT" >/dev/null 2>&1 ||
     usage "--result is not a triage-compare review result (kind \"review\" with reviewers and items): $RESULT"
   run_ts "$RESULT"
@@ -568,7 +651,7 @@ do_ingest_review() {
   h=$(run_hash "$RESULT" review "$REPO_NAME" "$res")
   # An extension (extendedFrom) or Alex's --resolved verdicts may revise a run.
   if [ -n "$RESOLVED" ] || jq -e '.extendedFrom | type == "object"' "$RESULT" >/dev/null 2>&1; then revisable=true; fi
-  jq -c --argjson cfg "$CFG" --argjson ah "$AH" --argjson res "$res" --arg ts "$TS" --arg run "$run" --arg repo "$REPO_NAME" --arg h "$h" "$DEFS"'
+  jq -c --argjson cfg "$CFG" --argjson ah "$AH" --argjson res "$res" --arg ts "$TS" --arg tsSrc "$TS_SRC" --arg run "$run" --arg repo "$REPO_NAME" --arg h "$h" "$DEFS"'
     ([.items[] | if .verdict == "disputed" and $res[.id] != null
                  then .verdict = (if $res[.id] == "real" then "real" else "rejected" end) | .resolved = true else . end]) as $items
     | ([$items[] | select(.verdict == "real")] | length) as $allReal
@@ -580,6 +663,7 @@ do_ingest_review() {
            status: (if $r.status == "ok" or $r.status == "superseded" then $r.status else "unavailable" end),
            totalTokens: ($r.tokens | num_or_null), seconds: ($r.seconds | num_or_null)}
         | . + model_id($ah; .vendor; .model; ($ts | date_of); false)
+        | at_ingest($r.model == null)
         | if .status != "ok" then . + {precision: null, recall: null, n: 0, real: null, rejected: null, disputed: null, findings: null}
           else ([$items[] | select((.foundBy // []) | index($r.label))]) as $mine
             | ([$mine[] | select(.verdict == "real")] | length) as $real
@@ -590,7 +674,7 @@ do_ingest_review() {
                    disputed: ([$mine[] | select(.verdict == "disputed")] | length),
                    findings: ($r.findings | num_or_null)} end] as $revs
     | if ($revs | all(cand_ok)) | not then error("a reviewer has an invalid label/vendor/model/effort")
-      else {v: 1, ts: $ts, source: "inline-review", run: (if $run == "" then null else $run end), repoName: $repo,
+      else {v: 1, ts: $ts, tsSource: $tsSrc, source: "inline-review", run: (if $run == "" then null else $run end), repoName: $repo,
             reviewers: $revs, items: ($items | length), real: $allReal,
             disputed: ([$items[] | select(.verdict == "disputed")] | length),
             resolved: ([$items[] | select(.resolved == true)] | length), revision: 1, runHash: $h} end' "$RESULT" > "$TMP/line" 2>"$TMP/err" ||
@@ -599,7 +683,7 @@ do_ingest_review() {
   # The line as committed (a revision number may have been set).
   jq -c '.lines[0] // empty' "$TMP/decision" > "$TMP/committed"
   [ -s "$TMP/committed" ] || cp "$TMP/line" "$TMP/committed"
-  jq -c --arg l "$LEDGER" --slurpfile c "$TMP/c" '{step:"ingest-review", ledger:$l, run, revision, lines:$c[0].appended, reviewers:(.reviewers | length),
+  jq -c --arg l "$LEDGER" --slurpfile c "$TMP/c" '{step:"ingest-review", ledger:$l, run, revision, tsSource, lines:$c[0].appended, reviewers:(.reviewers | length),
      scored:([.reviewers[] | select(.precision != null)] | length), disputed, resolved}
      + (if $c[0].appended == 0 then {skipped: $c[0].reason} elif $c[0].reason != null then {note: $c[0].reason} else {} end)' "$TMP/committed"
 }
@@ -798,16 +882,44 @@ def outcome: ([.[] | select(.status == "pass")] | length) as $p | (length - $p) 
     | {level, vendor, direction, from: {model: .incumbent.modelId, effort: .incumbent.effort}, to: {model: .challenger.modelId, effort: .challenger.effort},
        incumbent: {n: .incumbent.n, rate: .incumbent.rate}, challenger: {n: .challenger.n, rate: .challenger.rate, wilsonLB: .challenger.wilsonLB}, why} ] as $proposals
 # Sampling rate per level (header: Rates) — from the same groups and proposals.
+# REACHABILITY mirrors triage-exec bakeoffPick(): a claude subtask at top is never a
+# bake-off (Fable runs only through runFable()) and claude is never a challenger at
+# top; a challenger equal to the planned (vendor, model, effort) is dropped. So a
+# config gets inline data only as a PLANNER (an incumbent with at least one other
+# drawable challenger) or as a CHALLENGER (drawable against some planner). A config
+# that can never get inline data is no gap (it would hold its level at explore
+# forever); a level with nothing reachable is "unsampleable" at rate 0.
 | [ LEVELS[] as $L
     | ($challengers[$L] // {}) as $chL
     | if ([$chL[]? | arrays | length] | add // 0) == 0
       then {key: $L, value: {state: "none", rate: 0, reason: "no challenger configured at \($L)"}}
       else
         ([(($levels[$L] // {}) | to_entries[] | select(.value | type == "object") | .key), ($chL | keys[])] | unique) as $vs
-        | [ $vs[] as $V
+        | [ ($levels[$L] // {}) | to_entries[] | select((.value | type) == "object" and (.value.model | type) == "string")
+            | select(.key != "claude" or $L != "top")
+            | {vendor: .key, model: .value.model, effort: (.value.effort // null)} ] as $planners
+        | [ $chL | to_entries[] | .key as $W | select($W != "claude" or $L != "top") | .value[]? | objects
+            | {vendor: $W, model, effort: (.effort // null)} ] as $draws
+        | ([ ($planners[] as $p | select(any($draws[]; . != $p)) | $p),
+             ($draws[] as $c | select(any($planners[]; . != $c)) | $c) ]
+           | map({vendor, modelId: current_id($ah; .vendor; .model; $today), effort}) | unique) as $reach
+        | ([ $vs[] as $V
+             | ([($incs[] | select(.level == $L and .vendor == $V) | {vendor, modelId, effort}),
+                 ($chcfg[] | select(.level == $L and .vendor == $V) | {vendor, modelId, effort})] | unique)[]
+             | select(. as $c | ($reach | index([$c])) == null)
+             | "\(.vendor) \(.modelId)@\(.effort)" ] | unique) as $unreach
+        | ("not reachable by inline bake-offs (suite runs only): " + ($unreach | join(", "))) as $unreachWhy
+        | if ($reach | length) == 0
+          then {key: $L, value: {state: "unsampleable", rate: 0,
+                reason: ("no inline bake-off can run at \($L): no planned vendor there has a challenger other than itself"
+                  + (if $L == "top" then " (claude never runs a top bake-off: Fable spawns only via runFable(), and is never a top challenger)" else "" end)
+                  + "; " + $unreachWhy)}}
+          else
+        [ $vs[] as $V
             | ([($incs[] | select(.level == $L and .vendor == $V) | {modelId, effort}),
                 ($chcfg[] | select(.level == $L and .vendor == $V) | {modelId, effort})] | unique) as $cfgs
             | (($cfgs[] | . as $c
+                 | select(($reach | index([{vendor: $V, modelId: $c.modelId, effort: $c.effort}])) != null)
                  | ([$groups[] | select(.level == $L and .vendor == $V and .modelId == $c.modelId and .effort == $c.effort)] | first
                     // {n: 0, wilsonLB: null, wilsonUB: null}) as $g
                  | "\($V) \($c.modelId)@\($c.effort)" as $who
@@ -816,10 +928,12 @@ def outcome: ([.[] | select(.status == "pass")] | length) as $p | (length - $p) 
                    else empty end),
                ($proposals[] | select(.level == $L and .vendor == $V)
                  | "proposal pending for \($L)/\($V): \(.from.model)@\(.from.effort) -> \(.to.model)@\(.to.effort)")) ] as $gaps
+        | (if ($unreach | length) > 0 then " — " + $unreachWhy else "" end) as $note
         | if ($gaps | length) == 0
           then {key: $L, value: {state: "maintain", rate: $maintainRate,
-                reason: "settled: every incumbent and challenger at n >= \($minN), Wilson 95% CI width <= \($maxWidth), no proposal"}}
-          else {key: $L, value: {state: "explore", rate: $exploreRate, reason: ($gaps | join("; "))}} end
+                reason: ("settled: every incumbent and challenger at n >= \($minN), Wilson 95% CI width <= \($maxWidth), no proposal" + $note)}}
+          else {key: $L, value: {state: "explore", rate: $exploreRate, reason: (($gaps | join("; ")) + $note)}} end
+          end
       end ] | from_entries as $rateLevels
 # History — per level x vendor, every modelId x effort ever graded there (old
 # versions included), with the current incumbent named even before it has data.

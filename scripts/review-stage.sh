@@ -70,17 +70,21 @@
 #            whenever it answered (allowed or denied); 2 on a usage error (no JSON).
 # fingerprint  the SOURCE-CHANGED guard of a review: prints (and with --out also
 #            writes to FILE) one JSON line
-#              {"step":"fingerprint","head","paths":[P...],"status","tree","committed"}
+#              {"step":"fingerprint","head","paths":[P...],"status","tree","committed","ignored"}
 #            status = `git status --porcelain=v1 -uall --no-renames -- <paths>`,
 #            tree = a hash over the content of every changed/untracked path in it
 #            (a second edit to an already-dirty file changes it), committed = a
-#            hash over HEAD's blobs at <paths>. Hard-excluded paths are left out
-#            of all three. Read-only (--no-optional-locks).
+#            hash over HEAD's blobs at <paths>, ignored = a hash over the WHOLE
+#            repo's ignored files by `stage-worktree.sh ignored` (the one
+#            leak-fingerprint rule; a rewritten gitignored cache shows here).
+#            Hard-excluded paths are left out of all four. Read-only
+#            (--no-optional-locks).
 # compare    exit 0 when A and B have the same status, tree and committed hash, 7
-#            when any differs (a commit, edit or new file INSIDE the paths); a
-#            change outside the paths, or HEAD moving by a commit outside them,
-#            is not a change. Prints {"step":"compare","same","changed":[...],
-#            "headMoved","detail"}.
+#            when any differs (a commit, edit or new file INSIDE the paths, or
+#            any ignored file of the repo — "ignored" in changed, compared only
+#            when both carry it); a tracked/untracked change outside the paths, or
+#            HEAD moving by a commit outside them, is not a change. Prints
+#            {"step":"compare","same","changed":[...],"headMoved","detail"}.
 #
 # Exit codes: 0 ok / same; 1 the step failed; 2 usage error, nothing written;
 #             7 compare: changed.
@@ -92,6 +96,8 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OB
 
 # ext-run.sh owns every codex deny decision; this script only asks it (deny-query).
 EXT_RUN="${REVIEW_STAGE_EXT_RUN:-$(cd "$(dirname "$0")" && pwd)/ext-run.sh}"
+# stage-worktree.sh owns the IGNORED part of the leak fingerprint (`ignored`).
+STAGE_WT="$(cd "$(dirname "$0")" && pwd)/stage-worktree.sh"
 TAB=$(printf '\t')
 NL='
 '
@@ -165,10 +171,16 @@ check_glob() { # $1 flag name, $2 pattern — a repo-relative pattern
   case "/$2/" in */../*|*/./*) usage "$1 '$2' must not contain . or .. components" ;; esac
   case "$2" in *"$NL"*|*"$TAB"*) usage "$1 must not contain a newline or a tab" ;; esac
 }
-repo_top() { # $1 repo path -> physical top level, or usage error
+# resolve_top PATH — the ONE repo-root resolver here: PATH's physical top level, or
+# rc 1 (nothing printed) when PATH is not a git work tree. repo_top (usage error) and
+# deny-refresh (fail closed) both use it, so snapshot and refresh query one path.
+resolve_top() {
   local t
-  t=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) || usage "--repo is not a git work tree: $1"
+  t=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) && [ -n "$t" ] || return 1
   (cd "$t" && pwd -P)
+}
+repo_top() { # $1 repo path -> physical top level, or usage error
+  resolve_top "$1" || usage "--repo is not a git work tree: $1"
 }
 # The empty tree, in this repository's hash format (sha1 or sha256).
 empty_tree() { git -C "$1" hash-object -t tree /dev/null; }
@@ -312,7 +324,7 @@ do_snapshot() {
   for g in "${HARD[@]}"; do case "$g" in ''|*"$NL"*) usage "--hard-exclude must be a non-empty single-line pattern" ;; esac; done
   check_abs --out "$OUT"
   local R D B H EMPTY created=0 codex_denied=false
-  R=$(repo_top "$REPO")
+  R=$(repo_top "$REPO") || exit 2   # usage() inside $(...) exits only the subshell
   B=$(git -C "$R" rev-parse --verify --quiet "$BASE^{commit}") || usage "--base does not name a commit in $R: $BASE"
   H=$(git -C "$R" rev-parse --verify --quiet "$HEAD_REF^{commit}") || usage "--head does not name a commit in $R: $HEAD_REF"
   D=$(phys "$OUT") || usage "could not resolve --out $OUT"
@@ -467,7 +479,7 @@ do_deny_refresh() {
     echo "review-stage: deny-refresh: $OUT/manifest.json is unreadable or its extras are malformed — marking the snapshot off-limits to codex" >&2
     denied=true; srcs=""
   fi
-  if R=$(git -C "$REPO" rev-parse --show-toplevel 2>/dev/null) && R=$(cd "$R" && pwd -P); then
+  if R=$(resolve_top "$REPO"); then
     if codex_denied --beneath "$R"; then denied=true; fi
   else
     echo "review-stage: deny-refresh: --repo is not a git work tree: $REPO — marking the snapshot off-limits to codex" >&2
@@ -494,7 +506,7 @@ do_fingerprint() {
   for g in "${PATHS[@]}"; do check_glob --path "$g"; done
   FP_OUT="$OUT"
   [ -z "$FP_OUT" ] || check_abs --out "$FP_OUT"
-  R=$(repo_top "$REPO")
+  R=$(repo_top "$REPO") || exit 2   # usage() inside $(...) exits only the subshell
   W=$(mktemp -d "${TMPDIR:-/tmp}/review-fp.XXXXXX") || die "mktemp failed"
   # shellcheck disable=SC2064  # expand now: the dir is local to this call
   trap "rm -rf '$W'" EXIT
@@ -529,13 +541,20 @@ do_fingerprint() {
     list_raw "$R" "$EMPTY" "$head" "$W/cm" "$W/spec" || die "could not list HEAD's paths in $R"
     split_hard "$W/cm" "$W/cm.keep" "$W/cm.drop"
   fi
-  local status tree committed json
+  # ignored: the repo's IGNORED files, whole repo, by the ONE leak-fingerprint rule
+  # (`stage-worktree.sh ignored` owns it: a review that rewrites a gitignored cache
+  # in the real repo shows here), hard excludes out as everywhere else.
+  "$STAGE_WT" ignored --repo "$R" > "$W/ign.raw" 2>"$W/err" || die "could not list the ignored files of $R: $(head -c 300 "$W/err")"
+  awk -F "$TAB" -v OFS="$TAB" '{ p = $1; $1 = ""; print substr($0, 2), p }' "$W/ign.raw" > "$W/ign"
+  split_hard "$W/ign" "$W/ign.keep" "$W/ign.drop"
+  local status tree committed ignored json
   status=$(cut -f1,2 "$W/st.keep" | sed "s/$TAB/ /")
   tree=$(git -C "$R" hash-object --stdin < "$W/tree")
   committed=$(git -C "$R" hash-object --stdin < "$W/cm.keep")
-  json=$(jq -n -c --arg head "$head" --arg status "$status" --arg tree "$tree" --arg committed "$committed" \
+  ignored=$(git -C "$R" hash-object --stdin < "$W/ign.keep")
+  json=$(jq -n -c --arg head "$head" --arg status "$status" --arg tree "$tree" --arg committed "$committed" --arg ignored "$ignored" \
     --argjson paths "$(printf '%s\n' "${PATHS[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0))')" \
-    '{step: "fingerprint", head: $head, paths: $paths, status: $status, tree: $tree, committed: $committed}') || die "could not build the fingerprint"
+    '{step: "fingerprint", head: $head, paths: $paths, status: $status, tree: $tree, committed: $committed, ignored: $ignored}') || die "could not build the fingerprint"
   if [ -n "$FP_OUT" ]; then
     mkdir -p "$(dirname "$FP_OUT")" && printf '%s\n' "$json" > "$FP_OUT" || die "could not write $FP_OUT"
   fi
@@ -557,10 +576,16 @@ do_compare() {
     | [ (if $x.committed != $y.committed then "committed" else empty end),
         (if $x.status != $y.status then "status" else empty end),
         (if $x.tree != $y.tree then "tree" else empty end),
-        (if $x.paths != $y.paths then "paths" else empty end) ] as $ch
+        (if $x.paths != $y.paths then "paths" else empty end),
+        # ignored: compared only when both fingerprints carry it (one taken before
+        # it existed has none).
+        (if ($x.ignored | type) == "string" and ($y.ignored | type) == "string" and $x.ignored != $y.ignored then "ignored" else empty end) ] as $ch
+    | ($ch - ["ignored"]) as $src
     | {step: "compare", same: ($ch | length == 0), changed: $ch, headMoved: ($x.head != $y.head),
        detail: (if ($ch | length) == 0 then (if $x.head != $y.head then "SAME: HEAD moved, but nothing under the paths changed" else "SAME: nothing under the paths changed" end)
-                else "SOURCE_CHANGED: " + ($ch | join(", ")) + " changed under the paths" end)}') || die "compare failed"
+                else ([ (if ($src | length) > 0 then "SOURCE_CHANGED: " + ($src | join(", ")) + " changed under the paths" else empty end),
+                        (if ($ch | index("ignored")) != null then "IGNORED_CHANGED: ignored files in the repo changed (a cache or build-output write)" else empty end) ]
+                      | join("; ")) end)}') || die "compare failed"
   printf '%s\n' "$out"
   [ "$(printf '%s' "$out" | jq -r .same)" = true ] && exit 0
   exit 7

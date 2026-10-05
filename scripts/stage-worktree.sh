@@ -16,15 +16,13 @@
 #   stage-worktree.sh leakcheck --repo R --dir D [--line]
 #   stage-worktree.sh cleanup   --repo R --dir D
 #   stage-worktree.sh apply     --repo R --patch P [--require-clean]
+#   stage-worktree.sh ignored   --repo R
 #
 # create     resolves REV to a sha ONCE, records R's fingerprint (HEAD, `status
 #            --porcelain=v1 -uall`, and a content manifest of every tracked +
-#            untracked non-ignored path, plus the IGNORED paths — a candidate's
-#            accidental cache or build-output write is a leak too: content hash for
-#            the first 2000 of them up to 256 KiB, size + mtime for the rest, at
-#            most 100000 listed; agent bookkeeping written by design while a
-#            bake-off runs — anything under .claude/ and PROJECT_MEMORY*.md — is
-#            left out of the IGNORED part only) in D, then creates N detached worktrees
+#            untracked non-ignored path, plus the IGNORED paths as `ignored`
+#            prints them — a candidate's accidental cache or build-output write is
+#            a leak too) in D, then creates N detached worktrees
 #            D/wt-1..D/wt-N at that sha (hooks off). D must be absolute, outside R,
 #            not containing R, and absent or empty. Prints one JSON object:
 #              {"sha","worktrees":["D/wt-1",...],"fingerprint":"D/fingerprint","head","repo"}
@@ -61,16 +59,19 @@
 #                 WOULD conflict, so it counts as clean only with rc 0 AND no
 #                 "conflict" in its output — then `git apply --3way`;
 #              3. else nothing is written: exit 6.
-#            --require-clean: first, every path P touches (`git apply --numstat`,
-#            both sides of a rename) must be unmodified and not untracked in R, else
+#            --require-clean: first, every path P touches (`git apply --numstat`
+#            for the paths it writes, plus the SOURCE of every rename or copy from
+#            the patch headers) must be unmodified and not untracked in R, else
 #            exit 6 and nothing is written — a patch never lands on top of the
-#            caller's uncommitted work.
+#            caller's uncommitted work. Paths that cannot be listed, or a `git
+#            status` that fails, are never clean: exit 6, treeModified false.
 #            An empty P is a no-op success. Prints one JSON line
 #              {"step":"apply","repo","patch","ok","applied","method":"plain|3way|empty|none",
 #               "treeModified","error"?}
 #            treeModified = the paths P touches (index entries and files) differ from
 #            before this call: true after an apply, false on exit 6; after a FAILED
-#            write it is measured (a failed 3-way can leave conflict markers). A
+#            write it is measured (a failed 3-way can leave conflict markers), and
+#            true when the paths could not be listed (unknown is never clean). A
 #            caller must never run anything on the tree while it is true or absent.
 #            The rule mirrors ext-run.sh apply_back() on purpose rather than being
 #            shared: ext-run.sh stays self-contained (the single owner of every
@@ -78,6 +79,19 @@
 #            runtime dependency from that danger-zone script on this one was judged
 #            worse than a three-command rule kept in two places — each copy has its
 #            own conflict-marker mutation in qc/mutate.sh (51 there, 55 here).
+# ignored    SINGLE OWNER of the real-repo leak fingerprint's IGNORED part — the
+#            rule `create`/`leakcheck` here, `review-stage.sh fingerprint` and
+#            `parity-suite.sh fingerprint` all use (they call this subcommand, never
+#            a copy). Prints, sorted, one line per IGNORED untracked path of R:
+#            "<path>\tign:<blob sha>" (content) for the first 2000 files of at most
+#            256 KiB, "<path>\tign-meta:<size>:<mtime>" (nanosecond mtime where
+#            Time::HiRes has it) for every other file, "\tlink:", "\tdir" or
+#            "\tmissing" otherwise; paths are taken shallowest first and at most
+#            100000 listed (STAGE_WT_IGN_LIST_MAX overrides; a test knob), then one
+#            "\tign-count:<count>" line, so a change in the count still shows.
+#            Left out — the ONE exclusion list, written by design while agents run
+#            and not the tree: anything under .claude/, PROJECT_MEMORY*.md, and
+#            Finder's .DS_Store at any depth. Read-only. Exit 0, 1 on a git failure.
 #
 # Exit codes: 0 ok (CLEAN / BASE_MOVED for leakcheck); 1 the step failed (JSON
 #             says why); 2 usage error, nothing done; 6 apply: the patch would not
@@ -173,29 +187,36 @@ snapshot() {
   rm -f "$out.files" "$out.other" "$out.hashes" "$out.ign"
 }
 
-# ignored_snapshot R OUTFILE — the IGNORED untracked paths of R, bounded:
-# "<path>\tign:<blob sha>" for the first IGN_HASH_MAX files of at most
-# IGN_HASH_BYTES, "<path>\tign-meta:<size>:<mtime>" for every other file, links
-# and dirs as in snapshot(); at most IGN_LIST_MAX paths, then one
-# "\tign-count:<count>" line (a change in the count still shows). Paths under
-# .claude/ (harness worktrees, agent memory) and PROJECT_MEMORY*.md are skipped:
-# agents write them by design while a bake-off runs, and they are not the tree.
-IGN_HASH_MAX=2000 IGN_HASH_BYTES=262144 IGN_LIST_MAX=100000
+# ignored_snapshot R OUTFILE — the IGNORED part of the leak fingerprint (the
+# `ignored` subcommand prints it; see the header for the rule): IGNORED untracked
+# paths of R, bounded: "<path>\tign:<blob sha>" for the first IGN_HASH_MAX files of
+# at most IGN_HASH_BYTES, "<path>\tign-meta:<size>:<mtime>" for every other file,
+# links and dirs as in snapshot(); shallowest paths first, at most IGN_LIST_MAX
+# listed, then one "\tign-count:<count>" line (a change in the count still shows).
+# The ONE exclusion list: .claude/ (harness worktrees, agent memory),
+# PROJECT_MEMORY*.md and .DS_Store — agents and Finder write them by design while a
+# bake-off runs, and they are not the tree.
+IGN_HASH_MAX=2000 IGN_HASH_BYTES=262144 IGN_LIST_MAX="${STAGE_WT_IGN_LIST_MAX:-100000}"
+case "$IGN_LIST_MAX" in ''|*[!0-9]*) usage "STAGE_WT_IGN_LIST_MAX must be a whole number" ;; esac
 ignored_snapshot() {
   local r="$1" out="$2" tab
   tab=$(printf '\t')
   git -C "$r" --no-optional-locks ls-files -z -o -i --exclude-standard > "$out.z" || { rm -f "$out.z"; return 1; }
-  # perl lstat()s each path (nanosecond mtime where Time::HiRes has it): small
-  # files are listed in $out.h for hashing, the rest described by size and mtime.
+  # perl lstat()s each path: small files are listed in $out.h for hashing, the rest
+  # described by size and mtime. Time::HiRes::lstat is called by its full name: an
+  # import at run time comes after `lstat` was compiled to CORE::lstat (whole
+  # seconds), so a same-size rewrite within one second would go unseen.
   # shellcheck disable=SC2016  # $vars below are perl's
   ( cd "$r" && perl -e '
       my ($max, $hmax, $hbytes, $hfile) = @ARGV; my ($i, $h) = (0, 0);
-      eval { require Time::HiRes; Time::HiRes->import("lstat"); 1 };
+      my $hires = eval { require Time::HiRes; defined &Time::HiRes::lstat };
       open(my $H, ">", $hfile) or die; local $/ = "\0";
-      while (my $p = <STDIN>) { chomp $p;
-        next if $p =~ m{^\.claude/} || $p =~ m{(^|/)PROJECT_MEMORY[^/]*\.md$};
+      my @p = grep { !m{^\.claude/} && !m{(^|/)PROJECT_MEMORY[^/]*\.md$} && !m{(^|/)\.DS_Store$} }
+              map { chomp; $_ } <STDIN>;
+      @p = map { $_->[1] } sort { $a->[0] <=> $b->[0] || $a->[1] cmp $b->[1] } map { [tr{/}{}, $_] } @p;
+      for my $p (@p) {
         next if ++$i > $max;
-        my @s = lstat($p);
+        my @s = $hires ? Time::HiRes::lstat($p) : lstat($p);
         if (!@s) { print "$p\tmissing\n" }
         elsif (-l $p) { print "$p\tlink:" . readlink($p) . "\n" }
         elsif (-d $p) { print "$p\tdir\n" }
@@ -223,7 +244,7 @@ do_create() {
   [ "$COUNT" -ge 1 ] || usage "--count must be a positive integer"
   check_abs --dir "$DIR"
   local R D DL SHA HEAD i made=""
-  R=$(repo_top "$REPO")
+  R=$(repo_top "$REPO") || exit 2   # usage() inside $(...) exits only the subshell
   SHA=$(git -C "$R" rev-parse --verify --quiet "$BASE^{commit}") || usage "--base does not name a commit in $R: $BASE"
   HEAD=$(git -C "$R" rev-parse --verify --quiet HEAD) || HEAD=""
   D=$(phys "$DIR") || usage "could not resolve --dir $DIR"
@@ -304,7 +325,7 @@ do_diff() {
 stage_paths() { # sets R, D from --repo/--dir; refuses overlap
   [ -n "$REPO" ] && [ -n "$DIR" ] || usage "$SUB needs --repo --dir"
   check_abs --dir "$DIR"
-  R=$(repo_top "$REPO")
+  R=$(repo_top "$REPO") || exit 2   # usage() inside $(...) exits only the subshell
   D=$(phys "$DIR") || usage "could not resolve --dir $DIR"
   check_dir_vs_repo "$D" "$R"
 }
@@ -391,16 +412,41 @@ do_cleanup() {
 }
 
 # ---------------------------------------------------------------------------
+do_ignored() {
+  [ -n "$REPO" ] || usage "ignored needs --repo"
+  local R tmp
+  R=$(repo_top "$REPO") || exit 2   # usage() inside $(...) exits only the subshell
+  tmp=$(mktemp -d) || { echo "stage-worktree: mktemp failed" >&2; exit 1; }
+  # shellcheck disable=SC2064  # expand now: the temp dir is local to this call
+  trap "rm -rf '$tmp'" EXIT
+  ignored_snapshot "$R" "$tmp/ign" || { echo "stage-worktree: could not list the ignored files of $R" >&2; exit 1; }
+  sort -u "$tmp/ign"
+}
+
+# ---------------------------------------------------------------------------
 apply_out() { # $1 ok, $2 applied, $3 method, $4 treeModified, $5 error (empty = none)
   jq -nc --arg r "$REPO" --arg p "$PATCH" --argjson ok "$1" --argjson ap "$2" --arg m "$3" --argjson tm "$4" --arg e "$5" \
     '{step:"apply", repo:$r, patch:$p, ok:$ok, applied:$ap, method:$m, treeModified:$tm} + (if $e == "" then {} else {error:$e} end)'
 }
-# patch_paths R P OUT — every path P touches, one per line (both sides of a rename
-# or copy), from `git apply --numstat -z`: "A\tD\tPATH\0", or "A\tD\t\0PRE\0POST\0".
+# patch_paths R P OUT — every path P touches, one per line: the paths it writes,
+# from `git apply --numstat -z` ("A\tD\tPATH\0", or "A\tD\t\0PRE\0POST\0"), plus the
+# SOURCE of every rename and copy, from the patch headers (`git apply --numstat`
+# prints only the new side of a rename: a dirty source would go unseen and the
+# patch land on the caller's edit). Header paths are unquoted as git quotes them.
+# rc != 0 when either listing fails: the caller never treats that as clean.
 patch_paths() {
-  git -C "$1" apply --numstat -z "$2" 2>/dev/null |
-    perl -0ne 'chomp; my @f = split(/\t/, $_, 3); if ($f[2] eq "") { for (1, 2) { my $x = <STDIN>; chomp $x; print "$x\n" } } else { print "$f[2]\n" }' |
-    sort -u > "$3"
+  # shellcheck disable=SC2016  # $vars below are perl's
+  ( set -o pipefail
+    git -C "$1" apply --numstat -z "$2" 2>/dev/null |
+      perl -0ne 'chomp; my @f = split(/\t/, $_, 3); if ($f[2] eq "") { for (1, 2) { my $x = <STDIN>; chomp $x; print "$x\n" } } else { print "$f[2]\n" }' || exit 1
+    perl -ne '
+      my %e = (n => "\n", t => "\t", r => "\r", a => "\a", b => "\b", f => "\f", v => "\013");
+      sub unq { my $s = shift; return $s unless $s =~ s/^"(.*)"$/$1/;
+        $s =~ s/\\([0-7]{3}|.)/length($1) == 3 ? chr(oct($1)) : exists $e{$1} ? $e{$1} : $1/ge; return $s }
+      if (/^diff --git /) { $hd = 1; next }
+      if ($hd && /^(?:---|\+\+\+|@@|GIT binary patch|Binary files )/) { $hd = 0; next }
+      if ($hd && /^(?:rename|copy) from (.*?)\r?$/) { print unq($1), "\n" }' "$2" || exit 1
+  ) | sort -u > "$3"
 }
 # paths_state R LIST OUT — the index entries (all stages) and the file content of
 # every path in LIST: what an apply may change, and nothing else.
@@ -420,21 +466,27 @@ do_apply() {
   [ -n "$REPO" ] && [ -n "$PATCH" ] || usage "apply needs --repo --patch"
   check_abs --patch "$PATCH"
   [ -f "$PATCH" ] || usage "--patch is not a file: $PATCH"
-  local R log chk3 tmp dirty
-  R=$(repo_top "$REPO")
+  local R log chk3 tmp dirty paths_ok
+  R=$(repo_top "$REPO") || exit 2   # usage() inside $(...) exits only the subshell
   if [ ! -s "$PATCH" ]; then apply_out true false empty false ""; exit 0; fi
   tmp=$(mktemp -d) || { apply_out false false none false "mktemp failed"; exit 1; }
   log="$tmp/log" chk3="$tmp/chk3"
   # shellcheck disable=SC2064  # expand now: the temp dir is local to this call
   trap "rm -rf '$tmp'" EXIT
-  patch_paths "$R" "$PATCH" "$tmp/paths"
+  paths_ok=1
+  patch_paths "$R" "$PATCH" "$tmp/paths" || paths_ok=0
+  [ -s "$tmp/paths" ] || paths_ok=0
   if [ "$REQUIRE_CLEAN" -eq 1 ]; then
-    if [ ! -s "$tmp/paths" ]; then
-      apply_out false false none false "--require-clean: could not list the paths the patch touches (git apply --numstat), so nothing was written"
+    if [ "$paths_ok" -eq 0 ]; then
+      apply_out false false none false "--require-clean: could not list the paths the patch touches (git apply --numstat / the rename and copy headers), so nothing was written"
       exit 6
     fi
-    dirty=$(tr '\n' '\000' < "$tmp/paths" | xargs -0 git -C "$R" --literal-pathspecs --no-optional-locks status --porcelain=v1 -uall -- 2>/dev/null |
-      head -n 10 | paste -sd, - | sed 's/,/, /g')
+    # A status that FAILS is never clean (its empty output would read as clean).
+    if ! tr '\n' '\000' < "$tmp/paths" | xargs -0 git -C "$R" --literal-pathspecs --no-optional-locks status --porcelain=v1 -uall -- > "$tmp/dirty" 2>"$tmp/dirty.err"; then
+      apply_out false false none false "--require-clean: git status failed on the paths the patch touches, so nothing was written: $(head -c 300 "$tmp/dirty.err")"
+      exit 6
+    fi
+    dirty=$(head -n 10 "$tmp/dirty" | paste -sd, - | sed 's/,/, /g')
     if [ -n "$dirty" ]; then
       apply_out false false none false "--require-clean: $R has uncommitted changes in path(s) the patch touches ($dirty), so nothing was written"
       exit 6
@@ -443,7 +495,8 @@ do_apply() {
   paths_state "$R" "$tmp/paths" "$tmp/before"
   # A failed write is measured, never assumed: git apply is atomic, a --3way that
   # hits a conflict is not (markers + unmerged index entries).
-  modified() { paths_state "$R" "$tmp/paths" "$tmp/after"; if cmp -s "$tmp/before" "$tmp/after"; then echo false; else echo true; fi; }
+  # Paths that could not be listed (paths_ok 0): a failed write is never proven harmless.
+  modified() { paths_state "$R" "$tmp/paths" "$tmp/after"; if [ "$paths_ok" -eq 1 ] && cmp -s "$tmp/before" "$tmp/after"; then echo false; else echo true; fi; }
   if git -C "$R" apply --check "$PATCH" >"$log" 2>&1; then
     if git -C "$R" apply "$PATCH" >>"$log" 2>&1; then apply_out true true plain true ""; exit 0; fi
     apply_out false false plain "$(modified)" "git apply failed after a clean --check (the tree changed in between?) — inspect $R: $(head -c 300 "$log")"
@@ -464,5 +517,6 @@ case "$SUB" in
   diff)      do_diff ;;
   leakcheck) do_leakcheck ;;
   cleanup)   do_cleanup ;;
-  *)         usage "stage-worktree.sh create|diff|leakcheck|cleanup|apply [options] (see the header)" ;;
+  ignored)   do_ignored ;;
+  *)         usage "stage-worktree.sh create|diff|leakcheck|cleanup|apply|ignored [options] (see the header)" ;;
 esac

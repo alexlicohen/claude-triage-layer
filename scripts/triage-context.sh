@@ -11,8 +11,11 @@
 #   {"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"<label>\n\n<triage.md>"}}
 # It prints NOTHING (exit 0) when:
 #   - $CLAUDE_DIR/triage.disabled exists (the kill switch; `rm` re-enables);
-#   - $CLAUDE_DIR/CLAUDE.md still has the exact line `@triage.md` (CRLF too; legacy
-#     wiring: the import already loads the rubric, so a second copy would double it);
+#   - $CLAUDE_DIR/CLAUDE.md still has the legacy import line (LEGACY_IMPORT_AWK:
+#     `@triage.md`, `@./triage.md`, `@~/.claude/triage.md` or `@$CLAUDE_DIR/triage.md`,
+#     ONE trailing CR and trailing blanks ignored — the same normalisation install.sh
+#     migrates and uninstall.sh removes; legacy wiring: the import already loads the
+#     rubric, so a second copy would double it);
 #   - the input carries a non-null agent_id (defensive: never inject into a subagent).
 # A missing triage.md, or label + file over the 10,000-char additionalContext cap
 # (over it Claude Code keeps only a 2,000-char preview), prints a short notice
@@ -30,6 +33,10 @@ set -u
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
 TRIAGE_MD="${TRIAGE_MD:-$CLAUDE_DIR/triage.md}"
 CAP=10000
+# The ONE legacy-import normalisation (identical in install.sh and uninstall.sh;
+# test/roundtrip.sh N8 pins the three copies): is_legacy(line), TRIAGE_DIR in awk's
+# environment = CLAUDE_DIR.
+LEGACY_IMPORT_AWK='function is_legacy(l) { sub(/\r$/, "", l); sub(/[ \t]+$/, "", l); return l == "@triage.md" || l == "@./triage.md" || l == "@~/.claude/triage.md" || l == "@" ENVIRON["TRIAGE_DIR"] "/triage.md" }'
 LABEL="This is ~/.claude/triage.md, the user's orchestrator routing rubric for this main session, delivered by the triage-layer SessionStart hook."
 
 bytes_of() { wc -c < "$1" | tr -d ' '; }
@@ -61,7 +68,7 @@ fi
 
 # --- hook mode ------------------------------------------------------------------
 [ -e "$CLAUDE_DIR/triage.disabled" ] && exit 0
-if [ -f "$CLAUDE_DIR/CLAUDE.md" ] && tr -d '\r' < "$CLAUDE_DIR/CLAUDE.md" 2>/dev/null | grep -qxF '@triage.md'; then
+if [ -f "$CLAUDE_DIR/CLAUDE.md" ] && TRIAGE_DIR="$CLAUDE_DIR" awk "$LEGACY_IMPORT_AWK"' is_legacy($0) { f = 1 } END { exit f ? 0 : 1 }' "$CLAUDE_DIR/CLAUDE.md" 2>/dev/null; then
   exit 0
 fi
 

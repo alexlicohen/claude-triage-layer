@@ -224,6 +224,68 @@ chk "4.8: a project dir uses its newest session (workflow transcripts found), no
   '[ "$PD_RC" -eq 0 ] && [ "$PD_OUT" = "Usage: haiku 0 · sonnet 4k · opus 0 · fable 0 (orchestrator excluded; /usage for quota)" ]'
 
 # =============================================================================
+# Fixture 4d (Wave 22, L16) — repeated message ids and a corrupt line
+#   dd1: message m1 written on 3 lines (one per content block, same usage, out 100)
+#        + message m2 (out 50) + an id-less record (out 7): CUM_OUT counts each
+#        message ONCE (157), never per line (357).
+#   cr1: a corrupt line BETWEEN two records: skipped with a warning; the record
+#        after it still counts (peak 3000, not 1000).
+# =============================================================================
+DD_DIR=$(new_sandbox)
+mkdir -p "$DD_DIR/subagents"
+dd_line() { # ID MSGID IN OUT -> one assistant line (MSGID "-" = no id)
+  if [ "$2" = "-" ]; then
+    printf '{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":%s,"output_tokens":%s,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}\n' "$3" "$4"
+  else
+    printf '{"type":"assistant","message":{"id":"%s","model":"claude-sonnet-5","usage":{"input_tokens":%s,"output_tokens":%s,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}\n' "$2" "$3" "$4"
+  fi
+}
+{ dd_line dd1 m1 1000 100; dd_line dd1 m1 1000 100; dd_line dd1 m1 1000 100; dd_line dd1 m2 2000 50; dd_line dd1 - 500 7; } > "$DD_DIR/subagents/agent-dd1.jsonl"
+printf '{"agentType":"triage-builder"}\n' > "$DD_DIR/subagents/agent-dd1.meta.json"
+DD_OUT=$(new_tmp); DD_ERR=$(new_tmp)
+"$SCRIPT" -v "$DD_DIR" > "$DD_OUT" 2> "$DD_ERR"
+# shellcheck disable=SC2034  # used inside chk's eval'd condition string
+DD_RC=$?
+chk "6.1: a message repeated on several lines (same id) counts once: dd1 CUM_OUT 157, CUM_IN 3500; peak unchanged (2000)" \
+  '[ "$DD_RC" -eq 0 ] && [ "$(awk '"'"'$1=="dd1"{print $4 "/" $5 "/" $6}'"'"' "$DD_OUT")" = "2000/157/3500" ]'
+
+CR_DIR=$(new_sandbox)
+mkdir -p "$CR_DIR/subagents"
+{ dd_line cr1 c1 1000 10; printf '{"type":"assistant","message":{"model":TRUNCATED\n'; dd_line cr1 c2 3000 10; } > "$CR_DIR/subagents/agent-cr1.jsonl"
+CR_OUT=$(new_tmp); CR_ERR=$(new_tmp)
+"$SCRIPT" "$CR_DIR" > "$CR_OUT" 2> "$CR_ERR"
+# shellcheck disable=SC2034  # used inside chk's eval'd condition string
+CR_RC=$?
+chk "6.2: a corrupt line mid-transcript is skipped, not the end of the file: the later record counts (sonnet 3k), exit 0" \
+  '[ "$CR_RC" -eq 0 ] && [ "$(head -n 1 "$CR_OUT")" = "Usage: haiku 0 · sonnet 3k · opus 0 · fable 0 (orchestrator excluded; /usage for quota)" ]'
+chk "6.3: ...and it is warned about on stderr (count + file), never on the headline's stdout" \
+  'grep -q "warning: skipped 1 unparseable line(s) in .*agent-cr1.jsonl" "$CR_ERR" && ! grep -q warning "$CR_OUT"'
+
+# =============================================================================
+# Fixture 7 (Wave 22, L7) — scripts/triage-stats.sh attributes WORKFLOW agents to
+# their real session: sessions s1 and s2 each ran one triage-builder only inside a
+# workflow, s3 one direct, s4 one in a nested workflow dir. 4 sessions — never the
+# "workflows" dir (or a wf_* run id) standing in for a session (which counts 3).
+# =============================================================================
+STATS="$REPO_DIR/scripts/triage-stats.sh"
+ST_DIR=$(new_sandbox)
+st_agent() { # DIR ID
+  mkdir -p "$1"
+  printf '{"type":"assistant","timestamp":"2026-09-30T10:00:00.000Z","message":{"model":"claude-sonnet-5","usage":{"input_tokens":1000,"output_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}\n' > "$1/agent-$2.jsonl"
+  printf '{"agentType":"triage-builder"}\n' > "$1/agent-$2.meta.json"
+}
+st_agent "$ST_DIR/s1/subagents/workflows/wf_a" w1
+st_agent "$ST_DIR/s2/subagents/workflows/wf_b" w2
+st_agent "$ST_DIR/s3/subagents" d3
+st_agent "$ST_DIR/s4/subagents/workflows/wf_c/nested" w4
+ST_OUT=$(new_tmp)
+"$STATS" --project "$ST_DIR" --weeks 0 > "$ST_OUT" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition string
+ST_RC=$?
+chk "7.1: triage-stats counts workflow agents under their own session (triage-builder: 4 sessions, 4 spawns)" \
+  '[ "$ST_RC" -eq 0 ] && [ "$(awk '"'"'$1=="triage-builder"{print $2 "/" $3}'"'"' "$ST_OUT")" = "4/4" ]'
+
+# =============================================================================
 # Exit-code / fail-loud coverage — every distinct exit code the script defines
 # =============================================================================
 

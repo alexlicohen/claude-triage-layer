@@ -55,9 +55,43 @@ const stripSlash = v => String(v).replace(/\/+$/, '')
 const shq = s => `'${String(s).replace(/'/g, `'\\''`)}'`
 const firstLine = out => String(out || '').trimStart().split('\n')[0]
 const errText = e => String((e && e.message) || e).slice(0, 200)
-// UNAVAILABLE / REFUSED as a reply's FIRST line (triage-external's exit-code
-// mapping), or no reply at all: the candidate produced nothing to grade.
+// A CLAUDE candidate's reply: none at all, or UNAVAILABLE / REFUSED as its first
+// line — it produced nothing to grade. External replies go through classifyExternal().
 const producedNothing = out => out == null || /^\s*(UNAVAILABLE|REFUSED)\b/i.test(String(out).trimStart())
+// classifyExternal(out) — a PINNED COPY of triage-exec.js's classifyExternal() (the
+// one rule for reading a triage-external reply; test/lint.sh checks the copies are
+// identical): the FIRST line that starts with a verdict token decides, a preamble
+// before it is ignored, and only a positive `EXTERNAL (` header means work. Refused,
+// unavailable, malformed (no token line) or no reply is never graded or ledgered.
+const EXTERNAL_REASON_MAX = 160
+function classifyExternal(out) {
+  const cut = s => s.trim().slice(0, EXTERNAL_REASON_MAX)
+  if (out == null) return { work: false, kind: 'no-reply', reason: 'spawn returned nothing' }
+  const lines = String(out).split('\n')
+  for (const raw of lines) {
+    const line = raw.trimStart()
+    if (line.startsWith('EXTERNAL (')) return { work: true, kind: 'work', reason: '' }
+    if (line.startsWith('REFUSED:')) return { work: false, kind: 'refused', reason: cut(line.slice('REFUSED:'.length)) || '(no reason given)' }
+    if (line.startsWith('UNAVAILABLE:')) return { work: false, kind: 'unavailable', reason: cut(line.slice('UNAVAILABLE:'.length)) || '(no reason given)' }
+  }
+  const first = lines.map(l => l.trim()).find(Boolean)
+  return { work: false, kind: 'malformed', reason: cut(first ? `no EXTERNAL/REFUSED/UNAVAILABLE line; reply began: ${first}` : 'empty reply') }
+}
+// classifyCrossReview(out) — the SAME rule for a triage-cross-reviewer reply (codex
+// reviewers, adjudicators, parity judges): its positive header is `CROSS-REVIEW (`,
+// which takes `EXTERNAL (`'s place; a stray `EXTERNAL (` line in it is no verdict.
+// Pinned copy, identical in triage-parity.js (test/lint.sh).
+const CROSS_HEADER = 'CROSS-REVIEW ('
+function classifyCrossReview(out) {
+  if (out == null) return classifyExternal(out)
+  return classifyExternal(String(out).split('\n').map(raw => {
+    const line = raw.trimStart()
+    return line.startsWith(CROSS_HEADER) ? `EXTERNAL (${line.slice(CROSS_HEADER.length)}` : line.startsWith('EXTERNAL (') ? `- ${line}` : raw
+  }).join('\n'))
+}
+// The reason a no-work external reply is reported with (tail / reviewer reason).
+const noWorkReason = cls => (cls.kind === 'no-reply' ? cls.reason
+  : `${cls.kind === 'refused' ? 'REFUSED' : cls.kind === 'unavailable' ? 'UNAVAILABLE' : 'MALFORMED'}: ${cls.reason}`)
 // The accounting line ext-run.sh prints and triage-external relays:
 //   ext-run: <N> tokens (<S>s, <vendor>/<model>)[ out=<M>][ effort=<E>]
 const EXT_LINE = /ext-run:\s*(\d+)\s+tokens\s*\(([\d.]+)s,\s*([a-z]+)\/([^)\s]+)\)(?:\s+out=(\d+))?(?:\s+effort=([a-z]+))?/
@@ -93,7 +127,7 @@ const REVIEW_USAGE = 'Expected args (kind:"review") = {\n' +
   '  groundTruth: "text", accepted?: "text", conventions?: "text",\n' +
   '  outDir: "/abs/dir"                                          // fresh, outside repo: snap/, range.diff, manifest.json\n' +
   `  reviewers: [{ vendor: ${VENDORS.join('|')}, level: ${LEVELS.join('|')}, model?, effort?, label? }]   // codex: model + effort required\n` +
-  '  adjudicators?: [>= 2, default claude deep claude-opus-5-5·high + codex deep gpt-6-astra·high], batchSize?: 10,\n' +
+  `  adjudicators?: [>= 2, default ${DEFAULT_ADJUDICATORS.map(j => `${j.vendor} ${j.level} ${j.model}·${j.effort}`).join(' + ')} (config/tiers.json levels.deep)], batchSize?: 10,\n` +
   '  reviewerTimeout?: "30m", adjudicatorTimeout?: "15m",            // codex only: N | Ns | Nm | Nh, at most 3h\n' +
   '  extendResult?: {the prior result object, inline}, supersedes?: ["prior label"]  // add reviewers to a prior review of the SAME snapshot:\n' +
   '                                // re-pass its args (outDir = its outDir; base/head resolving to its shas) with only the NEW reviewers\n}'
@@ -132,7 +166,22 @@ const base = (args.base || 'HEAD').trim()
 const outDir = args.outDir.trim().replace(/\/+$/, '')
 const overlay = args.overlay ? args.overlay.trim() : null
 const stageDir = `${outDir}/stage`
-const files = (args.files || []).map(f => f.trim())
+// scopePath(path) — one spelling for a brief file and a changed path alike: repo-
+// relative, no ./ components, no doubled or trailing slash. An absolute path under
+// repo is made relative ('' = the repo itself, which covers everything); an absolute
+// path elsewhere stays absolute and so covers nothing (fail closed: outOfScope).
+const repoC = stripSlash(repo)
+function scopePath(f) {
+  let s = String(f).trim().replace(/\/{2,}/g, '/')
+  if (s === repoC || s === `${repoC}/`) return ''
+  if (s.startsWith(`${repoC}/`)) s = s.slice(repoC.length + 1)
+  if (s.startsWith('/')) return s
+  return s.split('/').filter(x => x !== '' && x !== '.').join('/')
+}
+// args.files are normalized HERE, at entry: the brief every candidate reads names
+// them repo-relative (never <repo>/… — the real tree — and never ./…), and inScope()
+// compares the same spelling. The repo itself is shown as '.'.
+const files = (args.files || []).map(f => scopePath(f) || '.')
 const checks = args.checks.map(c => c.trim())
 // The grade command: one check as written; several each in its OWN `bash -c`, so
 // `a || b` in one check can never mask an earlier check's failure (a plain
@@ -309,8 +358,11 @@ try {
     }
     const after = runParallel ? null : spentNow()
     const claudeOut = before != null && after != null ? after - before : null
-    const nothing = err != null || producedNothing(out)
-    const ext = external && out ? String(out).match(EXT_LINE) : null
+    // External: classifyExternal() decides — only an `EXTERNAL (` header is work; a
+    // preamble before REFUSED:/UNAVAILABLE:, or no verdict line at all, is not.
+    const cls = external && err == null ? classifyExternal(out) : null
+    const nothing = err != null || (external ? !cls.work : producedNothing(out))
+    const ext = external && !nothing ? String(out).match(EXT_LINE) : null
     // What ext-run.sh says it RAN, against what the candidate asked for: a wrapper
     // that dropped --model or --effort ran something else, so its grade would be
     // credited to the wrong model/effort — invalid, never a pass or a fail.
@@ -318,12 +370,17 @@ try {
     const ranEffort = ext && ext[6] ? ext[6] : null
     const mismatch = !nothing && ((c.model && ranModel && ranModel !== c.model) || (c.effort && ranEffort && ranEffort !== c.effort))
       ? `asked ${c.model || 'default'}@${c.effort || 'default'}, ext-run ran ${ranModel || '?'}@${ranEffort || '?'}` : null
+    // Fail closed: an external reply with work but no ext-run accounting line cannot
+    // show what ran, so the mismatch guard above cannot clear it — invalid, never graded.
+    const unverified = external && !nothing && !ext
+      ? `no ext-run accounting line in the reply: what ran cannot be checked against ${c.model || 'default'}@${c.effort || 'default'}` : null
     const run = {
       c,
       available: !nothing,
-      reason: err ? `spawn failed: ${err}` : out == null ? 'spawn returned nothing' : nothing ? firstLine(out).slice(0, 200) : null,
+      reason: err ? `spawn failed: ${err}` : out == null ? 'spawn returned nothing' : nothing ? (cls ? noWorkReason(cls) : firstLine(out).slice(0, 200)) : null,
       selfRc: nothing ? null : selfRcOf(out),
       mismatch,
+      unverified,
       model: c.model || ranModel,
       effort: c.effort || ranEffort,
       // Claude: the output tokens this candidate cost (budget delta; null in
@@ -340,7 +397,7 @@ try {
     // parallel() maps a thrown thunk to null; runCandidate never throws, but a
     // null is still reported as unavailable, never dropped.
     const got = await parallel(candidates.map(c => () => runCandidate(c)))
-    candidates.forEach((c, i) => runs.push(got[i] || { c, available: false, reason: 'candidate run failed', selfRc: null, mismatch: null, model: c.model, effort: c.effort, outTokens: null, totalTokens: null, seconds: null }))
+    candidates.forEach((c, i) => runs.push(got[i] || { c, available: false, reason: 'candidate run failed', selfRc: null, mismatch: null, unverified: null, model: c.model, effort: c.effort, outTokens: null, totalTokens: null, seconds: null }))
   } else {
     for (const c of candidates) runs.push(await runCandidate(c))
   }
@@ -455,8 +512,9 @@ const pcBad = !gr || !gradedPatches.length ? null
 if (pcBad) log(`⚠ GRADING UNUSABLE — ${pcBad}: every graded candidate is INVALID (ungradable), not a pass or a fail.`)
 const byPatch = gr && !pcBad && pcLine ? new Map(pcLine.results.map(x => [x.patch, x])) : new Map()
 // inScope(path) — a changed path the brief's files cover (a listed file, or a
-// path under a listed directory).
-const inScope = p => files.some(f => { const s = stripSlash(f); return p === s || p.startsWith(`${s}/`) })
+// path under a listed directory), both normalized by scopePath().
+const scopeFiles = files.map(scopePath)
+const inScope = p => { const q = scopePath(p); return scopeFiles.some(s => s === '' || q === s || q.startsWith(`${s}/`)) }
 
 // grade() — SINGLE OWNER of a candidate's status. pass = its worktree diff applied
 // at the sha AND the checks exited 0 in patch-check's own worktree. Nothing the
@@ -491,6 +549,8 @@ function gradeOf(r) {
   const base = { applies: pc.applies, diffstat: pc.diffstat, patch: r.c.patch, changedFiles: changed, outOfScope, captureWarnings: warn.length ? warn : null }
   // A model/effort other than the one asked for ran: the grade is not this candidate's.
   if (r.mismatch) return Object.assign(base, { status: 'invalid', rc: null, tail: `MODEL/EFFORT MISMATCH — ${r.mismatch}` })
+  // …or nothing says what ran (no ext-run line): fail closed, never credited.
+  if (r.unverified) return Object.assign(base, { status: 'invalid', rc: null, tail: `MODEL/EFFORT UNVERIFIED — ${r.unverified}` })
   // patch-check could not grade it (a non-empty error: overlay-failed = the hidden
   // tests never ran, harness = the grader itself failed), or an applied patch came
   // back with no rc: never a pass or a fail.
@@ -498,6 +558,12 @@ function gradeOf(r) {
     return Object.assign(base, { status: 'invalid', rc: null, tail: `UNGRADABLE (${pc.error || 'applied, but no check rc'}) ${tail || ''}`.trim() })
   }
   const status = pc.applies === true && pc.rc === 0 ? 'pass' : 'fail'
+  // A pass is a pass only for real, in-scope work: an EMPTY diff that passes did
+  // nothing (the checks were already green), and a pass that changed paths outside
+  // the brief's files is not the task asked for. Both are invalid — never booked to
+  // the ledger as a pass (a fail stays a fail: the checks did not go green).
+  if (status === 'pass' && !isStr(pc.diffstat)) return Object.assign(base, { status: 'invalid', rc: pc.rc, tail: `EMPTY DIFF — the checks passed with no change: nothing to credit ${tail || ''}`.trim() })
+  if (status === 'pass' && outOfScope === true) return Object.assign(base, { status: 'invalid', rc: pc.rc, tail: `OUT OF SCOPE — the checks passed, but the patch changes paths outside the brief's files ${tail || ''}`.trim() })
   return Object.assign(base, { status, rc: pc.rc, tail })
 }
 
@@ -1044,7 +1110,10 @@ async function runReview() {
       if (allMalformed(c)) return done('unavailable', { reason: `every finding (${c.dropped}) was malformed` })
       return done('ok', { findings: c.ok, dropped: c.dropped })
     }
-    if (producedNothing(out)) return done('unavailable', { reason: firstLine(out).slice(0, 200) || 'no reply' })
+    // classifyCrossReview(): only a `CROSS-REVIEW (` header is work — a preamble then
+    // REFUSED:/UNAVAILABLE:, or a reply with no verdict line, is unavailable, never scored.
+    const cls = classifyCrossReview(out)
+    if (!cls.work) return done('unavailable', { reason: noWorkReason(cls) })
     const ext = String(out).match(EXT_LINE)
     const cost = { tokens: ext ? Number(ext[1]) : null, seconds: ext ? Number(ext[2]) : null }
     const p = parseJsonObject(out)
@@ -1251,7 +1320,7 @@ async function runReview() {
         } catch (e) {
           out = null
         }
-        const obj = j.vendor === 'claude' ? out : (producedNothing(out) ? null : parseJsonObject(out))
+        const obj = j.vendor === 'claude' ? out : (classifyCrossReview(out).work ? parseJsonObject(out) : null)
         if (obj && Array.isArray(obj.verdicts)) return obj.verdicts
       }
       return null

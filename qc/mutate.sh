@@ -151,7 +151,7 @@ done
 # and bad() refusing a plan-time claude top subtask. 219-221 cover its reporting: a
 # deep@max FIX/FAIL that owes nothing gets one marked retry (then the stop), an empty
 # deep@max fallback in runFable() stops for the user, and needs-user reads INCOMPLETE.
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165 166 167 168 169 170 171 172 173 174 175 176 177 178 179 180 181 182 183 184 185 187 188 189 190 191 192 193 194 195 196 197 198 199 200 201 202 203 204 205 206 207 208 209 210 211 212 213 214 215 216 217 218 219 220 221"
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165 166 167 168 169 170 171 172 173 174 175 176 177 178 179 180 181 182 183 184 185 187 188 189 190 191 192 193 194 195 196 197 198 199 200 201 202 203 204 205 206 207 208 209 210 211 212 213 214 215 216 217 218 219 220 221 222 223 224 225 226 227 228 229 230 231 232 233 234 235 236 237 238 239 240 241 242 243 244 245 246 247 248 249 250 251 252 253 254 255 256 257 258 259 260 261 262 263 264 265 266 267 268 269 270 271 272 273 274 275 276 277 278 279 280 281 282 283 284 285 286 287 288 289 290 291 292 293 294 295 296 297 298 299 300 301 302 303 304 305"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -286,6 +286,90 @@ mut_file() {
     201) echo "scripts/triage-context.sh" ;;
     202|204|206|207|208|209|210|211|212|214|215) echo "install.sh" ;;
     203|205|213) echo "uninstall.sh" ;;
+    222) echo "workflows/triage-exec.js" ;;
+    223) echo "workflows/triage-exec.js" ;;
+    224) echo "workflows/triage-exec.js" ;;
+    225) echo "workflows/triage-exec.js" ;;
+    226) echo "workflows/triage-exec.js" ;;
+    227) echo "workflows/triage-exec.js" ;;
+    228) echo "workflows/triage-exec.js" ;;
+    229) echo "workflows/triage-exec.js" ;;
+    230) echo "workflows/triage-exec.js" ;;
+    231) echo "workflows/triage-exec.js" ;;
+    232) echo "workflows/triage-exec.js" ;;
+    233) echo "workflows/triage-exec.js" ;;
+    234) echo "workflows/triage-exec.js" ;;
+    235) echo "workflows/triage-exec.js" ;;
+    236) echo "workflows/triage-exec.js" ;;
+    237) echo "workflows/triage-exec.js" ;;
+    238) echo "workflows/triage-exec.js" ;;
+    239) echo "workflows/triage-exec.js" ;;
+    240) echo "workflows/triage-exec.js" ;;
+    241) echo "workflows/triage-exec.js" ;;
+    242) echo "workflows/triage-exec.js" ;;
+    243) echo "workflows/triage-exec.js" ;;
+    244) echo "workflows/triage-exec.js" ;;
+    245) echo "workflows/triage-exec.js" ;;
+    246) echo "workflows/triage-compare.js" ;;
+    247) echo "workflows/triage-compare.js" ;;
+    248) echo "workflows/triage-compare.js" ;;
+    249) echo "workflows/triage-compare.js" ;;
+    250) echo "workflows/triage-compare.js" ;;
+    251) echo "workflows/triage-compare.js" ;;
+    252) echo "workflows/triage-compare.js" ;;
+    253) echo "workflows/triage-compare.js" ;;
+    254) echo "workflows/triage-compare.js" ;;
+    255) echo "workflows/triage-compare.js" ;;
+    256) echo "workflows/triage-compare.js" ;;
+    257) echo "workflows/triage-parity.js" ;;
+    258) echo "workflows/triage-parity.js" ;;
+    259) echo "workflows/triage-parity.js" ;;
+    260) echo "workflows/triage-parity.js" ;;
+    261) echo "scripts/parity-report.sh" ;;
+    262) echo "scripts/parity-report.sh" ;;
+    263) echo "scripts/parity-report.sh" ;;
+    264) echo "scripts/parity-report.sh" ;;
+    265) echo "scripts/parity-report.sh" ;;
+    266) echo "scripts/parity-report.sh" ;;
+    267) echo "scripts/parity-report.sh" ;;
+    268) echo "scripts/parity-report.sh" ;;
+    269) echo "scripts/parity-report.sh" ;;
+    270) echo "scripts/triage-stats.sh" ;;
+    271) echo "scripts/triage-usage.sh" ;;
+    272) echo "scripts/triage-usage.sh" ;;
+    273) echo "scripts/parity-report.sh" ;;
+    274) echo "workflows/triage-exec.js" ;;
+    275) echo "triage.md" ;;
+    276) echo "scripts/ext-run.sh" ;;
+    277) echo "scripts/stage-worktree.sh" ;;
+    278) echo "scripts/stage-worktree.sh" ;;
+    279) echo "scripts/stage-worktree.sh" ;;
+    280) echo "scripts/stage-worktree.sh" ;;
+    281) echo "scripts/stage-worktree.sh" ;;
+    282) echo "scripts/stage-worktree.sh" ;;
+    283) echo "scripts/stage-worktree.sh" ;;
+    284) echo "scripts/parity-suite.sh" ;;
+    285) echo "scripts/review-stage.sh" ;;
+    286) echo "scripts/review-stage.sh" ;;
+    287) echo "scripts/review-stage.sh" ;;
+    288) echo "scripts/review-stage.sh" ;;
+    289) echo "scripts/ext-run.sh" ;;
+    290) echo "scripts/ext-run.sh" ;;
+    291) echo "scripts/ext-run.sh" ;;
+    292) echo "scripts/ext-run.sh" ;;
+    293) echo "scripts/ext-run.sh" ;;
+    294) echo "scripts/ext-run.sh" ;;
+    295) echo "scripts/triage-context.sh" ;;
+    296) echo "install.sh" ;;
+    297) echo "install.sh" ;;
+    298) echo "uninstall.sh" ;;
+    299) echo "uninstall.sh" ;;
+    300) echo "uninstall.sh" ;;
+    301) echo "install.sh" ;;
+    302) echo "uninstall.sh" ;;
+    303) echo "install.sh" ;;
+    304) echo "install.sh" ;;
+    305) echo "install.sh" ;;
     *) echo "" ;;
   esac
 }
@@ -364,7 +448,7 @@ mut_desc() {
     76) echo "triage-exec.js (bake-off): the sample threshold is dropped (every eligible subtask is sampled)" ;;
     77) echo "triage-exec.js (bake-off): a passing challenger is never applied when the planned candidate failed (no fallback)" ;;
     78) echo "triage-exec.js (bake-off): a compare LEAK does not abort the run (the rest of the plan runs on a tree someone else changed)" ;;
-    79) echo "triage-exec.js (bake-off): the dirty-files guard only checks that git status ran (a bake-off runs on files modified in the tree)" ;;
+    79) echo "triage-exec.js (bake-off): the clean check only checks that its reply parsed (a bake-off runs on files modified in the tree)" ;;
     80) echo "triage-exec.js (bake-off): the codex danger floor is not applied to challengers (danger work graded against codex below effort high)" ;;
     81) echo "triage-exec.js (bake-off): the return carries bake-off fields even when args.bakeoff is absent" ;;
     82) echo "parity-report.sh (rates): the n >= minN condition is weakened to n >= 1 (a level with a challenger a few runs in drops to the maintenance rate)" ;;
@@ -447,7 +531,7 @@ mut_desc() {
     193) echo "install.sh: matcher coverage ignored (our command under a resume-only matcher counts as installed)" ;;
     194) echo "install.sh: disableAllHooks ignored (CLAUDE.md migrated although the hook can never run)" ;;
     195) echo "install.sh: --settings-status no longer reports disableAllHooks" ;;
-    196) echo "install.sh: a CRLF @triage.md line is not recognized (import kept, status quiet)" ;;
+    196) echo "install.sh: a CRLF @triage.md line is not recognized (has_line keeps the CR; import kept, status quiet)" ;;
     197) echo "install.sh: an awk failure filtering CLAUDE.md is swallowed (CLAUDE.md emptied)" ;;
     198) echo "install.sh: a jq failure in the hook decision is read as 'add'" ;;
     199) echo "drift.sh: the settings status runs only when settings.json exists (a missing hook goes unreported)" ;;
@@ -469,7 +553,7 @@ mut_desc() {
     215) echo "install.sh: a CLAUDE_DIR with a line break is accepted (the pointer line splits, is never found again)" ;;
     91) echo "triage-exec.js (bake-off): an EMPTY diff counts as the passing choice (a no-op 'pass' beats a challenger's real patch)" ;;
     92) echo "triage-exec.js (bake-off): a patch that changes paths outside the subtask's files is inline-applied" ;;
-    93) echo "triage-exec.js (bake-off): an unknown leak state runs the subtask in place on an unchecked tree" ;;
+    93) echo "triage-exec.js (bake-off): an unconfirmed leak state is not a stop (the plan runs on an unchecked tree)" ;;
     94) echo "triage-exec.js (bake-off): args.bakeoff.repo is never compared with the session repo (the patch lands in one tree, checks run in another)" ;;
     95) echo "triage-exec.js (bake-off): any failed apply counts as nothing written (a 3-way that left conflict markers is run in place on)" ;;
     96) echo "triage-exec.js: an ESCALATE level climb carries the lower rung's plan effort (builder@low -> deep@low)" ;;
@@ -502,11 +586,95 @@ mut_desc() {
     122) echo "parity-report.sh: a --resolved or extended review re-ingest gets no new revision (refused as a collision)" ;;
     123) echo "parity-report.sh: ingest-parity drops modelFrom (a runner-reported model is ledgered pinned, not observed)" ;;
     124) echo "triage-parity.js: build rows drop modelFrom (observed models reach the ledger as pinned)" ;;
-    125) echo "parity-suite.sh: gitignored files are counted but not stat-ed (a refreshed cache file goes unseen)" ;;
+    125) echo "parity-suite.sh: gitignored files are counted but not stat-ed (a refreshed cache file goes unseen; stage-worktree.sh ignored's list is only counted)" ;;
     126) echo "parity-suite.sh: refs/heads, tags and the stash are left out of the refs hash" ;;
     127) echo "triage-parity.js: sourceGuard compares head and tree only (ignored-file and refs changes never void a task)" ;;
     128) echo "triage-tiers.sh: --bakeoff-json no longer validates aliasHistory (ALIAS_ERRORS not evaluated)" ;;
     129) echo "triage-tiers.sh: the challengerMix shares-sum-to-1 check is dropped" ;;
+    222) echo "triage-exec.js: a plan check with no CHECKRC line reads as exit 0 (a dead gate passes)" ;;
+    223) echo "triage-exec.js: the FIRST CHECKRC line decides, so check output can spoof the exit status" ;;
+    224) echo "triage-exec.js: a reviewer reply with no PASS/FIX/ESCALATE first line reads as PASS" ;;
+    225) echo "triage-exec.js: runGate treats any non-null reply as a live gate (a malformed check/review reply is not retried)" ;;
+    226) echo "triage-exec.js: args.repo is not compared with args.bakeoff.repo" ;;
+    227) echo "triage-exec.js: plan checks do not cd into args.repo" ;;
+    228) echo "triage-exec.js: the external brief header drops WORKDIR=<args.repo>" ;;
+    229) echo "triage-exec.js: classifyBuild ignores a non-zero ext-run exit (a failed build reads as work)" ;;
+    230) echo "triage-exec.js: classifyBuild reads CHANGED FILES: none as work" ;;
+    231) echo "triage-exec.js: an unconfirmed leak state stops only its own subtask, not the plan" ;;
+    232) echo "triage-exec.js: cross-review findings need no CROSS-REVIEW header (any reply is findings)" ;;
+    233) echo "triage-exec.js: parseCleanCheck no longer validates rc / the clock" ;;
+    234) echo "triage-exec.js: parseCleanCheck does not require the end marker (a truncated reply parses)" ;;
+    235) echo "triage-exec.js: a failed clean check is not retried" ;;
+    236) echo "triage-exec.js: round 1 re-verifies even when nothing was re-run" ;;
+    237) echo "triage-exec.js: Fable-family models are allowed as bake-off challengers" ;;
+    238) echo "triage-exec.js: a Fable-family planned model is sampled for a bake-off" ;;
+    239) echo "triage-exec.js: ledgerRun joins the hashed long run id with '~' (outside parity-report's token set)" ;;
+    240) echo "triage-exec.js: ledgerRun never shortens a long subtask id (the run id overflows the 80-char token)" ;;
+    241) echo "triage-exec.js: normFile accepts absolute / .. / repo-root files under a bake-off" ;;
+    242) echo "triage-exec.js: normFile keeps an absolute path under the repo (not made repo-relative)" ;;
+    243) echo "triage-exec.js: ingestStatus books a pass with no real in-scope diff as a pass" ;;
+    244) echo "triage-exec.js: the ingest result carries no run-time ts" ;;
+    245) echo "triage-exec.js: a null candidate model is left for ingest-time resolution (never filled from the tiers config)" ;;
+    246) echo "triage-compare.js: an external build reply is judged by the first-line rule (a preamble before REFUSED/EXTERNAL passes as work)" ;;
+    247) echo "triage-compare.js: an external candidate with no ext-run accounting line is not marked invalid" ;;
+    248) echo "triage-compare.js: a passing candidate with an empty diff is credited" ;;
+    249) echo "triage-compare.js: a passing candidate that changed paths outside the brief's files is credited" ;;
+    250) echo "triage-compare.js: a reviewer reply with no work is not reported unavailable (a refusal is parsed as findings)" ;;
+    251) echo "triage-compare.js: an adjudicator reply is parsed without the CROSS-REVIEW header check" ;;
+    252) echo "triage-compare.js: scopePath keeps an absolute path under the repo (brief/changed path spellings diverge)" ;;
+    253) echo "triage-compare.js: scopePath keeps '.' path components" ;;
+    254) echo "triage-compare.js: args.files are not normalised at entry (a <repo>/x file reaches the briefs as the real repo path)" ;;
+    255) echo "triage-compare.js: classifyCrossReview lets a stray EXTERNAL ( line in a cross-review reply count as work" ;;
+    256) echo "triage-compare.js: classifyExternal counts any non-blank line as work (the verdict header is not required)" ;;
+    257) echo "triage-parity.js: a codex judge reply is scored without the CROSS-REVIEW header check" ;;
+    258) echo "triage-parity.js: an external review reply with no work is not reported unavailable" ;;
+    259) echo "triage-parity.js: classifyExternal counts any non-blank line as work (the verdict header is not required)" ;;
+    260) echo "triage-parity.js: its classifyExternal copy drifts from triage-exec.js (REFUSED: token changed; lint 6e pin)" ;;
+    261) echo "parity-report.sh: a refused id token no longer names the offending characters" ;;
+    262) echo "parity-report.sh: a result's own ts is ignored at ingest" ;;
+    263) echo "parity-report.sh: a model filled from today's tiers file at ingest is ledgered as pinned" ;;
+    264) echo "parity-report.sh: stale-lock takeover skips the same-lock re-check (a live lock can be taken over)" ;;
+    265) echo "parity-report.sh: stale-lock takeover ignores the takeover mutex (two takers can race)" ;;
+    266) echo "parity-report.sh: an orphaned takeover mutex is never cleared" ;;
+    267) echo "parity-report.sh: an ingest-time ts is not flagged inferred-at-ingest" ;;
+    268) echo "parity-report.sh: rates counts configs no inline bake-off can reach as gaps" ;;
+    269) echo "parity-report.sh: rates never reports the unsampleable state (a level with nothing reachable stays in explore)" ;;
+    270) echo "triage-stats.sh: a workflow agent's transcript is attributed to the wrong session" ;;
+    271) echo "triage-usage.sh: repeated message ids are summed instead of counted once" ;;
+    272) echo "triage-usage.sh: a corrupt transcript line ends the file (later records dropped)" ;;
+    273) echo "parity-report.sh: id_tokens drops '@' from its family split (lint 6d vs triage-exec modelTokens)" ;;
+    274) echo "triage-exec.js: modelTokens drops '@' from its split (lint 6c/6d family-split)" ;;
+    275) echo "triage.md: names a model id in prose (lint check 7, model ids live in config/tiers.json)" ;;
+    276) echo "ext-run.sh: a hard-coded model id (lint check 7)" ;;
+    277) echo "stage-worktree.sh: apply --require-clean omits rename/copy SOURCE paths from the patch headers" ;;
+    278) echo "stage-worktree.sh: apply --require-clean reads a failed git status as clean" ;;
+    279) echo "stage-worktree.sh: apply ignores a failed path listing (paths_ok stays 1)" ;;
+    280) echo "stage-worktree.sh: a failed write over unlistable paths is measured as unmodified" ;;
+    281) echo "stage-worktree.sh: the ignored-file fingerprint uses whole-second mtimes (a same-second rewrite goes unseen)" ;;
+    282) echo "stage-worktree.sh: the ignored-file list stops excluding .DS_Store" ;;
+    283) echo "stage-worktree.sh: apply with a non-repo --repo falls back to the cwd's repo" ;;
+    284) echo "parity-suite.sh: ignored_tree hashes nothing (ignored files are not fingerprinted)" ;;
+    285) echo "review-stage.sh: fingerprint omits the ignored-files hash" ;;
+    286) echo "review-stage.sh: fingerprint compare ignores the ignored part" ;;
+    287) echo "review-stage.sh: deny-refresh resolves the repo top with an inline resolver (case/symlink spelling drifts from repo_top)" ;;
+    288) echo "review-stage.sh: fingerprint with a non-repo --repo falls back to the cwd's repo" ;;
+    289) echo "ext-run.sh: stale build worktrees are never reaped (the reaper call is removed)" ;;
+    290) echo "ext-run.sh: a live run's build worktree is reaped (the pid-alive check is removed)" ;;
+    291) echo "ext-run.sh: the reaper skips every entry (stale builds are never reaped)" ;;
+    292) echo "ext-run.sh: the locked build worktree carries no lock reason (the reaper cannot attribute it)" ;;
+    293) echo "ext-run.sh: git worktree add runs the caller's hooks (core.hooksPath not neutralised)" ;;
+    294) echo "ext-run.sh: the stage-base commit runs the caller's hooks (core.hooksPath not neutralised)" ;;
+    295) echo "triage-context.sh: LEGACY_IMPORT_AWK strips every CR, not one trailing CR" ;;
+    296) echo "install.sh: the subagent-model upgrade ignores the ownership marker (a downgraded legacy value is re-upgraded)" ;;
+    297) echo "install.sh: CLAUDE_DIR is not canonicalised" ;;
+    298) echo "uninstall.sh: CLAUDE_DIR is not canonicalised" ;;
+    299) echo "uninstall.sh: settings.json is written last again (a CLAUDE.md failure leaves settings half-removed)" ;;
+    300) echo "uninstall.sh: a CLAUDE.md write failure is ignored (files removed anyway)" ;;
+    301) echo "install.sh: an outdated pointer line is not detected (never migrated)" ;;
+    302) echo "uninstall.sh: the previous pointer-line spelling is left in CLAUDE.md" ;;
+    303) echo "install.sh: LEGACY_IMPORT_AWK matches only the bare @triage.md spelling and keeps CRs" ;;
+    304) echo "install.sh: POINTER_TAIL reverts to the previous spelling (no in-band fallback; the current line is treated as outdated)" ;;
+    305) echo "install.sh: LEGACY_IMPORT_AWK carries only the bare spelling (a ./ or ~/ import is not recognised)" ;;
     *) echo "" ;;
   esac
 }
@@ -552,6 +720,18 @@ mut_suite() {
     189|190|191|192|193|194|195|196|197|198|199|200) echo "roundtrip" ;;
     201) echo "triagectx" ;;
     202|203|204|205|206|207|208|209|210|211|212|213|214|215) echo "roundtrip" ;;
+    222|223|224|225|226|227|228|229|230|231|232|233|234|235|236|237|238|239|240|241|242|243|244|245) echo "scenarios" ;;
+    246|247|248|249|250|251|252|253|254|255|256) echo "compare" ;;
+    257|258|259) echo "parity" ;;
+    260|273|274|275|276) echo "lint" ;;
+    261|262|263|264|265|266|267|268|269) echo "parityreport" ;;
+    270|271|272) echo "usage" ;;
+    277|278|279|280|281|282|283) echo "stagewt" ;;
+    284) echo "paritysuite" ;;
+    285|286|287|288) echo "reviewstage" ;;
+    289|290|291|292|293|294) echo "extrun" ;;
+    295) echo "triagectx" ;;
+    296|297|298|299|300|301|302|303|304|305) echo "roundtrip" ;;
     *) echo "" ;;
   esac
 }
@@ -699,7 +879,7 @@ MUT6
       # gate (or a plan that gated nothing at all) is reported as a clean pass.
       printf '    incomplete: false, // MUTATED: incomplete tri-state disabled\n' > "$rep"
       mut_replace_block "$target" \
-        '    incomplete: v.checks.some(c => c.result == null)' 1 "$rep"
+        '    incomplete: rcs.some(rc => rc == null)' 1 "$rep"
       ;;
     8)
       # triage-exec.js: disable the gate retry surgically — the retry condition
@@ -707,7 +887,7 @@ MUT6
       # immediately. 1-line replace: robust to surrounding runGate changes
       # (a 9-line block replace went stale when budget logic reshaped runGate).
       printf '    if (false) { // MUTATED: retry disabled\n' > "$rep"
-      mut_replace_block "$target" '    if (out == null && !ceilinged) {' 1 "$rep"
+      mut_replace_block "$target" '    if (!live(out) && !ceilinged) {' 1 "$rep"
       ;;
     9)
       # triage-exec.js: matchedFiles() -> always [] (3 lines -> 3 lines).
@@ -1250,7 +1430,7 @@ MUT78
       cat > "$rep" <<'MUT79'
   if (!dirty) { // MUTATED: dirty files not checked
 MUT79
-      mut_replace_block "$target" "  if (!dirty || dirty.rc !== 0 || typeof dirty.porcelain !== 'string' || dirty.porcelain.trim() !== '') {" 1 "$rep"
+      mut_replace_block "$target" "  if (!dirty || dirty.rc !== 0 || dirty.porcelain.length) {" 1 "$rep"
       ;;
     80)
       # triage-exec.js: bakeoffPick()'s challenger pool drops the codex danger floor.
@@ -1656,7 +1836,7 @@ MUT177
       ;;
     181)
       printf ': # MUTATED: legacy guard removed\n' > "$rep"
-      mut_replace_block "$target" 'if [ -f "$CLAUDE_DIR/CLAUDE.md" ] && tr -d' 3 "$rep"
+      mut_replace_block "$target" 'if [ -f "$CLAUDE_DIR/CLAUDE.md" ] && TRIAGE_DIR=' 3 "$rep"
       ;;
     182)
       printf '  | (if $add == "1" then .hooks.SessionStart = [$group] else . end) # MUTATED: SessionStart replaced\n' > "$rep"
@@ -1748,9 +1928,9 @@ MUT199
       ;;
     201)
       cat > "$rep" <<'MUT201'
-if [ -f "$CLAUDE_DIR/CLAUDE.md" ] && grep -qxF '@triage.md' "$CLAUDE_DIR/CLAUDE.md"; then # MUTATED: CR not stripped
+LEGACY_IMPORT_AWK='function is_legacy(l) { sub(/[ \t]+$/, "", l); return l == "@triage.md" || l == "@./triage.md" || l == "@~/.claude/triage.md" || l == "@" ENVIRON["TRIAGE_DIR"] "/triage.md" }' # MUTATED: CR not stripped
 MUT201
-      mut_replace_block "$target" 'if [ -f "$CLAUDE_DIR/CLAUDE.md" ] && tr -d' 1 "$rep"
+      mut_replace_block "$target" "LEGACY_IMPORT_AWK='function is_legacy(l) {" 1 "$rep"
       ;;
     202)
       cat > "$rep" <<'MUT202'
@@ -1950,9 +2130,9 @@ MUT124
     125)
       # parity-suite.sh ignored_tree: only the count is hashed.
       cat > "$rep" <<'MUT125'
-    : # MUTATED: ignored files not stat-ed
+  lines=$("$SCRIPT_DIR/stage-worktree.sh" ignored --repo "$top" | wc -l) || return 1 # MUTATED: ignored files not stat-ed
 MUT125
-      mut_replace_block "$target" '    [ -z "$list" ] || ( cd "$top"' 1 "$rep"
+      mut_replace_block "$target" '  lines=$("$SCRIPT_DIR/stage-worktree.sh" ignored --repo "$top") || return 1' 1 "$rep"
       ;;
     126)
       # parity-suite.sh refs_tree: branches, tags and the stash are not listed.
@@ -1997,11 +2177,11 @@ MUT92
       mut_replace_block "$target" 'const realDiff = c => isStr(c.diffstat) && c.outOfScope !== true' 1 "$rep"
       ;;
     93)
-      # triage-exec.js (M1): an unknown leak state runs the subtask in place again.
+      # triage-exec.js (M5): an unconfirmed leak state no longer stops the plan.
       cat > "$rep" <<'MUT93'
-  if (res.leak !== false) { rec.outcome = 'in-place'; return { inPlace: true } } // MUTATED: unknown leak runs in place
+    : null // MUTATED: unknown leak runs in place
 MUT93
-      mut_replace_block "$target" "  if (res.leak !== false) { noExt(); return withhold(" 1 "$rep"
+      mut_replace_block "$target" "    : res.leak !== false ? 'leak state unknown" 1 "$rep"
       ;;
     94)
       # triage-exec.js (M2): bakeoff.repo is never compared with the session repo.
@@ -2076,9 +2256,9 @@ MUT103
     104)
       # ext-run.sh (H7): the build worktree is not locked (a parallel prune removes it).
       cat > "$rep" <<'MUT104'
-  if ! git -C "$BUILD_REPO" worktree add --detach "$STAGE/build" HEAD >"$STAGE/meta/worktree.log" 2>&1; then # MUTATED: build worktree unlocked
+  if ! git -C "$BUILD_REPO" -c core.hooksPath=/dev/null worktree add --detach "$STAGE/build" HEAD >"$STAGE/meta/worktree.log" 2>&1; then # MUTATED: build worktree unlocked
 MUT104
-      mut_replace_block "$target" '  if ! git -C "$BUILD_REPO" worktree add --lock --detach "$STAGE/build" HEAD' 1 "$rep"
+      mut_replace_block "$target" '  if ! git -C "$BUILD_REPO" -c core.hooksPath=/dev/null worktree add --lock --reason "ext-run $$" --detach "$STAGE/build" HEAD' 1 "$rep"
       ;;
     105)
       # review-stage.sh (H6): no **/ variants — **/x misses a top-level x, a/**/b misses a/b.
@@ -2115,6 +2295,603 @@ MUT108
 MUT109
       mut_replace_block "$target" '  ignored_snapshot "$r" "$out.ign" || return 1' 1 "$rep"
       ;;
+    222)
+      # triage-exec.js: a plan check with no CHECKRC line reads as exit 0 (a dead gate passes)
+      cat > "$rep" <<'MUT222'
+  return hits.length ? Number(hits[hits.length - 1][1]) : 0 // MUTATED: a missing CHECKRC reads as exit 0
+MUT222
+      mut_replace_block "$target" '  return hits.length ? Number(hits[hits.length - 1][1]) : null' 1 "$rep"
+      ;;
+    223)
+      # triage-exec.js: the FIRST CHECKRC line decides, so check output can spoof the exit status
+      cat > "$rep" <<'MUT223'
+  return hits.length ? Number(hits[0][1]) : null // MUTATED: the first CHECKRC line decides
+MUT223
+      mut_replace_block "$target" '  return hits.length ? Number(hits[hits.length - 1][1]) : null' 1 "$rep"
+      ;;
+    224)
+      # triage-exec.js: a reviewer reply with no PASS/FIX/ESCALATE first line reads as PASS
+      cat > "$rep" <<'MUT224'
+  const m = String(text == null ? '' : text).trimStart().match(/^\**\s*(PASS|FIX|ESCALATE)\b/i) || ['', 'PASS'] // MUTATED: no verdict reads as PASS
+MUT224
+      mut_replace_block "$target" '  const m = String(text == null ? '\'''\'' : text).trimStart().match(' 1 "$rep"
+      ;;
+    225)
+      # triage-exec.js: runGate treats any non-null reply as a live gate (a malformed check/review reply is not retried)
+      cat > "$rep" <<'MUT225'
+    const live = o => o != null // MUTATED: any reply is a live gate
+MUT225
+      mut_replace_block "$target" '    const live = o => o != null && usable(o)' 1 "$rep"
+      ;;
+    226)
+      # triage-exec.js: args.repo is not compared with args.bakeoff.repo
+      cat > "$rep" <<'MUT226'
+  // MUTATED: args.repo vs args.bakeoff.repo not compared
+MUT226
+      mut_replace_block "$target" '  if (b.repo != null && planRepo && stripSlash(b.repo) !== planRepo) bad(' 1 "$rep"
+      ;;
+    227)
+      # triage-exec.js: plan checks do not cd into args.repo
+      cat > "$rep" <<'MUT227'
+const checkCommand = cmd => `out=$( { { ${cmd.replace(/[\s;]+$/, '')} ; } ; } 2>&1 ); rc=$?; ` + // MUTATED: checks ignore args.repo
+MUT227
+      mut_replace_block "$target" 'const checkCommand = cmd => `out=$( { ${planRepo ? ' 1 "$rep"
+      ;;
+    228)
+      # triage-exec.js: the external brief header drops WORKDIR=<args.repo>
+      cat > "$rep" <<'MUT228'
+  '' // MUTATED: WORKDIR dropped
+MUT228
+      mut_replace_block "$target" '  (planRepo ? ` WORKDIR=${planRepo}` : '\'''\'')' 1 "$rep"
+      ;;
+    229)
+      # triage-exec.js: classifyBuild ignores a non-zero ext-run exit (a failed build reads as work)
+      cat > "$rep" <<'MUT229'
+  if (false) { // MUTATED: a non-zero exit counts as work
+MUT229
+      mut_replace_block "$target" '  if (exit !== '\''0'\'') {' 1 "$rep"
+      ;;
+    230)
+      # triage-exec.js: classifyBuild reads CHANGED FILES: none as work
+      cat > "$rep" <<'MUT230'
+  // MUTATED: CHANGED FILES: none counts as work
+MUT230
+      mut_replace_block "$target" '  if (changed && /^CHANGED FILES:\s*none\s*$/i.test(changed)) return' 1 "$rep"
+      ;;
+    231)
+      # triage-exec.js: an unconfirmed leak state stops only its own subtask, not the plan
+      cat > "$rep" <<'MUT231'
+    withheld.add(st.id); return { withheld: true } // MUTATED: an unknown leak stops only this subtask
+MUT231
+      mut_replace_block "$target" '    return { abort: unknown }' 1 "$rep"
+      ;;
+    232)
+      # triage-exec.js: cross-review findings need no CROSS-REVIEW header (any reply is findings)
+      cat > "$rep" <<'MUT232'
+    if (outs[i] != null) findings[v] = String(outs[i]).slice(0, 4000) // MUTATED: no header needed
+MUT232
+      mut_replace_block "$target" '    if (cls.work) findings[v] = String(outs[i]).slice(0, 4000)' 1 "$rep"
+      ;;
+    233)
+      # triage-exec.js: parseCleanCheck no longer validates rc / the clock
+      cat > "$rep" <<'MUT233'
+  if (rc == null) return null // MUTATED: rc/now not validated
+MUT233
+      mut_replace_block "$target" '  if (rc == null || !/^\d{1,3}$/.test(rc) || now == null || !ISO_UTC.test(now)) return null' 1 "$rep"
+      ;;
+    234)
+      # triage-exec.js: parseCleanCheck does not require the end marker (a truncated reply parses)
+      cat > "$rep" <<'MUT234'
+  if (!tags.length) return null // MUTATED: end tag not required
+MUT234
+      mut_replace_block "$target" '  if (only('\''end'\'') !== '\'''\'' || tags[tags.length - 1].k !== '\''end'\'') return null' 1 "$rep"
+      ;;
+    235)
+      # triage-exec.js: a failed clean check is not retried
+      cat > "$rep" <<'MUT235'
+  if (false) { // MUTATED: clean check not retried
+MUT235
+      mut_replace_block "$target" '  if (!dirty) {' 1 "$rep"
+      ;;
+    236)
+      # triage-exec.js: round 1 re-verifies even when nothing was re-run
+      cat > "$rep" <<'MUT236'
+  verification = await verify(r1.merged, true) // MUTATED: re-verify with nothing re-run
+MUT236
+      mut_replace_block "$target" '  if (r1.redoResults.length) verification = await verify(r1.merged, true)' 1 "$rep"
+      ;;
+    237)
+      # triage-exec.js: Fable-family models are allowed as bake-off challengers
+      cat > "$rep" <<'MUT237'
+      // MUTATED: Fable challengers allowed
+MUT237
+      mut_replace_block "$target" '      !isFableModel(c.model) &&' 1 "$rep"
+      ;;
+    238)
+      # triage-exec.js: a Fable-family planned model is sampled for a bake-off
+      cat > "$rep" <<'MUT238'
+  // MUTATED: a Fable-family planned model is sampled
+MUT238
+      mut_replace_block "$target" '  if (isFableModel(planned.model)) return { skip: '\''planned-fable'\'' }' 1 "$rep"
+      ;;
+    239)
+      # triage-exec.js: ledgerRun joins the hashed long run id with '~' (outside parity-report's token set)
+      cat > "$rep" <<'MUT239'
+  return `${baseName.slice(0, RUN_MAX - idPart.length - 10)}~${hex8(baseName)}:${idPart}` // MUTATED: ~ separator
+MUT239
+      mut_replace_block "$target" '  return `${baseName.slice(0, RUN_MAX - idPart.length - 10)}.${hex8(baseName)}:${idPart}`' 1 "$rep"
+      ;;
+    240)
+      # triage-exec.js: ledgerRun never shortens a long subtask id (the run id overflows the 80-char token)
+      cat > "$rep" <<'MUT240'
+  const idPart = id // MUTATED: a long id is never shortened
+MUT240
+      mut_replace_block "$target" '  const idPart = id.length <= 40 ? id :' 1 "$rep"
+      ;;
+    241)
+      # triage-exec.js: normFile accepts absolute / .. / repo-root files under a bake-off
+      cat > "$rep" <<'MUT241'
+  if (false) { // MUTATED: non-relative files accepted
+MUT241
+      mut_replace_block "$target" '  if (bakeoffOn && (s === '\'''\'' || s.startsWith('\''/'\'') || s.split('\''/'\'').includes('\''..'\''))) {' 1 "$rep"
+      ;;
+    242)
+      # triage-exec.js: normFile keeps an absolute path under the repo (not made repo-relative)
+      cat > "$rep" <<'MUT242'
+  // MUTATED: absolute paths kept
+MUT242
+      mut_replace_block "$target" '  if (fileRepo && s.startsWith(`${fileRepo}/`)) s = s.slice(fileRepo.length + 1)' 1 "$rep"
+      ;;
+    243)
+      # triage-exec.js: ingestStatus books a pass with no real in-scope diff as a pass
+      cat > "$rep" <<'MUT243'
+const ingestStatus = c => c.status // MUTATED: a no-op pass is ingested as a pass
+MUT243
+      mut_replace_block "$target" 'const ingestStatus = c =>' 1 "$rep"
+      ;;
+    244)
+      # triage-exec.js: the ingest result carries no run-time ts
+      cat > "$rep" <<'MUT244'
+      result: { base: res.base, sha: res.sha, leak: res.leak, baseMoved: res.baseMoved, graded: res.graded, // MUTATED: no run-time ts
+MUT244
+      mut_replace_block "$target" '      result: { ts: dirty.now, base: res.base,' 1 "$rep"
+      ;;
+    245)
+      # triage-exec.js: a null candidate model is left for ingest-time resolution (never filled from the tiers config)
+      cat > "$rep" <<'MUT245'
+          const fill = false // MUTATED: null models left for ingest-time resolution
+MUT245
+      mut_replace_block "$target" '          const fill = c.model == null && isStr(r.model)' 1 "$rep"
+      ;;
+    246)
+      # triage-compare.js: an external build reply is judged by the first-line rule (a preamble before REFUSED/EXTERNAL passes as work)
+      cat > "$rep" <<'MUT246'
+    const nothing = err != null || producedNothing(out) // MUTATED: external reply read by the first-line rule
+MUT246
+      mut_replace_block "$target" '    const nothing = err != null || (external ? !cls.work : producedNothing(out))' 1 "$rep"
+      ;;
+    247)
+      # triage-compare.js: an external candidate with no ext-run accounting line is not marked invalid
+      cat > "$rep" <<'MUT247'
+    const unverified = false && external && !nothing && !ext // MUTATED: missing ext-run line not checked
+MUT247
+      mut_replace_block "$target" '    const unverified = external && !nothing && !ext' 1 "$rep"
+      ;;
+    248)
+      # triage-compare.js: a passing candidate with an empty diff is credited
+      cat > "$rep" <<'MUT248'
+  if (false && status === 'pass' && !isStr(pc.diffstat)) return Object.assign(base, { status: 'invalid', rc: pc.rc, tail: `EMPTY DIFF — the checks passed with no change: nothing to credit ${tail || ''}`.trim() }) // MUTATED: empty-diff pass credited
+MUT248
+      mut_replace_block "$target" '  if (status === '\''pass'\'' && !isStr(pc.diffstat))' 1 "$rep"
+      ;;
+    249)
+      # triage-compare.js: a passing candidate that changed paths outside the brief's files is credited
+      cat > "$rep" <<'MUT249'
+  if (false && status === 'pass' && outOfScope === true) return Object.assign(base, { status: 'invalid', rc: pc.rc, tail: `OUT OF SCOPE — the checks passed, but the patch changes paths outside the brief's files ${tail || ''}`.trim() }) // MUTATED: out-of-scope pass credited
+MUT249
+      mut_replace_block "$target" '  if (status === '\''pass'\'' && outOfScope === true)' 1 "$rep"
+      ;;
+    250)
+      # triage-compare.js: a reviewer reply with no work is not reported unavailable (a refusal is parsed as findings)
+      cat > "$rep" <<'MUT250'
+    if (cls.kind === 'refused' && false) return done('unavailable', { reason: noWorkReason(cls) }) // MUTATED: no-work reviewer reply not unavailable
+MUT250
+      mut_replace_block "$target" '    if (!cls.work) return done('\''unavailable'\'', { reason: noWorkReason(cls) })' 1 "$rep"
+      ;;
+    251)
+      # triage-compare.js: an adjudicator reply is parsed without the CROSS-REVIEW header check
+      cat > "$rep" <<'MUT251'
+        const obj = j.vendor === 'claude' ? out : parseJsonObject(out) // MUTATED: adjudicator reply not classified
+MUT251
+      mut_replace_block "$target" '(classifyCrossReview(out).work ? parseJsonObject(out) : null)' 1 "$rep"
+      ;;
+    252)
+      # triage-compare.js: scopePath keeps an absolute path under the repo (brief/changed path spellings diverge)
+      cat > "$rep" <<'MUT252'
+  // MUTATED: repo prefix not stripped
+MUT252
+      mut_replace_block "$target" '  if (s.startsWith(`${repoC}/`)) s = s.slice(repoC.length + 1)' 1 "$rep"
+      ;;
+    253)
+      # triage-compare.js: scopePath keeps '.' path components
+      cat > "$rep" <<'MUT253'
+  return s.split('/').filter(x => x !== '').join('/') // MUTATED: dot components kept
+MUT253
+      mut_replace_block "$target" '  return s.split('\''/'\'').filter(x => x !== '\'''\'' && x !== '\''.'\'').join('\''/'\'')' 1 "$rep"
+      ;;
+    254)
+      # triage-compare.js: args.files are not normalised at entry (a <repo>/x file reaches the briefs as the real repo path)
+      cat > "$rep" <<'MUT254'
+const files = (args.files || []).map(f => f.trim()) // MUTATED: args.files not normalised
+MUT254
+      mut_replace_block "$target" 'const files = (args.files || []).map(f => scopePath(f) || '\''.'\'')' 1 "$rep"
+      ;;
+    255)
+      # triage-compare.js: classifyCrossReview lets a stray EXTERNAL ( line in a cross-review reply count as work
+      cat > "$rep" <<'MUT255'
+    return line.startsWith(CROSS_HEADER) ? `EXTERNAL (${line.slice(CROSS_HEADER.length)}` : raw // MUTATED: stray EXTERNAL ( line counts
+MUT255
+      mut_replace_block "$target" '    return line.startsWith(CROSS_HEADER) ?' 1 "$rep"
+      ;;
+    256)
+      # triage-compare.js: classifyExternal counts any non-blank line as work (the verdict header is not required)
+      cat > "$rep" <<'MUT256'
+    if (line.trim()) return { work: true, kind: 'work', reason: '' } // MUTATED: any line counts as work
+MUT256
+      mut_replace_block "$target" '    if (line.startsWith('\''EXTERNAL ('\'')) return { work: true, kind: '\''work'\'', reason: '\'''\'' }' 1 "$rep"
+      ;;
+    257)
+      # triage-parity.js: a codex judge reply is scored without the CROSS-REVIEW header check
+      cat > "$rep" <<'MUT257'
+    else if (o != null) { // MUTATED: judge reply not classified
+MUT257
+      mut_replace_block "$target" '    else if (classifyCrossReview(o).work) {' 1 "$rep"
+      ;;
+    258)
+      # triage-parity.js: an external review reply with no work is not reported unavailable
+      cat > "$rep" <<'MUT258'
+    if (cls.kind === 'refused' && false) { rows.push(row(c, c.label, 'unavailable', { reason: noWorkReason(cls) })); return } // MUTATED: no-work review row not unavailable
+MUT258
+      mut_replace_block "$target" '    if (!cls.work) { rows.push(row(c, c.label, '\''unavailable'\'', { reason: noWorkReason(cls) })); return }' 1 "$rep"
+      ;;
+    259)
+      # triage-parity.js: classifyExternal counts any non-blank line as work (the verdict header is not required)
+      cat > "$rep" <<'MUT259'
+    if (line.trim()) return { work: true, kind: 'work', reason: '' } // MUTATED: any line counts as work
+MUT259
+      mut_replace_block "$target" '    if (line.startsWith('\''EXTERNAL ('\'')) return { work: true, kind: '\''work'\'', reason: '\'''\'' }' 1 "$rep"
+      ;;
+    260)
+      # triage-parity.js: its classifyExternal copy drifts from triage-exec.js (REFUSED: token changed; lint 6e pin)
+      cat > "$rep" <<'MUT260'
+    if (line.startsWith('REFUSED')) return { work: false, kind: 'refused', reason: cut(line.slice('REFUSED:'.length)) || '(no reason given)' } // MUTATED: classifyExternal copy drifted
+MUT260
+      mut_replace_block "$target" '    if (line.startsWith('\''REFUSED:'\'')) return {' 1 "$rep"
+      ;;
+    261)
+      # parity-report.sh: a refused id token no longer names the offending characters
+      cat > "$rep" <<'MUT261'
+  if false; then : # MUTATED: refusal does not name the bad characters
+MUT261
+      mut_replace_block "$target" '  if [ -n "$bad" ]; then echo "'\''$v'\'' contains character(s)' 1 "$rep"
+      ;;
+    262)
+      # parity-report.sh: a result's own ts is ignored at ingest
+      cat > "$rep" <<'MUT262'
+    TS=$(now_ts); TS_SRC=result # MUTATED: result ts ignored
+MUT262
+      mut_replace_block "$target" '    TS="$own"; TS_SRC=result' 1 "$rep"
+      ;;
+    263)
+      # parity-report.sh: a model filled from today's tiers file at ingest is ledgered as pinned
+      cat > "$rep" <<'MUT263'
+def at_ingest($filled): .; # MUTATED: tiers-filled model not flagged
+MUT263
+      mut_replace_block "$target" 'def at_ingest($filled): if $filled' 1 "$rep"
+      ;;
+    264)
+      # parity-report.sh: stale-lock takeover skips the same-lock re-check (a live lock can be taken over)
+      cat > "$rep" <<'MUT264'
+  if true; then # MUTATED: takeover skips the same-lock re-check
+MUT264
+      mut_replace_block "$target" '  if [ -n "$ino" ] && [ "$(lock_ino "$lock")" = "$ino" ] && [ "$got" = "$want" ]; then' 1 "$rep"
+      ;;
+    265)
+      # parity-report.sh: stale-lock takeover ignores the takeover mutex (two takers can race)
+      cat > "$rep" <<'MUT265'
+  if false; then # MUTATED: takeover mutex ignored
+MUT265
+      mut_replace_block "$target" '  if ! mkdir "$m" 2>/dev/null; then' 1 "$rep"
+      ;;
+    266)
+      # parity-report.sh: an orphaned takeover mutex is never cleared
+      cat > "$rep" <<'MUT266'
+    : # MUTATED: orphaned mutex never cleared
+MUT266
+      mut_replace_block "$target" '    if [ "$TAKEOVER_WAIT" -ge 50 ]; then rmdir "$m" 2>/dev/null; TAKEOVER_WAIT=0; fi' 1 "$rep"
+      ;;
+    267)
+      # parity-report.sh: an ingest-time ts is not flagged inferred-at-ingest
+      cat > "$rep" <<'MUT267'
+    TS=$(now_ts); TS_SRC=result # MUTATED: ingest-time ts not flagged
+MUT267
+      mut_replace_block "$target" '    TS=$(now_ts); TS_SRC=inferred-at-ingest' 1 "$rep"
+      ;;
+    268)
+      # parity-report.sh: rates counts configs no inline bake-off can reach as gaps
+      cat > "$rep" <<'MUT268'
+                 | . # MUTATED: unreachable configs are gaps again
+MUT268
+      mut_replace_block "$target" '                 | select(($reach | index([{vendor: $V, modelId: $c.modelId, effort: $c.effort}])) != null)' 1 "$rep"
+      ;;
+    269)
+      # parity-report.sh: rates never reports the unsampleable state (a level with nothing reachable stays in explore)
+      cat > "$rep" <<'MUT269'
+        | if false # MUTATED: unsampleable level stays in explore
+MUT269
+      mut_replace_block "$target" '        | if ($reach | length) == 0' 1 "$rep"
+      ;;
+    270)
+      # triage-stats.sh: a workflow agent's transcript is attributed to the wrong session
+      cat > "$rep" <<'MUT270'
+  sess="$(basename "$(dirname "$(dirname "$f")")")" # MUTATED: workflow agents lumped
+MUT270
+      mut_replace_block "$target" '  sess="${f%/subagents/*}"; sess="${sess##*/}"' 1 "$rep"
+      ;;
+    271)
+      # triage-usage.sh: repeated message ids are summed instead of counted once
+      cat > "$rep" <<'MUT271'
+      | sort_by(.i) # MUTATED: repeated message ids summed
+MUT271
+      mut_replace_block "$target" '      | group_by(.k) | map(max_by(.i)) | sort_by(.i)' 1 "$rep"
+      ;;
+    272)
+      # triage-usage.sh: a corrupt transcript line ends the file (later records dropped)
+      cat > "$rep" <<'MUT272'
+       catch "CORRUPT") end' "$f" 2>/dev/null | sed '/^"CORRUPT"$/,$d')" # MUTATED: a corrupt line ends the file
+MUT272
+      mut_replace_block "$target" '       catch "CORRUPT") end'\'' "$f" 2>/dev/null)"' 1 "$rep"
+      ;;
+    273)
+      # parity-report.sh: id_tokens drops '@' from its family split (lint 6d vs triage-exec modelTokens)
+      cat > "$rep" <<'MUT273'
+def id_tokens: ascii_downcase | [splits("[-._:+]")]; # MUTATED: family split drifts from modelTokens
+MUT273
+      mut_replace_block "$target" 'def id_tokens: ascii_downcase | [splits("[-._:+@]")];' 1 "$rep"
+      ;;
+    274)
+      # triage-exec.js: modelTokens drops '@' from its split (lint 6c/6d family-split)
+      cat > "$rep" <<'MUT274'
+const modelTokens = m => String(m || '').toLowerCase().split(/[-._:+]/).filter(Boolean) // MUTATED: split drifts from parity-report
+MUT274
+      mut_replace_block "$target" 'const modelTokens = m => String(m || '\'''\'').toLowerCase().split(/[-._:+@]/).filter(Boolean)' 1 "$rep"
+      ;;
+    275)
+      # triage.md: names a model id in prose (lint check 7, model ids live in config/tiers.json)
+      cat > "$rep" <<'MUT275'
+## Tiers: level × vendor × role
+- MUTATED: danger work runs on gpt-6-astra
+MUT275
+      mut_replace_block "$target" '## Tiers: level × vendor × role' 1 "$rep"
+      ;;
+    276)
+      # ext-run.sh: a hard-coded model id (lint check 7)
+      cat > "$rep" <<'MUT276'
+#!/bin/bash
+HARDCODED_MODEL=gpt-6-sol # MUTATED: hard-coded model id
+MUT276
+      mut_replace_block "$target" '#!/bin/bash' 1 "$rep"
+      ;;
+    277)
+      # stage-worktree.sh: apply --require-clean omits rename/copy SOURCE paths from the patch headers
+      cat > "$rep" <<'MUT277'
+      1;' "$2" || exit 1 # MUTATED: rename sources not listed
+MUT277
+      mut_replace_block "$target" '      if ($hd && /^(?:rename|copy) from' 1 "$rep"
+      ;;
+    278)
+      # stage-worktree.sh: apply --require-clean reads a failed git status as clean
+      cat > "$rep" <<'MUT278'
+    if ! { tr '\n' '\000' < "$tmp/paths" | xargs -0 git -C "$R" --literal-pathspecs --no-optional-locks status --porcelain=v1 -uall -- > "$tmp/dirty" 2>"$tmp/dirty.err" || true; }; then # MUTATED: failed status read as clean
+MUT278
+      mut_replace_block "$target" '    if ! tr '\''\n'\'' '\''\000'\'' < "$tmp/paths" | xargs -0 git -C "$R" --literal-pathspecs --no-optional-locks status' 1 "$rep"
+      ;;
+    279)
+      # stage-worktree.sh: apply ignores a failed path listing (paths_ok stays 1)
+      cat > "$rep" <<'MUT279'
+  patch_paths "$R" "$PATCH" "$tmp/paths" || true # MUTATED: listing failure ignored
+MUT279
+      mut_replace_block "$target" '  patch_paths "$R" "$PATCH" "$tmp/paths" || paths_ok=0' 1 "$rep"
+      ;;
+    280)
+      # stage-worktree.sh: a failed write over unlistable paths is measured as unmodified
+      cat > "$rep" <<'MUT280'
+  modified() { paths_state "$R" "$tmp/paths" "$tmp/after"; if cmp -s "$tmp/before" "$tmp/after"; then echo false; else echo true; fi; } # MUTATED: unknown paths measured as clean
+MUT280
+      mut_replace_block "$target" '  modified() { paths_state' 1 "$rep"
+      ;;
+    281)
+      # stage-worktree.sh: the ignored-file fingerprint uses whole-second mtimes (a same-second rewrite goes unseen)
+      cat > "$rep" <<'MUT281'
+      my $hires = 0; # MUTATED: whole-second mtimes
+MUT281
+      mut_replace_block "$target" '      my $hires = eval' 1 "$rep"
+      ;;
+    282)
+      # stage-worktree.sh: the ignored-file list stops excluding .DS_Store
+      cat > "$rep" <<'MUT282'
+      my @p = grep { !m{^\.claude/} && !m{(^|/)PROJECT_MEMORY[^/]*\.md$} } # MUTATED: .DS_Store not excluded
+MUT282
+      mut_replace_block "$target" '      my @p = grep { !m{^\.claude/}' 1 "$rep"
+      ;;
+    283)
+      # stage-worktree.sh: apply with a non-repo --repo falls back to the cwd's repo
+      cat > "$rep" <<'MUT283'
+  local R log chk3 tmp dirty paths_ok
+  R=$(repo_top "$REPO") # MUTATED: a non-repo --repo falls back to the cwd
+MUT283
+      mut_replace_block "$target" '  local R log chk3 tmp dirty paths_ok' 2 "$rep"
+      ;;
+    284)
+      # parity-suite.sh: ignored_tree hashes nothing (ignored files are not fingerprinted)
+      cat > "$rep" <<'MUT284'
+  lines="" # MUTATED: ignored files not fingerprinted
+MUT284
+      mut_replace_block "$target" '  lines=$("$SCRIPT_DIR/stage-worktree.sh" ignored --repo "$top") || return 1' 1 "$rep"
+      ;;
+    285)
+      # review-stage.sh: fingerprint omits the ignored-files hash
+      cat > "$rep" <<'MUT285'
+  ignored=$(git -C "$R" hash-object --stdin < /dev/null) # MUTATED: ignored not fingerprinted
+MUT285
+      mut_replace_block "$target" '  ignored=$(git -C "$R" hash-object --stdin < "$W/ign.keep")' 1 "$rep"
+      ;;
+    286)
+      # review-stage.sh: fingerprint compare ignores the ignored part
+      cat > "$rep" <<'MUT286'
+        (empty) ] as $ch # MUTATED: ignored not compared
+MUT286
+      mut_replace_block "$target" '        (if ($x.ignored | type) == "string"' 1 "$rep"
+      ;;
+    287)
+      # review-stage.sh: deny-refresh resolves the repo top with an inline resolver (case/symlink spelling drifts from repo_top)
+      cat > "$rep" <<'MUT287'
+  if R=$(git -C "$REPO" rev-parse --show-toplevel 2>/dev/null) && R=$(cd "$R" && pwd -P); then # MUTATED: inline resolver
+MUT287
+      mut_replace_block "$target" '  if R=$(resolve_top "$REPO"); then' 1 "$rep"
+      ;;
+    288)
+      # review-stage.sh: fingerprint with a non-repo --repo falls back to the cwd's repo
+      cat > "$rep" <<'MUT288'
+  [ -z "$FP_OUT" ] || check_abs --out "$FP_OUT"
+  R=$(repo_top "$REPO") # MUTATED: a non-repo --repo falls back to the cwd
+MUT288
+      mut_replace_block "$target" '  [ -z "$FP_OUT" ] || check_abs --out "$FP_OUT"' 2 "$rep"
+      ;;
+    289)
+      # ext-run.sh: stale build worktrees are never reaped (the reaper call is removed)
+      cat > "$rep" <<'MUT289'
+  : # MUTATED: stale build worktrees never reaped
+MUT289
+      mut_replace_block "$target" '  reap_stale_builds' 1 "$rep"
+      ;;
+    290)
+      # ext-run.sh: a live run's build worktree is reaped (the pid-alive check is removed)
+      cat > "$rep" <<'MUT290'
+        : # MUTATED: a live run's worktree reaped
+MUT290
+      mut_replace_block "$target" '        ps -p "$pid" >/dev/null 2>&1 && continue' 1 "$rep"
+      ;;
+    291)
+      # ext-run.sh: the reaper skips every entry (stale builds are never reaped)
+      cat > "$rep" <<'MUT291'
+        continue # MUTATED: reaper never reaps
+MUT291
+      mut_replace_block "$target" '        ps -p "$pid" >/dev/null 2>&1 && continue' 1 "$rep"
+      ;;
+    292)
+      # ext-run.sh: the locked build worktree carries no lock reason (the reaper cannot attribute it)
+      cat > "$rep" <<'MUT292'
+  if ! git -C "$BUILD_REPO" -c core.hooksPath=/dev/null worktree add --lock --detach "$STAGE/build" HEAD >"$STAGE/meta/worktree.log" 2>&1; then # MUTATED: lock carries no reason
+MUT292
+      mut_replace_block "$target" '  if ! git -C "$BUILD_REPO" -c core.hooksPath=/dev/null worktree add --lock' 1 "$rep"
+      ;;
+    293)
+      # ext-run.sh: git worktree add runs the caller's hooks (core.hooksPath not neutralised)
+      cat > "$rep" <<'MUT293'
+  if ! git -C "$BUILD_REPO" worktree add --lock --reason "ext-run $$" --detach "$STAGE/build" HEAD >"$STAGE/meta/worktree.log" 2>&1; then # MUTATED: hooks run for worktree add
+MUT293
+      mut_replace_block "$target" '  if ! git -C "$BUILD_REPO" -c core.hooksPath=/dev/null worktree add --lock' 1 "$rep"
+      ;;
+    294)
+      # ext-run.sh: the stage-base commit runs the caller's hooks (core.hooksPath not neutralised)
+      cat > "$rep" <<'MUT294'
+  git -C "$BUILD_WT" -c user.email=ext-run@localhost -c user.name=ext-run -c commit.gpgsign=false \
+MUT294
+      mut_replace_block "$target" '  git -C "$BUILD_WT" -c user.email=ext-run@localhost' 1 "$rep"
+      ;;
+    295)
+      # triage-context.sh: LEGACY_IMPORT_AWK strips every CR, not one trailing CR
+      cat > "$rep" <<'MUT295'
+LEGACY_IMPORT_AWK='function is_legacy(l) { gsub(/\r/, "", l); sub(/[ \t]+$/, "", l); return l == "@triage.md" || l == "@./triage.md" || l == "@~/.claude/triage.md" || l == "@" ENVIRON["TRIAGE_DIR"] "/triage.md" }' # MUTATED: every CR stripped
+MUT295
+      mut_replace_block "$target" 'LEGACY_IMPORT_AWK=' 1 "$rep"
+      ;;
+    296)
+      # install.sh: the subagent-model upgrade ignores the ownership marker (a downgraded legacy value is re-upgraded)
+      cat > "$rep" <<'MUT296'
+  elif is_legacy_subagent_model "$1"; then echo "upgrade-legacy" # MUTATED: marker ignored for legacy values
+MUT296
+      mut_replace_block "$target" '  elif [ "$2" = "null" ] && is_legacy_subagent_model "$1"; then echo "upgrade-legacy"' 1 "$rep"
+      ;;
+    297)
+      # install.sh: CLAUDE_DIR is not canonicalised
+      cat > "$rep" <<'MUT297'
+CLAUDE_DIR="$CLAUDE_DIR_GIVEN" # MUTATED: CLAUDE_DIR not canonicalised
+MUT297
+      mut_replace_block "$target" 'CLAUDE_DIR=$(canon_dir "$CLAUDE_DIR_GIVEN")' 1 "$rep"
+      ;;
+    298)
+      # uninstall.sh: CLAUDE_DIR is not canonicalised
+      cat > "$rep" <<'MUT298'
+CLAUDE_DIR="$CLAUDE_DIR_GIVEN" # MUTATED: CLAUDE_DIR not canonicalised
+MUT298
+      mut_replace_block "$target" 'CLAUDE_DIR=$(canon_dir "$CLAUDE_DIR_GIVEN")' 1 "$rep"
+      ;;
+    299)
+      # uninstall.sh: settings.json is written last again (a CLAUDE.md failure leaves settings half-removed)
+      cat > "$rep" <<'MUT299E0'
+  : # MUTATED: settings written last
+MUT299E0
+      mut_replace_block "$target" '  apply_file "$SETTINGS_TMP" "$SETTINGS" || die "could not write $SETTINGS — nothing was changed."' 2 "$rep"
+      cat > "$rep" <<'MUT299E1'
+if [ -n "$SETTINGS_TMP" ]; then apply_file "$SETTINGS_TMP" "$SETTINGS" || die "could not write $SETTINGS."; fi
+if [ -n "${SUB_LEFT:-}" ]; then
+MUT299E1
+      mut_replace_block "$target" 'if [ -n "${SUB_LEFT:-}" ]; then' 1 "$rep"
+      ;;
+    300)
+      # uninstall.sh: a CLAUDE.md write failure is ignored (files removed anyway)
+      cat > "$rep" <<'MUT300'
+    apply_file "$CLAUDE_MD_TMP" "$CLAUDE_DIR/CLAUDE.md" || true # MUTATED: CLAUDE.md write failure ignored
+MUT300
+      mut_replace_block "$target" '    apply_file "$CLAUDE_MD_TMP" "$CLAUDE_DIR/CLAUDE.md" \' 2 "$rep"
+      ;;
+    301)
+      # install.sh: an outdated pointer line is not detected (never migrated)
+      cat > "$rep" <<'MUT301'
+  rc=1 # MUTATED: outdated pointer not detected
+MUT301
+      mut_replace_block "$target" '  rc=0; has_line "$CLAUDE_DIR/CLAUDE.md" "$(old_pointer_line)" || rc=$?' 1 "$rep"
+      ;;
+    302)
+      # uninstall.sh: the previous pointer-line spelling is left in CLAUDE.md
+      cat > "$rep" <<'MUT302'
+  drop_lines "$CLAUDE_DIR/CLAUDE.md" "$(pointer_line)" "MUTATED: old pointer kept" > "$CLAUDE_MD_TMP" \
+MUT302
+      mut_replace_block "$target" '  drop_lines "$CLAUDE_DIR/CLAUDE.md" "$(pointer_line)" "$(old_pointer_line)"' 1 "$rep"
+      ;;
+    303)
+      # install.sh: LEGACY_IMPORT_AWK matches only the bare @triage.md spelling and keeps CRs
+      cat > "$rep" <<'MUT303'
+LEGACY_IMPORT_AWK='function is_legacy(l) { sub(/\r$/, "", l); return l == "@triage.md" }' # MUTATED: only the bare spelling
+MUT303
+      mut_replace_block "$target" 'LEGACY_IMPORT_AWK=' 1 "$rep"
+      ;;
+    304)
+      # install.sh: POINTER_TAIL reverts to the previous spelling (no in-band fallback; the current line is treated as outdated)
+      cat > "$rep" <<'MUT304'
+POINTER_TAIL="/triage.md) reaches the main session through a SessionStart hook; subagents don't receive it." # MUTATED: old pointer tail
+MUT304
+      mut_replace_block "$target" 'POINTER_TAIL="' 1 "$rep"
+      ;;
+    305)
+      # install.sh: LEGACY_IMPORT_AWK carries only the bare spelling (a ./ or ~/ import is not recognised)
+      cat > "$rep" <<'MUT305'
+LEGACY_IMPORT_AWK='function is_legacy(l) { sub(/\r$/, "", l); sub(/[ \t]+$/, "", l); return l == "@triage.md" }' # MUTATED: bare import spelling only
+MUT305
+      mut_replace_block "$target" 'LEGACY_IMPORT_AWK=' 1 "$rep"
+      ;;
     *)
       return 1
       ;;
@@ -2137,7 +2914,7 @@ verify_mutation() {
     4) grep -qF 'rm -f "$CLAUDE_DIR"/agents/triage-*.md' "$target" && ! grep -qF 'for a in $AGENTS; do' "$target" ;;
     5) ! grep -qF '.permissions.deny  -= $fable' "$target" ;;
     6) ! grep -qF 'case "$PCT" in' "$target" && grep -qF 'if [ "$PCT" -ge 60 ]; then' "$target" ;;
-    7) grep -qF 'MUTATED: incomplete tri-state disabled' "$target" && ! grep -qF 'incomplete: v.checks.some(c => c.result == null)' "$target" ;;
+    7) grep -qF 'MUTATED: incomplete tri-state disabled' "$target" && ! grep -qF 'incomplete: rcs.some(rc => rc == null)' "$target" ;;
     8) grep -qF 'MUTATED: retry disabled' "$target" ;;
     9) grep -qF 'function matchedFiles(r, text) {' "$target" && ! grep -qF 'fileMentioned(f, text)' "$target" ;;
     10) [ "$(grep -cF 'UNEXPECTED_DRIFT=1' "$target")" -eq 1 ] ;;
@@ -2204,7 +2981,7 @@ verify_mutation() {
     76) grep -qF 'MUTATED: sample threshold dropped' "$target" && ! grep -qF "skip: 'not-sampled'" "$target" ;;
     77) grep -qF 'MUTATED: challenger fallback dropped' "$target" && ! grep -qF "return { apply: 'challenger'" "$target" ;;
     78) grep -qF 'MUTATED: LEAK abort dropped' "$target" && ! grep -qF 'if (res && res.leak === true) {' "$target" ;;
-    79) grep -qF 'MUTATED: dirty files not checked' "$target" && ! grep -qF "dirty.porcelain.trim() !== ''" "$target" ;;
+    79) grep -qF 'MUTATED: dirty files not checked' "$target" && ! grep -qF "dirty.rc !== 0 || dirty.porcelain.length" "$target" ;;
     80) grep -qF 'MUTATED: danger floor on challengers dropped' "$target" && ! grep -qF '!meetsCodexDangerFloor(st.level, c.effort)' "$target" ;;
     81) grep -qF 'MUTATED: bake-off fields without args.bakeoff' "$target" && ! grep -qF '...(bakeoffOn ? bakeoffReport() : {}),' "$target" ;;
     82) grep -qF 'MUTATED: rates n check weakened' "$target" && ! grep -qF '| if $g.n < $minN then' "$target" ;;
@@ -2272,7 +3049,7 @@ verify_mutation() {
     178) grep -qF 'MUTATED: Agent deny dropped' "$target" && ! grep -q '^disallowedTools:' "$target" ;;
     179) grep -qF 'MUTATED: cap check removed' "$target" && ! grep -qF -- '-gt "$CAP" ]; }' "$target" ;;
     180) grep -qF 'MUTATED: kill switch ignored' "$target" && ! grep -qF 'triage.disabled" ] && exit 0' "$target" ;;
-    181) grep -qF 'MUTATED: legacy guard removed' "$target" && ! grep -qF "grep -qxF '@triage.md'" "$target" ;;
+    181) grep -qF 'MUTATED: legacy guard removed' "$target" && ! grep -qF 'is_legacy($0) { f = 1 }' "$target" ;;
     182) grep -qF 'MUTATED: SessionStart replaced' "$target" && ! grep -qF '+ [$group])' "$target" ;;
     183) grep -qF 'MUTATED: every SessionStart hook deleted' "$target" && ! grep -qF 'any(.hooks[]; ours)' "$target" ;;
     184) grep -qF 'MUTATED: pointer guard dropped' "$target" && ! grep -qF 'if [ "$POINTER" -eq 0 ]' "$target" ;;
@@ -2291,7 +3068,7 @@ verify_mutation() {
     198) grep -qF 'MUTATED: jq failure read as add' "$target" && ! grep -qF '*) return 1 ;;' "$target" ;;
     199) grep -qF 'MUTATED: status needs settings.json' "$target" ;;
     200) grep -qF 'MUTATED: filter failure swallowed' "$target" && ! grep -qF 'die "could not filter $CLAUDE_DIR/CLAUDE.md' "$target" ;;
-    201) grep -qF 'MUTATED: CR not stripped' "$target" && ! grep -qF "tr -d '\r' <" "$target" ;;
+    201) grep -qF 'MUTATED: CR not stripped' "$target" && ! grep -qF 'is_legacy(l) { sub(/\r$/' "$target" ;;
     202|203) grep -qF 'MUTATED: pin ignored' "$target" && ! grep -qF ': $TRIAGE_HOOK_OWNED_JQ;' "$target" ;;
     204|205) grep -qF 'MUTATED: type ignored' "$target" && ! grep -qF ': $TRIAGE_HOOK_OWNED_JQ;' "$target" ;;
     206) grep -qF 'MUTATED: resume not required' "$target" && ! grep -qF '(($events | split("|")) - split("|"))' "$target" ;;
@@ -2318,14 +3095,14 @@ verify_mutation() {
     122) grep -qF 'MUTATED: no review revisions' "$target" && ! grep -qF 'elif $mode == "review" and $revisable then' "$target" ;;
     123) grep -qF 'MUTATED: ingest-parity modelFrom dropped' "$target" && ! grep -qF 'modelFrom: (if $row.model != null then $row.modelFrom else null end),' "$target" ;;
     124) grep -qF 'MUTATED: row modelFrom dropped' "$target" && ! grep -qF "modelFrom: g.model ? (g.modelFrom || null)" "$target" ;;
-    125) grep -qF 'MUTATED: ignored files not stat-ed' "$target" && ! grep -qF 'head -n "$cap" | tr' "$target" ;;
+    125) grep -qF 'MUTATED: ignored files not stat-ed' "$target" && ! grep -qF 'ignored --repo "$top") || return 1' "$target" ;;
     126) grep -qF 'MUTATED: refs not hashed' "$target" && ! grep -qF "for-each-ref --format='%(objectname) %(refname)' refs/heads refs/tags refs/stash" "$target" ;;
     127) grep -qF 'MUTATED: ignored/refs not compared' "$target" && ! grep -qF "after.ignored !== before.ignored ? 'ignored files changed'" "$target" ;;
     128) grep -qF 'MUTATED: aliasHistory not validated' "$target" && ! grep -qF '"$TUNING_ERRORS, ($ALIAS_ERRORS)"' "$target" ;;
     129) grep -qF 'MUTATED: mix-sum check dropped' "$target" && ! grep -qF '| if ($sum - 1 | fabs) < 1e-9 then empty' "$target" ;;
     91) grep -qF 'MUTATED: empty diff counts' "$target" && ! grep -qF 'const realDiff = c => isStr(c.diffstat) && c.outOfScope !== true' "$target" ;;
     92) grep -qF 'MUTATED: out-of-scope patch applied' "$target" && ! grep -qF 'const realDiff = c => isStr(c.diffstat) && c.outOfScope !== true' "$target" ;;
-    93) grep -qF 'MUTATED: unknown leak runs in place' "$target" && ! grep -qF "if (res.leak !== false) { noExt(); return withhold(" "$target" ;;
+    93) grep -qF 'MUTATED: unknown leak runs in place' "$target" && ! grep -qF "res.leak !== false ? 'leak state unknown" "$target" ;;
     94) grep -qF 'MUTATED: repo mismatch ignored' "$target" && ! grep -qF 'stripSlash(dirty.sessionTop) !== stripSlash(dirty.repoTop)' "$target" ;;
     95) grep -qF 'MUTATED: failed apply runs in place' "$target" && ! grep -qF 'ap.treeModified === false && [0, 1, 6].includes(ap.rc)' "$target" ;;
     96) grep -qF 'MUTATED: climb keeps plan effort' "$target" && ! grep -qF 'effort: up === r.level ? r.subtask.effort : null' "$target" ;;
@@ -2342,6 +3119,90 @@ verify_mutation() {
     107) grep -qF 'MUTATED: require-clean ignored' "$target" && ! grep -qF 'if [ "$REQUIRE_CLEAN" -eq 1 ]; then' "$target" ;;
     108) grep -qF 'MUTATED: failed write assumed untouched' "$target" && ! grep -qF 'modified() { paths_state' "$target" ;;
     109) grep -qF 'MUTATED: ignored paths not fingerprinted' "$target" && ! grep -qF 'ignored_snapshot "$r" "$out.ign" || return 1' "$target" ;;
+    222) grep -qF 'MUTATED: a missing CHECKRC reads as exit 0' "$target" && ! grep -qF '  return hits.length ? Number(hits[hits.length - 1][1]) : null' "$target" ;;
+    223) grep -qF 'MUTATED: the first CHECKRC line decides' "$target" && ! grep -qF '  return hits.length ? Number(hits[hits.length - 1][1]) : null' "$target" ;;
+    224) grep -qF 'MUTATED: no verdict reads as PASS' "$target" ;;
+    225) grep -qF 'MUTATED: any reply is a live gate' "$target" && ! grep -qF '    const live = o => o != null && usable(o)' "$target" ;;
+    226) grep -qF 'MUTATED: args.repo vs args.bakeoff.repo not compared' "$target" && ! grep -qF '  if (b.repo != null && planRepo && stripSlash(b.repo) !== planRepo) bad(' "$target" ;;
+    227) grep -qF 'MUTATED: checks ignore args.repo' "$target" && ! grep -qF 'const checkCommand = cmd => `out=$( { ${planRepo ? ' "$target" ;;
+    228) grep -qF 'MUTATED: WORKDIR dropped' "$target" && ! grep -qF '  (planRepo ? ` WORKDIR=${planRepo}` : '\'''\'')' "$target" ;;
+    229) grep -qF 'MUTATED: a non-zero exit counts as work' "$target" && ! grep -qF '  if (exit !== '\''0'\'') {' "$target" ;;
+    230) grep -qF 'MUTATED: CHANGED FILES: none counts as work' "$target" && ! grep -qF '  if (changed && /^CHANGED FILES:\s*none\s*$/i.test(changed)) return' "$target" ;;
+    231) grep -qF 'MUTATED: an unknown leak stops only this subtask' "$target" && ! grep -qF '    return { abort: unknown }' "$target" ;;
+    232) grep -qF 'MUTATED: no header needed' "$target" && ! grep -qF '    if (cls.work) findings[v] = String(outs[i]).slice(0, 4000)' "$target" ;;
+    233) grep -qF 'MUTATED: rc/now not validated' "$target" && ! grep -qF '  if (rc == null || !/^\d{1,3}$/.test(rc) || now == null || !ISO_UTC.test(now)) return null' "$target" ;;
+    234) grep -qF 'MUTATED: end tag not required' "$target" && ! grep -qF '  if (only('\''end'\'') !== '\'''\'' || tags[tags.length - 1].k !== '\''end'\'') return null' "$target" ;;
+    235) grep -qF 'MUTATED: clean check not retried' "$target" && ! grep -qF '  if (!dirty) {' "$target" ;;
+    236) grep -qF 'MUTATED: re-verify with nothing re-run' "$target" && ! grep -qF '  if (r1.redoResults.length) verification = await verify(r1.merged, true)' "$target" ;;
+    237) grep -qF 'MUTATED: Fable challengers allowed' "$target" && ! grep -qF '      !isFableModel(c.model) &&' "$target" ;;
+    238) grep -qF 'MUTATED: a Fable-family planned model is sampled' "$target" && ! grep -qF '  if (isFableModel(planned.model)) return { skip: '\''planned-fable'\'' }' "$target" ;;
+    239) grep -qF 'MUTATED: ~ separator' "$target" && ! grep -qF '  return `${baseName.slice(0, RUN_MAX - idPart.length - 10)}.${hex8(baseName)}:${idPart}`' "$target" ;;
+    240) grep -qF 'MUTATED: a long id is never shortened' "$target" && ! grep -qF '  const idPart = id.length <= 40 ? id :' "$target" ;;
+    241) grep -qF 'MUTATED: non-relative files accepted' "$target" && ! grep -qF '  if (bakeoffOn && (s === '\'''\'' || s.startsWith('\''/'\'') || s.split('\''/'\'').includes('\''..'\''))) {' "$target" ;;
+    242) grep -qF 'MUTATED: absolute paths kept' "$target" && ! grep -qF '  if (fileRepo && s.startsWith(`${fileRepo}/`)) s = s.slice(fileRepo.length + 1)' "$target" ;;
+    243) grep -qF 'MUTATED: a no-op pass is ingested as a pass' "$target" ;;
+    244) grep -qF 'MUTATED: no run-time ts' "$target" && ! grep -qF '      result: { ts: dirty.now, base: res.base,' "$target" ;;
+    245) grep -qF 'MUTATED: null models left for ingest-time resolution' "$target" && ! grep -qF '          const fill = c.model == null && isStr(r.model)' "$target" ;;
+    246) grep -qF 'MUTATED: external reply read by the first-line rule' "$target" && ! grep -qF '    const nothing = err != null || (external ? !cls.work : producedNothing(out))' "$target" ;;
+    247) grep -qF 'MUTATED: missing ext-run line not checked' "$target" ;;
+    248) grep -qF 'MUTATED: empty-diff pass credited' "$target" ;;
+    249) grep -qF 'MUTATED: out-of-scope pass credited' "$target" ;;
+    250) grep -qF 'MUTATED: no-work reviewer reply not unavailable' "$target" ;;
+    251) grep -qF 'MUTATED: adjudicator reply not classified' "$target" ;;
+    252) grep -qF 'MUTATED: repo prefix not stripped' "$target" && ! grep -qF '  if (s.startsWith(`${repoC}/`)) s = s.slice(repoC.length + 1)' "$target" ;;
+    253) grep -qF 'MUTATED: dot components kept' "$target" && ! grep -qF '  return s.split('\''/'\'').filter(x => x !== '\'''\'' && x !== '\''.'\'').join('\''/'\'')' "$target" ;;
+    254) grep -qF 'MUTATED: args.files not normalised' "$target" && ! grep -qF 'const files = (args.files || []).map(f => scopePath(f) || '\''.'\'')' "$target" ;;
+    255) grep -qF 'MUTATED: stray EXTERNAL ( line counts' "$target" ;;
+    256) grep -qF 'MUTATED: any line counts as work' "$target" && ! grep -qF '    if (line.startsWith('\''EXTERNAL ('\'')) return { work: true, kind: '\''work'\'', reason: '\'''\'' }' "$target" ;;
+    257) grep -qF 'MUTATED: judge reply not classified' "$target" && ! grep -qF '    else if (classifyCrossReview(o).work) {' "$target" ;;
+    258) grep -qF 'MUTATED: no-work review row not unavailable' "$target" && ! grep -qF '    if (!cls.work) { rows.push(row(c, c.label, '\''unavailable'\'', { reason: noWorkReason(cls) })); return }' "$target" ;;
+    259) grep -qF 'MUTATED: any line counts as work' "$target" && ! grep -qF '    if (line.startsWith('\''EXTERNAL ('\'')) return { work: true, kind: '\''work'\'', reason: '\'''\'' }' "$target" ;;
+    260) grep -qF 'MUTATED: classifyExternal copy drifted' "$target" ;;
+    261) grep -qF 'MUTATED: refusal does not name the bad characters' "$target" && ! grep -qF '  if [ -n "$bad" ]; then echo "'\''$v'\'' contains character(s)' "$target" ;;
+    262) grep -qF 'MUTATED: result ts ignored' "$target" && ! grep -qF '    TS="$own"; TS_SRC=result' "$target" ;;
+    263) grep -qF 'MUTATED: tiers-filled model not flagged' "$target" && ! grep -qF 'def at_ingest($filled): if $filled' "$target" ;;
+    264) grep -qF 'MUTATED: takeover skips the same-lock re-check' "$target" && ! grep -qF '  if [ -n "$ino" ] && [ "$(lock_ino "$lock")" = "$ino" ] && [ "$got" = "$want" ]; then' "$target" ;;
+    265) grep -qF 'MUTATED: takeover mutex ignored' "$target" && ! grep -qF '  if ! mkdir "$m" 2>/dev/null; then' "$target" ;;
+    266) grep -qF 'MUTATED: orphaned mutex never cleared' "$target" && ! grep -qF '    if [ "$TAKEOVER_WAIT" -ge 50 ]; then rmdir "$m" 2>/dev/null; TAKEOVER_WAIT=0; fi' "$target" ;;
+    267) grep -qF 'MUTATED: ingest-time ts not flagged' "$target" && ! grep -qF '    TS=$(now_ts); TS_SRC=inferred-at-ingest' "$target" ;;
+    268) grep -qF 'MUTATED: unreachable configs are gaps again' "$target" && ! grep -qF '                 | select(($reach | index([{vendor: $V, modelId: $c.modelId, effort: $c.effort}])) != null)' "$target" ;;
+    269) grep -qF 'MUTATED: unsampleable level stays in explore' "$target" && ! grep -qF '        | if ($reach | length) == 0' "$target" ;;
+    270) grep -qF 'MUTATED: workflow agents lumped' "$target" && ! grep -qF '  sess="${f%/subagents/*}"; sess="${sess##*/}"' "$target" ;;
+    271) grep -qF 'MUTATED: repeated message ids summed' "$target" && ! grep -qF '      | group_by(.k) | map(max_by(.i)) | sort_by(.i)' "$target" ;;
+    272) grep -qF 'MUTATED: a corrupt line ends the file' "$target" && ! grep -qF '       catch "CORRUPT") end'\'' "$f" 2>/dev/null)"' "$target" ;;
+    273) grep -qF 'MUTATED: family split drifts from modelTokens' "$target" && ! grep -qF 'def id_tokens: ascii_downcase | [splits("[-._:+@]")];' "$target" ;;
+    274) grep -qF 'MUTATED: split drifts from parity-report' "$target" && ! grep -qF 'const modelTokens = m => String(m || '\'''\'').toLowerCase().split(/[-._:+@]/).filter(Boolean)' "$target" ;;
+    275) grep -qF 'MUTATED: danger work runs on gpt-6-astra' "$target" ;;
+    276) grep -qF 'MUTATED: hard-coded model id' "$target" ;;
+    277) grep -qF 'MUTATED: rename sources not listed' "$target" && ! grep -qF '      if ($hd && /^(?:rename|copy) from' "$target" ;;
+    278) grep -qF 'MUTATED: failed status read as clean' "$target" && ! grep -qF '    if ! tr '\''\n'\'' '\''\000'\'' < "$tmp/paths" | xargs -0 git -C "$R" --literal-pathspecs --no-optional-locks status' "$target" ;;
+    279) grep -qF 'MUTATED: listing failure ignored' "$target" && ! grep -qF '  patch_paths "$R" "$PATCH" "$tmp/paths" || paths_ok=0' "$target" ;;
+    280) grep -qF 'MUTATED: unknown paths measured as clean' "$target" ;;
+    281) grep -qF 'MUTATED: whole-second mtimes' "$target" && ! grep -qF '      my $hires = eval' "$target" ;;
+    282) grep -qF 'MUTATED: .DS_Store not excluded' "$target" ;;
+    283) grep -qF 'MUTATED: a non-repo --repo falls back to the cwd' "$target" ;;
+    284) grep -qF 'MUTATED: ignored files not fingerprinted' "$target" && ! grep -qF '  lines=$("$SCRIPT_DIR/stage-worktree.sh" ignored --repo "$top") || return 1' "$target" ;;
+    285) grep -qF 'MUTATED: ignored not fingerprinted' "$target" && ! grep -qF '  ignored=$(git -C "$R" hash-object --stdin < "$W/ign.keep")' "$target" ;;
+    286) grep -qF 'MUTATED: ignored not compared' "$target" && ! grep -qF '        (if ($x.ignored | type) == "string"' "$target" ;;
+    287) grep -qF 'MUTATED: inline resolver' "$target" && ! grep -qF '  if R=$(resolve_top "$REPO"); then' "$target" ;;
+    288) grep -qF 'MUTATED: a non-repo --repo falls back to the cwd' "$target" ;;
+    289) grep -qF 'MUTATED: stale build worktrees never reaped' "$target" && ! grep -qF '  reap_stale_builds' "$target" ;;
+    290) grep -qF 'MUTATED: a live run'\''s worktree reaped' "$target" && ! grep -qF '        ps -p "$pid" >/dev/null 2>&1 && continue' "$target" ;;
+    291) grep -qF 'MUTATED: reaper never reaps' "$target" && ! grep -qF '        ps -p "$pid" >/dev/null 2>&1 && continue' "$target" ;;
+    292) grep -qF 'MUTATED: lock carries no reason' "$target" ;;
+    293) grep -qF 'MUTATED: hooks run for worktree add' "$target" && ! grep -qF '  if ! git -C "$BUILD_REPO" -c core.hooksPath=/dev/null worktree add --lock' "$target" ;;
+    294) grep -qF -e '-c commit.gpgsign=false \' "$target" && ! grep -qF -e 'commit.gpgsign=false -c core.hooksPath=/dev/null' "$target" ;;
+    295) grep -qF 'MUTATED: every CR stripped' "$target" ;;
+    296) grep -qF 'MUTATED: marker ignored for legacy values' "$target" && ! grep -qF '  elif [ "$2" = "null" ] && is_legacy_subagent_model "$1"; then echo "upgrade-legacy"' "$target" ;;
+    297) grep -qF 'MUTATED: CLAUDE_DIR not canonicalised' "$target" && ! grep -qF 'CLAUDE_DIR=$(canon_dir "$CLAUDE_DIR_GIVEN")' "$target" ;;
+    298) grep -qF 'MUTATED: CLAUDE_DIR not canonicalised' "$target" && ! grep -qF 'CLAUDE_DIR=$(canon_dir "$CLAUDE_DIR_GIVEN")' "$target" ;;
+    299) grep -qF 'MUTATED: settings written last' "$target" && ! grep -qF '  apply_file "$SETTINGS_TMP" "$SETTINGS" || die "could not write $SETTINGS — nothing was changed."' "$target" ;;
+    300) grep -qF 'MUTATED: CLAUDE.md write failure ignored' "$target" && ! grep -qF '    apply_file "$CLAUDE_MD_TMP" "$CLAUDE_DIR/CLAUDE.md" \' "$target" ;;
+    301) grep -qF 'MUTATED: outdated pointer not detected' "$target" && ! grep -qF '  rc=0; has_line "$CLAUDE_DIR/CLAUDE.md" "$(old_pointer_line)" || rc=$?' "$target" ;;
+    302) grep -qF 'MUTATED: old pointer kept' "$target" ;;
+    303) grep -qF 'MUTATED: only the bare spelling' "$target" ;;
+    304) grep -qF 'MUTATED: old pointer tail' "$target" ;;
+    305) grep -qF 'MUTATED: bare import spelling only' "$target" ;;
     *) return 1 ;;
   esac
 }

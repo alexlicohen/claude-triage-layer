@@ -130,7 +130,7 @@ const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).
     { subtasks: [ST('t1', 'builder', ['a.js'])], checks: ['make test'] },
     {
       'builder:': ['did t1'],
-      'verify:objective-check': ['all good\nPASS'],
+      'verify:objective-check': ['all good\nCHECKRC 0'],
     })
   chk('S1: objective-only path — no reviewer spawned', countCalls(calls, 'verify:reviewer') === 0)
   chk('S1: review.ran is false', result.review.ran === false)
@@ -146,7 +146,7 @@ const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).
     { subtasks: [ST('core', 'deep', ['core.js'], { danger: true })], checks: ['make test'] },
     {
       'deep:': ['did core edit'],
-      'verify:objective-check': ['ok\nPASS'],
+      'verify:objective-check': ['ok\nCHECKRC 0'],
       'verify:reviewer': ['PASS'],
     })
   chk('S2: seam runs the objective gate', countCalls(calls, 'verify:objective-check') === 1)
@@ -204,7 +204,7 @@ const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).
     { subtasks: [ST('t1', 'builder', ['a.js'])], checks: ['make test'] },
     {
       'builder:': ['did t1'],
-      'verify:objective-check': [null, 'ok\nPASS'],
+      'verify:objective-check': [null, 'ok\nCHECKRC 0'],
     })
   chk('S5: gate retried once', countCalls(calls, 'verify:objective-check') === 2)
   chk('S5: retry logged', logs.some(l => l.includes('retrying the gate once')))
@@ -265,7 +265,7 @@ const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).
     { subtasks: [ST('t1', 'builder', ['a.js'])], checks: ['make test'] },
     {
       'builder:': ['did t1'],
-      'verify:objective-check': ['all good\nPASS'],
+      'verify:objective-check': ['all good\nCHECKRC 0'],
     }, NO_BUDGET)
   chk('S9: budget field present with total:null', result.budget && result.budget.total === null)
   chk('S9: budget.skipped empty (nothing skipped in null mode)', Array.isArray(result.budget.skipped) && result.budget.skipped.length === 0)
@@ -285,7 +285,7 @@ const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).
     { subtasks: [ST('subA', 'builder', ['a.js']), ST('subB', 'builder', ['b.js'])], checks: ['make test'] },
     {
       'builder:': ['did sub A'],
-      'verify:objective-check': ['ok\nPASS'],
+      'verify:objective-check': ['ok\nCHECKRC 0'],
     }, budget)
   chk('S10: only the first subtask spawned (second skipped for budget)', countCalls(agentCalls, 'builder:') === 1)
   chk('S10: skipped subtask reported in return.budget.skipped',
@@ -308,7 +308,7 @@ const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).
     {
       'builder:': ['did good sub'],
       'deep:': [new Error('agent() budget ceiling reached')],
-      'verify:objective-check': ['ok\nPASS'],
+      'verify:objective-check': ['ok\nCHECKRC 0'],
     }, budget)
   chk('S11: partial results kept — the good subtask survived', statusOf(result, 'good') === 'ok')
   chk('S11: ceiling subtask recorded as skipped',
@@ -328,7 +328,7 @@ const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).
     { subtasks: [ST('only', 'builder', ['a.js'])], checks: ['make test'] },
     {
       // 'builder:' intentionally unscripted — it must never be called (would throw).
-      'verify:objective-check': ['should never run\nPASS'],
+      'verify:objective-check': ['should never run\nCHECKRC 0'],
     }, budget)
   chk('S12: explicit error field on total budget exhaustion', typeof result.error === 'string' && result.error.includes('all subtasks skipped'))
   chk('S12: no work done, all recorded in budget.skipped', statusOf(result, 'only') === 'skipped' && result.budget.skipped.length === 1)
@@ -382,7 +382,7 @@ const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).
     {
       'builder:': ['did 1'],
       'deep:': ['did 2'],
-      'verify:objective-check': ['ok\nPASS'],
+      'verify:objective-check': ['ok\nCHECKRC 0'],
     })
   chk('S14: ids auto-assigned positionally', result.subtasks.map(s => s.id).join(',') === 's1,s2')
   chk('S14: files default to [] and the brief still spawns', statusOf(result, 's1') === 'ok' && statusOf(result, 's2') === 'ok')
@@ -401,7 +401,7 @@ const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).
     { subtasks: [ST('t1', 'builder', ['a.js'])], checks: ['make test'], review: 'always' },
     {
       'builder:': ['did t1'],
-      'verify:objective-check': ['ok\nPASS'],
+      'verify:objective-check': ['ok\nCHECKRC 0'],
       'verify:reviewer': ['PASS'],
     })
   chk('S15a: review:"always" runs the reviewer alongside a passing check', countCalls(calls, 'verify:reviewer') === 1 && result.review.verdict === 'PASS')
@@ -410,7 +410,7 @@ const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).
     { subtasks: [ST('core', 'deep', ['core.js'], { danger: true })], checks: ['make test'], review: 'never' },
     {
       'deep:': ['did core'],
-      'verify:objective-check': ['ok\nPASS'],
+      'verify:objective-check': ['ok\nCHECKRC 0'],
     })
   chk('S15b: review:"never" suppresses the seam reviewer for a danger subtask', countCalls(c2, 'verify:reviewer') === 0 && r2.review.ran === false)
   chk('S15b: check still gates the round', r2.checks[0].pass === true && r2.incomplete === false)
@@ -433,7 +433,7 @@ const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).
     { subtasks: [ST('core', 'builder', ['core.js'], { danger: true })], checks: ['make test'], review: 'never' },
     {
       'deep:': ['did core on the deep tier'],
-      'verify:objective-check': ['ok\nPASS'],
+      'verify:objective-check': ['ok\nCHECKRC 0'],
     })
   chk('S17: danger subtask ran on triage-deep-reasoner, not the planned builder',
     calls.find(c => c.label.startsWith('deep:')).opts.agentType === 'triage-deep-reasoner' && countCalls(calls, 'builder:') === 0)
@@ -448,11 +448,11 @@ const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).
     { subtasks: [ST('t1', 'builder', ['a.js'])], checks: ['make lint', 'make test'], review: 'never' },
     {
       'builder:': ['did t1'],
-      'verify:objective-check#0': ['lint clean\nPASS'],
-      'verify:objective-check#1': ['a.js exploded\nFAIL'],
+      'verify:objective-check#0': ['lint clean\nCHECKRC 0'],
+      'verify:objective-check#1': ['a.js exploded\nCHECKRC 1'],
       'redo:': ['fixed a.js'],
-      'verify:recheck#0': ['PASS'],
-      'verify:recheck#1': ['PASS'],
+      'verify:recheck#0': ['CHECKRC 0'],
+      'verify:recheck#1': ['CHECKRC 0'],
     })
   chk('S18: one gate per check', countCalls(calls, 'verify:objective-check') === 2)
   chk('S18: remediation ran on the failing check', countCalls(calls, 'redo:t1') === 1)
@@ -470,7 +470,7 @@ const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).
     {
       'fable:': [null],
       'deep←fable:': ['did it on deep at max'],
-      'verify:objective-check': ['ok\nPASS'],
+      'verify:objective-check': ['ok\nCHECKRC 0'],
     })
   chk('S19: Fable escalation announced before the spawn', logs.some(l => l.startsWith('⚠ Escalating to Fable:')))
   chk('S19: fallback announced', logs.some(l => l.includes('Fable unavailable — using triage-deep-reasoner at max effort')))
@@ -488,7 +488,7 @@ const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).
     { subtasks: [ST('core', 'deep', ['core.js'], { danger: true })], checks: ['make test'], review: 'never', crossReview: true },
     {
       'deep:': ['did core'],
-      'verify:objective-check': ['ok\nPASS'],
+      'verify:objective-check': ['ok\nCHECKRC 0'],
       'verify:cross-review': ['CROSS-REVIEW (codex · review · exit 0): core.js line 12 looks wrong to me'],
     })
   // Wave 13: crossReview:true means codex (agy until its retirement), keyed by vendor.
@@ -507,7 +507,7 @@ const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).
     { subtasks: [ST('t1', 'builder', ['a.js'])], checks: ['make test'], review: 'never' },
     {
       'builder:': ['did t1'],
-      'verify:objective-check': ['ok\nPASS'],
+      'verify:objective-check': ['ok\nCHECKRC 0'],
     })
   chk('S20: crossReview absent from the result when not requested',
     r2.crossReview === undefined && countCalls(c2, 'verify:cross-review') === 0)
@@ -521,7 +521,7 @@ const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).
     { subtasks: [ST('t1', 'builder', ['a.js'])], checks: ['make test'], review: 'never' },
     {
       'builder:': [`${secret} ... many thousands of tokens ...`],
-      'verify:objective-check': ['ok\nPASS'],
+      'verify:objective-check': ['ok\nCHECKRC 0'],
     })
   chk('S21: worker output is not in the returned report', !JSON.stringify(result).includes(secret))
   chk('S21: report keys are the compact contract',
@@ -537,7 +537,7 @@ const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).
       'codex:': ['EXTERNAL (codex · build · exit 0)\ndid b1 externally'],
       'deep:': ['did d1'],
       'quick:': ['did q1'],
-      'verify:objective-check': ['ok\nPASS'],
+      'verify:objective-check': ['ok\nCHECKRC 0'],
     })
   chk('S22: exactly one external spawn, on triage-external with the codex header',
     countCalls(calls, 'codex:') === 1 &&
@@ -572,8 +572,8 @@ const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).
     {
       'codex:': [EXT('did b1 externally')],
       'redo:b1': ['fixed it on Claude builder'],
-      'verify:objective-check': ['a.js is broken\nFAIL'],
-      'verify:recheck': ['ok\nPASS'],
+      'verify:objective-check': ['a.js is broken\nCHECKRC 1'],
+      'verify:recheck': ['ok\nCHECKRC 0'],
     })
   chk('S23: the redo ran on triage-builder (same level, on Claude)',
     countCalls(calls, 'redo:b1') === 1 &&
@@ -594,7 +594,7 @@ const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).
 {
   const { result, logs, calls } = await run(
     { overflow: true, subtasks: [ST('core', 'builder', ['core.js'], { danger: true })], checks: ['make test'], review: 'never' },
-    { 'deep:': ['did core on deep'], 'verify:objective-check': ['ok\nPASS'] })
+    { 'deep:': ['did core on deep'], 'verify:objective-check': ['ok\nCHECKRC 0'] })
   chk('S24a: zero external spawns for a danger subtask', !calls.some(c => c.opts.agentType === 'triage-external'))
   chk('S24a: it ran on deep', calls.find(c => c.label === 'deep:core').opts.agentType === 'triage-deep-reasoner')
   chk('S24a: the danger upgrade is logged', logs.some(l => l.includes('Danger-zone routing') && l.includes('core')))
@@ -602,12 +602,12 @@ const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).
 
   const { result: rX, calls: cX } = await run(
     { subtasks: [ST('core2', 'overflow', ['core.js'], { danger: true })], checks: ['make test'], review: 'never' },
-    { 'deep:': ['did core2 on deep'], 'verify:objective-check': ['ok\nPASS'] })
+    { 'deep:': ['did core2 on deep'], 'verify:objective-check': ['ok\nCHECKRC 0'] })
   chk('S24a: an EXPLICIT tier:overflow + danger is also upgraded to deep',
     !cX.some(c => c.opts.agentType === 'triage-external') && rX.subtasks[0].tier === 'deep')
   const { result: rY, calls: cY } = await run(
     { subtasks: [ST('core3', 'overflow', ['core.js'], { vendor: 'codex', danger: true })], checks: ['make test'], review: 'never' },
-    { 'deep:': ['did core3 on deep'], 'verify:objective-check': ['ok\nPASS'] })
+    { 'deep:': ['did core3 on deep'], 'verify:objective-check': ['ok\nCHECKRC 0'] })
   chk('S24a: tier:overflow + danger stays off codex even with vendor codex spelled out',
     !cY.some(c => c.opts.agentType === 'triage-external') && rY.subtasks[0].tier === 'deep' && rY.subtasks[0].vendor === 'claude')
 
@@ -616,7 +616,7 @@ const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).
     {
       'codex:': [null],
       'builder←codex:': ['did it on builder'],
-      'verify:objective-check': ['ok\nPASS'],
+      'verify:objective-check': ['ok\nCHECKRC 0'],
     })
   chk('S24b: fallback spawned on triage-builder',
     c2.find(c => c.label === 'builder←codex:b1').opts.agentType === 'triage-builder')
@@ -640,7 +640,7 @@ const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).
 
   const { result } = await run(
     { subtasks: [ST('t1', 'overflow', ['a.js'])], checks: ['make test'], review: 'never' },
-    { 'codex:': [EXT('ok')], 'verify:objective-check': ['ok\nPASS'] })
+    { 'codex:': [EXT('ok')], 'verify:objective-check': ['ok\nCHECKRC 0'] })
   chk('S25: an explicit tier:"overflow" is accepted without the plan flag (= builder on codex)',
     result.subtasks[0].tier === 'codex:builder' && result.external.codex.routed[0] === 't1')
 }
@@ -803,7 +803,7 @@ const LV = (id, level, files, extra = {}) =>
   Object.assign({ id, brief: `do ${id}`, level, files, acceptance: 'works' }, extra)
 const extCalls = calls => calls.filter(c => c.opts.agentType === 'triage-external')
 const firstLine = c => (c ? String(c.prompt).split('\n')[0] : '')
-const GREEN = { 'verify:objective-check': ['ok\nPASS'] }
+const GREEN = { 'verify:objective-check': ['ok\nCHECKRC 0'] }
 
 // ---- Scenario 27: `level` is the field; `tier` is its alias; both given must agree.
 {
@@ -1004,7 +1004,7 @@ const GREEN = { 'verify:objective-check': ['ok\nPASS'] }
   // (a) plain objective FAIL on codex builder → Claude builder with the failure text.
   const { result, calls } = await run(
     { subtasks: [LV('b', 'builder', ['b.js'], { vendor: 'codex' })], checks: ['make test'], review: 'never' },
-    { 'codex:': [EXT('did b')], 'verify:objective-check': ['b.js broke\nFAIL'], 'redo:': ['fixed on Claude'], 'verify:recheck': ['ok\nPASS'] })
+    { 'codex:': [EXT('did b')], 'verify:objective-check': ['b.js broke\nCHECKRC 1'], 'redo:': ['fixed on Claude'], 'verify:recheck': ['ok\nCHECKRC 0'] })
   chk('S36a: redo ran on triage-builder with the failure text',
     calls.find(c => c.label === 'redo:b').opts.agentType === 'triage-builder' && calls.find(c => c.label === 'redo:b').prompt.includes('b.js broke'))
   chk('S36a: never a second external spawn', extCalls(calls).length === 1)
@@ -1067,7 +1067,7 @@ const GREEN = { 'verify:objective-check': ['ok\nPASS'] }
 
   const { calls: c3, result: r3 } = await run(
     { subtasks: [LV('t1', 'builder', ['a.js'])], checks: ['make test'], review: 'never', crossReview: 'codex' },
-    { 'builder:': ['did t1'], ...GREEN, 'verify:cross-review:codex': ['codex finding'] })
+    { 'builder:': ['did t1'], ...GREEN, 'verify:cross-review:codex': ['CROSS-REVIEW (codex · review · exit 0)\ncodex finding'] })
   chk('S38: crossReview "codex" → one codex spawn only',
     c3.filter(c => c.opts.agentType === 'triage-cross-reviewer').length === 1 && firstLine(c3.find(c => c.label === 'verify:cross-review:codex')) === 'VENDOR=codex' &&
     Object.keys(r3.crossReview.findings).join() === 'codex')
@@ -1153,7 +1153,11 @@ function CMP(statuses, over = {}) {
 // The dirty check's reply for a clean tree in the session repo, and stage-worktree.sh
 // apply's reply for the patch the prompt names (a function of the prompt: the
 // workflow requires the relayed patch to be the one it asked for).
-const DIRTY_OK = { porcelain: '', rc: 0, sessionTop: '/r/repo', repoTop: '/r/repo' }
+// The clean check's reply: the tagged stdout of triage-exec's one command (cleanCheckCmd()).
+const DIRTY = ({ porcelain = '', rc = 0, sessionTop = '/r/repo', repoTop = '/r/repo', now = '2026-10-05T12:00:00Z' } = {}) =>
+  [`CLEANCHECK rc ${rc}`, ...porcelain.split('\n').filter(Boolean).map(l => `CLEANCHECK porcelain ${l}`),
+    `CLEANCHECK sessionTop ${sessionTop}`, `CLEANCHECK repoTop ${repoTop}`, `CLEANCHECK now ${now}`, 'CLEANCHECK end'].join('\n')
+const DIRTY_OK = DIRTY()
 const patchOf = p => (p.match(/--patch '([^']+)'/) || [])[1]
 const APPLIED = (over = {}) => p => Object.assign({ step: 'apply', ok: true, applied: true, method: 'plain', treeModified: true, patch: patchOf(p), rc: 0 }, over)
 const CLEAN = { 'bakeoff:dirty:': [DIRTY_OK], 'bakeoff:apply:': [APPLIED()] }
@@ -1291,7 +1295,7 @@ const BST = (id, level, extra = {}) => LV(id, level, [`src/${id}.js`], Object.as
   // Dirty files: sampled, but git status shows the files modified → no compare, run in place.
   const dirty = await run(
     { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
-    { ...CLEAN, 'bakeoff:dirty:': [{ porcelain: ' M src/t1.js\n', rc: 0 }], 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
+    { ...CLEAN, 'bakeoff:dirty:': [DIRTY({ porcelain: ' M src/t1.js\n' })], 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
   const dcall = dirty.calls.find(c => c.label === 'bakeoff:dirty:t1')
   chk('S44: dirty check runs git status --porcelain on exactly the subtask files',
     dcall && dcall.prompt.includes(`git -C '/r/repo' status --porcelain -- 'src/t1.js'`) && dcall.opts.agentType === 'triage-quick-task')
@@ -1301,11 +1305,13 @@ const BST = (id, level, extra = {}) => LV(id, level, [`src/${id}.js`], Object.as
   const unknown = await run(
     { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
     { ...CLEAN, 'bakeoff:dirty:': [null], 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
-  chk('S44: dirty check that returns nothing counts as dirty', unknown.workflows.length === 0 && unknown.result.bakeoffs[0].reason === 'dirty check failed')
+  chk('S44: dirty check that returns nothing (twice) counts as dirty: dirty check unavailable', unknown.workflows.length === 0 && unknown.result.bakeoffs[0].reason === 'dirty check unavailable' &&
+    countCalls(unknown.calls, 'bakeoff:dirty:t1') === 2)
   const nonzero = await run(
     { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
-    { ...CLEAN, 'bakeoff:dirty:': [{ porcelain: '', rc: 128 }], 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
-  chk('S44: dirty check with a non-zero rc counts as dirty', nonzero.workflows.length === 0)
+    { ...CLEAN, 'bakeoff:dirty:': [DIRTY({ rc: 128 })], 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
+  chk('S44: dirty check with a non-zero rc counts as dirty (dirty check failed, not retried)', nonzero.workflows.length === 0 &&
+    nonzero.result.bakeoffs[0].reason === 'dirty check failed' && countCalls(nonzero.calls, 'bakeoff:dirty:t1') === 1)
 }
 
 // ---- Scenario 45: danger — a codex challenger must clear the codex danger floor
@@ -1373,7 +1379,7 @@ const BST = (id, level, extra = {}) => LV(id, level, [`src/${id}.js`], Object.as
     result.bakeoffs[0].outcome === 'challenger' && result.bakeoffs[0].applied === 'challenger' && result.ingest[0].cmd.endsWith(' --applied challenger'))
   const { result: r2, calls: c2 } = await run(
     { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
-    { ...CLEAN, 'verify:objective-check': ['src/t1.js broke\nFAIL'], 'verify:recheck': ['ok\nPASS'], 'redo:': ['fixed on claude'] },
+    { ...CLEAN, 'verify:objective-check': ['src/t1.js broke\nCHECKRC 1'], 'verify:recheck': ['ok\nCHECKRC 0'], 'redo:': ['fixed on claude'] },
     NO_BUDGET, CMP({ planned: 'fail', challenger: 'pass' }))
   const redo = c2.find(c => c.label.startsWith('redo:'))
   chk('S47: an applied codex challenger that fails verification is redone on Claude at its level',
@@ -1386,7 +1392,7 @@ const BST = (id, level, extra = {}) => LV(id, level, [`src/${id}.js`], Object.as
 {
   const { result, calls } = await run(
     { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
-    { ...CLEAN, 'verify:objective-check': ['src/t1.js broke\nFAIL'], 'verify:recheck': ['ok\nPASS'], 'redo:': ['fixed'] },
+    { ...CLEAN, 'verify:objective-check': ['src/t1.js broke\nCHECKRC 1'], 'verify:recheck': ['ok\nCHECKRC 0'], 'redo:': ['fixed'] },
     NO_BUDGET, CMP({ planned: 'fail', challenger: 'fail' }))
   chk('S48: both fail → the planned patch is applied', calls.some(c => c.label === 'bakeoff:apply:t1' && c.prompt.includes('/o/bake/t1/planned.patch')) &&
     result.bakeoffs[0].outcome === 'planned')
@@ -1403,8 +1409,9 @@ const BST = (id, level, extra = {}) => LV(id, level, [`src/${id}.js`], Object.as
 }
 
 // ---- Scenario 49: planned produced nothing → in place (challenger fail); a compare that
-// throws / returns no list / cannot confirm the leak state → WITHHELD (M1: the tree's
-// state is unknown, so the subtask is never run in place on it; the run is INCOMPLETE).
+// throws / returns no list / cannot confirm the leak state → the WHOLE PLAN STOPS,
+// LEAK-style (review 2026-10-05 M5: the tree's state is unknown, so nothing further runs
+// on it or takes it as a clean baseline; the run is INCOMPLETE with an explicit error).
 {
   const { result, calls } = await run(
     { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
@@ -1417,28 +1424,35 @@ const BST = (id, level, extra = {}) => LV(id, level, [`src/${id}.js`], Object.as
   const thrown = await run(
     { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
     { ...CLEAN, 'builder:': ['did it'], ...GREEN }, NO_BUDGET, () => new Error('staging failed'))
-  chk('S49: a compare that throws → WITHHELD: no in-place spawn, reason recorded, no ingest, run incomplete with an error',
-    countCalls(thrown.calls, 'builder:t1') === 0 && thrown.result.bakeoffs[0].outcome === 'withheld' &&
+  chk('S49: a compare that throws → plan stopped: no in-place spawn, no verification, reason recorded, no ingest, incomplete with a LEAK STATE UNKNOWN error',
+    countCalls(thrown.calls, 'builder:t1') === 0 && countCalls(thrown.calls, 'verify:') === 0 && thrown.result.bakeoffs[0].outcome === 'skipped' &&
     thrown.result.bakeoffs[0].reason.includes('staging failed') && thrown.result.ingest.length === 0 &&
-    thrown.result.incomplete === true && /withheld/.test(thrown.result.error) && JSON.stringify(thrown.result.withheld) === '["t1"]' && statusOf(thrown.result, 't1') === 'skipped')
+    thrown.result.incomplete === true && /^LEAK STATE UNKNOWN: .*staging failed/.test(thrown.result.error) && JSON.stringify(thrown.result.withheld) === '[]' &&
+    thrown.logs.some(l => l.startsWith('⚠ LEAK STATE UNKNOWN in the bake-off for "t1"')))
   const nothing = await run(
     { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
     { ...CLEAN, 'builder:': ['did it'], ...GREEN }, NO_BUDGET, () => null)
-  chk('S49: a compare that returns nothing → withheld, never run in place', countCalls(nothing.calls, 'builder:t1') === 0 && nothing.result.bakeoffs[0].outcome === 'withheld')
+  chk('S49: a compare that returns nothing → plan stopped, never run in place', countCalls(nothing.calls, 'builder:t1') === 0 &&
+    /^LEAK STATE UNKNOWN: .*no candidate list/.test(nothing.result.error) && nothing.result.incomplete === true)
   const unknownLeak = await run(
     { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
     { ...CLEAN, 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'invalid', challenger: 'invalid' }, { result: { leak: null, graded: false } }))
-  chk('S49: leak state unknown → no apply, NOT run in place (withheld), not ingested, incomplete',
+  chk('S49: leak state unknown → no apply, NOT run in place (plan stopped), not ingested, incomplete',
     !unknownLeak.calls.some(c => c.label.startsWith('bakeoff:apply:')) && countCalls(unknownLeak.calls, 'builder:t1') === 0 &&
     unknownLeak.result.ingest.length === 0 && unknownLeak.result.incomplete === true && /leak state unknown/.test(unknownLeak.result.bakeoffs[0].reason))
   const passLeakNull = await run(
     { subtasks: [BST('t1', 'builder'), LV('n1', 'builder', ['n.js'])], checks: ['make test'], review: 'never', bakeoff: BO() },
     { ...CLEAN, 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }, { result: { leak: null } }))
-  chk('S49: planned PASS with leak null → still withheld (no apply, no in-place); the unsampled subtask runs; verified; incomplete, not failed',
+  chk('S49 (M5): planned PASS with leak null on t1 → no apply, no in-place; the plan stops: the unsampled n1 NEVER spawns, nothing verified; incomplete, not failed',
     !passLeakNull.calls.some(c => c.label.startsWith('bakeoff:apply:')) && countCalls(passLeakNull.calls, 'builder:t1') === 0 &&
-    countCalls(passLeakNull.calls, 'builder:n1') === 1 && countCalls(passLeakNull.calls, 'verify:objective-check') === 1 &&
-    passLeakNull.result.incomplete === true && passLeakNull.result.failed === false && statusOf(passLeakNull.result, 'n1') === 'ok' && statusOf(passLeakNull.result, 't1') === 'skipped' &&
-    passLeakNull.logs.some(l => l.startsWith('⚠ INCOMPLETE — bake-off subtask(s) withheld')))
+    countCalls(passLeakNull.calls, 'builder:n1') === 0 && countCalls(passLeakNull.calls, 'verify:') === 0 &&
+    passLeakNull.result.incomplete === true && passLeakNull.result.failed === false && statusOf(passLeakNull.result, 'n1') === 'failed' &&
+    /^LEAK STATE UNKNOWN: .*leak state unknown/.test(passLeakNull.result.error) && passLeakNull.result.ingest.length === 0)
+  const second = await run(
+    { subtasks: [BST('t1', 'builder'), BST('t2', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
+    { ...CLEAN, 'builder:': ['did it'], ...GREEN }, NO_BUDGET, (name, a, n) => CMP({ planned: 'pass', challenger: 'fail' }, n === 1 ? { result: { leak: null } } : {})(name, a))
+  chk('S49 (M5): leak null on the FIRST sampled subtask → the second bake-off never starts (no dirty check, no compare)',
+    second.workflows.length === 1 && countCalls(second.calls, 'bakeoff:dirty:t2') === 0 && countCalls(second.calls, 'builder:') === 0)
 }
 
 // ---- Scenario 50: LEAK → nothing applied, nothing further runs, the run aborts loudly.
@@ -1552,7 +1566,7 @@ const BST = (id, level, extra = {}) => LV(id, level, [`src/${id}.js`], Object.as
   // … and it stays credited when verification then sends it back to Claude.
   const back = await run(
     { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
-    { ...CLEAN, 'verify:objective-check': ['src/t1.js broke\nFAIL'], 'verify:recheck': ['ok\nPASS'], 'redo:': ['fixed on claude'] },
+    { ...CLEAN, 'verify:objective-check': ['src/t1.js broke\nCHECKRC 1'], 'verify:recheck': ['ok\nCHECKRC 0'], 'redo:': ['fixed on claude'] },
     NO_BUDGET, CMP({ planned: 'fail', challenger: 'pass' }))
   chk('S55: an applied codex challenger redone on Claude → still bakeoffApplied, and returnedToClaude',
     JSON.stringify(back.result.external.codex.bakeoffApplied) === '["t1"]' && back.result.external.codex.returnedToClaude.includes('t1→builder'))
@@ -1633,16 +1647,16 @@ const BST = (id, level, extra = {}) => LV(id, level, [`src/${id}.js`], Object.as
 {
   const r = await run(
     { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
-    { ...CLEAN, 'bakeoff:dirty:': [Object.assign({}, DIRTY_OK, { sessionTop: '/elsewhere/repo' })], 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
+    { ...CLEAN, 'bakeoff:dirty:': [DIRTY({ sessionTop: '/elsewhere/repo' })], 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
   chk('S58: a session repo other than args.bakeoff.repo → no compare, reason repo-mismatch, run in place (nothing touched)',
     r.workflows.length === 0 && r.result.bakeoffs[0].reason === 'repo-mismatch' && countCalls(r.calls, 'builder:t1') === 1 && statusOf(r.result, 't1') === 'ok')
   const noTop = await run(
     { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
-    { ...CLEAN, 'bakeoff:dirty:': [{ porcelain: '', rc: 0, sessionTop: '', repoTop: '/r/repo' }], 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
+    { ...CLEAN, 'bakeoff:dirty:': [DIRTY({ sessionTop: '' })], 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
   chk('S58: an unknown session top level counts as a mismatch', noTop.workflows.length === 0 && noTop.result.bakeoffs[0].reason === 'repo-mismatch')
   const d = r.calls.find(c => c.label === 'bakeoff:dirty:t1')
-  chk('S58: the dirty step also reads both top levels (physical, pwd -P)', d && d.prompt.includes('cd "$(git rev-parse --show-toplevel)" && pwd -P') &&
-    d.prompt.includes(`cd "$(git -C '/r/repo' rev-parse --show-toplevel)" && pwd -P`))
+  chk('S58: the dirty step also reads both top levels (physical, pwd -P)', d && d.prompt.includes('CLEANCHECK sessionTop %s\\n\' "$(t=$(git rev-parse --show-toplevel 2>/dev/null) && cd "$t" && pwd -P)"') &&
+    d.prompt.includes(`CLEANCHECK repoTop %s\\n' "$(t=$(git -C '/r/repo' rev-parse --show-toplevel 2>/dev/null) && cd "$t" && pwd -P)"`))
 }
 
 // ---- Scenario 59 (M3/M4): apply --require-clean; an unknown or tree-modifying apply is withheld.
@@ -1688,14 +1702,14 @@ const BST = (id, level, extra = {}) => LV(id, level, [`src/${id}.js`], Object.as
 {
   const { calls } = await run(
     { subtasks: [BST('t1', 'builder', { effort: 'high' })], checks: ['make test'], review: 'never', bakeoff: BO() },
-    { ...CLEAN, 'verify:objective-check': ['src/t1.js broke\nFAIL'], 'verify:recheck': ['ok\nPASS'], 'redo:': ['fixed on claude'] },
+    { ...CLEAN, 'verify:objective-check': ['src/t1.js broke\nCHECKRC 1'], 'verify:recheck': ['ok\nCHECKRC 0'], 'redo:': ['fixed on claude'] },
     NO_BUDGET, CMP({ planned: 'fail', challenger: 'pass' }))
   const redo = calls.find(c => c.label.startsWith('redo:'))
   chk('S60: M5 — the redo after an applied challenger (gpt-6-sol@medium) runs at the PLAN\'s effort (high)',
     redo && redo.opts.agentType === 'triage-builder' && redo.opts.effort === 'high')
   const esc = await run(
     { subtasks: [ST('t', 'builder', ['t.js'], { effort: 'low' })], checks: ['make test'], review: 'always' },
-    { 'builder:': ['did t'], 'verify:objective-check': ['ok\nPASS'], 'verify:reviewer': ['ESCALATE: needs deeper work'], 'redo:': ['redone deep'], 'verify:recheck': ['ok\nPASS'], 'verify:re-review': ['PASS'] })
+    { 'builder:': ['did t'], 'verify:objective-check': ['ok\nCHECKRC 0'], 'verify:reviewer': ['ESCALATE: needs deeper work'], 'redo:': ['redone deep'], 'verify:recheck': ['ok\nCHECKRC 0'], 'verify:re-review': ['PASS'] })
   const up = esc.calls.find(c => c.label === 'redo:t')
   chk('S60: M6 — ESCALATE from builder@low climbs to deep WITHOUT carrying effort low (the deep agent\'s default)',
     up && up.opts.agentType === 'triage-deep-reasoner' && !('effort' in up.opts))
@@ -1731,7 +1745,20 @@ const BST = (id, level, extra = {}) => LV(id, level, [`src/${id}.js`], Object.as
   const runs = two.result.ingest.map(x => (x.cmd.match(/ --run (\S+)/) || [])[1])
   chk('S61: a long outDir basename never truncates the subtask id: distinct run ids, each ending in :<id>, each <= 80 chars, --run always passed',
     runs.length === 2 && runs.every(Boolean) && new Set(runs).size === 2 && runs.every((r, i) => r.endsWith(`:${ids[i]}`) && r.length <= 80) &&
-    runs.every(r => /~[0-9a-f]{8}:/.test(r)))
+    runs.every(r => /\.[0-9a-f]{8}:/.test(r)))
+  // M1: every run id must pass the REAL ledger token rule — parity-report.sh's is_token,
+  // read from the script and run through grep -E exactly as the script runs it.
+  const isTok = readFileSync(join(here, '..', 'scripts', 'parity-report.sh'), 'utf8').match(/^is_token\(\) \{[^\n]*grep -Eq '([^']+)'/m)
+  const tokenOk = v => { try { execFileSync('grep', ['-Eq', isTok[1]], { input: v }); return true } catch { return false } }
+  const longIds = ['a'.repeat(34), `${'b'.repeat(70)}-x`, 'c'.repeat(80), `${'c'.repeat(79)}d`, 'short']
+  const lr = await run(
+    { subtasks: longIds.map(id => BST(id, 'builder')), checks: ['make test'], review: 'never',
+      bakeoff: BO({}, { outDir: '/scratch/bakeoff-626e8492-d56e-4e8e-a940-aea2b6cb294f-12' }) },
+    { ...CLEAN, ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
+  const lruns = lr.result.ingest.map(x => (x.cmd.match(/ --run (\S+)/) || [])[1])
+  chk('S61 (M1): the rule-10 outDir with ids of 5–80 chars → every --run passes parity-report.sh is_token (the real rule), all distinct',
+    !!isTok && lruns.length === longIds.length && lruns.every(r => r && tokenOk(r) && r.length <= 80) && new Set(lruns).size === longIds.length &&
+    !tokenOk('a~b') && lr.result.ingest.every(x => tokenOk((x.cmd.match(/ --task (\S+)/) || [])[1])))
   chk('S61: a short outDir basename keeps the plain <basename>:<id> form', result.ingest[0].cmd.includes(' --run bake:t1'))
 }
 
@@ -1940,10 +1967,10 @@ const fableSpawned = calls => calls.some(c => c.opts.agentType === 'triage-fable
     { subtasks: [ST('core', 'deep', ['core.js'])], checks: ['make test'], review: 'always', noFable: true },
     {
       'deep:': ['did core'],
-      'verify:objective-check': ['ok\nPASS'],
+      'verify:objective-check': ['ok\nCHECKRC 0'],
       'verify:reviewer': [REVIEW_ESCALATE],
       'redo:deep@max:': ['redone at max'],
-      'verify:recheck': ['core.js: 1 failing\nFAIL'],
+      'verify:recheck': ['core.js: 1 failing\nCHECKRC 1'],
       'verify:re-review': ['PASS'],
       'redo:fable:': ['MUST NOT RUN'],
     })
@@ -1966,7 +1993,7 @@ const fableSpawned = calls => calls.some(c => c.opts.agentType === 'triage-fable
   chk('S66c: noFable + level top (claude by default) throws before any spawn', t2.threw && t2.calls.length === 0 && t2.message.includes('noFable'))
   const t3 = await runExpectingThrow(
     { subtasks: [{ id: 'arch', brief: 'b', level: 'top', vendor: 'codex', acceptance: 'ok', files: ['x.js'] }], noFable: true, review: 'never', checks: ['make test'] },
-    { 'codex:': [EXT('ok')], 'verify:objective-check': ['ok\nPASS'] })
+    { 'codex:': [EXT('ok')], 'verify:objective-check': ['ok\nCHECKRC 0'] })
   chk('S66c: noFable + a codex top subtask is accepted', !t3.threw)
 }
 
@@ -1989,7 +2016,7 @@ const fableSpawned = calls => calls.some(c => c.opts.agentType === 'triage-fable
       'codex:': ['UNAVAILABLE: codex exited 4'],
       'fable←codex:': ['MUST NOT RUN'],
       'deep@max:': ['did it on deep at max'],
-      'verify:objective-check': ['ok\nPASS'],
+      'verify:objective-check': ['ok\nCHECKRC 0'],
     })
   const mx = deepMaxCalls(calls)
   chk('S66e: codex no work → deep-reasoner at max (label deep@max:arch), no Fable spawn or announcement',
@@ -2016,7 +2043,7 @@ const fableSpawned = calls => calls.some(c => c.opts.agentType === 'triage-fable
 {
   const { result } = await run(
     { subtasks: [ST('t1', 'builder', ['a.js'])], checks: ['make test'] },
-    { 'builder:': ['did t1'], 'verify:objective-check': ['ok\nPASS'] })
+    { 'builder:': ['did t1'], 'verify:objective-check': ['ok\nCHECKRC 0'] })
   chk('S66f: default plan echoes noFable false and an empty needsUser',
     result.noFable === false && Array.isArray(result.needsUser) && result.needsUser.length === 0)
 }
@@ -2068,9 +2095,9 @@ const fableSpawned = calls => calls.some(c => c.opts.agentType === 'triage-fable
     {
       'codex:': ['UNAVAILABLE: codex exited 4'],
       'deep@max:': ['did it on deep at max'],
-      'verify:objective-check': ['x.js: 1 failing\nFAIL'],
+      'verify:objective-check': ['x.js: 1 failing\nCHECKRC 1'],
       'redo:deep@max:': ['retried at max'],
-      'verify:recheck': ['x.js: still 1 failing\nFAIL'],
+      'verify:recheck': ['x.js: still 1 failing\nCHECKRC 1'],
       'redo:': ['MUST NOT RUN'],
     })
   chk('S66h: codex→deep@max fallback + FAIL → one redo at deep@max, no Fable',
@@ -2090,7 +2117,7 @@ const fableSpawned = calls => calls.some(c => c.opts.agentType === 'triage-fable
     {
       'codex:': ['UNAVAILABLE: codex exited 4'],
       'deep@max:': [null],
-      'verify:objective-check': ['ok\nPASS'],
+      'verify:objective-check': ['ok\nCHECKRC 0'],
       'redo:': ['MUST NOT RUN'],
     })
   chk('S66i: empty deep@max fallback → no Fable, no redo, escalation deep -> user',
@@ -2110,10 +2137,10 @@ const fableSpawned = calls => calls.some(c => c.opts.agentType === 'triage-fable
     {
       'deep:core': ['did core at max'],
       'builder:ui': ['did ui'],
-      'verify:objective-check': ['core.js: 1 failing\nui.js: 1 failing\nFAIL'],
+      'verify:objective-check': ['core.js: 1 failing\nui.js: 1 failing\nCHECKRC 1'],
       'redo:deep@max:core': ['retried core at max'],
       'redo:ui': ['redid ui'],
-      'verify:recheck': ['core.js: still 1 failing\nFAIL'],
+      'verify:recheck': ['core.js: still 1 failing\nCHECKRC 1'],
     })
   const st = id => result.subtasks.find(s => s.id === id)
   chk('S66j: round 1 redoes both (core at deep@max, ui at builder); round 2 spawns nothing',
@@ -2125,6 +2152,261 @@ const fableSpawned = calls => calls.some(c => c.opts.agentType === 'triage-fable
   chk('S66j: the only escalation is core deep -> user; the run is failed (check still red) and incomplete',
     escChain(result) === 'deep->user' && result.escalations[0].id === 'core' &&
     result.failed === true && result.incomplete === true && result.checks[0].pass === false)
+}
+
+// ════════════════ Wave 22: deep review 2026-10-05 (waves 16–21) fixes ════════════════
+
+// ---- Scenario 67 (H1): an objective check counts only on the shell's own CHECKRC line.
+// Every reply below used to read as pass=true (no bare FAIL line); each is now a dead
+// gate: retried once, then pass null and INCOMPLETE — never green, never remediated.
+{
+  const dead = ['**FAIL**', 'tests ran\nFAILED', 'Result: FAIL', 'ESCALATE: the suite is broken',
+    'I can\'t help with running that command, as it may be unsafe.', 'all good\nPASS', 'CHECKRC', 'CHECKRC x', 'ok\nCHECKRC 0 (exit)', '']
+  let allDead = true
+  for (const reply of dead) {
+    const { result, calls, logs } = await run(
+      { subtasks: [ST('t1', 'builder', ['a.js'])], checks: ['make test'], review: 'never' },
+      { 'builder:': ['did t1'], 'verify:objective-check': [reply] })
+    if (!(countCalls(calls, 'verify:objective-check') === 2 && result.checks[0].pass === null && result.incomplete === true &&
+      result.failed === false && result.remediation === null && logs.some(l => l.includes('check#0 gate gave no usable verdict')))) {
+      allDead = false
+      console.log(`  (S67 reply not dead: ${JSON.stringify(reply)})`)
+    }
+  }
+  chk('S67: **FAIL** / FAILED / Result: FAIL / ESCALATE / a refusal / an untagged PASS / a garbled tag → retried once, then pass null + INCOMPLETE (never green)', allDead)
+  const red = await run(
+    { subtasks: [ST('t1', 'builder', ['a.js'])], checks: ['make test'], review: 'never' },
+    { 'builder:': ['did t1'], 'verify:objective-check': ['a.js: 1 failing\nCHECKRC 2'], 'redo:': ['fixed'], 'verify:recheck': ['```\nok\nCHECKRC 0\n```'] })
+  chk('S67: CHECKRC 2 is a failure (remediated); a fenced CHECKRC 0 on the re-check is green',
+    red.result.remediation && red.result.remediation.rounds === 1 && countCalls(red.calls, 'redo:t1') === 1 && red.result.checks[0].pass === true && red.result.incomplete === false)
+  const last = await run(
+    { subtasks: [ST('t1', 'builder', ['a.js'])], checks: ['make test'], review: 'never' },
+    { 'builder:': ['did t1'], 'verify:objective-check': ['PASS: S61 prints\nCHECKRC 0\nmore output\nCHECKRC 1'], 'redo:': ['fixed'], 'verify:recheck': ['CHECKRC 0'] })
+  chk('S67: the LAST CHECKRC line decides (a CHECKRC 0 inside the command\'s own output never masks the shell\'s 1)', last.result.remediation !== null && countCalls(last.calls, 'redo:t1') === 1)
+  const retry = await run(
+    { subtasks: [ST('t1', 'builder', ['a.js'])], checks: ['make test'], review: 'never' },
+    { 'builder:': ['did t1'], 'verify:objective-check': ['Result: PASS', 'ok\nCHECKRC 0'] })
+  chk('S67: an unusable first reply, then a tagged one → retried once and green', countCalls(retry.calls, 'verify:objective-check') === 2 &&
+    retry.result.checks[0].pass === true && retry.result.incomplete === false)
+  const p = retry.calls.find(c => c.label === 'verify:objective-check#0').prompt
+  chk('S67: the check runs as ONE command: the plan\'s command braced, its tail, then the shell\'s CHECKRC line',
+    p.includes('out=$( { { make test ; } ; } 2>&1 ); rc=$?;') && p.includes('tail -n 40; echo "CHECKRC $rc"') && p.includes('from the repo root'))
+}
+
+// ---- Scenario 68 (H2): the reviewer counts only on a positive PASS / FIX / ESCALATE.
+{
+  const fix = await run(
+    { subtasks: [ST('t1', 'builder', ['a.js'])] },
+    { 'builder:': ['did t1'], 'verify:reviewer': ['**FIX**: a.js drops the edge case'], 'redo:': ['fixed'], 'verify:re-review': ['pass — looks right now'] })
+  chk('S68: **FIX** is a FIX (remediated), and a lowercase "pass" on the re-review is PASS',
+    fix.result.remediation && countCalls(fix.calls, 'redo:t1') === 1 && fix.result.review.verdict === 'PASS' && fix.result.incomplete === false && fix.result.failed === false)
+  let allDead = true
+  for (const reply of ['Looks fine to me.', 'I cannot review this repository.', 'PASSED', 'Verdict: PASS', '']) {
+    const { result, calls } = await run({ subtasks: [ST('t1', 'builder', ['a.js'])] }, { 'builder:': ['did t1'], 'verify:reviewer': [reply] })
+    if (!(countCalls(calls, 'verify:reviewer') === 2 && result.review.ran === true && result.review.verdict === null &&
+      result.incomplete === true && result.failed === false && result.remediation === null)) { allDead = false; console.log(`  (S68 reply not dead: ${JSON.stringify(reply)})`) }
+  }
+  chk('S68: prose, a refusal, PASSED, "Verdict: PASS" or an empty reply → reviewer retried once, then verdict null + INCOMPLETE (never PASS)', allDead)
+  const again = await run({ subtasks: [ST('t1', 'builder', ['a.js'])] }, { 'builder:': ['did t1'], 'verify:reviewer': ['Let me look.', 'PASS'] })
+  chk('S68: a prose reply then PASS → retried once, PASS, complete', countCalls(again.calls, 'verify:reviewer') === 2 && again.result.review.verdict === 'PASS' && again.result.incomplete === false)
+}
+
+// ---- Scenario 69 (H3): args.repo — checks, reviewer, cross-review, briefs and WORKDIR
+// all name the plan's tree; bakeoff.repo defaults to it; a disagreeing pair throws.
+{
+  const R = '/w/tree'
+  const { result, calls } = await run(
+    { repo: `${R}/`, subtasks: [LV('c', 'builder', ['c.js']), LV('x', 'builder', ['x.js'], { vendor: 'codex' })], checks: ['make test'], review: 'always', crossReview: true },
+    { 'builder:': ['did c'], 'codex:': [EXT('did x')], ...GREEN, 'verify:reviewer': ['PASS'], 'verify:cross-review:codex': ['CROSS-REVIEW (codex · review · exit 0)\nno issues'] })
+  const chkP = calls.find(c => c.label === 'verify:objective-check#0').prompt
+  const revP = calls.find(c => c.label === 'verify:reviewer').prompt
+  const xrP = calls.find(c => c.label === 'verify:cross-review:codex').prompt
+  const extP = calls.find(c => c.opts.agentType === 'triage-external').prompt
+  const workP = calls.find(c => c.label === 'builder:c').prompt
+  chk('S69: checks run as cd <repo> && { cmd }', chkP.includes(`out=$( { cd '${R}' && { make test ; } ; } 2>&1 )`) && !chkP.includes('from the repo root'))
+  chk('S69: the reviewer reads git -C <repo> under a Repository: header', revP.startsWith(`Repository: ${R}\n`) &&
+    revP.includes(`\`git -C '${R}' status\``) && revP.includes(`\`git -C '${R}' diff\``))
+  chk('S69: the cross-review brief: VENDOR, MODE=review, Repository:, git -C <repo>', xrP.startsWith(`VENDOR=codex\nMODE=review\nRepository: ${R}\n`) &&
+    xrP.includes(`\`git -C '${R}' diff\``))
+  chk('S69: the external header carries WORKDIR=<repo>; worker briefs open with Repository:',
+    extP.split('\n')[0] === `VENDOR=codex LEVEL=builder WORKDIR=${R}` && workP.startsWith(`Repository: ${R} `) && extP.includes(`Repository: ${R} `))
+  chk('S69: the run is otherwise unchanged (green, complete)', result.failed === false && result.incomplete === false)
+  const bo = await run(
+    { repo: R, subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO({}, { repo: undefined }) },
+    { ...CLEAN, 'bakeoff:dirty:': [DIRTY({ sessionTop: R, repoTop: R })], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
+  const dP = bo.calls.find(c => c.label === 'bakeoff:dirty:t1').prompt
+  chk('S69: bakeoff.repo defaults to args.repo: the compare and the apply target it, the clean check reads args.repo\'s top level',
+    bo.workflows.length === 1 && bo.workflows[0].args.repo === R && bo.result.bakeoffs[0].applied === 'planned' &&
+    bo.calls.find(c => c.label === 'bakeoff:apply:t1').prompt.includes(`--repo '${R}'`) &&
+    dP.includes(`sessionTop %s\\n' "$(t=$(git -C '${R}' rev-parse --show-toplevel`) && !dP.includes('$(git rev-parse'))
+  const same = await run(
+    { repo: R, subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO({}, { repo: `${R}/` }) },
+    { ...CLEAN, 'bakeoff:dirty:': [DIRTY({ sessionTop: R, repoTop: R })], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
+  chk('S69: args.repo and the same bakeoff.repo (trailing slash) are accepted', same.workflows.length === 1)
+  const diff = await runExpectingThrow({ repo: R, subtasks: [BST('t1', 'builder')], checks: ['make test'], bakeoff: BO() })
+  chk('S69: args.repo and a different bakeoff.repo → throws before any spawn', diff.threw && /name different trees/.test(diff.message) && diff.calls.length === 0)
+  const rel = await runExpectingThrow({ repo: 'w/tree', subtasks: [ST('t1', 'builder', ['a.js'])] })
+  chk('S69: a relative args.repo → throws before any spawn', rel.threw && /args\.repo must be an absolute path/.test(rel.message) && rel.calls.length === 0)
+  const none = await runExpectingThrow({ subtasks: [BST('t1', 'builder')], checks: ['make test'], bakeoff: BO({}, { repo: undefined }) })
+  chk('S69: no args.repo and no bakeoff.repo → throws', none.threw && /args\.bakeoff\.repo must be/.test(none.message))
+  const unset = await run({ subtasks: [ST('t1', 'builder', ['a.js'])], checks: ['make test'], review: 'always' },
+    { 'builder:': ['did t1'], ...GREEN, 'verify:reviewer': ['PASS'] })
+  chk('S69: args.repo unset → no Repository: header, plain git, checks from the repo root (today\'s behaviour)',
+    !unset.calls.some(c => c.prompt.includes('Repository:')) && unset.calls.find(c => c.label === 'verify:reviewer').prompt.includes('`git status`') &&
+    !unset.calls.some(c => c.prompt.includes('WORKDIR=')))
+}
+
+// ---- Scenario 70 (M2): a build reply that wrote nothing is not work — exit 6, CHANGED
+// FILES: none, or no exit 0 in the header → the same-level Claude fallback.
+{
+  const cases = [
+    ['EXTERNAL (codex · build · exit 6)\nCHANGED FILES: none\nNO SENTINEL\npatch at /tmp/p', 'exit 6'],
+    ['EXTERNAL (codex · build · exit 0)\nCHANGED FILES: none\nDONE exit=0', 'CHANGED FILES: none'],
+    ['EXTERNAL (codex · build)\nCHANGED FILES: x.js', 'no exit code'],
+  ]
+  let ok = true
+  for (const [reply, why] of cases) {
+    const { result, calls } = await run(
+      { subtasks: [LV('x', 'builder', ['x.js'], { vendor: 'codex' })], checks: ['make test'], review: 'never' },
+      { 'codex:builder:': [reply], 'builder←codex:': ['did x on claude'], ...GREEN })
+    const u = result.external.codex.unavailable
+    if (!(countCalls(calls, 'builder←codex:x') === 1 && statusOf(result, 'x') === 'ok' && JSON.stringify(result.external.codex.ranExternally) === '[]' &&
+      u.length === 1 && u[0].kind === 'unavailable' && u[0].reason.includes(why) &&
+      result.escalations.some(e => e.id === 'x' && e.from === 'codex:builder' && e.to === 'builder'))) { ok = false; console.log(`  (S70 case failed: ${why})`) }
+  }
+  chk('S70: exit 6 / CHANGED FILES: none / no exit code → unavailable, re-run on Claude builder, never in ranExternally', ok)
+  const work = await run(
+    { subtasks: [LV('x', 'builder', ['x.js'], { vendor: 'codex' })], checks: ['make test'], review: 'never' },
+    { 'codex:builder:': ['EXTERNAL (codex · build · exit 0)\nCHANGED FILES: x.js\nDONE exit=0'], ...GREEN })
+  chk('S70: exit 0 with a changed file is work (no fallback)', countCalls(work.calls, 'builder←codex:') === 0 && JSON.stringify(work.result.external.codex.ranExternally) === '["x"]')
+}
+
+// ---- Scenario 71 (M11): cross-review findings need a positive CROSS-REVIEW ( header.
+{
+  const xr = async reply => run(
+    { subtasks: [LV('t1', 'builder', ['a.js'])], checks: ['make test'], review: 'never', crossReview: true },
+    { 'builder:': ['did t1'], ...GREEN, 'verify:cross-review:codex': [reply] })
+  const ref = await xr('Checking the brief.\nREFUSED: this repository is excluded from cross-vendor agents')
+  chk('S71: a refusal after a preamble → ran false, no findings, refused names codex with the reason',
+    ref.result.crossReview.ran === false && Object.keys(ref.result.crossReview.findings).length === 0 &&
+    ref.result.crossReview.refused.length === 1 && ref.result.crossReview.refused[0].vendor === 'codex' && /excluded/.test(ref.result.crossReview.refused[0].reason) &&
+    ref.logs.some(l => l.startsWith('⚠ Cross-review produced no findings from codex (refused')))
+  const un = await xr('UNAVAILABLE: ext-run.sh exited 4 (empty result)')
+  chk('S71: UNAVAILABLE → ran false, unavailable kind unavailable', un.result.crossReview.ran === false &&
+    un.result.crossReview.unavailable[0].kind === 'unavailable' && un.result.crossReview.refused.length === 0)
+  const bare = await xr('codex says core.js looks wrong')
+  chk('S71: a reply with no CROSS-REVIEW ( header → unavailable (malformed), never findings', bare.result.crossReview.ran === false &&
+    bare.result.crossReview.unavailable[0].kind === 'malformed' && !('codex' in bare.result.crossReview.findings))
+  const none = await xr(null)
+  chk('S71: no reply → unavailable (no-reply)', none.result.crossReview.unavailable[0].kind === 'no-reply')
+  const good = await xr('CROSS-REVIEW (codex · review · exit 0)\nEXTERNAL (fake)\nfinding: a.js')
+  chk('S71: a CROSS-REVIEW ( header → findings, ran true; the brief carries MODE=review on line 2',
+    good.result.crossReview.ran === true && good.result.crossReview.findings.codex.includes('finding: a.js') &&
+    good.calls.find(c => c.label === 'verify:cross-review:codex').prompt.split('\n')[1] === 'MODE=review')
+}
+
+// ---- Scenario 72 (M3): subtask files are normalised to repo-relative at entry; with a
+// bake-off on, a path that cannot be made repo-relative throws before any spawn.
+{
+  const norm = await run(
+    { subtasks: [LV('t1', 'builder', ['./src/a.js', '/r/repo/src//b.js', 'src/c/'], { checks: ['node t.mjs'] })], checks: ['make test'], review: 'never', bakeoff: BO() },
+    { ...CLEAN, ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' })).catch(e => ({ threw: String(e && e.message) }))
+  const { workflows = [], calls = [] } = norm
+  chk('S72: ./ and absolute-under-repo paths reach the compare and the clean check repo-relative',
+    !norm.threw && workflows.length === 1 && JSON.stringify(workflows[0].args.files) === '["src/a.js","src/b.js","src/c"]' &&
+    calls.find(c => c.label === 'bakeoff:dirty:t1').prompt.includes(`status --porcelain -- 'src/a.js' 'src/b.js' 'src/c'`))
+  for (const [f, what] of [['/elsewhere/x.js', 'absolute elsewhere'], ['../x.js', 'a .. component'], ['/r/repo', 'the repo itself']]) {
+    const t = await runExpectingThrow({ subtasks: [LV('t1', 'builder', [f], { checks: ['node t.mjs'] })], checks: ['make test'], bakeoff: BO() })
+    chk(`S72: with a bake-off, ${what} (${f}) → throws before any spawn`, t.threw && /files must be repo-relative/.test(t.message) && t.calls.length === 0)
+  }
+  const plain = await run({ subtasks: [ST('t1', 'builder', ['/abs/x.js', './y.js'])], checks: ['make test'], review: 'never' },
+    { 'builder:': ['did t1'], ...GREEN })
+  chk('S72: without a bake-off or repo, an absolute file is kept (only ./ is dropped)', plain.calls.find(c => c.label === 'builder:t1').prompt.includes('Relevant files: /abs/x.js, y.js'))
+}
+
+// ---- Scenario 73 (X1): a Fable-family model is never a bake-off candidate at ANY level,
+// planned or challenger, with or without noFable.
+{
+  const FABLE = 'claude-fable-5-1'
+  for (const nf of [false, true]) {
+    const ch = await run(
+      { subtasks: [BST('core', 'deep')], checks: ['make test'], review: 'never', noFable: nf,
+        bakeoff: BO({ challengerMix: { codex: 0, claude: 1 }, challengers: { deep: { claude: [{ model: FABLE, effort: 'high' }], codex: [] } } }) },
+      { ...CLEAN, 'deep:': ['did core'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
+    chk(`S73: a deep Fable challenger is never offered (noFable ${nf}) → no-challenger, no compare`,
+      ch.workflows.length === 0 && ch.result.bakeoffSkipped[0].reason === 'no-challenger' && countCalls(ch.calls, 'deep:core') === 1)
+    const cfg = BO({}, {})
+    cfg.config.levels.deep.claude = { model: FABLE, effort: 'high' }
+    const pl = await run(
+      { subtasks: [BST('core', 'deep')], checks: ['make test'], review: 'never', noFable: nf, bakeoff: cfg },
+      { ...CLEAN, 'deep:': ['did core'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
+    chk(`S73: a planned deep subtask whose level model is Fable-family is never sampled (noFable ${nf}) → planned-fable`,
+      pl.workflows.length === 0 && pl.result.bakeoffSkipped[0].reason === 'planned-fable')
+  }
+  const mix = await run(
+    { subtasks: [BST('core', 'deep')], checks: ['make test'], review: 'never',
+      bakeoff: BO({ challengerMix: { codex: 0, claude: 1 }, challengers: { deep: { claude: [{ model: FABLE, effort: 'high' }], codex: [{ model: 'gpt-6-astra', effort: 'high' }] } } }) },
+    { ...CLEAN, ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
+  chk('S73: with a Fable entry and a codex one, the codex one is drawn', mix.workflows.length === 1 && mix.workflows[0].args.candidates[1].model === 'gpt-6-astra')
+}
+
+// ---- Scenario 74 (L8): a round 1 that re-ran nothing does not re-verify.
+{
+  const { result, calls } = await run(
+    { subtasks: [LV('core', 'deep', ['core.js'], { effort: 'max' })], review: 'always', noFable: true },
+    { 'deep:': ['did core'], 'verify:reviewer': ['ESCALATE: core.js approach wrong'] })
+  chk('S74: noFable stop in round 1 → nothing re-run, no re-review, the round-1 verdict stands; needs-user',
+    countCalls(calls, 'redo:') === 0 && countCalls(calls, 'verify:re-review') === 0 && countCalls(calls, 'verify:reviewer') === 1 &&
+    result.review.verdict === 'ESCALATE' && JSON.stringify(result.needsUser) === '["core"]' && result.incomplete === true)
+}
+
+// ---- Scenario 75 (M8 / M6 / M12): the ingest result is recorded at RUN time (ts from
+// the clean check, null models resolved from args.bakeoff.config); a pass with no real
+// in-scope diff is ingested invalid; the clean check is ONE strict tagged reply.
+{
+  const cfg = BO()
+  const { result } = await run(
+    { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: cfg },
+    { ...CLEAN, 'bakeoff:dirty:': [DIRTY({ now: '2026-10-05T09:08:07Z' })], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
+  const r = result.ingest[0].result
+  const want = cfg.config.levels.builder.claude
+  chk('S75 (M8): ingest result ts = the clean check\'s run-time clock', r.ts === '2026-10-05T09:08:07Z')
+  chk('S75 (M8): the planned Claude candidate (model null from the compare) carries the config\'s model/effort, modelFrom tiers; the challenger keeps its own',
+    r.candidates[0].model === want.model && r.candidates[0].effort === (want.effort || null) && r.candidates[0].modelFrom === 'tiers' &&
+    r.candidates[1].model === 'gpt-6-sol' && r.candidates[1].modelFrom === null)
+  const noop = await run(
+    { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
+    { ...CLEAN, 'builder:': ['did it'], ...GREEN }, NO_BUDGET,
+    CMP({ planned: 'pass', challenger: 'pass' }, { cand: { planned: { diffstat: null }, challenger: { outOfScope: true } } }))
+  chk('S75 (M6): an empty-diff pass and an out-of-scope pass are ingested invalid, never pass (and nothing applied)',
+    noop.result.ingest.length === 1 && noop.result.ingest[0].result.candidates.every(c => c.status === 'invalid') && noop.result.bakeoffs[0].applied === null)
+  const fails = await run(
+    { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
+    { ...CLEAN, 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'fail', challenger: 'fail' }, { cand: { planned: { diffstat: null } } }))
+  chk('S75 (M6): a fail stays a fail in the ingest', fails.result.ingest[0].result.candidates.every(c => c.status === 'fail'))
+  // M12: strict parse — every malformed reply is retried once, then the sample is skipped.
+  const bad = [
+    'CLEANCHECK rc 0\nCLEANCHECK sessionTop /r/repo\nCLEANCHECK repoTop /r/repo\nCLEANCHECK now 2026-10-05T12:00:00Z',            // no end
+    `${DIRTY_OK}\nCLEANCHECK rc 0`,                                                                                             // end not last, rc twice
+    DIRTY_OK.replace('CLEANCHECK rc 0', 'CLEANCHECK rc null'),                                                                   // rc not a status
+    DIRTY_OK.replace('2026-10-05T12:00:00Z', 'today'),                                                                          // now not ISO
+    DIRTY_OK.replace('CLEANCHECK repoTop /r/repo', 'CLEANCHECK repoTop r/repo'),                                                 // relative top
+    'porcelain: ""\nrc: 0\nsessionTop: /r/repo',                                                                                // a paraphrase
+  ]
+  let strict = true
+  for (const reply of bad) {
+    const x = await run(
+      { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
+      { ...CLEAN, 'bakeoff:dirty:': [reply], 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
+    if (!(x.workflows.length === 0 && countCalls(x.calls, 'bakeoff:dirty:t1') === 2 && x.result.bakeoffs[0].reason === 'dirty check unavailable' &&
+      countCalls(x.calls, 'builder:t1') === 1 && x.logs.some(l => l.includes('clean check gave no usable reply')))) { strict = false; console.log(`  (S75 lax on: ${JSON.stringify(reply.slice(0, 60))})`) }
+  }
+  chk('S75 (M12): a clean-check reply missing/duplicating a tag, a non-status rc, a bad time, a relative top or a paraphrase → retried once, then skipped (dirty check unavailable)', strict)
+  const second = await run(
+    { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
+    { ...CLEAN, 'bakeoff:dirty:': ['Sure! Running it now.', `Output:\n\`\`\`\n${DIRTY_OK}\n\`\`\``], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
+  chk('S75 (M12): a chatty first reply, then the tagged stdout (fenced) → retried once and sampled', second.workflows.length === 1 && countCalls(second.calls, 'bakeoff:dirty:t1') === 2 &&
+    second.result.bakeoffs[0].applied === 'planned')
 }
 
 console.log('')
