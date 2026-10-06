@@ -451,8 +451,8 @@ PYR="$T/pyrepo"
 mkdir -p "$PYR/src/pkg" "$PYR/flat"
 git -c init.defaultBranch=main init -q "$PYR"
 git -C "$PYR" config user.email pc@localhost; git -C "$PYR" config user.name pc
-printf '.venv/\n' > "$PYR/.gitignore"; printf 'WHO = "source"\n' > "$PYR/src/pkg/__init__.py"; printf '.venv\n' > "$PYR/.triage-stage-links"
-printf 'WHO = "source"\n' > "$PYR/flat/__init__.py"
+printf '.venv/\n' > "$PYR/.gitignore"; printf 'WHO = "source"  # triage-layer test fixture\n' > "$PYR/src/pkg/__init__.py"; printf '.venv\n' > "$PYR/.triage-stage-links"
+printf 'WHO = "source"  # triage-layer test fixture\n' > "$PYR/flat/__init__.py"
 git -C "$PYR" add -A && git -C "$PYR" commit -qm init
 PYOK=0
 if command -v python3 >/dev/null 2>&1 && python3 -m venv --without-pip "$PYR/.venv" >/dev/null 2>&1; then
@@ -464,7 +464,7 @@ chk "P20f fixture: a real venv (python3 -m venv) whose editable .pth makes 'impo
 if [ "$PYOK" -eq 1 ]; then
   PYSUM=$(cksum < "$PYR/src/pkg/__init__.py")
   PYCHECK='.venv/bin/python -B -c "import pkg, sys; print(\"imported\", pkg.WHO, pkg.__file__); sys.exit(0 if pkg.WHO == \"worktree\" else 3)"'
-  ( s="$T/pyscratch"; git clone -q "$PYR" "$s"; printf 'WHO = "worktree"\n' > "$s/src/pkg/__init__.py"; printf 'WHO = "worktree"\n' > "$s/flat/__init__.py"
+  ( s="$T/pyscratch"; git clone -q "$PYR" "$s"; printf 'WHO = "worktree"  # triage-layer test fixture\n' > "$s/src/pkg/__init__.py"; printf 'WHO = "worktree"  # triage-layer test fixture\n' > "$s/flat/__init__.py"
     git -C "$s" diff --binary > "$T/pyfix.patch"; git -C "$s" checkout -q -- .; git -C "$s" rm -q src/pkg/__init__.py; git -C "$s" diff --cached --binary > "$T/pydel.patch"; rm -rf "$s" )
   # Why it is refused: linked by hand, the venv imports the SOURCE repo's package.
   PW="$T/pyhand"
