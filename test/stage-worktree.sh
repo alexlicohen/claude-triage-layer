@@ -590,7 +590,7 @@ run_sw cleanup --repo "$KR" --dir "$D12"
 BR="$T/bind-repo"
 mkrepo "$BR"
 printf '.venv/\ncache/\nvenv/\next\ntools/\n' > "$BR/.gitignore"
-mkdir -p "$BR/src/pkg" "$BR/cache"; printf 'WHO = "source"\n' > "$BR/src/pkg/__init__.py"; printf 'c\n' > "$BR/cache/x"
+mkdir -p "$BR/src/pkg" "$BR/cache"; printf 'WHO = "source"  # triage-layer test fixture\n' > "$BR/src/pkg/__init__.py"; printf 'c\n' > "$BR/cache/x"
 printf '.venv\ncache\n' > "$BR/.triage-stage-links"
 git -C "$BR" add .gitignore src .triage-stage-links && git -C "$BR" commit -qm one
 git -C "$BR" add -f cache/x && git -C "$BR" commit -qm cache-tracked
