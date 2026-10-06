@@ -510,7 +510,7 @@ if [ "$PYOK" -eq 1 ]; then
   chk "P23b (the bug) a self-contained venv with an inherited PYTHONPATH=<repo>/src imports a package the patch deleted" '[ "$HAND_RC" -eq 0 ]'
   OUT=$(PYTHONPATH="$PYR/src" "$PC" --repo "$PYR" --base HEAD --check "$PKGCHECK" "$T/pydel.patch" 2>"$T/err"); RC=$?
   chk "P23b patch-check with PYTHONPATH=<repo>/src inherited: the deleted package is NOT imported (the check fails), never masked by the source repo" \
-    '[ "$RC" -eq 0 ] && [ "$(field 1 .applies)" = true ] && [ "$(field 1 .rc)" != 0 ] && [ "$(field 1 .rc)" != null ] && ! field 1 .tail | grep -q "imported" && field 1 .tail | grep -q "No module named"'
+    '[ "$RC" -eq 0 ] && [ "$(field 1 .applies)" = true ] && [ "$(field 1 .rc)" != 0 ] && [ "$(field 1 .rc)" != null ] && ! field 1 .tail | grep -qE "^imported /" && field 1 .tail | grep -q "No module named"'
 fi
 
 # --- P21: repeated --check — && semantics, per-check rcs, and the pristine base
