@@ -558,39 +558,72 @@ need LibreOffice (grant-forge's docx rendering), so it is deliberately not done.
 ## `patch-check.sh` — the independent grader of a bake-off
 
 ```
-patch-check.sh --repo DIR --base REV --check CMD [--overlay DIR] [--timeout SECS]
-               [--env-map FILE] [--summary --tail-dir DIR] PATCH...
-patch-check.sh --print-env --check CMD [--env-map FILE]
+patch-check.sh --repo DIR --base REV --check CMD [--check CMD2 ...] [--overlay DIR]
+               [--timeout SECS] [--env-map FILE] [--baseline-on RCS] [--summary --tail-dir DIR] PATCH...
+patch-check.sh --print-env --check CMD [--check CMD2 ...] [--env-map FILE]
 ```
 
 `workflows/triage-compare.js` runs one brief on several candidates (Claude levels, codex),
 each writing a patch. The candidates' own claims about their checks are never the grade; this
-script is. When the brief carries several `checks`, `triage-compare.js` joins them into ONE CMD
-with each check in its own `bash -c '...'`, `&&`-chained — so one check's own `||` fallback can
-never mask a later check's failure, and CMD (below) still runs as a single string. For each
-PATCH, in argument order:
+script is. `--check` is repeatable: `triage-compare.js` passes each of the brief's `checks` as
+its own `--check`, and the GRADED run is ONE command, `bash -c 'A' && bash -c 'B'` (each check
+single-quoted; one check runs as written) — the very command the candidates are shown — in ONE
+process group under ONE `--timeout`: a check may rely on what an earlier one left running (a
+server it started) until the run ends, and one check's own `||` fallback can never mask an
+earlier check's failure. Checks run one by one only in `--baseline-on`'s classification pass
+(below). For each PATCH, in argument order:
 
-1. `git worktree add --detach` a fresh worktree of DIR at REV under a temp dir (hooks off);
+1. `git worktree add --detach` a fresh worktree of DIR at REV under a temp dir (hooks off),
+   then `stage-worktree.sh link --base <the REV's sha>` on it (**Stage links** below) to learn
+   the set L of links a staged worktree gets, and removes those symlinks again;
 2. `git apply --binary`, falling back to `git apply --3way` (a conflict is `applies:false`);
-   an **empty** patch file applies trivially and is still checked;
-3. copies `--overlay DIR` into the worktree after the patch: hidden tests the candidates
-   never saw, kept out of the diffstat;
-4. runs CMD (`bash -c`) from the worktree root under a wall-clock watchdog (default 600s;
-   over time = rc 124), with the mapped `$PARITY_` tool variables exported (see **Parity env
-   map** below) and `XDG_CACHE_HOME`, `TMPDIR` and `GRANTFORGE_CACHE_DIR` all pointed at a fresh
+   an **empty** patch file applies trivially and is still checked; diffstat and `files` are
+   taken here, with no link present;
+3. copies `--overlay DIR` into the worktree after the patch, still with no link present: hidden
+   tests the candidates never saw, kept out of the diffstat. Never copied (`overlay-failed`, the
+   check not run) when the overlay holds a linked path, or when an entry's destination — or a
+   directory above it — is a symlink the patch made (GNU `cp` writes THROUGH a destination
+   symlink, possibly out of the worktree);
+4. `stage-worktree.sh link` again, right before the checks: a result other than L means the
+   patch occupies a linked path — rejected (`applies:false`, `rc:null`, tail `REJECTED …`);
+5. runs the graded command from the worktree root under a wall-clock watchdog (default 600s;
+   over time = rc 124), with `PYTHONPATH`, `PYTHONHOME`, `PYTHONSTARTUP`, `NODE_PATH` and
+   `PERL5LIB` unset (`SOURCE_BOUND_ENV`, the one list: inherited, they could import the source
+   repo's code — a module the patch deleted would still load), the mapped `$PARITY_` tool
+   variables exported (see
+   **Parity env map** below) and `XDG_CACHE_HOME`, `TMPDIR` and `GRANTFORGE_CACHE_DIR` all pointed at a fresh
    per-patch dir beside the grading worktree (`<tmp root>/cache-<n>`, removed with it) — a check
    never refreshes a real user cache. grantforge honours `GRANTFORGE_CACHE_DIR` (its
    `config.cache_dir()`, whose default is `~/Library/Caches/grant-forge`, not XDG); the other two
    cover tools that follow XDG or `$TMPDIR`. (An old grant-forge base that still wrote its cache
    inside the package dir writes into the grading worktree, which is discarded.);
-5. removes the worktree and its `.git/worktrees` bookkeeping (`cleanup_wt()`, also on every
+6. removes the worktree and its `.git/worktrees` bookkeeping (`cleanup_wt()`, also on every
    exit path via the trap).
 
 It prints one JSON line per patch on stdout:
 
 ```json
-{"patch":"/abs/x.patch","applies":true,"rc":0,"diffstat":"1 file changed, 2 insertions(+)","tail":"<last 20 lines of check output>"}
+{"patch":"/abs/x.patch","applies":true,"rc":0,"rcs":[0,0],"failedCheck":null,"diffstat":"1 file changed, 2 insertions(+)","tail":"<last 20 lines of check output>"}
 ```
+
+`rc` is the graded run's exit (0 when all pass). `rcs` (each check's rc in order up to the one
+that failed) and `failedCheck` (its 0-based index, null when all passed) are known with one
+check, or when all passed (`rcs` all 0); with several checks and a failure they come only from
+the `--baseline-on` rerun below, else `rcs` is `null` (which check failed is unknown). `rcs` is
+`[]` when no check ran.
+
+`--baseline-on RCS` (a comma-separated list of exit codes; `triage-compare.js` passes `126,127`,
+"the check could not RUN") is the classification pass, the only place checks run one by one
+(each its own `bash -c`, process group and `--timeout`). When a patch's graded run exits with
+one of them: (a) with several checks the patch is re-graded check by check, stopping at the
+first failure, to find WHICH check it was — `rcs`/`failedCheck` are kept only when that rerun
+fails with the same rc, else they stay `null` (a check that needed an earlier one's background
+process, a flaky check); (b) the result gets `"baseRc"` — THAT check's rc on the **pristine**
+base — and `"baseRcs"`, every check's rc there. The base is an empty patch through the same
+steps (links, overlay), run once per invocation, on first need, with EVERY check run even past
+a failure. Both are `null` when the base could not be graded or the failing check is unknown.
+The tail gains a line for each. The verdict is `triage-compare`'s (below). Without the flag
+there is never a `baseRc`.
 
 `applies:false` means `rc:null` and the check never ran; `tail` says why (including "patch file
 not found"). `"error":"overlay-failed"` (with `applies:true, rc:null`) means the patch applied
@@ -598,16 +631,19 @@ but the `--overlay` copy failed, so the hidden tests are missing and the check w
 patch is ungradable — `triage-compare.js` maps it to `invalid`, `parity-suite.sh verify-task`
 to "neither base-fails nor solution-passes"; never a pass or a fail. `"error":"harness"` (with
 `applies:false, rc:null`) means the GRADER itself failed (the patch file is missing, no temp
-dir, no worktree) — also ungradable, and never the candidate's fault; `error` appears only in
-these two cases. Exit 0 = every patch was reported; exit 2 = usage error (bad flag, a flag with
-no value, not a repo, unknown REV, an unmapped `$PARITY_` variable), nothing ran. It never
-touches the caller's working tree, index or HEAD.
+dir, no worktree, a stage-link step that failed, or whose output was not exactly one well-formed
+result — empty, two objects, a malformed member, a non-null `env` from an outdated owner) — also ungradable, and never the candidate's
+fault; `error` appears only in these two cases. Exit 0 = every patch was reported; exit 2 = usage
+error (bad flag, a flag with no value, not a repo, unknown REV, an unmapped `$PARITY_` variable,
+a malformed `--baseline-on`), nothing ran. It never applies a patch or copies an overlay into the
+caller's working tree, index or HEAD; what the CHECK writes through a stage link is the
+exception (next section) — detected by the bake-off's leakcheck, not prevented.
 
 `--summary` (requires `--tail-dir DIR`, an absolute path, created if needed) prints ONE line
 instead of one JSON object per patch:
 
 ```
-PATCHCHECK {"base":"<sha>","results":[{"patch","applies","rc","diffstat","files","filesTruncated","tailFile"[,"error"]},...]}
+PATCHCHECK {"base":"<sha>","results":[{"patch","applies","rc","rcs","failedCheck","diffstat","files","filesTruncated","tailFile"[,"error"][,"baseRc","baseRcs"]},...]}
 ```
 
 — so a relay copying the line never sees candidate-written check output. Each patch's tail is
@@ -616,7 +652,56 @@ written to `--tail-dir DIR/<n>.tail` (`n` = its argument position) and `tailFile
 computed **before** the overlay. `triage-compare.js` parses the `PATCHCHECK ` line, cross-checks
 it against `stage-worktree.sh`'s `leakcheck --line` output (sha, patch order, status/rc) and
 treats a missing, garbled, or mismatched line the same as `error:"harness"` — invalid, never a
-pass or a fail.
+pass or a fail. It grades a 126/127 as `check-environment` only when the result pins the
+failing check (`failedCheck`; `rcs` 0 before it, `rc` there) and the base's checks ran the same
+way up to it — its first failing check is that check, with the same rc (`baseRcs[0..f]` equal to
+`rcs`). The base running that check (any other rc) makes it the candidate's `fail`; the base
+failing it with 126/127 but differently before it (base `[1,127]`, patch `[0,127]`: a failed
+prerequisite on the base) is `INCONCLUSIVE` — `invalid`, never booked as pass or fail, not
+`check-environment`. Unpinned, or no usable `baseRcs`: ungradable.
+
+### Stage links — the grading worktree gets the candidates' toolchain
+
+A repo that commits a `.triage-stage-links` (see `stage-worktree.sh` below; e.g. `.venv`) gets
+its gitignored toolchain symlinked into every staged worktree — and, through the same owner
+(`stage-worktree.sh link --base <sha>`: the grants read at the bake-off's base sha, refusal
+rules, which paths), into every grading worktree, so a check like
+`.venv/bin/python -m pytest` exits as it did for the candidates instead of 127. Because every
+call reads the grants at the same sha, the candidates and every grading worktree share one
+grant however HEAD moves during the run. No such file at the sha: no links, grading unchanged.
+`stage-worktree.sh` must sit beside `patch-check.sh` (missing = exit 2).
+
+The links exist only while CMD runs. While the patch is applied and the overlay copied there is
+none, because `git apply --3way`'s fallback ("Falling back to direct application") and GNU `cp`
+write THROUGH a symlink they meet — a patch adding `.venv/bin/x`, or an overlay file landing on a
+link, would reach the real repo. Hence steps 1–4 above: L is taken on the pristine worktree, the
+overlay is copied with no link present (and refused when it would pass through a symlink the
+patch made), and a patched worktree that no longer gets exactly L (the patch made `.venv/…` or
+`.venv` itself, so the link is refused as already present) is rejected rather than graded with a
+toolchain the candidate supplied. A patch that un-ignores a linked path is graded normally:
+diffstat and `files` were taken before the links came back. Refusal warnings ("entries NOT
+linked") close the tail. What the CHECK itself writes through a link is **not prevented**: it
+lands in the real repo, as in a staged worktree, and is **detected** afterwards — the bake-off's
+`leakcheck`, which runs after grading, reports it unless `.triage-leakignore` excludes it.
+Removing the worktree never follows a link.
+
+**Links are only for self-contained toolchains.** A linked path that refers back to the repo —
+an editable install (`*.pth`, `*.egg-link`, editable `direct_url.json`, setuptools'
+`__editable__` finder naming the repo), a `.pth` path line, absolute or RELATIVE, that resolves
+into it, or a symlink inside the linked path that does (`node_modules/local ->
+../packages/local`) — would import the SOURCE repo's code, not the patched worktree's: the check
+would grade the wrong code. `stage-worktree.sh` refuses such a link ("imports the source repo:
+…"), so the check exits 127 on the patch and on the base alike (`baseRc`) and `triage-compare`
+grades it `check-environment`. There is **no override**: an environment that points back to the
+source repo can never be isolated by precedence — with `PYTHONPATH=<worktree>/src` first, a
+module the patch DELETED is still imported from the repo through the editable install. (The
+former `.triage-stage-env` override is retired: a committed one is ignored with a one-line
+notice in the tail.) A self-contained venv — no reference to the repo, the project imported
+from the check's cwd, the grading worktree's root — links and grades the worktree's code.
+
+Known limits (not detected; such a toolchain can still grade against the source repo's code):
+- a linked path whose `site-packages` (or another directory inside it) is a symlink to a directory OUTSIDE the repo: the scan does not follow directory symlinks, so a repo-bound `.pth` in the target is never read.
+- an editable finder (`__editable__*`) or other metadata naming the repo through an alias path (`/alias/repo/src`, `/alias/repo` a symlink to the repo): finder mappings are compared textually, not physically resolved like `.pth` lines.
 
 ### Parity env map — no real paths to candidates
 
@@ -640,9 +725,9 @@ verify-task call it). Candidates see the checks with the variables UNEXPANDED; o
 `"selfCheckEnv": true` lets them run the checks themselves (see `parity-suite.sh`) — the
 trade-off: `.parity-env` reveals tool paths, never repo content.
 
-The check runs as its own process group; on timeout the whole tree is killed, and after every
-check `reap_tree` kills anything it left running (a background server, a TERM-ignoring child)
-before the worktree is removed. **Not a sandbox:** the check executes candidate-written code
+The graded run is one process group; on timeout the whole tree is killed, and after the run
+`reap_tree` kills anything it left running (a background server, a TERM-ignoring child) before
+the worktree is removed — a server one check started stays up for the later checks. **Not a sandbox:** the check executes candidate-written code
 (tests, Makefiles) with this user's rights, confined only by the disposable worktree — see the
 `--check` limitation under `ext-run.sh`; a seatbelt profile would block LibreOffice-based checks.
 
@@ -654,8 +739,35 @@ copy failure (`overlay-failed`), an inherited decoy `GIT_DIR`, grandchildren kil
 normal exit), the env map (export with quoting intact, `PARITY_ENV_MAP`, `--env-map` precedence,
 unmapped / missing map / invalid map / bad name => exit 2 before anything runs, a map-free check
 never reading it, `--print-env`) and the per-patch cache dir (all three variables, one dir per
-patch beside its worktree, removed). `qc/mutate.sh` #32, #48, #63 (unmapped variable ignored) and
-#66 (cache env not set) prove those assertions have teeth.
+patch beside its worktree, removed), and the stage links (a venv-dependent check exits 127
+without `.triage-stage-links` and passes with it; refusals unchanged and named in the tail; a
+patch bringing its own `.venv` rejected with the real one untouched; an un-ignoring patch's
+`files` free of the link; an overlay holding a linked path, or meeting a symlink the patch made
+(into the repo, into a linked path, a symlinked directory), `overlay-failed` and never copied; a
+failing, empty, doubled or malformed link step = `harness`; a missing `stage-worktree.sh` = exit
+2; the grants read at the base sha, not a moved HEAD; a committed `.triage-stage-env` ignored
+(nothing exported, a notice in the tail); `--baseline-on`'s `baseRc` (a deleted / un-chmodded
+script: base 0; a missing toolchain: base 127); a REAL Python venv whose editable `.pth` names
+the repo — linked by hand it imports the source repo's package (and a patch that DELETES the
+package still imports, even with `PYTHONPATH=<worktree>/src` first), `patch-check` refuses it
+(127 on patch and base, a committed `.triage-stage-env` changing nothing), while the same venv
+without the `.pth` (self-contained) is linked and the check, run from the worktree root, imports
+the grading worktree's patched code; and repeated `--check` (`&&` semantics, `rcs`,
+`failedCheck`, an empty `--check` = exit 2, and the base run past a failure: a patch fixing
+check 1 and failing check 2 with 127 gets that check's base rc, `baseRcs` `[1,127]` →
+`baseRc` 127, or `[1,0]` → 0); the graded run as ONE `bash -c 'A' && bash -c 'B'` (a later
+`||` masks nothing, single quotes survive; a background process check 1 starts is still up for
+check 2 and reaped after; a failure without `--baseline-on` leaves `rcs` null, a rerun that does
+not reproduce the rc pins nothing); and `SOURCE_BOUND_ENV` (all five variables unset in the
+check; a self-contained venv with an inherited `PYTHONPATH=<repo>/src` sees a deleted package
+as deleted).
+`qc/mutate.sh` #32, #48, #63 (unmapped variable ignored), #66 (cache env not set), #337–#342
+(stage links: never linked, kept during apply, occupied path graded, overlay copied through, a
+failed link step read as none, missing owner not fatal), #353, #354, #356 (a malformed link
+result read as none, no overlay alias guard, `--baseline-on` ignored) and #370–#372 (the base
+stopping at its first failure, `baseRc` from the base's first failing check, an outdated owner's
+`env` accepted), #379–#382 (import settings inherited, the list cut to `PYTHONPATH`, the graded
+run split check by check, an unreproduced rerun trusted) prove those assertions have teeth.
 
 ## `stage-worktree.sh` — the staging area of a bake-off
 
@@ -666,17 +778,97 @@ stage-worktree.sh leakcheck --repo R --dir D [--line]
 stage-worktree.sh cleanup   --repo R --dir D
 stage-worktree.sh apply     --repo R --patch P [--require-clean]
 stage-worktree.sh ignored   --repo R
+stage-worktree.sh link      --repo R --base REV --worktree W
+stage-worktree.sh link      --repo R --base REV --check
 ```
 
 `ignored` lists R's gitignored files with size and sub-second mtime, shallowest first: the one owner of
 the real-repo leak fingerprint's IGNORED part. `leakcheck`, `review-stage.sh fingerprint` (its `ignored`
 field) and `parity-suite.sh fingerprint` all call it.
 
+**Per-repo opt-ins** (all absent = the strict behaviour, unchanged). Each file must be
+**tracked** at R's root and is read at a **commit** (`git ls-tree <sha>` + `cat-file`; a symlink
+or tree entry is ignored), never from the working tree — an uncommitted edit cannot widen it.
+The commit is the bake-off's **base sha** — FROZEN for the whole run: `create` reads both at
+the sha it stages, `link --base <sha>` (what `patch-check.sh` passes for every grading worktree)
+reads the links there too, so a commit landing mid-run (HEAD moving, `BASE_MOVED`)
+changes no grant. `ignored` (no base) reads HEAD. An opt-in file that exists but cannot be READ
+(a missing object, a git failure) is a failure — `create`/`link`/`ignored` exit 1 — never "no
+opt-in".
+
+- `.triage-leakignore` — gitignore-style patterns for IGNORED paths a repo writes by design
+  while a bake-off runs (e.g. an always-on daemon's `data/`). Only the ignored-files listing is
+  filtered (`git ls-files -o -i --exclude-from`), so tracked and untracked-not-ignored paths are
+  never excludable, whatever the patterns say. As in `.gitignore`, a file under an excluded
+  directory cannot be re-included: write `data/*` + `!data/keep.json`, not `data/`. `create`
+  reads it once and keeps the copy (`D/fingerprint.leakignore`), so `leakcheck` compares both
+  snapshots under the same patterns even if HEAD moves; `create` and `leakcheck` print
+  `leakignore: null | {file, blob, patterns, excluded}` (`excluded` = ignored paths left out
+  now), and `leakcheck`'s detail names the count. `ignored` adds one `\tleakignore:<blob sha>`
+  line (so `review-stage`/`parity-suite` fingerprints see a change of the patterns themselves)
+  and says the count on stderr.
+- `.triage-stage-links` — repo-relative gitignored dirs/files (one per line, `#` comments, a
+  trailing `/` dropped), typically a toolchain: `.venv`, `node_modules`. `create` (via `link`,
+  the one owner of the rule) symlinks each into every staged worktree as `W/P -> R/P`, so a
+  check calling `.venv/bin/python` runs. Refused, listed in `linkRefused` and warned on stderr
+  (never fatal): an absolute path, a `.`/`..` component (a leading `./` too: write `.venv`), a
+  path tracked in R, at the base or in W's index, a path missing in R, a symlink there or whose
+  parent resolves outside R, a path R does not gitignore, a toolchain **bound to R** (below), a
+  path already present in W or whose parent resolves outside W. A git query that fails is exit 1,
+  never a pass. Every link made is recorded in W's **manifest** (`<W's git dir>/triage-stage-links`,
+  removed with the worktree): `diff` takes exactly those paths, while they are still symlinks, out
+  of the index after `git add -A` — also one a candidate's own `git add -A` already staged (a
+  `.venv/` pattern does not ignore the symlink FILE `.venv`) — and out of `ignoredNew`; any other
+  symlink, a candidate's own (even one spelled `<repo>/P`), stays in the patch. A manifest that
+  cannot be read fails the diff (`ok:false`), never "no links". `cleanup` removes the links, never
+  what they point at. `link --repo R --base REV --worktree W` does the same for any linked
+  worktree of R (it refuses a main working tree and a worktree of another repo) and prints
+  `{step:"link", worktree, base, links, refused}`; `patch-check.sh` calls it for
+  every grading worktree, so the grader runs the checks with the same links (see **Stage links**
+  under `patch-check.sh` for why it links only right before the check). `link --repo R --base
+  REV --check` applies the same rule to R at REV without a worktree (W's own refusals left out)
+  and writes nothing: `{step:"link-check", base, links, refused}` — what the
+  `triage-exec` pre-flight asks instead of re-implementing the rule.
+  **Bound toolchains — links are only for self-contained toolchains.** A linked path that refers
+  back to R would make every check run R's code instead of the worktree's, and no environment
+  can undo that by precedence (an import path that still reaches R imports a module the patch
+  DELETED). Refused with a reason starting `imports the source repo:` naming the file, with **no
+  override**, when, inside R/P:
+  - a `*.pth`, `*.egg-link`, editable `direct_url.json` (`"editable": true`) or `__editable__*`
+    file (setuptools' finder) names R's absolute path (physical or as git spells it, plain or
+    %-encoded);
+  - a `*.pth`/`*.egg-link` path line — absolute OR RELATIVE, resolved against the file's own
+    directory as `site.py` does (`import` and `#` lines skipped) — resolves into R;
+  - a symlink's target resolves into R (a workspace package: `node_modules/local ->
+    ../packages/local`; absolute or dangling alike);
+
+  where "into R" means R or below it but NOT inside R/P itself (a venv's own `lib64 -> lib`, a
+  `.pth` naming the venv's own dirs, `node_modules/.bin/x -> ../x/bin.js` and links out of R,
+  such as `bin/python -> /opt/…/python3`, are fine), resolved physically (symlinks followed, a
+  missing tail taken lexically). The scan is bounded — at most `STAGE_WT_BOUND_SCAN_MAX`
+  (default 100000; a test knob) symlinks and metadata files, each at most 1 MiB — and fails
+  closed: over the bound, an unreadable file, a symlink loop or a directory `find` cannot walk is
+  refused as `could not be scanned …`, never read as self-contained. A self-contained venv whose
+  checks import the project from their cwd (the worktree root) is linked and grades the
+  worktree's code.
+- `.triage-stage-env` — **retired** (it was a `PYTHONPATH` override for a bound toolchain): never
+  read; a committed one only prints a one-line notice on stderr (`create`, `link`; in a grading
+  tail through `patch-check.sh`) and lifts nothing. `create` writes no `D/wt-<i>.env` and no
+  result carries `env`.
+  A link is a hole in the staging on purpose: **writes through it land in R**, and the leak
+  check sees them like any other ignored-file write. Running a linked venv's Python usually
+  writes bytecode into it (`__pycache__/*.pyc` of packages not compiled yet), which reads as a
+  LEAK — add a pattern such as `.venv/**/__pycache__/` to `.triage-leakignore` (and keep
+  installs out of a bake-off: a `pip install` through the link is a real leak). Codex
+  candidates never see the target (ext-run's read confinement denies R), so only the grader
+  and Claude candidates benefit.
+
 `workflows/triage-compare.js` never gives a candidate the real repo as its working directory.
 `create` resolves REV to a sha **once**, fingerprints R (HEAD, `status --porcelain=v1 -uall`,
 and a content manifest of every tracked + untracked non-ignored path), and makes N detached
 worktrees `D/wt-1..N` at that sha (hooks off). D must be absolute, outside R, not containing R,
-and absent or empty; it prints `{sha, worktrees, fingerprint, head, repo}`. Candidate *i* works
+and absent or empty; it prints `{sha, worktrees, fingerprint, head, repo, links, linkRefused,
+leakignore}`. Candidate *i* works
 in `D/wt-i` — a wrapper that drops a flag, or an ext-run that applies its patch back, lands in
 a throwaway checkout, and a moving HEAD in R no longer moves anyone's base.
 
@@ -724,13 +916,30 @@ new/modified/deleted/binary files that applies cleanly at the sha through `patch
 empty diff still checked, diff refusing the main tree and never leaving a stale patch, leakcheck
 CLEAN / LEAK (tracked edit, untracked file, content change to an already-dirty file, an ignored
 path written) / BASE_MOVED (including committing pre-existing work), the IGNORED fingerprint's
-`.claude/`/`PROJECT_MEMORY*.md` exclusion, `--line`'s single-line form, cleanup leaving no
+`.claude/`/`PROJECT_MEMORY*.md` exclusion, `.triage-leakignore` (absent = strict, committed only,
+a working-tree widening ignored by `ignored` and leakcheck, patterns committed mid-run not re-read,
+never a tracked or untracked-not-ignored path, a symlink entry not followed, negation and root
+anchoring as in `.gitignore`, an unreadable committed file a failure) and `.triage-stage-links`
+(committed only, each refusal — incl. a parent resolving outside R or W and a path tracked only at
+the base — links in every worktree, the manifest, kept out of the patch and `ignoredNew` even when
+a candidate staged one, a candidate's own symlink kept in the patch, an unreadable manifest or
+links file a failure, the grants read at the base sha not a moved HEAD, a write through a link
+still a LEAK unless excluded, cleanup not following links, standalone `link`, `link --check`, a
+bound toolchain refused with no override (`.pth`, editable `direct_url.json`, `.egg-link`, an
+`__editable__` finder; a relative `.pth` entry into R, also through `..` after a missing dir and
+to R itself; `node_modules/local -> ../packages/local`, an absolute and a dangling symlink into R;
+over the scan bound, a symlink loop and an unwalkable dir refused as unscannable; self references,
+`import`/`#` lines, links inside the path or out of R, and a non-editable `direct_url.json` not),
+a committed `.triage-stage-env` lifting nothing (one notice, no `env`, no `D/wt-<i>.env`)), `--line`'s single-line form, cleanup leaving no
 worktree registered, and R's tree, index bytes and HEAD untouched; `apply` with a clean patch, a
 drifted tree recovered by a clean 3-way merge, a conflicting patch (exit 6, tree incl.
 untracked/unstaged work and index byte-identical, no markers), `--require-clean` refusing a
 dirty path the patch touches (and passing a clean one), `treeModified` on every outcome
 including a failed write, an empty patch and a relative path. `qc/mutate.sh` #39 proves the
-new-file capture has teeth, #55 the apply conflict pre-check.
+new-file capture has teeth, #55 the apply conflict pre-check, #306–#320, #343–#346, #350, #351,
+#363 and #364–#369 the opt-ins (commit-only reads, refusals, the manifest, unreadable files and
+manifests as failures, the grants at the base sha, the bound scan: relative `.pth` entries,
+symlinks into R, its bound, an unfinished or failed scan, `__editable__` finders).
 
 ## `review-stage.sh` — the staging area of a review bake-off
 
@@ -784,8 +993,9 @@ manifest, a missing or erroring `ext-run.sh` => `codexDenied: true`); when denie
 `fingerprint` is the review's SOURCE_CHANGED guard, scoped to its paths: `{step, head, paths,
 status (git status --porcelain=v1 -uall --no-renames -- paths), tree (a hash over the content of
 every changed/untracked path there, so a second edit to a dirty file counts), committed (a hash
-over HEAD's blobs at the paths), ignored (the hash of `stage-worktree.sh ignored`, compared only when
-both fingerprints carry it; a difference is `IGNORED_CHANGED`)}`, hard-excluded paths left out of all three, read-only
+over HEAD's blobs at the paths), ignored (the hash of `stage-worktree.sh ignored`, so the repo's committed
+`.triage-leakignore` applies; compared only when both fingerprints carry it; a difference is
+`IGNORED_CHANGED`)}`, hard-excluded paths left out of all three, read-only
 (`--no-optional-locks`). `compare` exits 0 when status, tree and committed are equal — a change
 outside the paths, or HEAD moving by a commit outside them, is no change (`headMoved` says so) —
 and **7** otherwise, printing `{step, same, changed, headMoved, detail}`.
@@ -971,7 +1181,8 @@ Without the opt-in, candidates are told the checks run only at grading.
 directory's name (never its path), `head` its HEAD sha, `tree` one hash over `git status
 --porcelain=v1 -uall` and the content of every modified or untracked non-ignored file (so a
 second edit to an already-dirty file changes it too); `ignored` is one hash over the IGNORED
-files — the hash of `stage-worktree.sh ignored` (the one leak-fingerprint rule) — catching a candidate or a grader regenerating a gitignored cache
+files — the hash of `stage-worktree.sh ignored` (the one leak-fingerprint rule, the source's
+committed `.triage-leakignore` included) — catching a candidate or a grader regenerating a gitignored cache
 (e.g. grant-forge's) in the real source repo; `refs` is one hash over `refs/heads`, `refs/tags`
 and `refs/stash` (a branch/tag/stash change that touches no tree and no HEAD). Everything runs
 with `--no-optional-locks`, so not even the index is refreshed. A generator source has no source
@@ -1018,6 +1229,7 @@ parity-report.sh backfill-modelid [--dry-run]
 parity-report.sh report         [--json] [--model ID|FAMILY] [--since DATE]
 parity-report.sh history        [--json] [--model ID|FAMILY] [--since DATE]
 parity-report.sh rates          [--json]
+parity-report.sh void           --run ID --reason TEXT [--ts ISO]
       every subcommand also takes [--ledger F] [--tiers F]
 ```
 
@@ -1030,6 +1242,15 @@ since a compare result carries no run id of its own); `ingest-parity` and `inges
 default it to the result's outDir basename. Every run id (and `--task`) is an id token: letters,
 digits, `. _ : + -`, 1–80 characters; a refusal says why (the offending characters, e.g. `'~'`,
 or the length) so the caller that built the id can be fixed from the message.
+
+**Voiding a bad measurement.** `void --run ID --reason TEXT [--ts ISO]` marks a whole run as a
+bad measurement (a broken grader relay, a missing toolchain) without rewriting anything: it appends one
+`{"v":1,"ts","source":"void","run","reason"}` line under the ledger lock. `report`, `rates`,
+`history` and the decision rule then drop every row of that run, review revisions included, so
+voided rows never count toward minN; void markers and the dropped rows are not counted as
+malformed. The run must already be in the ledger (unknown id or missing `--reason`/ledger: exit 2);
+voiding it again is a no-op with a notice. `report --json` and `history --json` list them under
+`voided: [{run, reason, ts, lines}]`. It is not undone: ingest a corrected run under a new `--run`.
 
 **After a manual `triage-compare` (orchestrator recipe).** The compare never applies anything:
 pick a candidate (or ask the user), `git apply` its patch, re-run the checks, then ingest — the

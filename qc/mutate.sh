@@ -13,7 +13,7 @@
 #     failure, never silently counted as a kill)
 #
 # Never mutates this repo in place — every mutation is applied to a throwaway
-# rsync copy under a mktemp -d root, which is removed on exit.
+# tar copy under a mktemp -d root, which is removed on exit.
 #
 # Usage:
 #   qc/mutate.sh                 run the full catalog
@@ -151,7 +151,42 @@ done
 # and bad() refusing a plan-time claude top subtask. 219-221 cover its reporting: a
 # deep@max FIX/FAIL that owes nothing gets one marked retry (then the stop), an empty
 # deep@max fallback in runFable() stops for the user, and needs-user reads INCOMPLETE.
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165 166 167 168 169 170 171 172 173 174 175 176 177 178 179 180 181 182 183 184 185 187 188 189 190 191 192 193 194 195 196 197 198 199 200 201 202 203 204 205 206 207 208 209 210 211 212 213 214 215 216 217 218 219 220 221 222 223 224 225 226 227 228 229 230 231 232 233 234 235 236 237 238 239 240 241 242 243 244 245 246 247 248 249 250 251 252 253 254 255 256 257 258 259 260 261 262 263 264 265 266 267 268 269 270 271 272 273 274 275 276 277 278 279 280 281 282 283 284 285 286 287 288 289 290 291 292 293 294 295 296 297 298 299 300 301 302 303 304 305"
+# 343-363 cover the Wave 23 grader-linking fixes: an opt-in unreadable at the sha read
+# as absent; an unreadable link manifest, a manifest bypassed (a candidate's symlink
+# dropped) or a link left out of it; no bound-toolchain scan, the bound refusal lifted
+# without a valid stage env, absolute PYTHONPATH entries and other keys accepted, the
+# env not resolved against the worktree; link/create reading the grants at HEAD, not the
+# base sha; patch-check reading a malformed link result as none, copying an overlay
+# through a symlink the patch made, not exporting the stage env, ignoring --baseline-on;
+# triage-compare calling 126/127 the environment's without the pristine base, an
+# unknown base the candidate's fail, no --baseline-on, the candidate's checks without
+# the stage env; triage-exec skipping a bound toolchain as untracked and letting a
+# refused entry cover a check path. Re-anchored there: 39 / 313 (diff now unstages
+# exactly the manifest's links), 48 / 66 / 337 / 338 / 340 / 341 (grade_one()), 306 /
+# 310 / 319 / 320 (rev_file, tracked_in, the grants read at the sha), 322 / 323 / 326
+# (the pre-flight asks `link --check`); 328 now: a FAILED link --check read as no
+# links (the pre-flight no longer reads .triage-stage-links itself); 336's verify gained
+# a marker and `lacks` (a grep error is never "the line is gone").
+# 347-349 / 352 / 355 / 360 were retired with the stage env (.triage-stage-env): an
+# environment pointing back to the source repo can never be isolated by precedence (a
+# module the patch DELETED is still imported from the repo), so a bound toolchain is
+# refused with no override. 364-378 cover what replaced it: the bound scan resolving
+# RELATIVE .pth entries, checking symlinks inside the linked path, its bound, an
+# unfinished or failed scan never read as self-contained, __editable__ finders
+# scanned; patch-check running the pristine base past a failure and taking baseRc from
+# THE SAME check, refusing an outdated owner's env; triage-compare grading each check
+# as its own --check and pinning the failing check; triage-exec's checkPaths ignoring
+# output redirections, VAR=/--opt= values and output-option values, and parseLinkCheck
+# refusing an env. 309 now calls the real reader (rev_file at HEAD; it called an
+# undefined head_file, which disabled the exclusions instead of re-reading them).
+# Re-anchored: 66 / 338 (run_check, grade_one), 356 (base_rcs), 357 / 358 (pinned).
+# 379-384 cover the third codex review (Wave 23): patch-check unsetting the source-bound
+# import settings (SOURCE_BOUND_ENV, all five), the graded run as ONE combined command
+# (one process group), a check-by-check rerun trusted only when it reproduces the rc;
+# triage-compare's check-environment requiring the base's rcs to match up to the failing
+# check, and INCONCLUSIVE never a fail. Re-anchored: 66 (run_check), 357 / 358 / 374
+# (gradeOf's sameWay / baseOk / pinned).
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 16 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165 166 167 168 169 170 171 172 173 174 175 176 177 178 179 180 181 182 183 184 185 187 188 189 190 191 192 193 194 195 196 197 198 199 200 201 202 203 204 205 206 207 208 209 210 211 212 213 214 215 216 217 218 219 220 221 222 223 224 225 226 227 228 229 230 231 232 233 234 235 236 237 238 239 240 241 242 243 244 245 246 247 248 249 250 251 252 253 254 255 256 257 258 259 260 261 262 263 264 265 266 267 268 269 270 271 272 273 274 275 276 277 278 279 280 281 282 283 284 285 286 287 288 289 290 291 292 293 294 295 296 297 298 299 300 301 302 303 304 305 306 307 308 309 310 311 312 313 314 315 316 317 318 319 320 321 322 323 324 325 326 327 328 329 330 331 332 333 334 335 336 337 338 339 340 341 342 343 344 345 346 350 351 353 354 356 357 358 359 361 362 363 364 365 366 367 368 369 370 371 372 373 374 375 376 377 378 379 380 381 382 383 384"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -370,6 +405,74 @@ mut_file() {
     303) echo "install.sh" ;;
     304) echo "install.sh" ;;
     305) echo "install.sh" ;;
+    306) echo "scripts/stage-worktree.sh" ;;
+    307) echo "scripts/stage-worktree.sh" ;;
+    308) echo "scripts/stage-worktree.sh" ;;
+    309) echo "scripts/stage-worktree.sh" ;;
+    310) echo "scripts/stage-worktree.sh" ;;
+    311) echo "scripts/stage-worktree.sh" ;;
+    312) echo "scripts/stage-worktree.sh" ;;
+    313) echo "scripts/stage-worktree.sh" ;;
+    314) echo "scripts/stage-worktree.sh" ;;
+    315) echo "scripts/stage-worktree.sh" ;;
+    316) echo "scripts/stage-worktree.sh" ;;
+    317) echo "scripts/stage-worktree.sh" ;;
+    318) echo "scripts/stage-worktree.sh" ;;
+    319) echo "scripts/stage-worktree.sh" ;;
+    320) echo "scripts/stage-worktree.sh" ;;
+    321) echo "workflows/triage-exec.js" ;;
+    322) echo "workflows/triage-exec.js" ;;
+    323) echo "workflows/triage-exec.js" ;;
+    324) echo "workflows/triage-exec.js" ;;
+    325) echo "workflows/triage-exec.js" ;;
+    326) echo "workflows/triage-exec.js" ;;
+    327) echo "workflows/triage-exec.js" ;;
+    328) echo "workflows/triage-exec.js" ;;
+    329) echo "workflows/triage-compare.js" ;;
+    330) echo "workflows/triage-compare.js" ;;
+    331) echo "workflows/triage-compare.js" ;;
+    332) echo "scripts/parity-report.sh" ;;
+    333) echo "scripts/parity-report.sh" ;;
+    334) echo "scripts/parity-report.sh" ;;
+    335) echo "scripts/parity-report.sh" ;;
+    336) echo "scripts/parity-report.sh" ;;
+    337|338|339|340|341|342) echo "scripts/patch-check.sh" ;;
+    343) echo "scripts/stage-worktree.sh" ;;
+    344) echo "scripts/stage-worktree.sh" ;;
+    345) echo "scripts/stage-worktree.sh" ;;
+    346) echo "scripts/stage-worktree.sh" ;;
+    350) echo "scripts/stage-worktree.sh" ;;
+    351) echo "scripts/stage-worktree.sh" ;;
+    353) echo "scripts/patch-check.sh" ;;
+    354) echo "scripts/patch-check.sh" ;;
+    356) echo "scripts/patch-check.sh" ;;
+    357) echo "workflows/triage-compare.js" ;;
+    358) echo "workflows/triage-compare.js" ;;
+    359) echo "workflows/triage-compare.js" ;;
+    361) echo "workflows/triage-exec.js" ;;
+    362) echo "workflows/triage-exec.js" ;;
+    363) echo "scripts/stage-worktree.sh" ;;
+    364) echo "scripts/stage-worktree.sh" ;;
+    365) echo "scripts/stage-worktree.sh" ;;
+    366) echo "scripts/stage-worktree.sh" ;;
+    367) echo "scripts/stage-worktree.sh" ;;
+    368) echo "scripts/stage-worktree.sh" ;;
+    369) echo "scripts/stage-worktree.sh" ;;
+    370) echo "scripts/patch-check.sh" ;;
+    371) echo "scripts/patch-check.sh" ;;
+    372) echo "scripts/patch-check.sh" ;;
+    373) echo "workflows/triage-compare.js" ;;
+    374) echo "workflows/triage-compare.js" ;;
+    375) echo "workflows/triage-exec.js" ;;
+    376) echo "workflows/triage-exec.js" ;;
+    377) echo "workflows/triage-exec.js" ;;
+    378) echo "workflows/triage-exec.js" ;;
+    379) echo "scripts/patch-check.sh" ;;
+    380) echo "scripts/patch-check.sh" ;;
+    381) echo "scripts/patch-check.sh" ;;
+    382) echo "scripts/patch-check.sh" ;;
+    383) echo "workflows/triage-compare.js" ;;
+    384) echo "workflows/triage-compare.js" ;;
     *) echo "" ;;
   esac
 }
@@ -675,6 +778,79 @@ mut_desc() {
     303) echo "install.sh: LEGACY_IMPORT_AWK matches only the bare @triage.md spelling and keeps CRs" ;;
     304) echo "install.sh: POINTER_TAIL reverts to the previous spelling (no in-band fallback; the current line is treated as outdated)" ;;
     305) echo "install.sh: LEGACY_IMPORT_AWK carries only the bare spelling (a ./ or ~/ import is not recognised)" ;;
+    306) echo "stage-worktree.sh: rev_file reads .triage-leakignore / .triage-stage-links from the working tree, not the commit (an uncommitted edit widens the grant)" ;;
+    307) echo "stage-worktree.sh: leak-exclusion matches are not counted (excluded stays 0, the exclusion is invisible)" ;;
+    308) echo "stage-worktree.sh: the .triage-leakignore blob is not part of the fingerprint (a change of the patterns is invisible)" ;;
+    309) echo "stage-worktree.sh: leakcheck re-reads the leak-exclusion patterns from HEAD instead of the copy kept at create" ;;
+    310) echo "stage-worktree.sh: a path tracked in the repo may be stage-linked" ;;
+    311) echo "stage-worktree.sh: a .. component is no longer refused in a stage-link path" ;;
+    312) echo "stage-worktree.sh: a path the repo does not gitignore may be stage-linked" ;;
+    313) echo "stage-worktree.sh: stage links are not taken out of the index (diff stages the symlinks, a candidate-staged one too)" ;;
+    314) echo "stage-worktree.sh: link makes an empty directory instead of the symlink" ;;
+    315) echo "stage-worktree.sh: a main working tree counts as a linked worktree (link would write into the real repo)" ;;
+    316) echo "stage-worktree.sh: link accepts a worktree of another repo" ;;
+    317) echo "stage-worktree.sh: a symlink in the repo may be stage-linked" ;;
+    318) echo "stage-worktree.sh: stage links are counted in diff's ignoredNew (a linked toolchain looks like an unpatchable new file)" ;;
+    319) echo "stage-worktree.sh: create links nothing into the staged worktrees" ;;
+    320) echo "stage-worktree.sh: create ignores .triage-leakignore (no exclusions kept for leakcheck)" ;;
+    321) echo "triage-exec.js: the toolchain pre-flight never skips (a bake-off runs on checks whose toolchain the staged worktrees lack)" ;;
+    322) echo "triage-exec.js: a linked path covers by string prefix, not path component (.ven covers .venv/bin/x)" ;;
+    323) echo "triage-exec.js: an untracked (not ignored) check path is no toolchain gap" ;;
+    324) echo "triage-exec.js: one environment-invalid candidate is enough to skip the bake-off (a real fail by the other is hidden)" ;;
+    325) echo "triage-exec.js: a toolchain-invalid bake-off choice is not skipped (the run goes on to apply/ingest)" ;;
+    326) echo "triage-exec.js: an empty or garbled link --check answer (linkrc 0) reads as no links instead of an unusable reply" ;;
+    327) echo "triage-exec.js: parseCleanCheck accepts a different number of path lines than were asked" ;;
+    328) echo "triage-exec.js: a FAILED link --check (linkrc != 0) reads as no links (the bake-off goes on to the gap check)" ;;
+    329) echo "triage-compare.js: only exit 127 grades a check-environment failure (126, not executable, grades fail)" ;;
+    330) echo "triage-compare.js: a check exiting 126/127 grades pass/fail, not invalid (check-environment)" ;;
+    331) echo "triage-compare.js: a LEAK-voided grade keeps its check-environment invalidReason (the leak is misreported as the toolchain)" ;;
+    332) echo "parity-report.sh: void takes no ledger lock (a concurrent ingest can interleave)" ;;
+    333) echo "parity-report.sh: void accepts a run id that is not in the ledger" ;;
+    334) echo "parity-report.sh: voiding an already-voided run appends a second marker" ;;
+    335) echo "parity-report.sh: report aggregates the rows of voided runs (the void marker has no effect)" ;;
+    336) echo "parity-report.sh: void markers and voided rows are counted as malformed lines" ;;
+    337) echo "patch-check.sh: the grading worktree never gets the stage links (a venv-dependent check exits 127 at grading)" ;;
+    338) echo "patch-check.sh: the pristine stage links stay while the patch is applied (a --3way fallback writes through them into the repo)" ;;
+    339) echo "patch-check.sh: a patch occupying a stage-linked path is graded (with the toolchain it brought)" ;;
+    340) echo "patch-check.sh: an overlay holding a stage-linked path is copied (through the link into the repo)" ;;
+    341) echo "patch-check.sh: a failed stage-link step reads as no links (graded, not harness)" ;;
+    342) echo "patch-check.sh: a missing stage-worktree.sh is not exit 2" ;;
+    343) echo 'stage-worktree.sh: an opt-in file that cannot be READ at the sha (rev_file rc 2) reads as absent (no links / no exclusions)' ;;
+    344) echo 'stage-worktree.sh: an unreadable link manifest reads as no links (diff goes on)' ;;
+    345) echo 'stage-worktree.sh: diff takes every untracked path as a candidate stage link (the manifest bypassed: a candidate-created symlink is dropped from its patch)' ;;
+    346) echo 'stage-worktree.sh: no scan for a toolchain bound to the source repo (an editable venv is linked)' ;;
+    350) echo 'stage-worktree.sh: link reads the grants at the moving HEAD, not at --base' ;;
+    351) echo 'stage-worktree.sh: create reads the grants at HEAD, not at the staged sha' ;;
+    353) echo 'patch-check.sh: an empty or malformed link result reads as no links (graded, not harness)' ;;
+    354) echo 'patch-check.sh: an overlay is copied through a symlink the patch made (no alias guard)' ;;
+    356) echo 'patch-check.sh: --baseline-on is ignored (no baseRc: the pristine base never checked)' ;;
+    357) echo 'triage-compare.js: a check exiting 126/127 is check-environment without the pristine base running the same way up to it' ;;
+    358) echo 'triage-compare.js: a 126/127 with no usable baseRcs (wrong length, disagreeing with baseRc, null) grades as the candidate'\''s fail' ;;
+    359) echo 'triage-compare.js: patch-check is not given --baseline-on (no baseRc ever)' ;;
+    361) echo 'triage-exec.js: a toolchain bound to the source repo is skipped with the untracked-toolchain reason' ;;
+    362) echo 'triage-exec.js: an entry the stage-link owner REFUSED still covers a check path (the pre-flight re-grants it)' ;;
+    363) echo 'stage-worktree.sh: a link is made but not recorded in the manifest (diff then puts it in the patch)' ;;
+    364) echo 'stage-worktree.sh: a RELATIVE .pth entry is not resolved (only absolute lines are checked): ../../../src into the repo is linked' ;;
+    365) echo 'stage-worktree.sh: symlinks inside the linked path are not checked (node_modules/local -> ../packages/local is linked)' ;;
+    366) echo 'stage-worktree.sh: the bound-toolchain scan is unbounded (STAGE_WT_BOUND_SCAN_MAX ignored)' ;;
+    367) echo 'stage-worktree.sh: a scan that cannot finish (over the bound, a loop, an unreadable file) reads as self-contained' ;;
+    368) echo 'stage-worktree.sh: a scan whose find fails with no output reads as self-contained' ;;
+    369) echo 'stage-worktree.sh: setuptools'\'' __editable__ finder modules are not scanned' ;;
+    370) echo 'patch-check.sh: the pristine base stops at its first failing check (the candidate'\''s failing check never runs there: baseRc null)' ;;
+    371) echo 'patch-check.sh: baseRc is the base'\''s first failing check, not the candidate'\''s failing check' ;;
+    372) echo 'patch-check.sh: a link result carrying a non-null env (an outdated owner lifting a bound refusal) is accepted' ;;
+    373) echo 'triage-compare.js: the grade runs the &&-combined string as ONE --check (no per-check rcs)' ;;
+    374) echo 'triage-compare.js: a multi-check 126/127 result that does not pin down the failing check is compared as if it did' ;;
+    375) echo 'triage-exec.js: checkPaths counts an output redirection target (> build/out.log) as a dependency' ;;
+    376) echo 'triage-exec.js: checkPaths counts VAR= / --opt= values (--junitxml=build/x.xml) as dependencies' ;;
+    377) echo 'triage-exec.js: checkPaths counts the value after an output option (-o out/bin, --basetemp tmp/pt) as a dependency' ;;
+    378) echo 'triage-exec.js: parseLinkCheck accepts an outdated owner'\''s stage env (env not null)' ;;
+    379) echo 'patch-check.sh: checks inherit the caller'\''s source-bound import settings (PYTHONPATH & co. never unset)' ;;
+    380) echo 'patch-check.sh: SOURCE_BOUND_ENV clears only PYTHONPATH (PYTHONHOME, PYTHONSTARTUP, NODE_PATH, PERL5LIB inherited)' ;;
+    381) echo 'patch-check.sh: the graded run runs the checks one by one (a process group per check: what check 1 started is gone for check 2)' ;;
+    382) echo 'patch-check.sh: a check-by-check rerun that does not fail with the graded rc is trusted to name the failing check' ;;
+    383) echo 'triage-compare.js: check-environment compares only the failing check'\''s rc on the base (base [1,127] vs patch [0,127] reads as a missing toolchain)' ;;
+    384) echo 'triage-compare.js: a 126/127 the base cannot run either but reaches differently (INCONCLUSIVE) grades as the candidate'\''s fail' ;;
     *) echo "" ;;
   esac
 }
@@ -732,6 +908,47 @@ mut_suite() {
     289|290|291|292|293|294) echo "extrun" ;;
     295) echo "triagectx" ;;
     296|297|298|299|300|301|302|303|304|305) echo "roundtrip" ;;
+    306|307|308|309|310|311|312|313|314|315|316|317|318|319|320) echo "stagewt" ;;
+    321|322|323|324|325|326|327|328) echo "scenarios" ;;
+    329|330|331) echo "compare" ;;
+    332|333|334|335|336) echo "parityreport" ;;
+    337|338|339|340|341|342) echo "patchcheck" ;;
+    343) echo "stagewt" ;;
+    344) echo "stagewt" ;;
+    345) echo "stagewt" ;;
+    346) echo "stagewt" ;;
+    350) echo "stagewt" ;;
+    351) echo "stagewt" ;;
+    353) echo "patchcheck" ;;
+    354) echo "patchcheck" ;;
+    356) echo "patchcheck" ;;
+    357) echo "compare" ;;
+    358) echo "compare" ;;
+    359) echo "compare" ;;
+    361) echo "scenarios" ;;
+    362) echo "scenarios" ;;
+    363) echo "stagewt" ;;
+    364) echo "stagewt" ;;
+    365) echo "stagewt" ;;
+    366) echo "stagewt" ;;
+    367) echo "stagewt" ;;
+    368) echo "stagewt" ;;
+    369) echo "stagewt" ;;
+    370) echo "patchcheck" ;;
+    371) echo "patchcheck" ;;
+    372) echo "patchcheck" ;;
+    373) echo "compare" ;;
+    374) echo "compare" ;;
+    375) echo "scenarios" ;;
+    376) echo "scenarios" ;;
+    377) echo "scenarios" ;;
+    378) echo "scenarios" ;;
+    379) echo "patchcheck" ;;
+    380) echo "patchcheck" ;;
+    381) echo "patchcheck" ;;
+    382) echo "patchcheck" ;;
+    383) echo "compare" ;;
+    384) echo "compare" ;;
     *) echo "" ;;
   esac
 }
@@ -1110,9 +1327,9 @@ MUT38
       # stage-worktree.sh: `git add -u` stages modifications and deletions only, so
       # every file a candidate CREATED is missing from its patch.
       cat > "$rep" <<'MUT39'
-  git -C "$WT" add -u >/dev/null 2>&1 || diff_fail "git add -u failed in $WT" # MUTATED: untracked files omitted
+  git -C "$WT" add -u >/dev/null 2>&1 || { rm -f "$sl"; diff_fail "git add -u failed in $WT"; } # MUTATED: untracked files omitted
 MUT39
-      mut_replace_block "$target" '  git -C "$WT" add -A >/dev/null 2>&1 || diff_fail "git add -A failed in $WT"' 1 "$rep"
+      mut_replace_block "$target" '  git -C "$WT" add -A >/dev/null 2>&1 || { rm -f "$sl"; diff_fail "git add -A failed in $WT"; }' 1 "$rep"
       ;;
     40)
       # ext-run.sh: deny_check stops checking the main worktree of the path's
@@ -1187,11 +1404,9 @@ MUT47
       # patch-check.sh: the overlay copy failure is logged and ignored again (the
       # pre-fix behaviour): the check runs with the hidden tests missing.
       cat > "$rep" <<'MUT48'
-  if [ -n "$OVERLAY" ]; then
     cp -R "$OVERLAY"/. "$WT"/ 2>> "$log" || echo "patch-check: overlay copy failed" >> "$log" # MUTATED: overlay failure ignored
-  fi
 MUT48
-      mut_replace_block "$target" '  if [ -n "$OVERLAY" ] && ! cp -R "$OVERLAY"/. "$WT"/ 2>> "$log"; then' 5 "$rep"
+      mut_replace_block "$target" '    if ! cp -R "$OVERLAY"/. "$WT"/ 2>> "$log"; then' 5 "$rep"
       ;;
     49)
       # ext-run.sh: the top-level unset of the git redirection variables is gone.
@@ -1336,9 +1551,9 @@ MUT65
     66)
       # patch-check.sh: the check inherits the caller's cache/temp locations.
       cat > "$rep" <<'MUT66'
-  ( cd "$WT" && eval "$ENV_LINES" && exec bash -c "$CHECK" ) > "$1" 2>&1 < /dev/null & # MUTATED: cache env not set
+  ( cd "$WT" && unset "${SOURCE_BOUND_ENV[@]}" && eval "$ENV_LINES" && exec bash -c "$2" ) >> "$1" 2>&1 < /dev/null & # MUTATED: cache env not set
 MUT66
-      mut_replace_block "$target" '  ( cd "$WT" && export XDG_CACHE_HOME="$CACHE" TMPDIR="$CACHE" GRANTFORGE_CACHE_DIR="$CACHE" && eval "$ENV_LINES" && exec bash -c "$CHECK" ) > "$1" 2>&1 < /dev/null &' 1 "$rep"
+      mut_replace_block "$target" '  ( cd "$WT" && unset "${SOURCE_BOUND_ENV[@]}" && export XDG_CACHE_HOME="$CACHE" TMPDIR="$CACHE" GRANTFORGE_CACHE_DIR="$CACHE" && eval "$ENV_LINES" && exec bash -c "$2" ) >> "$1" 2>&1 < /dev/null &' 1 "$rep"
       ;;
     67)
       # review-stage.sh: split_hard lets a TRACKED path through (hard excludes
@@ -2291,9 +2506,9 @@ MUT108
     109)
       # stage-worktree.sh (H4): ignored paths are left out of the leak fingerprint.
       cat > "$rep" <<'MUT109'
-  : > "$out.ign" # MUTATED: ignored paths not fingerprinted
+  : > "$out.ign"; echo 0 > "$out.xn" # MUTATED: ignored paths not fingerprinted
 MUT109
-      mut_replace_block "$target" '  ignored_snapshot "$r" "$out.ign" || return 1' 1 "$rep"
+      mut_replace_block "$target" '  ignored_snapshot "$r" "$out.ign" "$pf" || return 1' 2 "$rep"
       ;;
     222)
       # triage-exec.js: a plan check with no CHECKRC line reads as exit 0 (a dead gate passes)
@@ -2892,11 +3107,527 @@ LEGACY_IMPORT_AWK='function is_legacy(l) { sub(/\r$/, "", l); sub(/[ \t]+$/, "",
 MUT305
       mut_replace_block "$target" 'LEGACY_IMPORT_AWK=' 1 "$rep"
       ;;
+    306)
+      # stage-worktree.sh: rev_file reads .triage-leakignore / .triage-stage-links from the working tree, not the commit (an uncommitted edit widens the grant)
+      cat > "$rep" <<'MUT306'
+  cat "$1/$3" > "$4" 2>/dev/null || { : > "$4"; return 1; } # MUTATED: working-tree copy read
+MUT306
+      mut_replace_block "$target" '  git -C "$1" cat-file blob "$sha" > "$4" 2>/dev/null || { : > "$4"; return 2; }' 1 "$rep"
+      ;;
+    307)
+      # stage-worktree.sh: leak-exclusion matches are not counted (excluded stays 0, the exclusion is invisible)
+      cat > "$rep" <<'MUT307'
+      @p = grep { !$x{$_} } @p; # MUTATED: excluded paths not counted
+MUT307
+      mut_replace_block "$target" '      @p = grep { !($x{$_} && ++$xn) } @p;' 1 "$rep"
+      ;;
+    308)
+      # stage-worktree.sh: the .triage-leakignore blob is not part of the fingerprint (a change of the patterns is invisible)
+      cat > "$rep" <<'MUT308'
+    : # MUTATED: leakignore patterns blob not fingerprinted
+MUT308
+      mut_replace_block "$target" '    printf '\''\tleakignore:%s\n'\''' 1 "$rep"
+      ;;
+    309)
+      # stage-worktree.sh: leakcheck re-reads the leak-exclusion patterns from HEAD instead of the copy kept at create
+      cat > "$rep" <<'MUT309'
+  rev_file "$R" HEAD "$LEAKIGNORE" "$D/now.li"; if [ -s "$D/now.li" ]; then pf="$D/now.li"; else pf=""; fi # MUTATED: patterns re-read from HEAD at leakcheck
+MUT309
+      mut_replace_block "$target" '  [ -s "$pf" ] || pf=""' 1 "$rep"
+      ;;
+    310)
+      # stage-worktree.sh: a path tracked in the repo may be stage-linked
+      cat > "$rep" <<'MUT310'
+        "in the repo") false ;; # MUTATED: a tracked path may be linked
+MUT310
+      mut_replace_block "$target" '        "in the repo") tracked_in "$r" "$p" ;;' 1 "$rep"
+      ;;
+    311)
+      # stage-worktree.sh: a .. component is no longer refused in a stage-link path
+      cat > "$rep" <<'MUT311'
+      case "/$p/" in */./*|*//*) reason="not a normalized repo-relative path" ;; esac # MUTATED: .. component allowed
+MUT311
+      mut_replace_block "$target" '      case "/$p/" in */../*) reason="contains a .. component"' 1 "$rep"
+      ;;
+    312)
+      # stage-worktree.sh: a path the repo does not gitignore may be stage-linked
+      cat > "$rep" <<'MUT312'
+      case $? in 0|1) ;; *) reason="git check-ignore failed" ;; esac # MUTATED: a path the repo does not ignore may be linked
+MUT312
+      mut_replace_block "$target" '      case $? in 0) ;; 1) reason="not gitignored in the repo"' 1 "$rep"
+      ;;
+    313)
+      # stage-worktree.sh: stage links are not taken out of the index (diff stages the symlinks, a candidate-staged one too)
+      cat > "$rep" <<'MUT313'
+    : # MUTATED: stage links not excluded from the patch
+MUT313
+      mut_replace_block "$target" '    git -C "$WT" update-index --force-remove -- "$lp" >/dev/null 2>&1 || { bad="could not unstage the stage link $lp in $WT"; break; }' 1 "$rep"
+      ;;
+    314)
+      # stage-worktree.sh: link makes an empty directory instead of the symlink
+      cat > "$rep" <<'MUT314'
+    if ! { mkdir -p "$w/$p"; }; then # MUTATED: an empty dir instead of the link
+MUT314
+      mut_replace_block "$target" '    if ! { mkdir -p "$w/$(dirname "$p")" && ln -s "$r/$p" "$w/$p"; }; then' 1 "$rep"
+      ;;
+    315)
+      # stage-worktree.sh: a main working tree counts as a linked worktree (link would write into the real repo)
+      cat > "$rep" <<'MUT315'
+  : # MUTATED: a main working tree counts as linked
+MUT315
+      mut_replace_block "$target" '  [ "$gd" != "$cdir" ] || return 1' 1 "$rep"
+      ;;
+    316)
+      # stage-worktree.sh: link accepts a worktree of another repo
+      cat > "$rep" <<'MUT316'
+  : # MUTATED: a worktree of another repo is accepted
+MUT316
+      mut_replace_block "$target" '  [ "$(common_dir "$W")" = "$(common_dir "$R")" ] || usage' 1 "$rep"
+      ;;
+    317)
+      # stage-worktree.sh: a symlink in the repo may be stage-linked
+      cat > "$rep" <<'MUT317'
+      if false; then : # MUTATED: a symlink in the repo may be linked
+MUT317
+      mut_replace_block "$target" '      if [ -L "$r/$p" ]; then reason="a symlink in the repo"' 1 "$rep"
+      ;;
+    318)
+      # stage-worktree.sh: stage links are counted in diff's ignoredNew (a linked toolchain looks like an unpatchable new file)
+      cat > "$rep" <<'MUT318'
+  ign=$(git -C "$WT" --no-optional-locks ls-files -z -o -i --exclude-standard 2>/dev/null | tr '\000' '\n' | grep -cvx '\.parity-env') # MUTATED: stage links counted in ignoredNew
+MUT318
+      mut_replace_block "$target" '  ign=$(git -C "$WT" --no-optional-locks ls-files -z -o -i --exclude-standard 2>/dev/null | tr '\''\000'\'' '\''\n'\'' | grep -cvxF -f "$sl")' 1 "$rep"
+      ;;
+    319)
+      # stage-worktree.sh: create links nothing into the staged worktrees
+      cat > "$rep" <<'MUT319'
+    : > "$D/links.links"; : > "$D/links.refused" # MUTATED: create links nothing
+MUT319
+      mut_replace_block "$target" '    make_links "$R" "$SHA" "$D/wt-$i" "$D/grants" "$D/links" || { rollback; exit 1; }' 1 "$rep"
+      ;;
+    320)
+      # stage-worktree.sh: create ignores .triage-leakignore (no exclusions kept for leakcheck)
+      cat > "$rep" <<'MUT320'
+  : > "$D/fingerprint.leakignore"; rc=1 # MUTATED: create ignores .triage-leakignore
+MUT320
+      mut_replace_block "$target" '  rev_file "$R" "$SHA" "$LEAKIGNORE" "$D/fingerprint.leakignore"; rc=$?' 1 "$rep"
+      ;;
+    321)
+      # triage-exec.js: the toolchain pre-flight never skips (a bake-off runs on checks whose toolchain the staged worktrees lack)
+      cat > "$rep" <<'MUT321'
+  if (false) { // MUTATED: toolchain gap never skips
+MUT321
+      mut_replace_block "$target" '  if (gap.length) {' 1 "$rep"
+      ;;
+    322)
+      # triage-exec.js: a linked path covers by string prefix, not path component (.ven covers .venv/bin/x)
+      cat > "$rep" <<'MUT322'
+  const under = (p, e) => p === e || p.startsWith(e) // MUTATED: link coverage by string prefix
+MUT322
+      mut_replace_block "$target" '  const under = (p, e) => p === e || p.startsWith(`${e}/`)' 1 "$rep"
+      ;;
+    323)
+      # triage-exec.js: an untracked (not ignored) check path is no toolchain gap
+      cat > "$rep" <<'MUT323'
+  return cc.paths.filter(x => (x.state === 'ignored') && // MUTATED: untracked is no gap
+MUT323
+      mut_replace_block "$target" '  return cc.paths.filter(x => (x.state' 1 "$rep"
+      ;;
+    324)
+      # triage-exec.js: one environment-invalid candidate is enough to skip the bake-off (a real fail by the other is hidden)
+      cat > "$rep" <<'MUT324'
+  if (envInvalid(p) || envInvalid(ch)) return { apply: null, toolchain: true, why: `${TOOLCHAIN_REASON} (every candidate's checks exited 126/127, and so did the pristine base's)` } // MUTATED: either candidate skips
+MUT324
+      mut_replace_block "$target" '  if (envInvalid(p) && envInvalid(ch)) return' 1 "$rep"
+      ;;
+    325)
+      # triage-exec.js: a toolchain-invalid bake-off choice is not skipped (the run goes on to apply/ingest)
+      cat > "$rep" <<'MUT325'
+  if (false) { // MUTATED: toolchain choice not skipped
+MUT325
+      mut_replace_block "$target" '  if (choice.toolchain) {' 1 "$rep"
+      ;;
+    326)
+      # triage-exec.js: an empty or garbled link --check answer (linkrc 0) reads as no links instead of an unusable reply
+      cat > "$rep" <<'MUT326'
+  const link = linkRc === '0' ? (parseLinkCheck(linkJson) || { links: [], refused: [] }) : null // MUTATED: garbled owner answer read as no links
+MUT326
+      mut_replace_block "$target" '  const link = linkRc === '\''0'\'' ? parseLinkCheck(linkJson) : null' 1 "$rep"
+      ;;
+    327)
+      # triage-exec.js: parseCleanCheck accepts a different number of path lines than were asked
+      cat > "$rep" <<'MUT327'
+  if (pathTags.some(x => !x || !PATH_STATES.includes(x.state)) || // MUTATED: path count unchecked
+MUT327
+      mut_replace_block "$target" '  if (pathTags.length !== asked.length ||' 1 "$rep"
+      ;;
+    328)
+      # triage-exec.js: a FAILED link --check (linkrc != 0) reads as no links (the bake-off goes on to the gap check)
+      cat > "$rep" <<'MUT328'
+  const link = linkRc === '0' ? parseLinkCheck(linkJson) : { links: [], refused: [] } // MUTATED: a failed owner read as no links
+MUT328
+      mut_replace_block "$target" '  const link = linkRc === '\''0'\'' ? parseLinkCheck(linkJson) : null' 1 "$rep"
+      ;;
+    329)
+      # triage-compare.js: only exit 127 grades a check-environment failure (126, not executable, grades fail)
+      cat > "$rep" <<'MUT329'
+const CHECK_ENV_RC = [127] // MUTATED: 126 not an environment failure
+MUT329
+      mut_replace_block "$target" 'const CHECK_ENV_RC = [126, 127]' 1 "$rep"
+      ;;
+    330)
+      # triage-compare.js: a check exiting 126/127 grades pass/fail, not invalid (check-environment)
+      cat > "$rep" <<'MUT330'
+  if (false) { // MUTATED: environment grade disabled
+MUT330
+      mut_replace_block "$target" '  if (pc.applies === true && CHECK_ENV_RC.includes(pc.rc)) {' 1 "$rep"
+      ;;
+    331)
+      # triage-compare.js: a LEAK-voided grade keeps its check-environment invalidReason (the leak is misreported as the toolchain)
+      cat > "$rep" <<'MUT331'
+  if (leakInfo.leak === true) return Object.assign({}, g, { status: 'invalid', tail: `LEAK — ${leakInfo.detail || 'the real repo changed during the run'}` }) // MUTATED: leak keeps invalidReason
+MUT331
+      mut_replace_block "$target" 'if (leakInfo.leak === true) return Object.assign({}, g, { status: '\''invalid'\'', invalidReason: null,' 1 "$rep"
+      ;;
+    332)
+      # parity-report.sh: void takes no ledger lock (a concurrent ingest can interleave)
+      cat > "$rep" <<'MUT332'
+  printf '%s' "$REASON" | LC_ALL=C grep -q '[[:cntrl:]]' && usage "--reason must be one line of plain text"
+  : # MUTATED: void takes no ledger lock
+MUT332
+      mut_replace_block "$target" '  printf '\''%s'\'' "$REASON" | LC_ALL=C grep -q '\''[[:cntrl:]]'\'' && usage' 2 "$rep"
+      ;;
+    333)
+      # parity-report.sh: void accepts a run id that is not in the ledger
+      cat > "$rep" <<'MUT333'
+  if false; then # MUTATED: unknown run ids accepted
+MUT333
+      mut_replace_block "$target" '  if ! jq -e -s --arg r "$RUN" '\''any(.[]; .source != "void" and .run != null' 1 "$rep"
+      ;;
+    334)
+      # parity-report.sh: voiding an already-voided run appends a second marker
+      cat > "$rep" <<'MUT334'
+  if false; then # MUTATED: re-void appends again
+MUT334
+      mut_replace_block "$target" '  if jq -e -s --arg r "$RUN" '\''any(.[]; .source == "void"' 1 "$rep"
+      ;;
+    335)
+      # parity-report.sh: report aggregates the rows of voided runs (the void marker has no effect)
+      cat > "$rep" <<'MUT335'
+| ($objs0 | map(select(.source != "void"))) as $objs # MUTATED: voided rows kept
+MUT335
+      mut_replace_block "$target" '| ($objs0 | map(select(.source != "void" and ((.run | type) == "null"' 1 "$rep"
+      ;;
+    336)
+      # parity-report.sh: void markers and voided rows are counted as malformed lines
+      cat > "$rep" <<'MUT336'
+| {ledger: $ledger, tiers: $tiersPath, lines: $total, malformed: ($total - ($ok | length) - ($rvAll | length) ), # MUTATED: void rows counted as malformed
+MUT336
+      mut_replace_block "$target" 'malformed: ($total - ($ok | length)' 1 "$rep"
+      ;;
+    337)
+      # patch-check.sh: the grading worktree never gets the stage links
+      cat > "$rep" <<'MUT337'
+  : > "$1"; : > "$3"; return 0 # MUTATED: grading worktree never linked
+MUT337
+      mut_replace_block "$target" '  js=$("$STAGE_WT" link --repo "$REPO" --base "$BASE_SHA" --worktree "$WT" 2> "$2") || return 1' 1 "$rep"
+      ;;
+    338)
+      # patch-check.sh: the pristine stage links stay while the patch is applied
+      cat > "$rep" <<'MUT338'
+  if ! link_wt "$L0" "$log.link0"; then # MUTATED: links kept while the patch is applied
+MUT338
+      mut_replace_block "$target" '  if ! link_wt "$L0" "$log.link0" || ! unlink_wt "$L0"; then' 1 "$rep"
+      ;;
+    339)
+      # patch-check.sh: a patch occupying a stage-linked path is graded
+      cat > "$rep" <<'MUT339'
+  if false; then # MUTATED: a patch occupying a linked path is graded
+MUT339
+      mut_replace_block "$target" '  if ! cmp -s "$L0" "$L1"; then' 1 "$rep"
+      ;;
+    340)
+      # patch-check.sh: an overlay holding a stage-linked path is copied
+      cat > "$rep" <<'MUT340'
+    : # MUTATED: overlay may hold a linked path
+MUT340
+      mut_replace_block "$target" '    if [ -e "$OVERLAY/$lp" ] || [ -L "$OVERLAY/$lp" ]; then echo "it holds $lp, a stage-linked path (.triage-stage-links)"; return 0; fi' 1 "$rep"
+      ;;
+    341)
+      # patch-check.sh: a failed stage-link step reads as no links
+      cat > "$rep" <<'MUT341'
+  js=$("$STAGE_WT" link --repo "$REPO" --base "$BASE_SHA" --worktree "$WT" 2> "$2") || js='{"step":"link","links":[],"refused":[],"env":null}' # MUTATED: a failed link step reads as no links
+MUT341
+      mut_replace_block "$target" '  js=$("$STAGE_WT" link --repo "$REPO" --base "$BASE_SHA" --worktree "$WT" 2> "$2") || return 1' 1 "$rep"
+      ;;
+    342)
+      # patch-check.sh: a missing stage-worktree.sh is not exit 2
+      cat > "$rep" <<'MUT342'
+: # MUTATED: missing stage-worktree.sh not fatal
+MUT342
+      mut_replace_block "$target" '[ -x "$STAGE_WT" ] || usage "stage-worktree.sh is missing beside patch-check.sh' 1 "$rep"
+      ;;
+    343)
+      # stage-worktree.sh: an opt-in file that cannot be READ at the sha (rev_file rc 2) reads as absent (no links / no exclusions)
+      cat > "$rep" <<'MUT343'
+  git -C "$1" cat-file blob "$sha" > "$4" 2>/dev/null || { : > "$4"; return 1; } # MUTATED: a read failure reads as absent
+MUT343
+      mut_replace_block "$target" '  git -C "$1" cat-file blob "$sha" > "$4" 2>/dev/null || { : > "$4"; return 2; }' 1 "$rep"
+      ;;
+    344)
+      # stage-worktree.sh: an unreadable link manifest reads as no links (diff goes on)
+      cat > "$rep" <<'MUT344'
+  cat "$gd/$MANIFEST" > "$out.m" 2>/dev/null || : > "$out.m" # MUTATED: unreadable manifest read as empty
+MUT344
+      mut_replace_block "$target" '  cat "$gd/$MANIFEST" > "$out.m" 2>/dev/null || { rm -f "$out.m"; return 1; }' 1 "$rep"
+      ;;
+    345)
+      # stage-worktree.sh: diff takes every untracked path as a candidate stage link (the manifest bypassed: a candidate-created symlink is dropped from its patch)
+      cat > "$rep" <<'MUT345'
+  git -C "$w" ls-files -o > "$out.m" 2>/dev/null || { rm -f "$out.m"; return 1; } # MUTATED: every untracked symlink is a stage link
+MUT345
+      mut_replace_block "$target" '  cat "$gd/$MANIFEST" > "$out.m" 2>/dev/null || { rm -f "$out.m"; return 1; }' 1 "$rep"
+      ;;
+    346)
+      # stage-worktree.sh: no scan for a toolchain bound to the source repo (an editable venv is linked)
+      cat > "$rep" <<'MUT346'
+      bf=""; brc=0 # MUTATED: no bound-toolchain scan
+MUT346
+      mut_replace_block "$target" '      bf=$(bound_file "$r" "$p"); brc=$?' 1 "$rep"
+      ;;
+    350)
+      # stage-worktree.sh: link reads the grants at the moving HEAD, not at --base
+      cat > "$rep" <<'MUT350'
+  read_grants "$R" HEAD "$tmp/g" || exit 1 # MUTATED: link grants read at HEAD
+MUT350
+      mut_replace_block "$target" '  read_grants "$R" "$SHA" "$tmp/g" || exit 1' 1 "$rep"
+      ;;
+    351)
+      # stage-worktree.sh: create reads the grants at HEAD, not at the staged sha
+      cat > "$rep" <<'MUT351'
+  read_grants "$R" HEAD "$D/grants" || { rollback; exit 1; } # MUTATED: create grants read at HEAD
+MUT351
+      mut_replace_block "$target" '  read_grants "$R" "$SHA" "$D/grants" || { rollback; echo "stage-worktree: could not read the stage grants at $SHA" >&2; exit 1; }' 1 "$rep"
+      ;;
+    353)
+      # patch-check.sh: an empty or malformed link result reads as no links (graded, not harness)
+      cat > "$rep" <<'MUT353'
+    then .[0].links[] else empty end' > "$1" 2>> "$2" || return 1 # MUTATED: a malformed link result reads as no links
+MUT353
+      mut_replace_block "$target" '    then .[0].links[] else error("no well-formed link result") end'\'' > "$1" 2>> "$2" || return 1' 1 "$rep"
+      ;;
+    354)
+      # patch-check.sh: an overlay is copied through a symlink the patch made (no alias guard)
+      cat > "$rep" <<'MUT354'
+        if (0) { } # MUTATED: no overlay alias guard
+MUT354
+      mut_replace_block "$target" '        if (-l $at) { print "its $_ would be copied through $at, a symlink in the patched worktree\n"; exit 0 }' 1 "$rep"
+      ;;
+    356)
+      # patch-check.sh: --baseline-on is ignored (no baseRc: the pristine base never checked)
+      cat > "$rep" <<'MUT356'
+        brc="" brcs="" # MUTATED: the pristine base never checked
+MUT356
+      mut_replace_block "$target" '        base_rcs' 2 "$rep"
+      ;;
+    357)
+      # triage-compare.js: a check exiting 126/127 is check-environment without the pristine base failing the same way
+      cat > "$rep" <<'MUT357'
+    if (true) { // MUTATED: no pristine-base confirmation
+MUT357
+      mut_replace_block "$target" '    if (sameWay) {' 1 "$rep"
+      ;;
+    358)
+      # triage-compare.js: a 126/127 with no baseRc grades as the candidate's fail
+      cat > "$rep" <<'MUT358'
+    if (!pinned || !Array.isArray(baseRcs)) { // MUTATED: an unknown base reads as the candidate's fail
+MUT358
+      mut_replace_block "$target" '    if (!pinned || !baseOk) {' 1 "$rep"
+      ;;
+    359)
+      # triage-compare.js: patch-check is not given --baseline-on (no baseRc ever)
+      cat > "$rep" <<'MUT359'
+      (overlay ? ` --overlay ${shq(overlay)}` : '') + // MUTATED: no --baseline-on
+MUT359
+      mut_replace_block "$target" '      (overlay ? ` --overlay ${shq(overlay)}` : '\'''\'') + ` --baseline-on ${CHECK_ENV_RC.join('\'','\'')}` +' 1 "$rep"
+      ;;
+    361)
+      # triage-exec.js: a toolchain bound to the source repo is skipped with the untracked-toolchain reason
+      cat > "$rep" <<'MUT361'
+    rec.reason = TOOLCHAIN_REASON // MUTATED: a bound toolchain reads as untracked
+MUT361
+      mut_replace_block "$target" '    rec.reason = gap.some(x => x.bound) ? BOUND_REASON : TOOLCHAIN_REASON' 1 "$rep"
+      ;;
+    362)
+      # triage-exec.js: an entry the stage-link owner REFUSED still covers a check path (the pre-flight re-grants it)
+      cat > "$rep" <<'MUT362'
+    !cc.link.links.concat(cc.link.refused.map(r => r.path)).some(e => under(x.path, e))) // MUTATED: a refused entry covers
+MUT362
+      mut_replace_block "$target" '    !cc.link.links.some(e => under(x.path, e)))' 1 "$rep"
+      ;;
+    363)
+      # stage-worktree.sh: a link is made but not recorded in the manifest (diff then puts it in the patch)
+      cat > "$rep" <<'MUT363'
+      if false; then # MUTATED: links not recorded in the manifest
+MUT363
+      mut_replace_block "$target" '      if ! { grep -qxF -- "$p" "$mf" 2>/dev/null || printf '\''%s\n'\'' "$p" >> "$mf"; }; then' 1 "$rep"
+      ;;
+    364)
+      # stage-worktree.sh: a RELATIVE .pth entry is not resolved (only absolute lines are checked): ../../../src into the repo is linked
+      cat > "$rep" <<'MUT364'
+            next if $l eq "" || $l =~ /^#/ || $l =~ /^import[ \t]/ || $l !~ m{^/}; # MUTATED: relative .pth entries not resolved
+MUT364
+      mut_replace_block "$target" '            next if $l eq "" || $l =~ /^#/ || $l =~ /^import[ \t]/;' 1 "$rep"
+      ;;
+    365)
+      # stage-worktree.sh: symlinks inside the linked path are not checked (node_modules/local -> ../packages/local is linked)
+      cat > "$rep" <<'MUT365'
+          # MUTATED: symlinks inside the linked path not checked
+MUT365
+      mut_replace_block "$target" '          if (-l $f) { my $t = phys($f, 0); defined $t or err("$rel is a symlink loop");' 2 "$rep"
+      ;;
+    366)
+      # stage-worktree.sh: the bound-toolchain scan is unbounded (STAGE_WT_BOUND_SCAN_MAX ignored)
+      cat > "$rep" <<'MUT366'
+          ++$n; # MUTATED: the scan is unbounded
+MUT366
+      mut_replace_block "$target" '          err("more than $max symlinks and metadata files under $self") if ++$n > $max;' 1 "$rep"
+      ;;
+    367)
+      # stage-worktree.sh: a scan that cannot finish (over the bound, a loop, an unreadable file) reads as self-contained
+      cat > "$rep" <<'MUT367'
+        sub err { exit 0 } # MUTATED: an unfinished scan reads as self-contained
+MUT367
+      mut_replace_block "$target" '        sub err { out("could not be scanned for references to the source repo: $_[0] — refused (unknown is never self-contained)") }' 1 "$rep"
+      ;;
+    368)
+      # stage-worktree.sh: a scan whose find fails with no output reads as self-contained
+      cat > "$rep" <<'MUT368'
+      elif false; then : # MUTATED: a failed scan reads as self-contained
+MUT368
+      mut_replace_block "$target" '      elif [ "$brc" -ne 0 ]; then reason="could not be scanned for references to the source repo: the scan failed (find could not walk $p) — refused (unknown is never self-contained)"' 1 "$rep"
+      ;;
+    369)
+      # stage-worktree.sh: setuptools' __editable__ finder modules are not scanned
+      cat > "$rep" <<'MUT369'
+    find "$r/$p" \( -type l -o -type f \( -name '*.pth' -o -name '*.egg-link' -o -name direct_url.json \) \) -print0 2>/dev/null | # MUTATED: finder modules not scanned
+MUT369
+      mut_replace_block "$target" '    find "$r/$p" \( -type l -o -type f \( -name '\''*.pth'\'' -o -name '\''*.egg-link'\'' -o -name direct_url.json -o -name '\''__editable__*'\'' \) \) -print0 2>/dev/null |' 1 "$rep"
+      ;;
+    370)
+      # patch-check.sh: the pristine base stops at its first failing check (the candidate's failing check never runs there: baseRc null)
+      cat > "$rep" <<'MUT370'
+  grade_one "$ROOT/baseline.patch" base stop # MUTATED: the base stops at its first failing check
+MUT370
+      mut_replace_block "$target" '  grade_one "$ROOT/baseline.patch" base all' 1 "$rep"
+      ;;
+    371)
+      # patch-check.sh: baseRc is the base's first failing check, not the candidate's failing check
+      cat > "$rep" <<'MUT371'
+        if [ "${#BASE_RCS[@]}" -gt 0 ]; then brc=null; for x in "${BASE_RCS[@]}"; do [ "$x" -ne 0 ] && { brc=$x; break; }; done; brcs="[$(IFS=,; printf '%s' "${BASE_RCS[*]}")]"; else brc=null brcs=null; fi # MUTATED: baseRc is the base's first failing check
+MUT371
+      mut_replace_block "$target" '        if [ "${#BASE_RCS[@]}" -gt 0 ]; then brc=${BASE_RCS[$p_failed]:-null}; brcs="[$(IFS=,; printf '\''%s'\'' "${BASE_RCS[*]}")]"; else brc=null brcs=null; fi' 1 "$rep"
+      ;;
+    372)
+      # patch-check.sh: a link result carrying a non-null env (an outdated owner lifting a bound refusal) is accepted
+      cat > "$rep" <<'MUT372'
+       and true # MUTATED: an env member accepted
+MUT372
+      mut_replace_block "$target" '       and .[0].env == null' 1 "$rep"
+      ;;
+    373)
+      # triage-compare.js: the grade runs the &&-combined string as ONE --check (no per-check rcs)
+      cat > "$rep" <<'MUT373'
+const pcChecks = `--check ${shq(checkCmd)}` // MUTATED: one --check for the && string
+MUT373
+      mut_replace_block "$target" 'const pcChecks = checks.map(c => `--check ${shq(c)}`).join('\'' '\'')' 1 "$rep"
+      ;;
+    374)
+      # triage-compare.js: a multi-check 126/127 result that does not pin down the failing check is compared as if it did
+      cat > "$rep" <<'MUT374'
+    const pinned = true // MUTATED: the failing check is not pinned down
+MUT374
+      mut_replace_block "$target" '    const pinned = Number.isInteger(f) && f >= 0 && f < n && Array.isArray(rcs) && rcs.length === f + 1 && rcs.every((x, i) => x === (i < f ? 0 : pc.rc))' 1 "$rep"
+      ;;
+    375)
+      # triage-exec.js: checkPaths counts an output redirection target (> build/out.log) as a dependency
+      cat > "$rep" <<'MUT375'
+const OUTPUT_REDIRECT = /$^/ // MUTATED: output redirection targets count as dependencies
+MUT375
+      mut_replace_block "$target" 'const OUTPUT_REDIRECT = /^(\d*>>|\d*>\||\d*>&?|&>>?)$/' 1 "$rep"
+      ;;
+    376)
+      # triage-exec.js: checkPaths counts VAR= / --opt= values (--junitxml=build/x.xml) as dependencies
+      cat > "$rep" <<'MUT376'
+      { const eq = w.indexOf('='); if (eq >= 0) w = w.slice(eq + 1) } if (!w.includes('/')) continue // MUTATED: VAR= and --opt= values count as dependencies
+MUT376
+      mut_replace_block "$target" '      if (w.includes('\''='\'') || !w.includes('\''/'\'')) continue' 1 "$rep"
+      ;;
+    377)
+      # triage-exec.js: checkPaths counts the value after an output option (-o out/bin, --basetemp tmp/pt) as a dependency
+      cat > "$rep" <<'MUT377'
+const OUTPUT_OPTION = /$^/ // MUTATED: the value after an output option counts as a dependency
+MUT377
+      mut_replace_block "$target" 'const OUTPUT_OPTION = /^(-o|--[A-Za-z0-9-]*(out|junitxml|junit-xml|basetemp|log-file|report)[A-Za-z0-9-]*)$/' 1 "$rep"
+      ;;
+    378)
+      # triage-exec.js: parseLinkCheck accepts an outdated owner's stage env (env not null)
+      cat > "$rep" <<'MUT378'
+  // MUTATED: an outdated owner's stage env accepted
+MUT378
+      mut_replace_block "$target" '  if (o.env != null) return null' 1 "$rep"
+      ;;
+    379)
+      # patch-check.sh: checks inherit the caller's source-bound import settings (PYTHONPATH & co. never unset)
+      cat > "$rep" <<'MUT379'
+  ( cd "$WT" && export XDG_CACHE_HOME="$CACHE" TMPDIR="$CACHE" GRANTFORGE_CACHE_DIR="$CACHE" && eval "$ENV_LINES" && exec bash -c "$2" ) >> "$1" 2>&1 < /dev/null & # MUTATED: source-bound import settings inherited
+MUT379
+      mut_replace_block "$target" '  ( cd "$WT" && unset "${SOURCE_BOUND_ENV[@]}" && export XDG_CACHE_HOME="$CACHE" TMPDIR="$CACHE" GRANTFORGE_CACHE_DIR="$CACHE" && eval "$ENV_LINES" && exec bash -c "$2" ) >> "$1" 2>&1 < /dev/null &' 1 "$rep"
+      ;;
+    380)
+      # patch-check.sh: SOURCE_BOUND_ENV clears only PYTHONPATH (PYTHONHOME, PYTHONSTARTUP, NODE_PATH, PERL5LIB inherited)
+      cat > "$rep" <<'MUT380'
+SOURCE_BOUND_ENV=(PYTHONPATH) # MUTATED: only PYTHONPATH cleared
+MUT380
+      mut_replace_block "$target" 'SOURCE_BOUND_ENV=(PYTHONPATH PYTHONHOME PYTHONSTARTUP NODE_PATH PERL5LIB)' 1 "$rep"
+      ;;
+    381)
+      # patch-check.sh: the graded run runs the checks one by one (a process group per check: what check 1 started is gone for check 2)
+      cat > "$rep" <<'MUT381'
+  local abs="$1" tag="$2" mode="${3:-stop}" log="$ROOT/$2.log" L0="$ROOT/$2.links0" L1="$ROOT/$2.links1" ds="" hit # MUTATED: the graded run split check by check
+MUT381
+      mut_replace_block "$target" '  local abs="$1" tag="$2" mode="${3:-combined}" log="$ROOT/$2.log" L0="$ROOT/$2.links0" L1="$ROOT/$2.links1" ds="" hit' 1 "$rep"
+      ;;
+    382)
+      # patch-check.sh: a check-by-check rerun that does not fail with the graded rc is trusted to name the failing check
+      cat > "$rep" <<'MUT382'
+          if [ "$G_APPLIES" = true ] && [ -z "$G_ERROR" ] && [ -n "$G_FAILED" ]; then # MUTATED: an unreproduced rerun trusted
+MUT382
+      mut_replace_block "$target" '          if [ "$G_APPLIES" = true ] && [ -z "$G_ERROR" ] && [ "$G_RC" = "$p_rc" ] && [ -n "$G_FAILED" ]; then' 1 "$rep"
+      ;;
+    383)
+      # triage-compare.js: check-environment compares only the failing check's rc on the base (base [1,127] vs patch [0,127] reads as a missing toolchain)
+      cat > "$rep" <<'MUT383'
+    const sameWay = baseRcs[f] === pc.rc // MUTATED: only the failing check compared
+MUT383
+      mut_replace_block "$target" '    const sameWay = baseRcs.slice(0, f + 1).every((x, i) => x === rcs[i])' 1 "$rep"
+      ;;
+    384)
+      # triage-compare.js: a 126/127 the base cannot run either but reaches differently (INCONCLUSIVE) grades as the candidate's fail
+      cat > "$rep" <<'MUT384'
+    if (false) { // MUTATED: inconclusive reads as a fail
+MUT384
+      mut_replace_block "$target" '    if (CHECK_ENV_RC.includes(baseRcs[f])) {' 1 "$rep"
+      ;;
     *)
       return 1
       ;;
   esac
 }
+
+# lacks STRING FILE — true only when grep ran and found no match (rc 1): a grep ERROR
+# (rc 2, e.g. a pattern taken for an option) is never read as "the line is gone".
+lacks() { grep -qF -- "$1" "$2"; [ $? -eq 1 ]; }
 
 # verify_mutation ID DEST_REPO_DIR — confirm the mutation actually took effect
 # (the mutated line changed), independent of whatever the test suite says.
@@ -2950,7 +3681,7 @@ verify_mutation() {
     45) grep -qF 'MUTATED: source history/refs kept' "$target" && ! grep -qF 'update-ref -d "$r"' "$target" ;;
     46) grep -qF 'MUTATED: MODEL line dropped for external review candidates' "$target" && ! grep -qF '(c.model ? `MODEL=${c.model}' "$target" ;;
     47) grep -qF 'MUTATED: unknown leak state accepted' "$target" && ! grep -qF 'if (leakInfo.leak !== false && gr)' "$target" ;;
-    48) grep -qF 'MUTATED: overlay failure ignored' "$target" && ! grep -qF 'emit "$patch" true null "$diffstat" "$log.tail" overlay-failed' "$target" ;;
+    48) grep -qF 'MUTATED: overlay failure ignored' "$target" && lacks 'overlay copy failed — the hidden tests are missing' "$target" ;;
     49) grep -qF 'MUTATED: git env not cleared' "$target" && ! grep -qF 'unset GIT_DIR GIT_WORK_TREE' "$target" ;;
     50) grep -qF 'MUTATED: symlink resolved only at parent' "$target" && ! grep -qF 't=$(readlink "$p")' "$target" ;;
     51) grep -qF 'MUTATED: conflicting 3-way apply not pre-checked' "$target" && ! grep -qF "! grep -qi 'conflict'" "$target" ;;
@@ -3118,7 +3849,7 @@ verify_mutation() {
     106) grep -qF 'MUTATED: missing ext-run allows codex' "$target" && ! grep -qF 'is missing — marking the snapshot off-limits to codex' "$target" ;;
     107) grep -qF 'MUTATED: require-clean ignored' "$target" && ! grep -qF 'if [ "$REQUIRE_CLEAN" -eq 1 ]; then' "$target" ;;
     108) grep -qF 'MUTATED: failed write assumed untouched' "$target" && ! grep -qF 'modified() { paths_state' "$target" ;;
-    109) grep -qF 'MUTATED: ignored paths not fingerprinted' "$target" && ! grep -qF 'ignored_snapshot "$r" "$out.ign" || return 1' "$target" ;;
+    109) grep -qF 'MUTATED: ignored paths not fingerprinted' "$target" && ! grep -qF 'ignored_snapshot "$r" "$out.ign" "$pf" || return 1' "$target" ;;
     222) grep -qF 'MUTATED: a missing CHECKRC reads as exit 0' "$target" && ! grep -qF '  return hits.length ? Number(hits[hits.length - 1][1]) : null' "$target" ;;
     223) grep -qF 'MUTATED: the first CHECKRC line decides' "$target" && ! grep -qF '  return hits.length ? Number(hits[hits.length - 1][1]) : null' "$target" ;;
     224) grep -qF 'MUTATED: no verdict reads as PASS' "$target" ;;
@@ -3203,6 +3934,79 @@ verify_mutation() {
     303) grep -qF 'MUTATED: only the bare spelling' "$target" ;;
     304) grep -qF 'MUTATED: old pointer tail' "$target" ;;
     305) grep -qF 'MUTATED: bare import spelling only' "$target" ;;
+    306) grep -qF 'MUTATED: working-tree copy read' "$target" && lacks '  git -C "$1" cat-file blob "$sha" > "$4" 2>/dev/null || { : > "$4"; return 2; }' "$target" ;;
+    307) grep -qF 'MUTATED: excluded paths not counted' "$target" && ! grep -qF '@p = grep { !($x{$_} && ++$xn) } @p;' "$target" ;;
+    308) grep -qF 'MUTATED: leakignore patterns blob not fingerprinted' "$target" && ! grep -qF 'printf '\''\tleakignore:%s\n'\'' "$(git hash-object --no-filters -- "$pf")" >> "$out" || { rm -f "$out.z" "$out.x" "$out.xn" "$out.h" "$out.m" "$out.hh"; return 1; }' "$target" ;;
+    309) grep -qF 'MUTATED: patterns re-read from HEAD at leakcheck' "$target" && grep -qF 'rev_file "$R" HEAD "$LEAKIGNORE" "$D/now.li";' "$target" && lacks '  [ -s "$pf" ] || pf=""' "$target" ;;
+    310) grep -qF 'MUTATED: a tracked path may be linked' "$target" && lacks '        "in the repo") tracked_in "$r" "$p" ;;' "$target" ;;
+    311) grep -qF 'MUTATED: .. component allowed' "$target" && ! grep -qF 'case "/$p/" in */../*) reason="contains a .. component" ;; */./*|*//*) reason="not a normalized repo-relative path" ;; esac' "$target" ;;
+    312) grep -qF 'MUTATED: a path the repo does not ignore may be linked' "$target" && ! grep -qF 'case $? in 0) ;; 1) reason="not gitignored in the repo" ;; *) reason="git check-ignore failed" ;; esac' "$target" ;;
+    313) grep -qF 'MUTATED: stage links not excluded from the patch' "$target" && lacks 'update-index --force-remove' "$target" ;;
+    314) grep -qF 'MUTATED: an empty dir instead of the link' "$target" && ! grep -qF 'if ! { mkdir -p "$w/$(dirname "$p")" && ln -s "$r/$p" "$w/$p"; }; then' "$target" ;;
+    315) grep -qF 'MUTATED: a main working tree counts as linked' "$target" && ! grep -qF '[ "$gd" != "$cdir" ] || return 1' "$target" ;;
+    316) grep -qF 'MUTATED: a worktree of another repo is accepted' "$target" && ! grep -qF '[ "$(common_dir "$W")" = "$(common_dir "$R")" ] || usage "--worktree $WT is not a worktree of $R"' "$target" ;;
+    317) grep -qF 'MUTATED: a symlink in the repo may be linked' "$target" && ! grep -qF 'if [ -L "$r/$p" ]; then reason="a symlink in the repo"' "$target" ;;
+    318) grep -qF 'MUTATED: stage links counted in ignoredNew' "$target" && ! grep -qF 'ign=$(git -C "$WT" --no-optional-locks ls-files -z -o -i --exclude-standard 2>/dev/null | tr '\''\000'\'' '\''\n'\'' | grep -cvxF -f "$sl")' "$target" ;;
+    319) grep -qF 'MUTATED: create links nothing' "$target" && lacks '    make_links "$R" "$SHA" "$D/wt-$i" "$D/grants" "$D/links" || { rollback; exit 1; }' "$target" ;;
+    320) grep -qF 'MUTATED: create ignores .triage-leakignore' "$target" && lacks '  rev_file "$R" "$SHA" "$LEAKIGNORE" "$D/fingerprint.leakignore"; rc=$?' "$target" ;;
+    321) grep -qF 'MUTATED: toolchain gap never skips' "$target" && ! grep -qF 'if (gap.length) {' "$target" ;;
+    322) grep -qF 'MUTATED: link coverage by string prefix' "$target" && lacks '  const under = (p, e) => p === e || p.startsWith(`${e}/`)' "$target" ;;
+    323) grep -qF 'MUTATED: untracked is no gap' "$target" && lacks '  return cc.paths.filter(x => (x.state === '\''ignored'\'' || x.state === '\''untracked'\'' || x.state === '\''error'\'') &&' "$target" ;;
+    324) grep -qF 'MUTATED: either candidate skips' "$target" && ! grep -qF 'if (envInvalid(p) && envInvalid(ch)) return { apply: null, toolchain: true, why: `${TOOLCHAIN_REASON} (every candidate'\''s checks exited 126/127, and so did the pristine base'\''s)` }' "$target" ;;
+    325) grep -qF 'MUTATED: toolchain choice not skipped' "$target" && ! grep -qF 'if (choice.toolchain) {' "$target" ;;
+    326) grep -qF 'MUTATED: garbled owner answer read as no links' "$target" && lacks '  const link = linkRc === '\''0'\'' ? parseLinkCheck(linkJson) : null' "$target" ;;
+    327) grep -qF 'MUTATED: path count unchecked' "$target" && ! grep -qF 'if (pathTags.length !== asked.length || pathTags.some(x => !x || !PATH_STATES.includes(x.state)) ||' "$target" ;;
+    328) grep -qF 'MUTATED: a failed owner read as no links' "$target" && lacks '  const link = linkRc === '\''0'\'' ? parseLinkCheck(linkJson) : null' "$target" ;;
+    329) grep -qF 'MUTATED: 126 not an environment failure' "$target" && ! grep -qF 'const CHECK_ENV_RC = [126, 127]' "$target" ;;
+    330) grep -qF 'MUTATED: environment grade disabled' "$target" && ! grep -qF 'if (pc.applies === true && CHECK_ENV_RC.includes(pc.rc)) {' "$target" ;;
+    331) grep -qF 'MUTATED: leak keeps invalidReason' "$target" && ! grep -qF 'if (leakInfo.leak === true) return Object.assign({}, g, { status: '\''invalid'\'', invalidReason: null, tail: `LEAK — ${leakInfo.detail || '\''the real repo changed during the run'\''}` })' "$target" ;;
+    332) grep -qF 'MUTATED: void takes no ledger lock' "$target" ;;
+    333) grep -qF 'MUTATED: unknown run ids accepted' "$target" && ! grep -qF 'if ! jq -e -s --arg r "$RUN" '\''any(.[]; .source != "void" and .run != null and (.run | tostring) == $r)'\'' "$TMP/old" >/dev/null; then' "$target" ;;
+    334) grep -qF 'MUTATED: re-void appends again' "$target" && ! grep -qF 'if jq -e -s --arg r "$RUN" '\''any(.[]; .source == "void" and (.run | tostring) == $r)'\'' "$TMP/old" >/dev/null; then' "$target" ;;
+    335) grep -qF 'MUTATED: voided rows kept' "$target" && ! grep -qF '| ($objs0 | map(select(.source != "void" and ((.run | type) == "null" or ((.run | tostring) as $r | $voidRuns | index($r) == null))))) as $objs' "$target" ;;
+    336) grep -qF 'MUTATED: void rows counted as malformed' "$target" && lacks '- ($voidRows | length) - ($voidMarks | length)),' "$target" ;;
+    337) grep -qF 'MUTATED: grading worktree never linked' "$target" && lacks '  js=$("$STAGE_WT" link --repo "$REPO" --base "$BASE_SHA" --worktree "$WT" 2> "$2") || return 1' "$target" ;;
+    338) grep -qF 'MUTATED: links kept while the patch is applied' "$target" && lacks '|| ! unlink_wt "$L0"; then' "$target" ;;
+    339) grep -qF 'MUTATED: a patch occupying a linked path is graded' "$target" && ! grep -qF 'if ! cmp -s "$L0" "$L1"; then' "$target" ;;
+    340) grep -qF 'MUTATED: overlay may hold a linked path' "$target" && lacks 'a stage-linked path (.triage-stage-links)"; return 0; fi' "$target" ;;
+    341) grep -qF 'MUTATED: a failed link step reads as no links' "$target" && lacks '  js=$("$STAGE_WT" link --repo "$REPO" --base "$BASE_SHA" --worktree "$WT" 2> "$2") || return 1' "$target" ;;
+    342) grep -qF 'MUTATED: missing stage-worktree.sh not fatal' "$target" && ! grep -qF '[ -x "$STAGE_WT" ] || usage' "$target" ;;
+    343) grep -qF 'MUTATED: a read failure reads as absent' "$target" && lacks '  git -C "$1" cat-file blob "$sha" > "$4" 2>/dev/null || { : > "$4"; return 2; }' "$target" ;;
+    344) grep -qF 'MUTATED: unreadable manifest read as empty' "$target" && lacks '  cat "$gd/$MANIFEST" > "$out.m" 2>/dev/null || { rm -f "$out.m"; return 1; }' "$target" ;;
+    345) grep -qF 'MUTATED: every untracked symlink is a stage link' "$target" && lacks '  cat "$gd/$MANIFEST" > "$out.m" 2>/dev/null || { rm -f "$out.m"; return 1; }' "$target" ;;
+    346) grep -qF 'MUTATED: no bound-toolchain scan' "$target" && lacks '      bf=$(bound_file "$r" "$p"); brc=$?' "$target" ;;
+    350) grep -qF 'MUTATED: link grants read at HEAD' "$target" && lacks '  read_grants "$R" "$SHA" "$tmp/g" || exit 1' "$target" ;;
+    351) grep -qF 'MUTATED: create grants read at HEAD' "$target" && lacks '  read_grants "$R" "$SHA" "$D/grants" || { rollback; echo "stage-worktree: could not read the stage grants at $SHA" >&2; exit 1; }' "$target" ;;
+    353) grep -qF 'MUTATED: a malformed link result reads as no links' "$target" && lacks '    then .[0].links[] else error("no well-formed link result") end'\'' > "$1" 2>> "$2" || return 1' "$target" ;;
+    354) grep -qF 'MUTATED: no overlay alias guard' "$target" && lacks '        if (-l $at) { print "its $_ would be copied through $at, a symlink in the patched worktree\n"; exit 0 }' "$target" ;;
+    356) grep -qF 'MUTATED: the pristine base never checked' "$target" && lacks '        base_rcs' "$target" ;;
+    357) grep -qF 'MUTATED: no pristine-base confirmation' "$target" && lacks '    if (sameWay) {' "$target" ;;
+    358) grep -qF 'MUTATED: an unknown base reads as the candidate' "$target" && lacks '    if (!pinned || !baseOk) {' "$target" ;;
+    359) grep -qF 'MUTATED: no --baseline-on' "$target" && lacks '      (overlay ? ` --overlay ${shq(overlay)}` : '\'''\'') + ` --baseline-on ${CHECK_ENV_RC.join('\'','\'')}` +' "$target" ;;
+    361) grep -qF 'MUTATED: a bound toolchain reads as untracked' "$target" && lacks '    rec.reason = gap.some(x => x.bound) ? BOUND_REASON : TOOLCHAIN_REASON' "$target" ;;
+    362) grep -qF 'MUTATED: a refused entry covers' "$target" && lacks '    !cc.link.links.some(e => under(x.path, e)))' "$target" ;;
+    363) grep -qF 'MUTATED: links not recorded in the manifest' "$target" && lacks '      if ! { grep -qxF -- "$p" "$mf" 2>/dev/null || printf '\''%s\n'\'' "$p" >> "$mf"; }; then' "$target" ;;
+    364) grep -qF 'MUTATED: relative .pth entries not resolved' "$target" && lacks '            next if $l eq "" || $l =~ /^#/ || $l =~ /^import[ \t]/;' "$target" ;;
+    365) grep -qF 'MUTATED: symlinks inside the linked path not checked' "$target" && lacks '          if (-l $f) { my $t = phys($f, 0); defined $t or err("$rel is a symlink loop");' "$target" ;;
+    366) grep -qF 'MUTATED: the scan is unbounded' "$target" && lacks '          err("more than $max symlinks and metadata files under $self") if ++$n > $max;' "$target" ;;
+    367) grep -qF 'MUTATED: an unfinished scan reads as self-contained' "$target" && lacks '        sub err { out("could not be scanned for references to the source repo: $_[0] — refused (unknown is never self-contained)") }' "$target" ;;
+    368) grep -qF 'MUTATED: a failed scan reads as self-contained' "$target" && lacks '      elif [ "$brc" -ne 0 ]; then reason="could not be scanned for references to the source repo: the scan failed (find could not walk $p) — refused (unknown is never self-contained)"' "$target" ;;
+    369) grep -qF 'MUTATED: finder modules not scanned' "$target" && lacks '    find "$r/$p" \( -type l -o -type f \( -name '\''*.pth'\'' -o -name '\''*.egg-link'\'' -o -name direct_url.json -o -name '\''__editable__*'\'' \) \) -print0 2>/dev/null |' "$target" ;;
+    370) grep -qF 'MUTATED: the base stops at its first failing check' "$target" && lacks '  grade_one "$ROOT/baseline.patch" base all' "$target" ;;
+    371) grep -qF 'MUTATED: baseRc is the base'\''s first failing check' "$target" && lacks '        if [ "${#BASE_RCS[@]}" -gt 0 ]; then brc=${BASE_RCS[$p_failed]:-null}; brcs="[$(IFS=,; printf '\''%s'\'' "${BASE_RCS[*]}")]"; else brc=null brcs=null; fi' "$target" ;;
+    372) grep -qF 'MUTATED: an env member accepted' "$target" && lacks '       and .[0].env == null' "$target" ;;
+    373) grep -qF 'MUTATED: one --check for the && string' "$target" && lacks 'const pcChecks = checks.map(c => `--check ${shq(c)}`).join('\'' '\'')' "$target" ;;
+    374) grep -qF 'MUTATED: the failing check is not pinned down' "$target" && lacks '    const pinned = Number.isInteger(f) && f >= 0 && f < n && Array.isArray(rcs) && rcs.length === f + 1 && rcs.every((x, i) => x === (i < f ? 0 : pc.rc))' "$target" ;;
+    375) grep -qF 'MUTATED: output redirection targets count as dependencies' "$target" && lacks 'const OUTPUT_REDIRECT = /^(\d*>>|\d*>\||\d*>&?|&>>?)$/' "$target" ;;
+    376) grep -qF 'MUTATED: VAR= and --opt= values count as dependencies' "$target" && lacks '      if (w.includes('\''='\'') || !w.includes('\''/'\'')) continue' "$target" ;;
+    377) grep -qF 'MUTATED: the value after an output option counts as a dependency' "$target" && lacks 'const OUTPUT_OPTION = /^(-o|--[A-Za-z0-9-]*(out|junitxml|junit-xml|basetemp|log-file|report)[A-Za-z0-9-]*)$/' "$target" ;;
+    378) grep -qF 'MUTATED: an outdated owner'\''s stage env accepted' "$target" && lacks '  if (o.env != null) return null' "$target" ;;
+    379) grep -qF 'MUTATED: source-bound import settings inherited' "$target" && lacks '  ( cd "$WT" && unset "${SOURCE_BOUND_ENV[@]}" && export XDG_CACHE_HOME="$CACHE" TMPDIR="$CACHE" GRANTFORGE_CACHE_DIR="$CACHE" && eval "$ENV_LINES" && exec bash -c "$2" ) >> "$1" 2>&1 < /dev/null &' "$target" ;;
+    380) grep -qF 'MUTATED: only PYTHONPATH cleared' "$target" && lacks 'SOURCE_BOUND_ENV=(PYTHONPATH PYTHONHOME PYTHONSTARTUP NODE_PATH PERL5LIB)' "$target" ;;
+    381) grep -qF 'MUTATED: the graded run split check by check' "$target" && lacks '  local abs="$1" tag="$2" mode="${3:-combined}" log="$ROOT/$2.log" L0="$ROOT/$2.links0" L1="$ROOT/$2.links1" ds="" hit' "$target" ;;
+    382) grep -qF 'MUTATED: an unreproduced rerun trusted' "$target" && lacks '          if [ "$G_APPLIES" = true ] && [ -z "$G_ERROR" ] && [ "$G_RC" = "$p_rc" ] && [ -n "$G_FAILED" ]; then' "$target" ;;
+    383) grep -qF 'MUTATED: only the failing check compared' "$target" && lacks '    const sameWay = baseRcs.slice(0, f + 1).every((x, i) => x === rcs[i])' "$target" ;;
+    384) grep -qF 'MUTATED: inconclusive reads as a fail' "$target" && lacks '    if (CHECK_ENV_RC.includes(baseRcs[f])) {' "$target" ;;
     *) return 1 ;;
   esac
 }
@@ -3216,17 +4020,29 @@ verify_mutation() {
 # own suite before any mutation was applied.
 # -----------------------------------------------------------------------------
 FILELIST="$WORK_ROOT/filelist.txt"
-if ! git -C "$REPO_DIR" ls-files --cached --others --exclude-standard > "$FILELIST" 2>/dev/null; then
+if ! git -C "$REPO_DIR" ls-files --cached --others --exclude-standard > "$FILELIST.all" 2>/dev/null; then
   # Disposable checkouts may have no .git. Keep the mutation copy inside the
   # same tree while excluding the working temp directory from its own file list.
-  ( cd "$REPO_DIR" && find . \( -path './.git' -o -path "./$(basename "$WORK_ROOT")" \) -prune -o -type f -print | sed 's#^./##' ) > "$FILELIST"
+  ( cd "$REPO_DIR" && find . \( -path './.git' -o -path "./$(basename "$WORK_ROOT")" \) -prune -o -type f -print | sed 's#^./##' ) > "$FILELIST.all"
 fi
+# Only paths that exist: a tracked file deleted in the working tree (not committed yet)
+# is not part of the tree under test, and tar would fail on it.
+( cd "$REPO_DIR" && while IFS= read -r f; do if [ -e "$f" ] || [ -L "$f" ]; then printf '%s\n' "$f"; fi; done ) < "$FILELIST.all" | awk '!seen[$0]++' > "$FILELIST"
+FILE_COUNT=$(wc -l < "$FILELIST" | tr -d ' ')
 
+# copy_repo DEST — the file list into DEST. rc != 0 when EITHER tar failed (pipefail,
+# each status checked) or DEST does not end up holding exactly the listed number of
+# non-directory entries: an incomplete copy is a harness ERROR, never a mutation run.
 copy_repo() { # $1 = dest dir
-  local dest
+  local dest st n
   dest="$1"
-  mkdir -p "$dest"
-  rsync -a --files-from="$FILELIST" "$REPO_DIR/" "$dest/" >/dev/null
+  mkdir -p "$dest" || return 1
+  # tar (bsdtar on macOS, GNU tar on CI): same file list, modes and symlinks kept.
+  ( cd "$REPO_DIR" && tar -cf - -T "$FILELIST" ) | ( cd "$dest" && tar -xpf - )
+  st=("${PIPESTATUS[@]}")
+  [ "${st[0]}" -eq 0 ] && [ "${st[1]}" -eq 0 ] || { echo "copy_repo: tar failed (create rc ${st[0]}, extract rc ${st[1]})" >&2; return 1; }
+  n=$(find "$dest" ! -type d | wc -l | tr -d ' ')
+  [ "$n" = "$FILE_COUNT" ] || { echo "copy_repo: $dest holds $n files, the list has $FILE_COUNT" >&2; return 1; }
 }
 
 run_suite() { # $1 = repo copy dir, $2 = suite name (see suite_file) -> exit code
@@ -3260,7 +4076,7 @@ run_suite() { # $1 = repo copy dir, $2 = suite name (see suite_file) -> exit cod
 # -----------------------------------------------------------------------------
 echo "Building baseline (unmutated) copies and running suites once..."
 BASELINE_DIR="$WORK_ROOT/baseline"
-copy_repo "$BASELINE_DIR"
+copy_repo "$BASELINE_DIR" || { echo "ERROR: could not copy the repo for the baseline (see above); nothing assessed" >&2; exit 1; }
 
 BASELINE_ROUNDTRIP_OK=1
 BASELINE_SCENARIOS_OK=1
@@ -3395,7 +4211,14 @@ for id in $RUN_IDS; do
   fi
 
   dest="$WORK_ROOT/mut-$id"
-  copy_repo "$dest"
+  if ! copy_repo "$dest"; then
+    printf '[%-2s] %-26s %-9s %-7s %s\n' "$id" "$file" "$suite" "ERROR" "$desc"
+    echo "      -> the repo copy is incomplete (see above); harness error, not a kill."
+    ERRORS=$((ERRORS + 1))
+    ERROR_LIST="$ERROR_LIST\n  [$id] $desc — repo copy failed"
+    rm -rf "$dest"
+    continue
+  fi
 
   if ! apply_mutation "$id" "$dest"; then
     printf '[%-2s] %-26s %-9s %-7s %s\n' "$id" "$file" "$suite" "ERROR" "$desc"

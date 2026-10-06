@@ -30,6 +30,14 @@ const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 const CLAUDE_AGENT = { quick: 'triage-quick-task', builder: 'triage-builder', deep: 'triage-deep-reasoner', top: 'triage-fable-architect' }
 const PATCH_CHECK = '~/.claude/scripts/patch-check.sh'
 const STAGE_WT = '~/.claude/scripts/stage-worktree.sh'
+// Check exit codes that mean the checks could not RUN (the shell's command-not-found
+// and not-executable statuses). patch-check.sh is told them (--baseline-on): when the
+// graded run exits with one it finds WHICH check (re-run check by check: failedCheck,
+// rcs) and reports baseRc — THAT check's rc on the pristine base — and baseRcs; gradeOf()
+// calls it the environment's (invalid, invalidReason 'check-environment') only when the
+// base's checks fail the same way up to that check, INCONCLUSIVE when the base cannot run
+// it either but differs before it.
+const CHECK_ENV_RC = [126, 127]
 
 const USAGE = 'Expected args = {\n' +
   '  repo: "/abs/repo"            // any git repo (need not be the session repo); may be dirty — candidates never see its tree\n' +
@@ -183,10 +191,16 @@ function scopePath(f) {
 // compares the same spelling. The repo itself is shown as '.'.
 const files = (args.files || []).map(f => scopePath(f) || '.')
 const checks = args.checks.map(c => c.trim())
-// The grade command: one check as written; several each in its OWN `bash -c`, so
-// `a || b` in one check can never mask an earlier check's failure (a plain
-// ' && ' join would parse ['false', 'true || true'] as (false && true) || true).
+// The check command a candidate is shown: one check as written; several each in its
+// OWN `bash -c`, so `a || b` in one check can never mask an earlier check's failure (a
+// plain ' && ' join would parse ['false', 'true || true'] as (false && true) || true).
+// patch-check.sh gets each check as its own --check (pcChecks) and GRADES this very
+// string (it builds `bash -c 'A' && bash -c 'B'` with the same quoting): one process
+// group, so a check may use what an earlier one left running, exactly as the candidates
+// ran it. It runs the checks one by one only to classify a 126/127 (which check; the
+// same check on the pristine base).
 const checkCmd = checks.length === 1 ? checks[0] : checks.map(c => `bash -c ${shq(c)}`).join(' && ')
+const pcChecks = checks.map(c => `--check ${shq(c)}`).join(' ')
 // NO REAL PATHS TO CANDIDATES: a check names a tool only as $PARITY_<NAME>; the
 // prompts show it UNEXPANDED. patch-check.sh exports the mapped paths at grading.
 // A candidate can run such checks itself only when the task opted in
@@ -251,8 +265,8 @@ const cleanupCmd = `${STAGE_WT} cleanup --repo ${shq(repo)} --dir ${shq(stageDir
 // the session repo — a wrong selfRc and a false LEAK.
 function claudePrompt(c, sha) {
   const cdPrefix = `cd ${c.worktree} && `
-  // With a self-check env, the env is sourced in the SAME command (nothing persists).
-  const runPrefix = usesParityEnv && selfCheckFor(c) ? `${cdPrefix}. .parity-env && ` : cdPrefix
+  // With a self-check env, .parity-env is sourced in the SAME command (nothing persists).
+  const runPrefix = `${cdPrefix}${usesParityEnv && selfCheckFor(c) ? '. .parity-env && ' : ''}`
   return `${task}\n\n` +
     `--- Bake-off protocol (you are one candidate; others get the same brief) ---\n` +
     `Your workspace is the staged git worktree ${c.worktree} (detached at ${sha}).\n` +
@@ -420,8 +434,9 @@ try {
   const pcOut = `${outDir}/patchcheck.out`
   const pcRc = `${outDir}/patchcheck.rc`
   if (graded.length) {
-    lines.push(`rm -f ${shq(pcRc)}; ${PATCH_CHECK} --repo ${shq(repo)} --base ${shq(sha)} --check ${shq(checkCmd)}` +
-      (overlay ? ` --overlay ${shq(overlay)}` : '') + ` --summary --tail-dir ${shq(`${outDir}/tails`)} ` + graded.map(r => shq(r.c.patch)).join(' ') +
+    lines.push(`rm -f ${shq(pcRc)}; ${PATCH_CHECK} --repo ${shq(repo)} --base ${shq(sha)} ${pcChecks}` +
+      (overlay ? ` --overlay ${shq(overlay)}` : '') + ` --baseline-on ${CHECK_ENV_RC.join(',')}` +
+      ` --summary --tail-dir ${shq(`${outDir}/tails`)} ` + graded.map(r => shq(r.c.patch)).join(' ') +
       ` > ${shq(pcOut)} 2> ${shq(`${outDir}/patchcheck.err`)}; echo $? > ${shq(pcRc)}`)
     lines.push(`for i in $(seq 1 100); do [ -s ${shq(pcRc)} ] && break; sleep 5; done; cat ${shq(pcRc)} 2>/dev/null || echo RUNNING`)
     lines.push(`grep '^PATCHCHECK ' ${shq(pcOut)}`)
@@ -524,8 +539,9 @@ const inScope = p => { const q = scopePath(p); return scopeFiles.some(s => s ===
 // to accept.
 function grade(r) {
   const g = gradeOf(r)
-  if (leakInfo.leak === true) return Object.assign({}, g, { status: 'invalid', tail: `LEAK — ${leakInfo.detail || 'the real repo changed during the run'}` })
-  if (leakInfo.leak !== false && gr) return Object.assign({}, g, { status: 'invalid', tail: `LEAK STATE UNKNOWN — ${leakInfo.detail}` })
+  // A void grade is the leak's doing, not the environment's: invalidReason cleared.
+  if (leakInfo.leak === true) return Object.assign({}, g, { status: 'invalid', invalidReason: null, tail: `LEAK — ${leakInfo.detail || 'the real repo changed during the run'}` })
+  if (leakInfo.leak !== false && gr) return Object.assign({}, g, { status: 'invalid', invalidReason: null, tail: `LEAK STATE UNKNOWN — ${leakInfo.detail}` })
   return g
 }
 function gradeOf(r) {
@@ -557,6 +573,47 @@ function gradeOf(r) {
   if (isStr(pc.error) || (pc.applies === true && pc.rc == null)) {
     return Object.assign(base, { status: 'invalid', rc: null, tail: `UNGRADABLE (${pc.error || 'applied, but no check rc'}) ${tail || ''}`.trim() })
   }
+  // The checks could not RUN: exit 127 (command not found) or 126 (not executable). It
+  // is the staged worktree's ENVIRONMENT — typically a gitignored toolchain such as
+  // .venv/ that a fresh worktree lacks (scripts/stage-worktree.sh links only the
+  // self-contained ones the repo's .triage-stage-links grants) — ONLY when the pristine
+  // base's checks run exactly as the patch's did up to the failing check: its first
+  // failing check is the SAME check (index f) with the SAME rc, every earlier check's rc
+  // matching (base rcs[0..f] === the patch's rcs). Then: invalid, never a pass or a fail,
+  // and invalidReason 'check-environment' lets triage-exec skip the whole bake-off when
+  // no candidate's checks could run. The base RUNNING that check (any other rc) means the
+  // CANDIDATE broke the command (deleted the script, dropped its exec bit): an ordinary
+  // fail. The base failing it with 126/127 too, but not the same way up to it (e.g. base
+  // [1,127] vs patch [0,127]: the base's earlier check failed first — a prerequisite the
+  // patch made pass may or may not have produced what the check runs): INCONCLUSIVE —
+  // invalid, never booked as a pass or a fail, and not check-environment. No base rcs
+  // (the base could not be graded), or a result that does not pin down WHICH check
+  // failed (failedCheck, and rcs: earlier checks 0, rc at that index — with several
+  // checks patch-check finds it by re-running check by check): unknown, so ungradable.
+  if (pc.applies === true && CHECK_ENV_RC.includes(pc.rc)) {
+    const n = checks.length
+    const what = `${pc.rc} (${pc.rc === 127 ? 'command not found' : 'not executable'})`
+    // One check: the graded run IS check 1 (rcs [rc]); an older result may omit rcs/baseRcs.
+    const f = n === 1 ? 0 : pc.failedCheck
+    const rcs = n === 1 && pc.rcs == null ? [pc.rc] : pc.rcs
+    const pinned = Number.isInteger(f) && f >= 0 && f < n && Array.isArray(rcs) && rcs.length === f + 1 && rcs.every((x, i) => x === (i < f ? 0 : pc.rc))
+    const baseRcs = Array.isArray(pc.baseRcs) ? pc.baseRcs : n === 1 && pc.baseRcs === undefined ? [pc.baseRc] : null
+    const baseOk = pinned && Array.isArray(baseRcs) && baseRcs.length === n && baseRcs.every(Number.isInteger) && baseRcs[f] === pc.baseRc
+    const which = n > 1 && pinned ? `check ${f + 1} of ${n}` : 'the checks'
+    if (!pinned || !baseOk) {
+      return Object.assign(base, { status: 'invalid', rc: pc.rc,
+        tail: `UNGRADABLE — ${which} exited ${what} and ${pinned ? 'the pristine base could not be checked (no baseRc)' : 'the grader did not say which check failed'}, so it is unknown whether the toolchain or the patch is at fault ${tail || ''}`.trim() })
+    }
+    const sameWay = baseRcs.slice(0, f + 1).every((x, i) => x === rcs[i])
+    if (sameWay) {
+      return Object.assign(base, { status: 'invalid', rc: pc.rc, invalidReason: 'check-environment',
+        tail: `CHECK ENVIRONMENT — ${which} exited ${what} on the patch and ${pc.baseRc} on the pristine base, every earlier check alike: the staged worktree lacks a toolchain, not a model result ${tail || ''}`.trim() })
+    }
+    if (CHECK_ENV_RC.includes(baseRcs[f])) {
+      return Object.assign(base, { status: 'invalid', rc: pc.rc,
+        tail: `INCONCLUSIVE — ${which} exited ${what} on the patch and ${baseRcs[f]} on the pristine base, but the base's checks did not run the same way up to it (base rcs ${JSON.stringify(baseRcs)}, patch ${JSON.stringify(rcs)}): neither a missing toolchain nor the candidate's fail is established; not booked ${tail || ''}`.trim() })
+    }
+  }
   const status = pc.applies === true && pc.rc === 0 ? 'pass' : 'fail'
   // A pass is a pass only for real, in-scope work: an EMPTY diff that passes did
   // nothing (the checks were already green), and a pass that changed paths outside
@@ -575,6 +632,9 @@ const results = runs.map(r => {
     // (parity-report.sh ledgers that as modelIdSource "observed"), or nowhere (null).
     modelFrom: r.c.model ? 'candidate' : r.model ? 'runner' : null,
     status: g.status, applies: g.applies, rc: g.rc, diffstat: g.diffstat,
+    // Why an invalid grade is invalid, when it is the environment's doing: only
+    // 'check-environment' (checks exited 126/127) so far; null otherwise.
+    invalidReason: g.invalidReason || null,
     patch: g.patch,
     changedFiles: g.changedFiles == null ? null : g.changedFiles, outOfScope: g.outOfScope == null ? null : g.outOfScope,
     captureWarnings: g.captureWarnings == null ? null : g.captureWarnings,
@@ -589,6 +649,11 @@ for (const x of results) {
   if (x.captureWarnings) log(`⚠ ${x.label}: ${x.captureWarnings.join('; ')}.`)
 }
 const tally = s => results.filter(x => x.status === s).length
+const envInvalid = results.filter(x => x.invalidReason === 'check-environment')
+if (envInvalid.length) {
+  log(`⚠ CHECK ENVIRONMENT: ${envInvalid.map(x => `${x.label} (rc ${x.rc})`).join(', ')} — the checks could not run in the staged worktree ` +
+    '(command not found / not executable: an untracked toolchain such as .venv/?). Graded INVALID, not fail; list such paths in the repo\'s .triage-stage-links.')
+}
 log(`Bake-off graded by patch-check at ${sha.slice(0, 12)}: ${tally('pass')} pass, ${tally('fail')} fail, ${tally('unavailable')} unavailable` +
   (tally('ungraded') ? `, ${tally('ungraded')} UNGRADED` : '') + (tally('invalid') ? `, ${tally('invalid')} INVALID` : '') +
   ' — nothing was applied to the repo.')

@@ -76,7 +76,8 @@
 #            (a second edit to an already-dirty file changes it), committed = a
 #            hash over HEAD's blobs at <paths>, ignored = a hash over the WHOLE
 #            repo's ignored files by `stage-worktree.sh ignored` (the one
-#            leak-fingerprint rule; a rewritten gitignored cache shows here).
+#            leak-fingerprint rule, R's committed .triage-leakignore included; a
+#            rewritten gitignored cache shows here).
 #            Hard-excluded paths are left out of all four. Read-only
 #            (--no-optional-locks).
 # compare    exit 0 when A and B have the same status, tree and committed hash, 7

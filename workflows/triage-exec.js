@@ -679,11 +679,18 @@ function bakeoffPick(st) {
 //                                                   as if it had run in place
 //   anything else (planned produced nothing: unavailable / ungraded / invalid / an
 //   empty, out-of-scope or non-applying diff)      → null: run the subtask in place
+//   every candidate invalid because its checks could not RUN (triage-compare's
+//   invalidReason 'check-environment': exit 126/127, and the same on the pristine base)
+//                                                  → null, toolchain: the bake-off is
+//                                                   skipped (TOOLCHAIN_REASON); nothing
+//                                                   was ledgered as a pass or a fail
 const realDiff = c => isStr(c.diffstat) && c.outOfScope !== true
+const envInvalid = c => c.status === 'invalid' && c.invalidReason === 'check-environment'
 function bakeoffChoice(res) {
   const by = new Map(res.candidates.map(c => [c.label, c]))
   const p = by.get('planned') || { status: 'missing' }
   const ch = by.get('challenger') || { status: 'missing' }
+  if (envInvalid(p) && envInvalid(ch)) return { apply: null, toolchain: true, why: `${TOOLCHAIN_REASON} (every candidate's checks exited 126/127, and so did the pristine base's)` }
   if (p.status === 'pass' && realDiff(p)) return { apply: 'planned', cand: p }
   if (ch.status === 'pass' && realDiff(ch)) return { apply: 'challenger', cand: ch, planned: p }
   if (p.status === 'fail' && p.applies === true && realDiff(p)) return { apply: 'planned', cand: p }
@@ -692,31 +699,95 @@ function bakeoffChoice(res) {
   return { apply: null, why: `planned ${p.status}${note(p)}, challenger ${ch.status}${note(ch)}` }
 }
 
-// cleanCheckCmd(st) — the bake-off's dirty + same-repo check as ONE command whose stdout
-// carries tagged lines, so nothing rides on an agent's paraphrase of three separate
-// commands: `CLEANCHECK rc <n>` (git status's exit), one `CLEANCHECK porcelain <line>`
-// per modified file, `CLEANCHECK sessionTop|repoTop <physical path>` ('' = unknown),
-// `CLEANCHECK now <UTC ISO time>` (the run date, recorded in the ingest result) and a
-// final `CLEANCHECK end`. sessionTop is the tree checks/review run in: args.repo's when
-// set, else the session's working directory.
-function cleanCheckCmd(st) {
+// The skip reason when a bake-off's checks need a toolchain the staged worktrees lack
+// (the pre-flight in runBakeoff(), or every candidate graded check-environment).
+const TOOLCHAIN_REASON = 'checks need an untracked toolchain'
+// …and when the toolchain they need is BOUND to the source repo (an editable install, a
+// .pth or symlink resolving into the repo: stage-worktree.sh links only self-contained
+// toolchains and refuses it with a reason starting BOUND_PREFIX, since checks would
+// import the repo's code, not the worktree's — there is no override).
+const BOUND_REASON = 'linked toolchain imports the source repo'
+const BOUND_PREFIX = 'imports the source repo'
+// checkPaths(cmds) — the repo-relative INPUT paths a subtask's checks name (executables
+// and files they read), for the toolchain pre-flight: every word (split on whitespace,
+// quotes and shell operators) that contains a '/' (so ./run.sh counts), starts with no
+// '/', '~', '$' or '-', has only path-safe characters and no '.'/'..'/empty component
+// once a leading './' and a trailing '/' are dropped. NOT dependencies — the check may
+// well create them, so they never skip a bake-off: the target of an OUTPUT redirection
+// (> >> >| &> N> N>&, e.g. `> build/out.log`), a heredoc delimiter or here-string
+// (<< <<<), any VALUE word (VAR=x, --opt=x: `--junitxml=build/x.xml`) and the value
+// after an output option (-o, --out*, --output*, --junitxml, --basetemp, --log-file,
+// --*report*). If unsure, not a dependency: a missed toolchain still exits 126/127 at
+// grading, compared with the pristine base (triage-compare's check-environment), the
+// backstop. First CHECK_PATHS_MAX, in order, deduplicated.
+const CHECK_PATHS_MAX = 40
+const PATH_WORD = /^[A-Za-z0-9._@+,][A-Za-z0-9._@+,/-]*$/
+const CHECK_TOKEN = /(\d*>>|\d*>\||\d*>&?|&>>?|<<<|<<-?|\d*<&?|\|\||&&|[|;&()`])|([^\s|;&()<>`"']+)/g
+const OUTPUT_REDIRECT = /^(\d*>>|\d*>\||\d*>&?|&>>?)$/
+const OUTPUT_OPTION = /^(-o|--[A-Za-z0-9-]*(out|junitxml|junit-xml|basetemp|log-file|report)[A-Za-z0-9-]*)$/
+function checkPaths(cmds) {
+  const out = []
+  for (const cmd of cmds) {
+    let skip = false
+    for (const m of String(cmd).matchAll(CHECK_TOKEN)) {
+      if (m[1] != null) { skip = OUTPUT_REDIRECT.test(m[1]) || m[1].startsWith('<<'); continue }
+      let w = m[2]
+      if (skip) { skip = false; continue }
+      if (OUTPUT_OPTION.test(w)) { skip = true; continue }
+      if (w.includes('=') || !w.includes('/')) continue
+      w = w.replace(/^(\.\/)+/, '').replace(/\/+$/, '')
+      if (!PATH_WORD.test(w) || w.split('/').some(c => c === '' || c === '.' || c === '..')) continue
+      if (!out.includes(w)) out.push(w)
+      if (out.length >= CHECK_PATHS_MAX) return out
+    }
+  }
+  return out
+}
+// cleanCheckCmd(st, paths) — the bake-off's dirty + same-repo + toolchain check as ONE
+// command whose stdout carries tagged lines, so nothing rides on an agent's paraphrase
+// of separate commands: `CLEANCHECK rc <n>` (git status's exit), one `CLEANCHECK
+// porcelain <line>` per modified file, `CLEANCHECK sessionTop|repoTop <physical path>`
+// ('' = unknown), `CLEANCHECK now <UTC ISO time>` (the run date, recorded in the ingest
+// result), one `CLEANCHECK path <tracked|ignored|untracked|absent|error> <path>` per path
+// of checkPaths() (in bo.repo: tracked by git, else gitignored, else present on disk,
+// else absent; error = git could not tell), then the stage-link rule's OWN answer —
+// `stage-worktree.sh link --check` at HEAD (the base the compare stages), never a copy
+// of its eligibility rules here — as `CLEANCHECK linkrc <its exit>` and `CLEANCHECK
+// linkcheck <its one JSON line>`, and a final `CLEANCHECK end`. sessionTop is the tree
+// checks/review run in: args.repo's when set, else the session's working directory.
+function cleanCheckCmd(st, paths) {
   const top = g => `$(t=$(${g} rev-parse --show-toplevel 2>/dev/null) && cd "$t" && pwd -P)`
-  return `p=$(git -C ${shq(bo.repo)} status --porcelain -- ${st.files.map(shq).join(' ')} 2>&1); rc=$?; ` +
+  const R = shq(bo.repo)
+  const pathLoop = paths.length
+    ? `for q in ${paths.map(shq).join(' ')}; do git -C ${R} ls-files --error-unmatch -- "$q" >/dev/null 2>&1; e=$?; ` +
+      `if [ "$e" -eq 0 ]; then s=tracked; elif [ "$e" -ne 1 ]; then s=error; else git -C ${R} check-ignore -q -- "$q" >/dev/null 2>&1; e=$?; ` +
+      `if [ "$e" -eq 0 ]; then s=ignored; elif [ "$e" -ne 1 ]; then s=error; elif [ -e ${R}/"$q" ] || [ -L ${R}/"$q" ]; then s=untracked; else s=absent; fi; fi; ` +
+      'printf \'CLEANCHECK path %s %s\\n\' "$s" "$q"; done; '
+    : ''
+  return `p=$(git -C ${R} status --porcelain -- ${st.files.map(shq).join(' ')} 2>&1); rc=$?; ` +
     'printf \'CLEANCHECK rc %s\\n\' "$rc"; printf \'%s\' "$p" | awk \'{print "CLEANCHECK porcelain " $0}\'; ' +
     `printf 'CLEANCHECK sessionTop %s\\n' "${top(planRepo ? `git -C ${shq(planRepo)}` : 'git')}"; ` +
-    `printf 'CLEANCHECK repoTop %s\\n' "${top(`git -C ${shq(bo.repo)}`)}"; ` +
-    'printf \'CLEANCHECK now %s\\n\' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; echo \'CLEANCHECK end\''
+    `printf 'CLEANCHECK repoTop %s\\n' "${top(`git -C ${R}`)}"; ` +
+    'printf \'CLEANCHECK now %s\\n\' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; ' + pathLoop +
+    `l=$(${STAGE_WT} link --check --repo ${R} --base HEAD 2>/dev/null); printf 'CLEANCHECK linkrc %s\\n' "$?"; ` +
+    'printf \'CLEANCHECK linkcheck %s\\n\' "$(printf \'%s\' "$l" | tr \'\\n\' \' \')"; ' +
+    'echo \'CLEANCHECK end\''
 }
-// parseCleanCheck(text) — the STRICT reading of that reply: rc, sessionTop, repoTop,
-// now and end each exactly once, end the last tagged line, rc an exit status, now a UTC
-// time, each top level '' or absolute. Anything else (no reply, a paraphrase, a lost
-// line) → null: the check is retried once, then the sample is skipped.
+// parseCleanCheck(text, asked) — the STRICT reading of that reply: rc, sessionTop,
+// repoTop, now, linkrc, linkcheck and end each exactly once, end the last tagged line,
+// rc and linkrc exit statuses, now a UTC time, each top level '' or absolute, exactly one
+// valid path line for each asked path (and none for any other), and — when linkrc is 0 —
+// linkcheck the owner's well-formed result (parseLinkCheck()). Anything else (no reply,
+// a paraphrase, a lost line, an empty or garbled owner answer) → null: the check is
+// retried once, then the sample is skipped. linkrc != 0 (the owner FAILED: an opt-in it
+// could not read, a git query that failed) parses, with link null: runBakeoff() skips.
 const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/
-function parseCleanCheck(text) {
+const PATH_STATES = ['tracked', 'ignored', 'untracked', 'absent', 'error']
+function parseCleanCheck(text, asked) {
   if (typeof text !== 'string') return null
   const tags = []
   for (const raw of text.split('\n')) {
-    const m = raw.trim().match(/^CLEANCHECK (rc|porcelain|sessionTop|repoTop|now|end)(?: (.*))?$/)
+    const m = raw.trim().match(/^CLEANCHECK (rc|porcelain|sessionTop|repoTop|now|path|linkrc|linkcheck|end)(?: (.*))?$/)
     if (m) tags.push({ k: m[1], v: m[2] == null ? '' : m[2].trim() })
   }
   const only = k => { const hit = tags.filter(t => t.k === k); return hit.length === 1 ? hit[0].v : null }
@@ -724,10 +795,50 @@ function parseCleanCheck(text) {
   const sessionTop = only('sessionTop')
   const repoTop = only('repoTop')
   const now = only('now')
+  const linkRc = only('linkrc')
+  const linkJson = only('linkcheck')
   if (only('end') !== '' || tags[tags.length - 1].k !== 'end') return null
   if (rc == null || !/^\d{1,3}$/.test(rc) || now == null || !ISO_UTC.test(now)) return null
   if (sessionTop == null || repoTop == null || [sessionTop, repoTop].some(p => p !== '' && !p.startsWith('/'))) return null
-  return { rc: Number(rc), porcelain: tags.filter(t => t.k === 'porcelain').map(t => t.v), sessionTop, repoTop, now }
+  if (linkRc == null || !/^\d{1,3}$/.test(linkRc) || linkJson == null) return null
+  const link = linkRc === '0' ? parseLinkCheck(linkJson) : null
+  if (linkRc === '0' && !link) return null
+  const pathTags = tags.filter(t => t.k === 'path').map(t => { const i = t.v.indexOf(' '); return i < 0 ? null : { state: t.v.slice(0, i), path: t.v.slice(i + 1) } })
+  if (pathTags.length !== asked.length || pathTags.some(x => !x || !PATH_STATES.includes(x.state)) ||
+    !asked.every(a => pathTags.filter(x => x.path === a).length === 1)) return null
+  return { rc: Number(rc), porcelain: tags.filter(t => t.k === 'porcelain').map(t => t.v), sessionTop, repoTop, now, paths: pathTags, linkRc: Number(linkRc), link }
+}
+// parseLinkCheck(json) — `stage-worktree.sh link --check`'s one JSON line, or null when
+// it is not exactly its shape: step "link-check", base a sha, links an array of
+// normalized repo-relative paths, refused an array of {path, reason} strings (there is
+// no stage env any more: an "env" other than null is an outdated owner — not its shape).
+// An empty answer is null — never "no links".
+const REL_PATH = p => isStr(p) && !p.startsWith('/') && p.split('/').every(c => c !== '' && c !== '.' && c !== '..')
+function parseLinkCheck(json) {
+  let o = null
+  try { o = JSON.parse(json) } catch (e) { return null }
+  if (!o || typeof o !== 'object' || Array.isArray(o) || o.step !== 'link-check' || !isStr(o.base) || !/^[0-9a-f]{40,64}$/.test(o.base)) return null
+  if (!Array.isArray(o.links) || !o.links.every(REL_PATH)) return null
+  if (!Array.isArray(o.refused) || !o.refused.every(r => r && typeof r === 'object' && isStr(r.path) && isStr(r.reason))) return null
+  if (o.env != null) return null
+  return { links: o.links, refused: o.refused }
+}
+// toolchainGap(cc) — SINGLE OWNER of the toolchain pre-flight: the checks' paths that a
+// staged worktree will NOT have — gitignored or untracked in bo.repo, or unclassifiable
+// (absent and tracked paths are fine: a file the subtask creates, or one HEAD carries) —
+// and not under a path the stage-link OWNER accepted (cc.link.links: the entry itself,
+// or a path below it). Each gap carries the owner's refusal of the entry covering it,
+// if any; bound = that refusal is BOUND_PREFIX (the toolchain imports the source repo).
+// Non-empty → the bake-off is skipped (BOUND_REASON when any gap is bound, else
+// TOOLCHAIN_REASON).
+function toolchainGap(cc) {
+  const under = (p, e) => p === e || p.startsWith(`${e}/`)
+  return cc.paths.filter(x => (x.state === 'ignored' || x.state === 'untracked' || x.state === 'error') &&
+    !cc.link.links.some(e => under(x.path, e)))
+    .map(x => {
+      const r = cc.link.refused.find(f => under(x.path, f.path))
+      return r ? Object.assign({}, x, { refusal: r.reason, bound: r.reason.startsWith(BOUND_PREFIX) }) : x
+    })
 }
 
 // ledgerRun(id) — the ledger run id `<outDir basename>:<subtask id>`, always a
@@ -758,15 +869,16 @@ const ingestStatus = c => (c.status === 'pass' && !realDiff(c) ? 'invalid' : c.s
 // plan stops — a later subtask must never run on, or take as its clean baseline, a
 // tree nobody checked).
 async function runBakeoff(st, pick, rec, at) {
+  const asked = checkPaths(pick.checks)
   const ask = () => agent(`Run this one command exactly as written and reply with its stdout verbatim — every line, nothing added, nothing left out. ` +
-    'Do not run anything else, and do not interpret or fix anything.\n' + cleanCheckCmd(st),
+    'Do not run anything else, and do not interpret or fix anything.\n' + cleanCheckCmd(st, asked),
   { phase: 'Execute', agentType: 'triage-quick-task', label: `bakeoff:dirty:${st.id}` })
   let raw = await ask()
-  let dirty = parseCleanCheck(raw)
+  let dirty = parseCleanCheck(raw, asked)
   if (!dirty) {
     log(`⚠ Bake-off: "${st.id}" clean check gave no usable reply (${raw == null ? 'none' : JSON.stringify(String(raw).trim().slice(0, 200))}) — retrying it once.`)
     raw = await ask()
-    dirty = parseCleanCheck(raw)
+    dirty = parseCleanCheck(raw, asked)
   }
   // Unknown counts as dirty: a bake-off runs only on files proven unmodified.
   if (!dirty || dirty.rc !== 0 || dirty.porcelain.length) {
@@ -779,6 +891,23 @@ async function runBakeoff(st, pick, rec, at) {
   if (!isStr(dirty.sessionTop) || !isStr(dirty.repoTop) || stripSlash(dirty.sessionTop) !== stripSlash(dirty.repoTop)) {
     rec.reason = 'repo-mismatch'
     log(`⚠ Bake-off: "${st.id}" not run — args.bakeoff.repo ${bo.repo} is not the ${planRepo ? 'args.repo' : 'session'} repo (${isStr(dirty.sessionTop) ? dirty.sessionTop : 'unknown'}); running it normally in place.`)
+    return { inPlace: true }
+  }
+  // Pre-flight, before anything is staged: checks that run a gitignored/untracked path
+  // (.venv/bin/python, node_modules/.bin/…) exit 127 in every staged worktree unless the
+  // stage-link owner links it in — every candidate would be graded on the missing
+  // toolchain, not its work. An owner that FAILED is no answer: no bake-off.
+  if (!dirty.link) {
+    rec.reason = 'stage-link check failed'
+    log(`⚠ Bake-off: "${st.id}" not run — stage-worktree.sh link --check exited ${dirty.linkRc} in ${bo.repo} (an opt-in file it could not read, or a git query that failed) — running it normally in place.`)
+    return { inPlace: true }
+  }
+  const gap = toolchainGap(dirty)
+  if (gap.length) {
+    rec.reason = gap.some(x => x.bound) ? BOUND_REASON : TOOLCHAIN_REASON
+    rec.untracked = gap.map(x => x.path)
+    log(`Bake-off: "${st.id}" not run (${rec.reason}: ${gap.map(x => `${x.path} is ${x.state}${x.refusal ? ` (its .triage-stage-links entry was refused: ${x.refusal})` : ''}`).join(', ')} in ${bo.repo}, ` +
+      'and stage-worktree.sh links nothing that covers it) — running it normally in place.')
     return { inPlace: true }
   }
   at.stage = 'compare'
@@ -851,6 +980,12 @@ async function runBakeoff(st, pick, rec, at) {
       cmd: `${PARITY_REPORT} ingest-compare --result ${shq(file)} --repo-name ${repoName} --level ${st.level} --source inline --task ${st.id} --run ${ledgerRun(st.id)}` })
   }
   const choice = bakeoffChoice(res)
+  if (choice.toolchain) {
+    rec.outcome = 'skipped'
+    rec.reason = TOOLCHAIN_REASON
+    log(`⚠ Bake-off "${st.id}": skipped — ${choice.why}; nothing ledgered as pass/fail. List the toolchain in the repo's .triage-stage-links. Running it normally in place.`)
+    return { inPlace: true }
+  }
   if (!choice.apply) {
     rec.outcome = 'in-place'
     rec.reason = choice.why

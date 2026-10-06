@@ -970,6 +970,63 @@ chk "L9c ...while a reachable config is short it explores, naming only reachable
 run_pr report --tiers "$TIERS" --ledger "$T/none.jsonl"
 chk "L9d the markdown report shows the unsampleable state in the sampling table" 'printf "%s" "$OUT" | grep -q "^| top | unsampleable | 0 | no inline bake-off can run at top"'
 
+# --- VD: void markers (Wave 23) ----------------------------------------------------
+VL="$T/vd.jsonl"; : > "$VL"
+vrow() { # RUN STATUS COUNT — COUNT builder/claude sonnet·medium lines of run RUN
+  local i=0
+  while [ "$i" -lt "$3" ]; do
+    jq -nc --arg run "$1" --arg s "$2" --argjson i "$i" \
+      '{v:1, ts:"2026-09-24T00:00:00Z", source:"inline", run:$run, repoName:"r", level:"builder", task:("t\($i)"),
+        candidates:[{label:"c", vendor:"claude", model:"sonnet", effort:"medium", status:$s, totalTokens:100, seconds:2}], applied:null}' >> "$VL"
+    i=$((i + 1))
+  done
+}
+vrow keep pass 3; vrow bad fail 6
+run_pr report --json --tiers "$TIERS" --ledger "$VL"
+VD_N_BEFORE=$(printf '%s' "$OUT" | jq '[.groups[] | select(.level == "builder" and .vendor == "claude") | .n] | add')
+VD_FAIL_BEFORE=$(printf '%s' "$OUT" | jq '[.groups[] | select(.level == "builder" and .vendor == "claude") | .passes] | add')
+chk "VD0 baseline: both runs count (n 9, 3 passes)" '[ "$VD_N_BEFORE" = 9 ] && [ "$VD_FAIL_BEFORE" = 3 ]'
+VD_SUM=$(cksum < "$VL"); VD_LINES=$(nlines "$VL")
+run_pr void --tiers "$TIERS" --ledger "$VL" --run bad --reason "grader relay broke" --ts 2026-09-25T00:00:00Z
+chk "VD1 void appends exactly one marker line (v1, source void, run, reason, ts) and rewrites nothing earlier" \
+  '[ "$RC" -eq 0 ] && [ "$(nlines "$VL")" = "$((VD_LINES + 1))" ] && [ "$(head -n "$VD_LINES" "$VL" | cksum)" = "$VD_SUM" ] && [ "$(tail -n 1 "$VL" | jq -c "[.v, .source, .run, .reason, .ts]")" = "[1,\"void\",\"bad\",\"grader relay broke\",\"2026-09-25T00:00:00Z\"]" ] && [ "$(j .appended)" = 1 ] && [ ! -e "$VL.lock" ]'
+run_pr report --json --tiers "$TIERS" --ledger "$VL"
+chk "VD2 report ignores every row of the voided run (n 3, 3 passes), counts neither the rows nor the marker as malformed, and lists it under voided" \
+  '[ "$(printf "%s" "$OUT" | jq "[.groups[] | select(.level == \"builder\" and .vendor == \"claude\") | .n] | add")" = 3 ] && [ "$(j .malformed)" = 0 ] && [ "$(j ".voided | length")" = 1 ] && [ "$(j ".voided[0] | [.run, .reason, .lines] | @json")" = "[\"bad\",\"grader relay broke\",6]" ]'
+run_pr history --json --tiers "$TIERS" --ledger "$VL"
+chk "VD3 history --json excludes the voided rows and lists the voided run with its reason separately" \
+  '[ "$(printf "%s" "$OUT" | jq "[.history[].entries[] | select(.modelId == \"claude-sonnet-5\") | .n] | add")" = 3 ] && [ "$(j ".voided[0].run + \":\" + .voided[0].reason")" = "bad:grader relay broke" ]'
+run_pr rates --json --tiers "$TIERS" --ledger "$VL"
+chk "VD4 rates still runs on a ledger with a void marker" '[ "$RC" -eq 0 ] && [ "$(j .levels.builder.state | wc -l | tr -d " ")" = 1 ]'
+# minN: 8 voided passes must not lift the incumbent to minN.
+VM="$T/vd-min.jsonl"; VL_SAVE="$VL"; VL="$VM"; : > "$VM"
+vrow tiny pass 2; vrow big pass 9
+run_pr void --tiers "$TIERS" --ledger "$VM" --run big --reason "bad measurement"
+run_pr report --json --tiers "$TIERS" --ledger "$VM"
+chk "VD5 voided rows do not count toward minN: 2 live + 9 voided -> n 2, still short of minN" \
+  '[ "$(printf "%s" "$OUT" | jq "[.groups[] | select(.level == \"builder\" and .vendor == \"claude\") | .n] | add")" = 2 ]'
+VL="$VL_SAVE"
+VD_LINES=$(nlines "$VL"); VD_SUM=$(cksum < "$VL")
+run_pr void --tiers "$TIERS" --ledger "$VL" --run bad --reason "again"
+chk "VD6 voiding the same run again is a no-op with a notice (exit 0, ledger byte-identical)" \
+  '[ "$RC" -eq 0 ] && [ "$(cksum < "$VL")" = "$VD_SUM" ] && [ "$(j .appended)" = 0 ] && printf "%s" "$ERR" | grep -q "already voided"'
+run_pr void --tiers "$TIERS" --ledger "$VL" --run nope --reason "x"
+chk "VD7 an unknown run id is refused (exit 2), nothing written" '[ "$RC" -eq 2 ] && [ "$(cksum < "$VL")" = "$VD_SUM" ] && printf "%s" "$ERR" | grep -q "not in the ledger"'
+run_pr void --tiers "$TIERS" --ledger "$VL" --run keep
+chk "VD8 --reason is required (exit 2)" '[ "$RC" -eq 2 ] && [ "$(cksum < "$VL")" = "$VD_SUM" ]'
+run_pr void --tiers "$TIERS" --ledger "$T/vd-none.jsonl" --run keep --reason x
+chk "VD8b a missing ledger is refused (exit 2) and not created" '[ "$RC" -eq 2 ] && [ ! -e "$T/vd-none.jsonl" ]'
+mkdir "$VL.lock"; echo "$$" > "$VL.lock/pid"
+RC_V=0; PARITY_LOCK_TRIES=2 "$PR" void --tiers "$TIERS" --ledger "$VL" --run keep --reason "x" >/dev/null 2>"$T/err" || RC_V=$?; ERR=$(cat "$T/err"); RC=$RC_V
+chk "VD9 void takes the ledger lock: a live holder blocks it (exit 1, nothing written)" \
+  '[ "$RC" -eq 1 ] && [ "$(cksum < "$VL")" = "$VD_SUM" ] && printf "%s" "$ERR" | grep -q "locked by pid $$"'
+rm -rf "$VL.lock"
+run_pr void --tiers "$TIERS" --ledger "$VL" --run keep --reason "x"
+chk "VD9b ...and releases it afterwards" '[ "$RC" -eq 0 ] && [ ! -e "$VL.lock" ]'
+# A late re-ingest of a voided run id stays out of the aggregates.
+run_pr report --json --tiers "$TIERS" --ledger "$VL"
+chk "VD10 voiding the last live run empties the aggregates without error" '[ "$RC" -eq 0 ] && [ "$(printf "%s" "$OUT" | jq "[.groups[] | select(.level == \"builder\" and .vendor == \"claude\") | .n] | add // 0")" = 0 ]'
+
 echo ""
 echo "RESULT: $PASS_COUNT passed, $FAIL_COUNT failed"
 [ "$FAIL_COUNT" -eq 0 ]

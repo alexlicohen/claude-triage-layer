@@ -50,7 +50,8 @@ const STAGED = (prompt, over = {}) => {
 // The grade reply, built from the grade prompt itself: one diff line per
 // `stage-worktree.sh diff` command (ok unless the label is in opts.badDiff), the
 // PATCHCHECK line — one result per patch patch-check was given, in that order, for
-// each label in {label: [applies, rc, error?, files?, diffstat?]} (a label left out makes the
+// each label in {label: [applies, rc, error?, files?, diffstat?, baseRc?, extra?]} (extra: more result
+// fields, e.g. {rcs, failedCheck}; a label left out makes the
 // line not match the graded patches) — and the LEAKCHECK line. opts: base (the sha
 // patch-check reports), pcLine / lkLine (a raw line instead), diffExtra {label: {…}}.
 const FIN = (rows, { leak = 'CLEAN', rc, badDiff = [], leakField, baseMoved, base = SHA, pcLine, lkLine, diffExtra = {}, lkSha = SHA } = {}) => prompt => {
@@ -64,9 +65,9 @@ const FIN = (rows, { leak = 'CLEAN', rc, badDiff = [], leakField, baseMoved, bas
   const results = given.map((p, i) => {
     const label = p.replace(/^.*\//, '').replace(/\.patch$/, '')
     if (!(label in rows)) return null
-    const [applies, rc2, error, fl, ds] = rows[label]
+    const [applies, rc2, error, fl, ds, baseRc, extra] = rows[label]
     return Object.assign({ patch: p, applies, rc: rc2, diffstat: ds != null ? ds : applies ? '1 file changed, 1 insertion(+)' : '', files: fl || (applies ? ['calc.txt'] : []), filesTruncated: false,
-      tailFile: `/o/out/tails/${i + 1}.tail` }, error != null ? { error } : {})
+      tailFile: `/o/out/tails/${i + 1}.tail` }, error != null ? { error } : {}, baseRc !== undefined ? { baseRc } : {}, extra || {})
   }).filter(Boolean)
   const patchcheckLine = pcLine != null ? pcLine : given.length ? `PATCHCHECK ${JSON.stringify({ base, results })}` : ''
   const status = leak
@@ -223,9 +224,9 @@ const repoAsWorkdir = p => /(^|\s)cd\s+'?\/r\/repo'?(\s|$|\/)/.test(p) || /WORKD
   chk('C3: model/effort pass through only when given (a pinned id like claude-sonnet-5 verbatim, an alias like fable verbatim)',
     !('model' in cand[0].opts) && !('effort' in cand[0].opts) && cand[1].opts.model === 'claude-sonnet-5' && !('effort' in cand[1].opts) &&
     cand[2].opts.effort === 'max' && !('model' in cand[2].opts) && cand[3].opts.model === 'fable' && cand[3].opts.effort === 'xhigh')
-  chk('C3: candidate i must prefix EVERY shell command with `cd <its own worktree> && ` (cwd resets between Bash calls), with the first check as the example',
+  chk('C3: candidate i must prefix EVERY shell command with `cd <its own worktree> && ` (cwd resets between Bash calls), with the first check as the example — no stage env (retired) sourced',
     cand.every((c, i) => c.prompt.includes(`EVERY shell command you run MUST start with \`cd ${STAGE}/wt-${i + 1} && \``) &&
-      c.prompt.includes(`\`cd ${STAGE}/wt-${i + 1} && make test\``)) &&
+      c.prompt.includes(`\`cd ${STAGE}/wt-${i + 1} && make test\``) && !c.prompt.includes(`wt-${i + 1}.env`)) &&
     cand.every((c, i) => cand.every((o, j) => i === j || !c.prompt.includes(`${STAGE}/wt-${j + 1}`))))
   chk('C3: no bare `cd <dir>` instruction — every cd in the prompt is chained with && (a lone cd does not persist)',
     cand.every(c => /`cd \//.test(c.prompt) && [...c.prompt.matchAll(/(^|[\s`])cd\s+(\/\S*)/g)].every(m => c.prompt.slice(m.index + m[0].length).startsWith(' && '))))
@@ -345,12 +346,12 @@ const repoAsWorkdir = p => /(^|\s)cd\s+'?\/r\/repo'?(\s|$|\/)/.test(p) || /WORKD
   const iA = lines.indexOf(`${S} diff --worktree '${STAGE}/wt-1' --base '${SHA}' --out '/o/out/a.patch'`)
   const iB = lines.indexOf(`${S} diff --worktree '${STAGE}/wt-2' --base '${SHA}' --out '/o/out/b.patch'`)
   const shqT = x => `'${String(x).replace(/'/g, `'\\''`)}'`
-  const wantCheck = shqT(`bash -c ${shqT("grep -q 'ok' calc.txt")} && bash -c ${shqT('make test')}`)
-  const iPC = lines.indexOf(`rm -f '/o/out/patchcheck.rc'; ~/.claude/scripts/patch-check.sh --repo '${REPO}' --base '${SHA}' --check ${wantCheck} --overlay '/h/hidden' --summary --tail-dir '/o/out/tails' '/o/out/a.patch' '/o/out/b.patch' > '/o/out/patchcheck.out' 2> '/o/out/patchcheck.err'; echo $? > '/o/out/patchcheck.rc'`)
+  const wantCheck = `${shqT("grep -q 'ok' calc.txt")} --check ${shqT('make test')}`
+  const iPC = lines.indexOf(`rm -f '/o/out/patchcheck.rc'; ~/.claude/scripts/patch-check.sh --repo '${REPO}' --base '${SHA}' --check ${wantCheck} --overlay '/h/hidden' --baseline-on 126,127 --summary --tail-dir '/o/out/tails' '/o/out/a.patch' '/o/out/b.patch' > '/o/out/patchcheck.out' 2> '/o/out/patchcheck.err'; echo $? > '/o/out/patchcheck.rc'`)
   const iW = lines.indexOf(`for i in $(seq 1 100); do [ -s '/o/out/patchcheck.rc' ] && break; sleep 5; done; cat '/o/out/patchcheck.rc' 2>/dev/null || echo RUNNING`)
   const iG = lines.indexOf(`grep '^PATCHCHECK ' '/o/out/patchcheck.out'`)
   const iLC = lines.indexOf(`${S} leakcheck --repo '${REPO}' --dir '${STAGE}' --line`)
-  chk('C7: in order — a diff of each candidate worktree at the sha, patch-check at the SHA (never HEAD) with the quoted checks, overlay, --summary and every patch into a file, the wait, the grep, then leakcheck --line',
+  chk('C7: in order — a diff of each candidate worktree at the sha, patch-check at the SHA (never HEAD) with EACH check as its own quoted --check (never the && string: per-check rcs), overlay, --baseline-on 126,127, --summary and every patch into a file, the wait, the grep, then leakcheck --line',
     iA >= 0 && iB > iA && iPC > iB && iW > iPC && iG > iW && iLC > iG)
   chk('C7: M8 — the grader is told the 600000 ms Bash timeout and to wait out a backgrounded command',
     grade[0].prompt.includes('timeout 600000') && grade[0].prompt.includes('moves a command to the background'))
@@ -1625,6 +1626,87 @@ const EX = await run(XA({}), XS())
   const r = await throws(RA({ repoName: 'bad name' }))
   chk('C29: the review usage names the default adjudicators from DEFAULT_ADJUDICATORS',
     r.threw && r.message.includes(`default ${adj.map(j => `${j.vendor} ${j.level} ${j.model}·${j.effort}`).join(' + ')} (config/tiers.json levels.deep)`))
+}
+
+// ---- C30 (Wave 23): a check that exits 127 (command not found) or 126 (not
+// executable) never ran. When the same check fails the same way on the PRISTINE base
+// (patch-check's baseRc) the staged worktree lacks a toolchain: invalid with
+// invalidReason 'check-environment', never a pass or a fail. When the base runs it, the
+// candidate broke the command: a fail. No baseRc: ungradable.
+{
+  const { result, logs } = await run(A({ candidates: [
+    { vendor: 'claude', level: 'builder', label: 'nf' }, { vendor: 'claude', level: 'deep', label: 'nx' },
+    { vendor: 'claude', level: 'deep', label: 'nfempty' }, { vendor: 'claude', level: 'deep', label: 'f' }, { vendor: 'claude', level: 'deep', label: 'p' },
+    { vendor: 'claude', level: 'deep', label: 'noapply' },
+  ] }), { 'candidate:': ['done'], 'grade:': [FIN({ nf: [true, 127, null, null, null, 127], nx: [true, 126, null, null, null, 126], nfempty: [true, 127, null, [], '', 127], f: [true, 1], p: [true, 0], noapply: [false, null] })] })
+  const nf = byLabel(result, 'nf')
+  const nx = byLabel(result, 'nx')
+  chk('C30: rc 127 → invalid, invalidReason check-environment, rc kept, CHECK ENVIRONMENT tail',
+    nf.status === 'invalid' && nf.invalidReason === 'check-environment' && nf.rc === 127 && /^CHECK ENVIRONMENT/.test(nf.tail) && /command not found/.test(nf.tail))
+  chk('C30: rc 126 → invalid, check-environment (not executable)', nx.status === 'invalid' && nx.invalidReason === 'check-environment' && nx.rc === 126 && /not executable/.test(nx.tail))
+  chk('C30: an empty diff whose checks exit 127 is check-environment too (never a fail)', byLabel(result, 'nfempty').status === 'invalid' && byLabel(result, 'nfempty').invalidReason === 'check-environment')
+  chk('C30: rc 1 stays a fail, rc 0 a pass, a non-applying patch a fail — invalidReason null on each',
+    byLabel(result, 'f').status === 'fail' && byLabel(result, 'p').status === 'pass' && byLabel(result, 'noapply').status === 'fail' &&
+    ['f', 'p', 'noapply'].every(l => byLabel(result, l).invalidReason === null))
+  chk('C30: graded:false; the tally counts them INVALID, and the environment is named in a warning',
+    result.graded === false && logs.some(l => /1 pass, 2 fail, 0 unavailable, 3 INVALID/.test(l)) &&
+    logs.some(l => l.startsWith('⚠ CHECK ENVIRONMENT:') && l.includes('nf (rc 127)') && l.includes('.triage-stage-links')))
+  const { result: lk } = await run(A({ candidates: [{ vendor: 'claude', level: 'builder', label: 'nf' }] }),
+    { 'candidate:': ['done'], 'grade:': [FIN({ nf: [true, 127, null, null, null, 127] }, { leak: 'LEAK' })] })
+  chk('C30: a LEAK voids the grade as a leak — invalidReason cleared, not check-environment',
+    byLabel(lk, 'nf').status === 'invalid' && byLabel(lk, 'nf').invalidReason === null && /^LEAK/.test(byLabel(lk, 'nf').tail))
+  const { result: un } = await run(A({ candidates: [{ vendor: 'claude', level: 'builder', label: 'u' }] }),
+    { 'candidate:': [new Error('ceiling')] })
+  chk('C30: an unavailable candidate carries invalidReason null', byLabel(un, 'u').status === 'unavailable' && byLabel(un, 'u').invalidReason === null)
+  // The candidate broke the command (the base runs it), or the base could not be checked.
+  const { result: br } = await run(A({ candidates: [
+    { vendor: 'claude', level: 'builder', label: 'del' }, { vendor: 'claude', level: 'deep', label: 'chm' },
+    { vendor: 'claude', level: 'deep', label: 'nobase' }, { vendor: 'claude', level: 'deep', label: 'nullbase' }, { vendor: 'claude', level: 'deep', label: 'odd' },
+  ] }), { 'candidate:': ['done'], 'grade:': [FIN({ del: [true, 127, null, null, null, 0], chm: [true, 126, null, null, null, 1], nobase: [true, 127],
+    nullbase: [true, 127, null, null, null, null], odd: [true, 127, null, null, null, '127'] })] })
+  chk('C30: rc 127/126 while the pristine base exits 0/1 → the candidate broke the command: an ordinary fail, invalidReason null',
+    ['del', 'chm'].every(l => byLabel(br, l).status === 'fail' && byLabel(br, l).invalidReason === null) && byLabel(br, 'del').rc === 127 && byLabel(br, 'chm').rc === 126)
+  chk('C30: rc 127 with no baseRc, a null one or a non-integer one → invalid UNGRADABLE (never a fail, never check-environment)',
+    ['nobase', 'nullbase', 'odd'].every(l => byLabel(br, l).status === 'invalid' && byLabel(br, l).invalidReason === null && /^UNGRADABLE/.test(byLabel(br, l).tail)))
+  // Several checks: the comparison is per check — patch-check pins the failing one
+  // (failedCheck, rcs ending in rc there) and baseRc is THAT check's rc on the base.
+  const PIN = (rcs, failedCheck, baseRcs) => Object.assign({ rcs, failedCheck }, baseRcs ? { baseRcs } : {})
+  const { result: mc } = await run(A({ checks: ['make build', 'make test'], candidates: [
+    { vendor: 'claude', level: 'builder', label: 'pin' }, { vendor: 'claude', level: 'deep', label: 'pinbroke' },
+    { vendor: 'claude', level: 'deep', label: 'unpinned' }, { vendor: 'claude', level: 'deep', label: 'skew' }, { vendor: 'claude', level: 'deep', label: 'outside' },
+  ] }), { 'candidate:': ['done'], 'grade:': [FIN({ pin: [true, 127, null, null, null, 127, PIN([0, 127], 1, [0, 127])], pinbroke: [true, 127, null, null, null, 0, PIN([0, 127], 1, [1, 0])],
+    unpinned: [true, 127, null, null, null, 127], skew: [true, 127, null, null, null, 127, PIN([127, 0], 0)], outside: [true, 127, null, null, null, 127, PIN([0, 0, 127], 2)] })] })
+  chk('C30: two checks — the failing check (2 of 2) exits 127 on the patch AND on the base → check-environment, the check named in the tail',
+    byLabel(mc, 'pin').status === 'invalid' && byLabel(mc, 'pin').invalidReason === 'check-environment' && /^CHECK ENVIRONMENT — check 2 of 2 exited 127/.test(byLabel(mc, 'pin').tail))
+  chk('C30: two checks — the same check runs on the base (baseRc 0) → the candidate broke it: a fail',
+    byLabel(mc, 'pinbroke').status === 'fail' && byLabel(mc, 'pinbroke').invalidReason === null)
+  chk('C30: two checks — a result that does not pin the failing check (no failedCheck/rcs, rcs not ending in rc, an index past the checks) → UNGRADABLE, never check-environment',
+    ['unpinned', 'skew', 'outside'].every(l => byLabel(mc, l).status === 'invalid' && byLabel(mc, l).invalidReason === null &&
+      /^UNGRADABLE — the checks exited 127 .*did not say which check failed/.test(byLabel(mc, l).tail)))
+  // Wave 23 (Codex #4): a 126/127 is the ENVIRONMENT only when the base's first failing
+  // check is the SAME check with the SAME rc, every earlier check's rc matching. Base
+  // [1,127] vs patch [0,127] (a failed prerequisite on the base, the patch made it pass)
+  // establishes neither a missing toolchain nor the candidate's fail: INCONCLUSIVE.
+  const { result: cl, logs: clLogs } = await run(A({ checks: ['./build.sh', './build/test'], candidates: [
+    { vendor: 'claude', level: 'builder', label: 'prereq' }, { vendor: 'claude', level: 'deep', label: 'same' },
+    { vendor: 'claude', level: 'deep', label: 'shortbase' }, { vendor: 'claude', level: 'deep', label: 'disagree' }, { vendor: 'claude', level: 'deep', label: 'ran' },
+  ] }), { 'candidate:': ['done'], 'grade:': [FIN({ prereq: [true, 127, null, null, null, 127, PIN([0, 127], 1, [1, 127])],
+    same: [true, 127, null, null, null, 127, PIN([0, 127], 1, [0, 127])], shortbase: [true, 127, null, null, null, 127, PIN([0, 127], 1, [127])],
+    disagree: [true, 127, null, null, null, 127, PIN([0, 127], 1, [0, 0])], ran: [true, 127, null, null, null, 2, PIN([0, 127], 1, [1, 2])] })] })
+  const pr = byLabel(cl, 'prereq')
+  chk('C30b: base rcs [1,127] vs patch [0,127] → INCONCLUSIVE: invalid, never pass/fail, never check-environment, both rc lists in the tail',
+    pr.status === 'invalid' && pr.invalidReason === null && pr.rc === 127 && /^INCONCLUSIVE — check 2 of 2 exited 127/.test(pr.tail) && pr.tail.includes('[1,127]') && pr.tail.includes('[0,127]'))
+  chk('C30b: base rcs [0,127] vs patch [0,127] (the same check first fails the same way) → check-environment',
+    byLabel(cl, 'same').status === 'invalid' && byLabel(cl, 'same').invalidReason === 'check-environment')
+  chk('C30b: baseRcs not one rc per check, or disagreeing with baseRc → UNGRADABLE (no base), never check-environment',
+    ['shortbase', 'disagree'].every(l => byLabel(cl, l).status === 'invalid' && byLabel(cl, l).invalidReason === null && /^UNGRADABLE — .*no baseRc/.test(byLabel(cl, l).tail)))
+  chk('C30b: the base RUNS the check (rc 2 there) although an earlier one failed → the candidate broke it: a fail',
+    byLabel(cl, 'ran').status === 'fail' && byLabel(cl, 'ran').invalidReason === null)
+  chk('C30b: an inconclusive grade is not named in the CHECK ENVIRONMENT warning', !clLogs.some(l => l.startsWith('⚠ CHECK ENVIRONMENT:') && l.includes('prereq')))
+  const { result: one } = await run(A({ candidates: [{ vendor: 'claude', level: 'builder', label: 'x126' }, { vendor: 'claude', level: 'deep', label: 'x127' }] }),
+    { 'candidate:': ['done'], 'grade:': [FIN({ x126: [true, 126, null, null, null, 127], x127: [true, 127, null, null, null, 126, { rcs: [127], failedCheck: 0, baseRcs: [126] }] })] })
+  chk('C30b: one check, 126 on the patch but 127 on the base (or the reverse) → INCONCLUSIVE, not check-environment (the same rc is required)',
+    ['x126', 'x127'].every(l => byLabel(one, l).status === 'invalid' && byLabel(one, l).invalidReason === null && /^INCONCLUSIVE/.test(byLabel(one, l).tail)))
 }
 
 console.log('')
