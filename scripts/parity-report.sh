@@ -15,6 +15,7 @@
 #                    [--run ID] [--ts ISO] [--ledger F] [--tiers F]
 #   parity-report.sh migrate        [--from F] [--ledger F] [--tiers F]
 #   parity-report.sh backfill-modelid [--dry-run] [--ledger F] [--tiers F]
+#   parity-report.sh void           --run ID --reason TEXT [--ts ISO] [--ledger F] [--tiers F]
 #   parity-report.sh report         [--ledger F] [--tiers F] [--json] [--model M] [--since DATE]
 #   parity-report.sh history        [--ledger F] [--tiers F] [--json] [--model M] [--since DATE]
 #   parity-report.sh rates          [--ledger F] [--tiers F] [--json]
@@ -72,6 +73,14 @@
 #                 default --from) best-effort: a compare line -> one ledger line; a
 #                 parity aggregate -> one line per counted pass/fail per band (no
 #                 task ids or tokens existed). Idempotent: keyed by run id.
+# void            appends ONE marker line {"v":1,"ts","source":"void","run","reason"}
+#                 (under the ledger lock; the ledger stays append-only) that makes
+#                 report, rates, history and the decision rule ignore EVERY row of
+#                 that run (all lines and revisions): for a bad measurement. The run
+#                 must already be in the ledger (an unknown id is refused, exit 2);
+#                 voiding a run again is a no-op with a notice. The reason is free
+#                 text (<= 300 chars), metadata only. `history --json` lists the voided
+#                 runs separately ({run, reason, ts, lines}); `report --json` too.
 # report          aggregates graded outcomes and applies tuning.rule (below).
 #                 Markdown by default, one JSON object with --json. Review lines
 #                 (source inline-review) get their OWN section — mean precision /
@@ -206,7 +215,7 @@ command -v jq >/dev/null 2>&1 || usage "jq is required"
 SUB="${1:-}"
 [ $# -gt 0 ] && shift
 RESULT="" REPO_NAME="" LEVEL="" SOURCE="" TASK="" APPLIED="" RUN="" TS="" LEDGER="" TIERS="" FROM="" RESOLVED="" JSON=0
-FMODEL="" FSINCE="" DRY=0
+FMODEL="" FSINCE="" DRY=0 REASON=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --json) JSON=1; shift; continue ;;
@@ -229,6 +238,7 @@ while [ $# -gt 0 ]; do
     --resolved)  RESOLVED="$2" ;;
     --model)     FMODEL="$2" ;;
     --since)     FSINCE="$2" ;;
+    --reason)    REASON="$2" ;;
     *)           usage "unknown argument $1" ;;
   esac
   shift 2
@@ -514,7 +524,7 @@ ledger_runs() { # distinct run ids already in the ledger, one per line
 COMMIT='
 def okey: [.run, (.task // null), ([(.candidates // [])[]? | objects | .label] | join(","))];
 ($new[0].run) as $run | ($new[0].runHash) as $h
-| [$old[] | select($run != null and .run == $run)] as $same
+| [$old[] | select($run != null and .run == $run and .source != "void")] as $same
 | if $run == null or ($same | length) == 0 then {action: "append", lines: $new, reason: null}
   elif any($same[]; .runHash == $h) then
     if $mode == "review" then {action: "skip", lines: [], reason: "run already in the ledger with the same content"}
@@ -782,6 +792,33 @@ do_backfill() {
 }
 
 # ---------------------------------------------------------------------------
+# void — append a marker that excludes a whole run from every aggregate. The
+# known-run check, the already-voided check and the append are ONE locked step.
+do_void() {
+  [ -n "$RUN" ] && [ -n "$REASON" ] || usage "void needs --run and --reason"
+  [ -f "$REAL_LEDGER" ] || usage "the ledger does not exist: $LEDGER"
+  [ "${#REASON}" -le 300 ] || usage "--reason is at most 300 characters (got ${#REASON})"
+  printf '%s' "$REASON" | LC_ALL=C grep -q '[[:cntrl:]]' && usage "--reason must be one line of plain text"
+  lock_ledger
+  jq -R -c 'fromjson? | objects' "$REAL_LEDGER" > "$TMP/old" 2>/dev/null || : > "$TMP/old"
+  if jq -e -s --arg r "$RUN" 'any(.[]; .source == "void" and (.run | tostring) == $r)' "$TMP/old" >/dev/null; then
+    unlock_ledger
+    echo "parity-report: run $RUN is already voided — nothing written" >&2
+    jq -nc --arg l "$LEDGER" --arg r "$RUN" '{step:"void", ledger:$l, run:$r, appended:0, reason:"already voided"}'
+    return 0
+  fi
+  if ! jq -e -s --arg r "$RUN" 'any(.[]; .source != "void" and .run != null and (.run | tostring) == $r)' "$TMP/old" >/dev/null; then
+    unlock_ledger
+    usage "run $RUN is not in the ledger $LEDGER — nothing voided"
+  fi
+  jq -nc --arg ts "${TS:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" --arg r "$RUN" --arg why "$REASON" \
+    '{v:1, ts:$ts, source:"void", run:$r, reason:$why}' > "$TMP/void"
+  append "$TMP/void"
+  unlock_ledger
+  jq -c --arg l "$LEDGER" '{step:"void", ledger:$l, run, appended:1, reason}' "$TMP/void"
+}
+
+# ---------------------------------------------------------------------------
 # report — aggregation + THE decision rule (+ the history view).
 REPORT='
 # wilsonBound — the Wilson 95% score interval: $sgn -1 = lower, +1 = upper bound.
@@ -811,7 +848,15 @@ def keep_ts: $fSince == "" or ((utc // (. // "" | tostring))) >= $fSince;
 def outcome: ([.[] | select(.status == "pass")] | length) as $p | (length - $p) as $f
   | if $p > $f then "pass" elif $f > $p then "fail" else "tie" end;
 
-($lines | map(fromjson? | select(type == "object"))) as $objs
+($lines | map(fromjson? | select(type == "object"))) as $objs0
+# VOID markers (parity-report.sh void): every row of a voided run is dropped before
+# anything else sees it; the markers themselves are neither rows nor malformed.
+| ($objs0 | map(select(.source == "void" and (.run | type) != "null"))) as $voidMarks
+| ([$voidMarks[] | .run | tostring] | unique) as $voidRuns
+| ($objs0 | map(select(.source != "void" and (.run | type) != "null" and ((.run | tostring) as $r | $voidRuns | index($r) != null)))) as $voidRows
+| ($objs0 | map(select(.source != "void" and ((.run | type) == "null" or ((.run | tostring) as $r | $voidRuns | index($r) == null))))) as $objs
+| ([$voidRuns[] as $r | ([$voidMarks[] | select((.run | tostring) == $r)] | first) as $m
+    | {run: $r, reason: ($m.reason // null), ts: ($m.ts // null), lines: ([$voidRows[] | select((.run | tostring) == $r)] | length)}]) as $voided
 | ($objs | map(select((.candidates | type) == "array" and .source != "inline-review"))) as $ok
 # Review lines are their own section: never a build row, never a proposal input.
 | ($objs | map(select(.source == "inline-review" and (.reviewers | type) == "array"))) as $rvAll
@@ -956,13 +1001,13 @@ def outcome: ([.[] | select(.status == "pass")] | length) as $p | (length - $p) 
         superseded: ([$g[] | select(.status == "superseded")] | length),
         meanPrecision: ([$g[] | .precision | numbers] | mean), nPrecision: ([$g[] | .precision | numbers] | length),
         meanRecall: ([$g[] | .recall | numbers] | mean), nRecall: ([$g[] | .recall | numbers] | length)}) as $rgroups
-| {ledger: $ledger, tiers: $tiersPath, lines: $total, malformed: ($total - ($ok | length) - ($rvAll | length)),
+| {ledger: $ledger, tiers: $tiersPath, lines: $total, malformed: ($total - ($ok | length) - ($rvAll | length) - ($voidRows | length) - ($voidMarks | length)),
    filters: {model: (if $fModel == "" then null else $fModel end), since: (if $fSince == "" then null else $fSince end)},
    rule: {minN: $minN, cheaperTolerance: $tol, pricierMargin: $margin, confidence: "wilson95"},
    groups: $groups, decisions: $decisions, proposals: $proposals,
    sampling: {asOf: $asOf, params: {explore: $exploreRate, maintain: $maintainRate, maxWidth: $maxWidth, minN: $minN},
               levels: $rateLevels, rates: ($rateLevels | map_values(.rate))},
-   history: $history,
+   history: $history, voided: $voided,
    reviews: {lines: ($rv | length), supersededRevisions: (($rvAll | length) - ($rv | length)), groups: $rgroups,
              note: "review bake-offs (source inline-review) are reported separately from build pass rates and do not drive tier proposals yet"},
    note: "proposal only: parity-report.sh never writes tiers.json; Alex approves every change"}
@@ -1057,7 +1102,7 @@ do_report() {
 do_history() {
   compute_report
   if [ "$JSON" -eq 1 ]; then
-    jq -c '{ledger, tiers, lines, filters, history}' "$TMP/report.json"
+    jq -c '{ledger, tiers, lines, filters, history, voided}' "$TMP/report.json"
   else
     jq -r "$HISTORY_MD" "$TMP/report.json"
   fi
@@ -1069,8 +1114,9 @@ case "$SUB" in
   ingest-review)    do_ingest_review ;;
   migrate)          do_migrate ;;
   backfill-modelid) do_backfill ;;
+  void)             do_void ;;
   report)           do_report ;;
   history)          do_history ;;
   rates)            do_rates ;;
-  *)                usage "parity-report.sh ingest-compare|ingest-parity|ingest-review|migrate|backfill-modelid|report|history|rates [options] (see the header)" ;;
+  *)                usage "parity-report.sh ingest-compare|ingest-parity|ingest-review|migrate|backfill-modelid|void|report|history|rates [options] (see the header)" ;;
 esac

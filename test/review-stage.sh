@@ -349,6 +349,21 @@ cmpfp old ign1
 chk "F5d a fingerprint taken before ignored existed compares on the other three only (same)" '[ "$RC" -eq 0 ] && [ "$(j .same)" = true ]'
 IGN_HASH=$("$REPO_DIR/scripts/stage-worktree.sh" ignored --repo "$R" | awk -F "$(printf '\t')" -v OFS="$(printf '\t')" '{ p = $1; $1 = ""; print substr($0, 2), p }' | grep -v "	context/" | git -C "$R" hash-object --stdin)
 chk "F5e ignored is stage-worktree.sh ignored (hard excludes out) — one owner of the rule" '[ "$(jq -r .ignored "$FP/ign2.json")" = "$IGN_HASH" ]'
+# --- F6: per-repo leak exclusions (HEAD:.triage-leakignore, owned by stage-worktree.sh ignored)
+printf 'build/\n' > "$R/.triage-leakignore"
+fp lk0; printf 'o2\n' > "$R/build/out.bin"; fp lk1
+cmpfp lk0 lk1
+chk "F6 an UNCOMMITTED .triage-leakignore is not read: an ignored build/ write is still IGNORED_CHANGED" \
+  '[ "$RC" -eq 7 ] && [ "$(j ".changed | join(\",\")")" = ignored ]'
+g add .triage-leakignore && g commit -qm leakignore -- .triage-leakignore
+fp lk2; printf 'o3\n' > "$R/build/out.bin"; printf 'n\n' > "$R/build/new.bin"; fp lk3
+cmpfp lk2 lk3
+chk "F6b with it COMMITTED, writes under the excluded ignored dir are not a change" '[ "$RC" -eq 0 ] && [ "$(j .same)" = true ]'
+printf 'v3\n' > "$R/cache.csv"; fp lk4
+cmpfp lk3 lk4
+chk "F6c an ignored file the patterns do not match is still IGNORED_CHANGED" '[ "$RC" -eq 7 ] && [ "$(j ".changed | join(\",\")")" = ignored ]'
+cmpfp lk1 lk2
+chk "F6d committing the patterns is itself visible (ignored changed), never a silent widening" '[ "$RC" -eq 7 ] && [ "$(j ".changed | index(\"ignored\") != null")" = true ]'
 rm -rf "$R/cache.csv" "$R/build" "$R/.claude" "$R/context/scratch.md" "$R/.DS_Store"
 
 # --- U2: one repo-root resolver; a non-repo --repo never falls back to the cwd ----------

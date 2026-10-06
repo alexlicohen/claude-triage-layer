@@ -433,6 +433,15 @@ mkdir -p "$FI/.claude/agent-memory"; printf 'note\n' > "$FI/.claude/agent-memory
 fpf; chk "F11g: ignored agent bookkeeping (.claude/, PROJECT_MEMORY*.md) is not a change — the ONE exclusion list a compare's leakcheck uses too" '[ "$OUT" = "$FIG" ]'
 chk "F11h: ignored IS the hash of stage-worktree.sh ignored (one owner of the rule, M10)" \
   '[ "$(j .ignored)" = "$("$SCRIPT_DIR/../scripts/stage-worktree.sh" ignored --repo "$FI" | git hash-object --stdin)" ]'
+# Per-repo leak exclusions (HEAD:.triage-leakignore): HEAD only, ignored paths only.
+printf 'cache/\n' > "$FI/.triage-leakignore"
+fpf; FL0="$OUT"; printf 'v4\n' > "$FI/cache/data.csv"
+fpf; chk "F11i: an UNCOMMITTED .triage-leakignore is not read: a cache/ rewrite still changes ignored" '[ "$(j .ignored)" != "$(printf "%s" "$FL0" | jq -r .ignored)" ]'
+git -C "$FI" add .triage-leakignore && git -C "$FI" commit -qm leakignore
+fpf; FL1="$OUT"; printf 'v5\n' > "$FI/cache/data.csv"; printf 'n\n' > "$FI/cache/new2.csv"
+fpf; chk "F11j: with it COMMITTED, writes under the excluded ignored dir leave ignored unchanged" '[ "$(j .ignored)" = "$(printf "%s" "$FL1" | jq -r .ignored)" ]'
+printf 'v6\n' > "$FI/run.log"
+fpf; chk "F11k: ...an ignored file the patterns do not match still changes it" '[ "$(j .ignored)" != "$(printf "%s" "$FL1" | jq -r .ignored)" ]'
 fpf; FR0="$OUT"
 git -C "$FI" branch side
 fpf; FR1="$OUT"

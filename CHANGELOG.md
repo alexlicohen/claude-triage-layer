@@ -4,6 +4,35 @@ Reverse-chronological. Each entry cites the commit(s) it corresponds to and,
 where known, the test-count delta. See `test/roundtrip.sh` and `test/lint.sh`
 for the current check catalog.
 
+## Wave 23 — bake-off portability (coach bug report) + rsync removal (branch wave23-bakeoff-portability)
+
+Coach session report 2026-10-05: inline bake-offs unusable in ~/projects/coach — false LEAK from
+gitignored files a live daemon writes, and staged worktrees without `.venv` (every check rc 127,
+both candidates graded fail, one artefact row in the ledger).
+- `.triage-leakignore` (tracked, read at the bake-off base sha): gitignore-style patterns
+  excluded from the ignored-files leak fingerprint; tracked and untracked-not-ignored paths are
+  never excludable; excluded count reported.
+- `.triage-stage-links` (tracked, base sha): gitignored toolchain paths symlinked into
+  candidate AND grading worktrees through one owner (`stage-worktree.sh link`); a harness link
+  manifest keeps them out of patches; links absent during patch apply and overlay copy. STRICT:
+  a toolchain that references the source repo (absolute/relative .pth, egg-link, direct_url,
+  internal symlinks into the repo) is refused — it would grade the source repo's code. Known
+  limits: a site-packages symlinked to an external dir; editable finder metadata via an alias
+  path. Check processes run with PYTHONPATH/PYTHONHOME/PYTHONSTARTUP/NODE_PATH/PERL5LIB cleared.
+- Grading: rc 126/127 is `invalid` (check environment) only when the base fails identically at
+  the same first check; otherwise the candidate's fail. Graded runs keep the combined command;
+  per-check runs only classify. triage-exec skips a bake-off up front ("checks need an untracked
+  toolchain") when a check needs an untracked input the owner's link check does not cover.
+- `parity-report.sh void --run <id> --reason <text>`: append-only void markers; report, rates,
+  history and the rule drop voided runs.
+- qc/mutate.sh copies with a tar pipe (pipefail, file-count check) instead of rsync — Cortex XDR
+  on Alex's Mac flagged ~300 rsync copies per `make mutate`.
+- Four codex cross-review rounds on the linking work; the last two findings documented as
+  limits (Alex's stop point).
+- Checks: patch-check 44 → 94, stage-worktree 67 → 126, review-stage 79 → 83, workflow-scenarios
+  457 → 486, compare 379 → 397, parity-suite 116 → 119, parity-report 222 → 235; strict mutate
+  372 killed / 0 survived (catalog 299 → 372).
+
 ## Wave 22 — deep-review fixes, Waves 16–21 (branch wave22-review-fixes)
 
 Source: code-review-deep wf_4edf6fac-44a over 953a087..main (88 agents; GO-with-fixes; 32

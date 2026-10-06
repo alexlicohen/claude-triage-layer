@@ -15,7 +15,21 @@
 # empty patches; --require-clean seeing the SOURCE of a rename (quoted header paths
 # too), and a failed status / path listing never read as clean; a non-repo --repo
 # never falling back to the cwd's repo; the `ignored` fingerprint rule (one owner,
-# sub-second mtimes, shallowest first, the one exclusion list).
+# sub-second mtimes, shallowest first, the one exclusion list); the per-repo
+# exclusions of .triage-leakignore (absent = strict, committed only, ignored paths
+# only, a non-regular file not followed, negation and root anchoring) and the opt-in
+# stage links of .triage-stage-links (refusals incl. a parent outside the repo or the
+# worktree and a path tracked only at the base, kept out of the patch through the
+# manifest even when a candidate staged one, a candidate's own symlink kept IN,
+# writes through a link still a leak, cleanup never following a link, the standalone
+# `link` and `link --check`); the grants read at the bake-off's sha, never a moving
+# HEAD; an unreadable opt-in file or manifest a failure, never "none"; a toolchain
+# bound to the source repo refused with no override — an editable .pth / .egg-link /
+# direct_url.json / __editable__ finder naming it, an absolute or RELATIVE .pth entry
+# resolving into it, a symlink inside the linked path into it (node_modules/local ->
+# ../packages/local), a scan that cannot finish (bound, loop, find error) — while a
+# self-contained one (self references, links outside the repo) is linked; a tracked
+# .triage-stage-env (retired) ignored with a notice.
 # shellcheck disable=SC2034  # *_BEFORE etc. are read inside chk's eval'd conditions
 set -u
 
@@ -405,6 +419,377 @@ chk "S16d ignored on a non-repo is a usage error (exit 2)" '[ "$RC" -eq 2 ]'
 uses_owner() { grep -q "stage-worktree.sh" "$1" && grep -q "ignored --repo" "$1" && ! grep -qE "ls-files[^|]* -(o -i|i -o)|ls-files[^|]*--ignored" "$1"; }
 chk "S16e review-stage.sh and parity-suite.sh take the IGNORED fingerprint from stage-worktree.sh ignored (no copy of the rule)" \
   'uses_owner "$REPO_DIR/scripts/review-stage.sh" && uses_owner "$REPO_DIR/scripts/parity-suite.sh"'
+
+# --- S17: per-repo leak exclusions — HEAD:.triage-leakignore ---------------------
+LR="$T/leak-repo"
+mkrepo "$LR"
+printf 'data/\nbuild/\n' > "$LR/.gitignore"
+printf 'x\n' > "$LR/x.txt"
+git -C "$LR" add -A && git -C "$LR" commit -qm one
+mkdir -p "$LR/data/checkin" "$LR/build"
+printf 'db v1\n' > "$LR/data/coach.sqlite"; printf 'old\n' > "$LR/build/out.bin"
+# Absent file: today's strict behaviour, byte for byte.
+run_sw ignored --repo "$LR"
+chk "S17a no .triage-leakignore: ignored lists data/ and prints no leakignore line" \
+  '[ "$RC" -eq 0 ] && printf "%s\n" "$OUT" | grep -q "^data/coach.sqlite	ign:" && ! printf "%s" "$OUT" | grep -q leakignore && [ -z "$ERR" ]'
+# A working-tree-only file is never read (HEAD only).
+printf 'data/\n' > "$LR/.triage-leakignore"
+run_sw ignored --repo "$LR"
+chk "S17b an UNCOMMITTED .triage-leakignore is not read: data/ still listed" \
+  '[ "$RC" -eq 0 ] && printf "%s\n" "$OUT" | grep -q "^data/coach.sqlite	ign:" && ! printf "%s" "$OUT" | grep -q leakignore'
+D7="$T/out/stage7"
+run_sw create --repo "$LR" --base HEAD --count 1 --dir "$D7"
+chk "S17c create without a committed file: leakignore null, no links" \
+  '[ "$RC" -eq 0 ] && [ "$(j .leakignore)" = null ] && [ "$(j ".links | length")" = 0 ] && [ "$(j ".linkRefused | length")" = 0 ] && [ ! -e "$D7/fingerprint.leakignore" ]'
+printf 'db v2\n' > "$LR/data/coach.sqlite"
+run_sw leakcheck --repo "$LR" --dir "$D7" --line
+chk "S17d without a committed file a daemon write to data/ is still a LEAK (leakignore null in the line)" \
+  '[ "$RC" -eq 7 ] && [ "$(printf "%s" "${OUT#LEAKCHECK }" | jq -r ".status + \" \" + (.leakignore|tostring)")" = "LEAK null" ]'
+run_sw cleanup --repo "$LR" --dir "$D7"
+printf 'db v1\n' > "$LR/data/coach.sqlite"
+# Committed: data/ excluded.
+printf '# coach daemon output\ndata/\n' > "$LR/.triage-leakignore"
+git -C "$LR" add .triage-leakignore && git -C "$LR" commit -qm leakignore
+run_sw ignored --repo "$LR"
+chk "S17e a COMMITTED .triage-leakignore leaves its ignored paths out and adds ONE leakignore line (the blob sha)" \
+  '[ "$RC" -eq 0 ] && ! printf "%s" "$OUT" | grep -q "^data/" && printf "%s\n" "$OUT" | grep -q "^build/out.bin	ign:" &&
+   printf "%s\n" "$OUT" | grep -qx "	leakignore:$(git -C "$LR" rev-parse HEAD:.triage-leakignore)" && printf "%s" "$ERR" | grep -q "1 ignored path(s) left out"'
+D8="$T/out/stage8"
+run_sw create --repo "$LR" --base HEAD --count 1 --dir "$D8"
+chk "S17f create reports the patterns (comments dropped) and the excluded count" \
+  '[ "$RC" -eq 0 ] && [ "$(j ".leakignore.patterns | join(\",\")")" = "data/" ] && [ "$(j .leakignore.excluded)" = 1 ] && [ "$(j .leakignore.file)" = .triage-leakignore ]'
+printf 'db v2\n' > "$LR/data/coach.sqlite"; printf '{}\n' > "$LR/data/checkin/2026-10-05.json"
+run_sw leakcheck --repo "$LR" --dir "$D8" --line
+chk "S17g daemon writes under an excluded ignored dir are CLEAN; the line carries patterns + excluded count" \
+  '[ "$RC" -eq 0 ] && [ "$(printf "%s" "${OUT#LEAKCHECK }" | jq -r ".status + \" \" + (.leakignore.excluded|tostring) + \" \" + (.leakignore.patterns|join(\",\"))")" = "CLEAN 2 data/" ]'
+printf 'rewritten\n' > "$LR/build/out.bin"
+run_sw leakcheck --repo "$LR" --dir "$D8"
+chk "S17h an ignored path the patterns do not match is still a LEAK" \
+  '[ "$RC" -eq 7 ] && [ "$(j ".paths | join(\",\")")" = build/out.bin ]'
+printf 'old\n' > "$LR/build/out.bin"
+# An uncommitted widening is never read: leakcheck keeps create's copy.
+printf '*\n' > "$LR/.triage-leakignore"; git -C "$LR" update-index --assume-unchanged .triage-leakignore
+printf 'rewritten\n' > "$LR/build/out.bin"
+run_sw leakcheck --repo "$LR" --dir "$D8"
+chk "S17i a working-tree widening of the patterns (to *) does not hide an ignored write" \
+  '[ "$RC" -eq 7 ] && [ "$(j ".paths | index(\"build/out.bin\") != null")" = true ] && [ "$(j ".leakignore.patterns | join(\",\")")" = "data/" ]'
+git -C "$LR" update-index --no-assume-unchanged .triage-leakignore
+git -C "$LR" checkout -q -- .triage-leakignore; printf 'old\n' > "$LR/build/out.bin"
+run_sw cleanup --repo "$LR" --dir "$D8"
+# Even '*' committed: tracked and untracked-not-ignored paths are never excludable.
+printf '*\n' > "$LR/.triage-leakignore"
+git -C "$LR" add .triage-leakignore && git -C "$LR" commit -qm widen
+D9="$T/out/stage9"
+run_sw create --repo "$LR" --base HEAD --count 1 --dir "$D9"
+printf 'edited\n' > "$LR/x.txt"; printf 'new\n' > "$LR/stray.txt"; printf 'rewritten\n' > "$LR/build/out.bin"
+run_sw leakcheck --repo "$LR" --dir "$D9"
+chk "S17j a committed '*' never excludes a tracked edit or a new untracked-not-ignored file (only ignored paths)" \
+  '[ "$RC" -eq 7 ] && [ "$(j ".paths | join(\",\")")" = "stray.txt,x.txt" ]'
+git -C "$LR" checkout -q -- x.txt; rm -f "$LR/stray.txt"; printf 'old\n' > "$LR/build/out.bin"
+run_sw cleanup --repo "$LR" --dir "$D9"
+# A non-regular-file entry (a committed symlink) is ignored: strict.
+git -C "$LR" rm -q .triage-leakignore; ln -s .gitignore "$LR/.triage-leakignore"
+git -C "$LR" add .triage-leakignore && git -C "$LR" commit -qm symlink
+run_sw ignored --repo "$LR"
+chk "S17k a committed SYMLINK .triage-leakignore is not followed: no exclusions" \
+  '[ "$RC" -eq 0 ] && printf "%s\n" "$OUT" | grep -q "^data/coach.sqlite	ign:" && ! printf "%s" "$OUT" | grep -q "	leakignore:"'
+# An uncommitted widening of a COMMITTED file: `ignored` (and create) read HEAD's copy.
+git -C "$LR" rm -q .triage-leakignore; printf 'data/\n' > "$LR/.triage-leakignore"
+git -C "$LR" add .triage-leakignore && git -C "$LR" commit -qm regular
+printf '*\n' > "$LR/.triage-leakignore"
+run_sw ignored --repo "$LR"
+chk "S17l with the committed file widened in the working tree (to *), ignored still uses HEAD's patterns" \
+  '[ "$RC" -eq 0 ] && printf "%s\n" "$OUT" | grep -q "^build/out.bin	ign:" && ! printf "%s" "$OUT" | grep -q "^data/" &&
+   printf "%s\n" "$OUT" | grep -qx "	leakignore:$(git -C "$LR" rev-parse HEAD:.triage-leakignore)"'
+# Patterns committed MID-RUN are not picked up: leakcheck keeps create's copy.
+printf 'data/\nbuild/\n' > "$LR/.triage-leakignore"
+D13="$T/out/stage13"
+run_sw create --repo "$LR" --base HEAD --count 1 --dir "$D13"
+git -C "$LR" commit -qam widen-mid-run
+run_sw leakcheck --repo "$LR" --dir "$D13"
+chk "S17m a .triage-leakignore committed after create is not re-read: BASE_MOVED under the stage's own patterns" \
+  '[ "$RC" -eq 0 ] && [ "$(j .status)" = BASE_MOVED ] && [ "$(j ".leakignore.patterns | join(\",\")")" = "data/" ] && [ "$(j .leakignore.excluded)" = 2 ]'
+run_sw cleanup --repo "$LR" --dir "$D13"
+
+# --- S18: opt-in stage links — HEAD:.triage-stage-links ---------------------------
+KR="$T/link-repo"
+mkrepo "$KR"
+printf '.venv/\nnode_modules\n*.pyc\n__pycache__/\n' > "$KR/.gitignore"
+printf 'print(1)\n' > "$KR/src.py"
+git -C "$KR" add -A && git -C "$KR" commit -qm one
+mkdir -p "$KR/.venv/bin" "$KR/node_modules/m" "$KR/plain" "$T/elsewhere"
+printf '#!/bin/sh\necho venv-ok\n' > "$KR/.venv/bin/python"; chmod +x "$KR/.venv/bin/python"
+printf 'm\n' > "$KR/node_modules/m/i.js"; printf 'p\n' > "$KR/plain/f"
+ln -s "$T/elsewhere" "$KR/outlink"; printf 'outlink\n' >> "$KR/.git/info/exclude"
+# Absent file: no links (S17c covers create's JSON), and a working-tree-only list is never read.
+printf '.venv\n' > "$KR/.triage-stage-links"
+D10="$T/out/stage10"
+run_sw create --repo "$KR" --base HEAD --count 1 --dir "$D10"
+chk "S18a an UNCOMMITTED .triage-stage-links is not read: nothing linked" \
+  '[ "$RC" -eq 0 ] && [ "$(j ".links | length")" = 0 ] && [ ! -e "$D10/wt-1/.venv" ] && [ ! -L "$D10/wt-1/.venv" ]'
+run_sw cleanup --repo "$KR" --dir "$D10"
+printf '# toolchain\n.venv/\nnode_modules\n/abs/venv\n../up\na/./b\nsrc.py\nmissing\nplain\noutlink\n\n' > "$KR/.triage-stage-links"
+git -C "$KR" add .triage-stage-links && git -C "$KR" commit -qm links
+KHEAD=$(git -C "$KR" rev-parse HEAD)
+D11="$T/out/stage11"
+run_sw create --repo "$KR" --base HEAD --count 2 --dir "$D11"
+reason_of() { j ".linkRefused[] | select(.path == \"$1\") | .reason"; }
+chk "S18b create links .venv (trailing / dropped) and node_modules into EVERY worktree, pointing at the repo" \
+  '[ "$RC" -eq 0 ] && [ "$(j ".links | join(\",\")")" = ".venv,node_modules" ] &&
+   [ "$(readlink "$D11/wt-1/.venv")" = "$KR/.venv" ] && [ "$(readlink "$D11/wt-2/node_modules")" = "$KR/node_modules" ] &&
+   [ "$("$D11/wt-2/.venv/bin/python")" = venv-ok ]'
+chk "S18c refusals: absolute, .., unnormalized, tracked, missing, not gitignored, a symlink in the repo — listed, warned, not linked" \
+  '[ "$(reason_of /abs/venv)" = "absolute path" ] && [ "$(reason_of ../up)" = "contains a .. component" ] &&
+   [ "$(reason_of a/./b)" = "not a normalized repo-relative path" ] && [ "$(reason_of src.py)" = "tracked in the repo" ] &&
+   [ "$(reason_of missing)" = "does not exist in the repo" ] && [ "$(reason_of plain)" = "not gitignored in the repo" ] &&
+   [ "$(reason_of outlink)" = "a symlink in the repo" ] && [ ! -e "$D11/wt-1/plain" ] && [ ! -L "$D11/wt-1/outlink" ] &&
+   [ -f "$D11/wt-1/src.py" ] && [ ! -L "$D11/wt-1/src.py" ] && printf "%s" "$ERR" | grep -q "NOT linked"'
+printf 'print(2)\n' > "$D11/wt-1/src.py"
+run_sw diff --worktree "$D11/wt-1" --base "$KHEAD" --out "$T/out/link.patch"
+chk "S18d diff keeps the stage links out of the patch and out of ignoredNew" \
+  '[ "$RC" -eq 0 ] && [ "$(j .ignoredNew)" = 0 ] && grep -q "^+print(2)" "$T/out/link.patch" && ! grep -qE "venv|node_modules" "$T/out/link.patch" &&
+   [ "$(git -C "$D11/wt-1" diff --cached --name-only "$KHEAD")" = src.py ]'
+printf 'pkg\n' > "$D11/wt-1/.venv/bin/new-tool"
+run_sw leakcheck --repo "$KR" --dir "$D11"
+chk "S18e a write THROUGH a link lands in the repo and is a LEAK (no leakignore)" \
+  '[ "$RC" -eq 7 ] && [ "$(j ".paths | join(\",\")")" = ".venv/bin/new-tool" ]'
+rm -f "$KR/.venv/bin/new-tool"
+run_sw cleanup --repo "$KR" --dir "$D11"
+chk "S18f cleanup removes the links, never what they point at" \
+  '[ "$RC" -eq 0 ] && [ ! -e "$D11" ] && [ -x "$KR/.venv/bin/python" ] && [ -f "$KR/node_modules/m/i.js" ]'
+# With a leakignore for bytecode under the linked venv, that write is excluded.
+printf '.venv/**/__pycache__/\n' > "$KR/.triage-leakignore"
+git -C "$KR" add .triage-leakignore && git -C "$KR" commit -qm pyc
+D12="$T/out/stage12"
+run_sw create --repo "$KR" --base HEAD --count 1 --dir "$D12"
+mkdir -p "$D12/wt-1/.venv/lib/__pycache__"; printf 'pyc\n' > "$D12/wt-1/.venv/lib/__pycache__/m.cpython.pyc"
+run_sw leakcheck --repo "$KR" --dir "$D12"
+chk "S18g a bytecode write through a linked venv is CLEAN when .triage-leakignore excludes it" \
+  '[ "$RC" -eq 0 ] && [ "$(j .status)" = CLEAN ] && [ "$(j .leakignore.excluded)" = 1 ]'
+# link, standalone: a grading worktree of the same repo gets the same links; refusals.
+GW="$T/out/grade-wt"
+git -C "$KR" worktree add -q --detach "$GW" HEAD
+run_sw link --repo "$KR" --base HEAD --worktree "$GW"
+chk "S18h link gives any linked worktree of the repo the same links (one JSON line)" \
+  '[ "$RC" -eq 0 ] && [ "$(j .step)" = link ] && [ "$(j ".links | join(\",\")")" = ".venv,node_modules" ] && [ "$(readlink "$GW/.venv")" = "$KR/.venv" ]'
+run_sw link --repo "$KR" --base HEAD --worktree "$GW"
+chk "S18i linking again refuses what already exists in the worktree" \
+  '[ "$RC" -eq 0 ] && [ "$(j ".links | length")" = 0 ] && [ "$(j "[.refused[] | select(.reason == \"already exists in the worktree\")] | length")" = 2 ]'
+run_sw link --repo "$KR" --base HEAD --worktree "$KR"
+chk "S18j link refuses the repo's own (main) working tree: usage error, nothing linked" \
+  '[ "$RC" -eq 2 ] && [ ! -L "$KR/.venv" ] && [ -d "$KR/.venv" ]'
+run_sw link --repo "$LR" --base HEAD --worktree "$GW"
+chk "S18k link refuses a worktree of ANOTHER repo" '[ "$RC" -eq 2 ]'
+run_sw link --repo "$GW" --base HEAD --worktree "$KR"
+chk "S18l link refuses a MAIN working tree as --worktree even when --repo is a linked worktree of it" \
+  '[ "$RC" -eq 2 ] && [ ! -L "$KR/.venv" ] && [ -d "$KR/.venv" ]'
+git -C "$KR" worktree remove --force "$GW"
+run_sw cleanup --repo "$KR" --dir "$D12"
+
+# --- S19: the link manifest, frozen grants, failures, bound toolchains, stage env ----
+BR="$T/bind-repo"
+mkrepo "$BR"
+printf '.venv/\ncache/\nvenv/\next\ntools/\n' > "$BR/.gitignore"
+mkdir -p "$BR/src/pkg" "$BR/cache"; printf 'WHO = "source"\n' > "$BR/src/pkg/__init__.py"; printf 'c\n' > "$BR/cache/x"
+printf '.venv\ncache\n' > "$BR/.triage-stage-links"
+git -C "$BR" add .gitignore src .triage-stage-links && git -C "$BR" commit -qm one
+git -C "$BR" add -f cache/x && git -C "$BR" commit -qm cache-tracked
+BOLD=$(git -C "$BR" rev-parse HEAD)
+git -C "$BR" rm -q --cached cache/x && git -C "$BR" commit -qm cache-untracked
+B1=$(git -C "$BR" rev-parse HEAD)
+mkdir -p "$BR/.venv/bin" "$BR/.venv/lib/site-packages"
+printf '#!/bin/sh\necho venv\n' > "$BR/.venv/bin/tool"; chmod +x "$BR/.venv/bin/tool"
+D20="$T/out/stage20"
+run_sw create --repo "$BR" --base HEAD --count 1 --dir "$D20"
+MF=$(git -C "$D20/wt-1" rev-parse --absolute-git-dir)/triage-stage-links
+chk "S19a create records every link it makes in the worktree's manifest (its own git dir); no stage env anywhere" \
+  '[ "$RC" -eq 0 ] && [ "$(j ".links | join(\",\")")" = ".venv,cache" ] && [ "$(cat "$MF" | paste -sd, -)" = ".venv,cache" ] &&
+   [ "$(j "has(\"env\") or has(\"envRefused\")")" = false ] && [ ! -e "$D20/wt-1.env" ] && [ ! -e "$D20/wt-1/triage-stage-links" ]'
+# A candidate's own `git add -A` stages the .venv symlink (.venv/ does not match the FILE).
+printf 'print(2)\n' > "$D20/wt-1/src/pkg/__init__.py"
+git -C "$D20/wt-1" add -A
+STAGED_BEFORE=$(git -C "$D20/wt-1" diff --cached --name-only | paste -sd, -)
+# …and creates its OWN symlinks: one spelled like a stage link (<repo>/P), one relative.
+ln -s "$BR/new-unlisted" "$D20/wt-1/new-unlisted"; ln -s src/pkg "$D20/wt-1/pkglink"
+run_sw diff --worktree "$D20/wt-1" --base HEAD --out "$T/out/s19.patch"
+chk "S19b a stage link a candidate already STAGED is unstaged again: never in the patch (the link itself stays)" \
+  'printf "%s" "$STAGED_BEFORE" | grep -q "\.venv" && [ "$RC" -eq 0 ] && [ "$(j .ok)" = true ] && ! grep -q "\.venv" "$T/out/s19.patch" &&
+   ! git -C "$D20/wt-1" diff --cached --name-only HEAD | grep -qx .venv && [ -L "$D20/wt-1/.venv" ] && [ "$(j .ignoredNew)" = 0 ]'
+chk "S19c a candidate-created symlink NOT in the manifest stays in the patch, even one pointing at <repo>/P" \
+  'grep -q "^+++ b/new-unlisted" "$T/out/s19.patch" && grep -q "^+++ b/pkglink" "$T/out/s19.patch" && grep -q "^+print(2)" "$T/out/s19.patch"'
+# A manifest that cannot be read: a failure, never "no links".
+mv "$MF" "$MF.bak"; mkdir "$MF"
+run_sw diff --worktree "$D20/wt-1" --base HEAD --out "$T/out/s19.patch"
+chk "S19d an unreadable link manifest fails the diff (ok:false, no patch left) — never read as no links" \
+  '[ "$RC" -eq 1 ] && [ "$(j .ok)" = false ] && j .error | grep -q "manifest" && [ ! -e "$T/out/s19.patch" ]'
+rmdir "$MF"; mv "$MF.bak" "$MF"
+run_sw cleanup --repo "$BR" --dir "$D20"
+# The grants are frozen at the given sha: HEAD moving (the list edited) changes nothing.
+printf 'cache\n' > "$BR/.triage-stage-links"; git -C "$BR" commit -qam links-edited
+GW2="$T/out/grade-wt2"
+git -C "$BR" worktree add -q --detach "$GW2" "$B1"
+run_sw link --repo "$BR" --base "$B1" --worktree "$GW2"
+chk "S19e link reads the grants at --base, not at a moved HEAD: the base's .venv is linked" \
+  '[ "$RC" -eq 0 ] && [ "$(j .base)" = "$B1" ] && [ "$(j ".links | join(\",\")")" = ".venv,cache" ] && [ -L "$GW2/.venv" ]'
+git -C "$BR" worktree remove --force "$GW2"
+D21="$T/out/stage21"
+run_sw create --repo "$BR" --base "$B1" --count 1 --dir "$D21"
+chk "S19f create at an older base links the grants committed THERE (HEAD's edited list is not read)" \
+  '[ "$RC" -eq 0 ] && [ "$(j ".links | join(\",\")")" = ".venv,cache" ]'
+run_sw cleanup --repo "$BR" --dir "$D21"
+run_sw link --repo "$BR" --base HEAD --worktree "$T/out"
+chk "S19g link without a linked worktree, or --check with one, is a usage error" '[ "$RC" -eq 2 ]'
+run_sw link --repo "$BR" --base HEAD --check --worktree "$T/out"
+chk "S19g …(--check takes no --worktree)" '[ "$RC" -eq 2 ]'
+run_sw link --repo "$BR" --base "$BOLD" --check
+chk "S19h --check: a path tracked ONLY at the selected base (cache/, untracked now) is refused there; nothing is created" \
+  '[ "$RC" -eq 0 ] && [ "$(j .step)" = link-check ] && [ "$(j .base)" = "$BOLD" ] && [ "$(j ".links | join(\",\")")" = .venv ] &&
+   [ "$(j ".refused[] | select(.path == \"cache\") | .reason")" = "tracked at the base" ] && [ "$(j "has(\"worktree\")")" = false ]'
+run_sw link --repo "$BR" --base HEAD --check
+chk "S19h …and linked at a base where it is untracked; --check makes no symlink anywhere" \
+  '[ "$RC" -eq 0 ] && [ "$(j ".links | join(\",\")")" = cache ] && [ -z "$(find "$T/out" -type l 2>/dev/null | head -n 1)" ]'
+# Parents that resolve elsewhere: the repo side (ext -> outside) and the worktree side.
+mkdir -p "$T/outside/venv" "$T/elsewhere2" "$BR/tools/venv"
+ln -s "$T/outside" "$BR/ext"
+printf 'ext/venv\ntools/venv\n' > "$BR/.triage-stage-links"; git -C "$BR" commit -qam parents
+GW3="$T/out/grade-wt3"
+git -C "$BR" worktree add -q --detach "$GW3" HEAD
+ln -s "$T/elsewhere2" "$GW3/tools"
+run_sw link --repo "$BR" --base HEAD --worktree "$GW3"
+chk "S19i a source path whose parent resolves outside the repo, and a destination whose parent resolves outside the worktree, are refused (nothing made)" \
+  '[ "$RC" -eq 0 ] && [ "$(j ".links | length")" = 0 ] && [ "$(j ".refused[] | select(.path == \"ext/venv\") | .reason")" = "resolves outside the repo" ] &&
+   [ "$(j ".refused[] | select(.path == \"tools/venv\") | .reason")" = "its parent resolves outside the worktree" ] && [ -z "$(ls -A "$T/elsewhere2")" ]'
+git -C "$BR" worktree remove --force "$GW3"
+# An opt-in file that cannot be READ at the sha (its blob is gone): a failure, never none.
+BLOB=$(git -C "$BR" rev-parse HEAD:.triage-stage-links)
+OBJ="$BR/.git/objects/${BLOB:0:2}/${BLOB:2}"
+mv "$OBJ" "$T/blob.bak"
+D22="$T/out/stage22"
+run_sw create --repo "$BR" --base HEAD --count 1 --dir "$D22"
+chk "S19j an unreadable .triage-stage-links at the sha fails create (exit 1, rolled back) — never 'no links'" \
+  '[ "$RC" -eq 1 ] && [ ! -e "$D22" ] && [ "$(wt_count "$BR")" = 1 ] && printf "%s" "$ERR" | grep -q "could not read"'
+run_sw link --repo "$BR" --base HEAD --check
+chk "S19j …and fails link (exit 1, no JSON)" '[ "$RC" -eq 1 ] && [ -z "$OUT" ]'
+mv "$T/blob.bak" "$OBJ"
+printf 'data/\n' > "$BR/.triage-leakignore"; git -C "$BR" add .triage-leakignore && git -C "$BR" commit -qm li
+BLOB=$(git -C "$BR" rev-parse HEAD:.triage-leakignore); OBJ="$BR/.git/objects/${BLOB:0:2}/${BLOB:2}"
+mv "$OBJ" "$T/blob.bak"
+run_sw ignored --repo "$BR"; IGN_RC=$RC
+run_sw create --repo "$BR" --base HEAD --count 1 --dir "$D22"
+chk "S19k an unreadable .triage-leakignore fails ignored (exit 1) and create (exit 1, rolled back) — never 'no exclusions'" \
+  '[ "$IGN_RC" -eq 1 ] && [ "$RC" -eq 1 ] && [ ! -e "$D22" ] && [ "$(wt_count "$BR")" = 1 ]'
+mv "$T/blob.bak" "$OBJ"
+git -C "$BR" rm -q .triage-leakignore && git -C "$BR" commit -qm no-li
+# A toolchain BOUND to the source repo: an editable install names <repo>/src.
+SP="$BR/.venv/lib/site-packages"
+printf '.venv\n' > "$BR/.triage-stage-links"; git -C "$BR" commit -qam venv-only
+printf '%s\n../extra\nimport os; os.getcwd()\n# ../../../src\n' "$BR/.venv/lib/extra" > "$SP/self.pth"
+ln -s lib "$BR/.venv/lib64"; ln -s /usr/bin/env "$BR/.venv/bin/env"; ln -s ../../tool "$BR/.venv/lib/site-packages/tool"
+run_sw link --repo "$BR" --base HEAD --check
+chk "S19l self-contained: a .pth naming only the venv itself (absolute or relative), import/# lines, and symlinks inside it or outside the repo — .venv is linked" \
+  '[ "$RC" -eq 0 ] && [ "$(j ".links | join(\",\")")" = .venv ] && [ "$(j ".refused | length")" = 0 ]'
+printf '%s\n' "$BR/src" > "$SP/__editable__.pkg-0.1.pth"
+run_sw link --repo "$BR" --base HEAD --check
+chk "S19m an editable .pth naming <repo>/src: refused, 'imports the source repo' with the file named" \
+  '[ "$RC" -eq 0 ] && [ "$(j ".links | length")" = 0 ] && j ".refused[0].reason" | grep -q "^imports the source repo: lib/site-packages/__editable__.pkg-0.1.pth"'
+rm -f "$SP/__editable__.pkg-0.1.pth"
+mkdir -p "$SP/pkg-0.1.dist-info"
+printf '{"url": "file://%s", "dir_info": {}}\n' "$BR" > "$SP/pkg-0.1.dist-info/direct_url.json"
+run_sw link --repo "$BR" --base HEAD --check
+chk "S19n a NON-editable direct_url.json naming the repo is not bound (the code was copied)" '[ "$(j ".links | join(\",\")")" = .venv ]'
+printf '{"url": "file://%s", "dir_info": {"editable": true}}\n' "$BR" > "$SP/pkg-0.1.dist-info/direct_url.json"
+run_sw link --repo "$BR" --base HEAD --check
+chk "S19n …an editable one is bound (refused)" 'j ".refused[0].reason" | grep -q "^imports the source repo: lib/site-packages/pkg-0.1.dist-info/direct_url.json"'
+rm -rf "$SP/pkg-0.1.dist-info"
+printf '%s\n.\n' "$BR" > "$SP/pkg.egg-link"
+run_sw link --repo "$BR" --base HEAD --check
+chk "S19n …and so is an .egg-link naming the repo root" 'j ".refused[0].reason" | grep -q "^imports the source repo: lib/site-packages/pkg.egg-link"'
+rm -f "$SP/pkg.egg-link"
+printf "MAPPING = {'pkg': '%s/src/pkg'}\n" "$BR" > "$SP/__editable___pkg_0_1_finder.py"
+run_sw link --repo "$BR" --base HEAD --check
+chk "S19n …and so is setuptools' __editable__ finder module naming <repo>/src/pkg" \
+  '[ "$(j ".links | length")" = 0 ] && j ".refused[0].reason" | grep -q "^imports the source repo: lib/site-packages/__editable___pkg_0_1_finder.py names $BR"'
+rm -f "$SP/__editable___pkg_0_1_finder.py"
+# The retired stage env: a committed .triage-stage-env lifts NOTHING (one notice line).
+printf '%s\n' "$BR/src" > "$SP/__editable__.pkg-0.1.pth"
+printf 'PYTHONPATH=src\n' > "$BR/.triage-stage-env"
+git -C "$BR" add .triage-stage-env && git -C "$BR" commit -qm env
+D23="$T/out/stage23"
+run_sw create --repo "$BR" --base HEAD --count 1 --dir "$D23"
+chk "S19o a committed .triage-stage-env is ignored: the bound venv stays refused, create writes no wt-<i>.env and reports no env, one notice" \
+  '[ "$RC" -eq 0 ] && [ "$(j ".links | length")" = 0 ] && j ".linkRefused[0].reason" | grep -q "^imports the source repo" && [ ! -e "$D23/wt-1.env" ] &&
+   [ "$(j "has(\"env\")")" = false ] && [ "$(printf "%s\n" "$ERR" | grep -c "triage-stage-env at .* is ignored")" = 1 ]'
+run_sw cleanup --repo "$BR" --dir "$D23"
+run_sw link --repo "$BR" --base HEAD --check
+chk "S19o …and link --check alike (no env member, the notice on stderr)" \
+  '[ "$RC" -eq 0 ] && [ "$(j ".links | length")" = 0 ] && [ "$(j "has(\"env\") or has(\"envRefused\")")" = false ] && printf "%s" "$ERR" | grep -q "the stage env was retired"'
+git -C "$BR" rm -q .triage-stage-env && git -C "$BR" commit -qm no-env
+rm -f "$SP/__editable__.pkg-0.1.pth"
+run_sw link --repo "$BR" --base HEAD --check
+chk "S19o …without it, no notice" '[ "$(j ".links | join(\",\")")" = .venv ] && ! printf "%s" "$ERR" | grep -q "triage-stage-env"'
+# A RELATIVE .pth entry is resolved against its own directory (as site.py does).
+printf '../../../src\n' > "$SP/rel.pth"
+run_sw link --repo "$BR" --base HEAD --check
+chk "S19p a RELATIVE .pth entry that resolves into the repo (../../../src → <repo>/src) is bound: refused, naming the file and the target" \
+  '[ "$RC" -eq 0 ] && [ "$(j ".links | length")" = 0 ] && [ "$(j ".refused[0].reason")" = "imports the source repo: lib/site-packages/rel.pth puts $BR/src on the import path — links are only for self-contained toolchains: checks would run the repo'\''s code, not the worktree'\''s" ]'
+printf 'sub/../../../../src\n' > "$SP/rel.pth"
+run_sw link --repo "$BR" --base HEAD --check
+chk "S19p …also through a .. after a missing directory, and to the repo root itself ('../../..')" '[ "$(j ".links | length")" = 0 ]'
+printf '../../..\n' > "$SP/rel.pth"
+run_sw link --repo "$BR" --base HEAD --check
+chk "S19p …(the repo root)" '[ "$(j ".links | length")" = 0 ] && j ".refused[0].reason" | grep -q "puts $BR on the import path"'
+rm -f "$SP/rel.pth"
+# A symlink INSIDE the linked path that resolves into the repo: a workspace package.
+printf 'node_modules/\n' >> "$BR/.gitignore"; mkdir -p "$BR/packages/local" "$BR/node_modules/.bin" "$BR/node_modules/dep"
+printf 'module.exports = "source"\n' > "$BR/packages/local/index.js"; printf 'x\n' > "$BR/node_modules/dep/bin.js"
+printf '.venv\nnode_modules\n' > "$BR/.triage-stage-links"
+git -C "$BR" add .gitignore .triage-stage-links packages && git -C "$BR" commit -qm node
+ln -s ../dep/bin.js "$BR/node_modules/.bin/dep"
+run_sw link --repo "$BR" --base HEAD --check
+chk "S19q node_modules whose symlinks stay inside it (.bin/dep -> ../dep/bin.js) is self-contained: linked" '[ "$(j ".links | join(\",\")")" = ".venv,node_modules" ]'
+ln -s ../packages/local "$BR/node_modules/local"
+run_sw link --repo "$BR" --base HEAD --check
+chk "S19q node_modules/local -> ../packages/local (a workspace package in the repo) is bound: refused, naming the link and its target" \
+  '[ "$(j ".links | join(\",\")")" = .venv ] && [ "$(j ".refused[0].path")" = node_modules ] &&
+   j ".refused[0].reason" | grep -q "^imports the source repo: local is a symlink to $BR/packages/local, in the repo outside node_modules"'
+rm -f "$BR/node_modules/local"; ln -s "$BR/src" "$BR/node_modules/abs"
+run_sw link --repo "$BR" --base HEAD --check
+chk "S19q …and so is an ABSOLUTE symlink into the repo" 'j ".refused[0].reason" | grep -q "^imports the source repo: abs is a symlink to $BR/src"'
+rm -f "$BR/node_modules/abs"; mkdir -p "$BR/node_modules/sub"; ln -s ../../packages/x "$BR/node_modules/sub/dangling"
+run_sw link --repo "$BR" --base HEAD --check
+chk "S19q …and a DANGLING one that would land in the repo" 'j ".refused[0].reason" | grep -q "^imports the source repo: sub/dangling is a symlink to $BR/packages/x"'
+rm -rf "$BR/node_modules/sub"
+# The scan is bounded and fails closed: over the bound, a symlink loop, an unwalkable dir.
+STAGE_WT_BOUND_SCAN_MAX=1 run_sw link --repo "$BR" --base HEAD --check
+chk "S19u over STAGE_WT_BOUND_SCAN_MAX entries the scan stops: refused as could not be scanned, never linked" \
+  '[ "$RC" -eq 0 ] && [ "$(j ".links | join(\",\")")" = node_modules ] && [ "$(j ".refused[0].path")" = .venv ] &&
+   j ".refused[0].reason" | grep -q "^could not be scanned for references to the source repo: more than 1 symlinks and metadata files under .venv"'
+ln -s loop-b "$BR/node_modules/loop-a"; ln -s loop-a "$BR/node_modules/loop-b"
+run_sw link --repo "$BR" --base HEAD --check
+chk "S19u a symlink loop inside the linked path: refused (could not be scanned)" \
+  '[ "$(j ".links | join(\",\")")" = .venv ] && j ".refused[0].reason" | grep -q "^could not be scanned.*symlink loop"'
+rm -f "$BR/node_modules/loop-a" "$BR/node_modules/loop-b"
+if [ "$(id -u)" != 0 ]; then
+  mkdir -p "$BR/node_modules/locked/inner"; chmod 000 "$BR/node_modules/locked"
+  run_sw link --repo "$BR" --base HEAD --check
+  chmod 755 "$BR/node_modules/locked"
+  chk "S19u a directory the scan cannot walk (find fails): refused (could not be scanned), never linked" \
+    '[ "$(j ".links | join(\",\")")" = .venv ] && j ".refused[0].reason" | grep -q "^could not be scanned.*the scan failed"'
+  rm -rf "$BR/node_modules/locked"
+fi
+rm -rf "$BR/node_modules"; printf '.venv\n' > "$BR/.triage-stage-links"; git -C "$BR" commit -qam venv-again
+# .triage-leakignore: negation and root anchoring work as in .gitignore.
+NR="$T/neg-repo"
+mkrepo "$NR"
+printf 'data/\nbuild/\n' > "$NR/.gitignore"; printf 'x\n' > "$NR/x"
+printf 'data/*\n!data/keep.json\n/build/\n' > "$NR/.triage-leakignore"
+git -C "$NR" add -A && git -C "$NR" commit -qm one
+mkdir -p "$NR/data" "$NR/build" "$NR/sub/build"
+printf 'a\n' > "$NR/data/a"; printf 'k\n' > "$NR/data/keep.json"; printf 'o\n' > "$NR/build/out"; printf 's\n' > "$NR/sub/build/out"
+run_sw ignored --repo "$NR"
+chk "S19r leakignore negation (!data/keep.json kept) and root anchoring (/build/ only at the root) behave as in .gitignore" \
+  '[ "$RC" -eq 0 ] && printf "%s\n" "$OUT" | grep -q "^data/keep.json	ign:" && printf "%s\n" "$OUT" | grep -q "^sub/build/out	ign:" &&
+   ! printf "%s\n" "$OUT" | grep -q "^data/a	" && ! printf "%s\n" "$OUT" | grep -q "^build/out	" && printf "%s" "$ERR" | grep -q "2 ignored path(s) left out"'
 
 echo ""
 echo "RESULT: $PASS_COUNT passed, $FAIL_COUNT failed"

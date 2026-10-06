@@ -77,7 +77,8 @@
 #               "head":<HEAD sha>, "tree":<hash of `status --porcelain=v1 -uall`
 #               + the content of every modified/untracked non-ignored file>,
 #               "ignored":<hash of `stage-worktree.sh ignored` — the IGNORED files
-#               by the one leak-fingerprint rule that script owns>,
+#               by the one leak-fingerprint rule that script owns, the source's
+#               committed .triage-leakignore included>,
 #               "refs":<hash of refs/heads, refs/tags, refs/stash, the repo
 #               config and non-sample hooks>}; a generator source prints
 #              {"id","source":"generator","guarded":false} (no source repo: the
@@ -492,8 +493,9 @@ source_tree() {
 # candidate or a grader regenerating a gitignored cache in the real repo). The rule
 # is NOT here: `stage-worktree.sh ignored` owns it (the same one a compare's
 # leakcheck and a review's fingerprint use — content hash of small files, size +
-# sub-second mtime of the rest, shallowest first, a count past the list cap, and one
-# exclusion list: .claude/, PROJECT_MEMORY*.md, .DS_Store). Missing or failing => rc 1.
+# sub-second mtime of the rest, shallowest first, a count past the list cap, one
+# exclusion list: .claude/, PROJECT_MEMORY*.md, .DS_Store, and the repo's committed
+# HEAD:.triage-leakignore). Missing or failing => rc 1.
 ignored_tree() {
   local top="$1" lines
   lines=$("$SCRIPT_DIR/stage-worktree.sh" ignored --repo "$top") || return 1

@@ -6,7 +6,8 @@
 //
 // Fail-loud runner: accumulates all failures, prints RESULT line, exits non-zero
 // on any failure.
-import { readFileSync } from 'node:fs'
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -1154,9 +1155,18 @@ function CMP(statuses, over = {}) {
 // apply's reply for the patch the prompt names (a function of the prompt: the
 // workflow requires the relayed patch to be the one it asked for).
 // The clean check's reply: the tagged stdout of triage-exec's one command (cleanCheckCmd()).
-const DIRTY = ({ porcelain = '', rc = 0, sessionTop = '/r/repo', repoTop = '/r/repo', now = '2026-10-05T12:00:00Z' } = {}) =>
+// A function of the prompt: one `CLEANCHECK path` line per path the command asks about
+// (its `for q in '…' …; do` list; state from opts.paths, default tracked), then the
+// stage-link owner's answer (`link --check`): its exit (opts.linkRc) and its JSON line —
+// opts.links accepted, opts.refused [{path, reason}] — or opts.linkcheck verbatim.
+const askedOf = prompt => { const m = String(prompt).match(/for q in ((?:'[^']*' ?)+); do/); return m ? [...m[1].matchAll(/'([^']*)'/g)].map(x => x[1]) : [] }
+const LINK_BASE = 'a'.repeat(40)
+const LINKCHECK = (links = [], refused = []) => JSON.stringify({ step: 'link-check', base: LINK_BASE, links, refused })
+const DIRTY = ({ porcelain = '', rc = 0, sessionTop = '/r/repo', repoTop = '/r/repo', now = '2026-10-05T12:00:00Z', paths = {}, links = [], refused = [], linkRc = 0, linkcheck } = {}) => prompt =>
   [`CLEANCHECK rc ${rc}`, ...porcelain.split('\n').filter(Boolean).map(l => `CLEANCHECK porcelain ${l}`),
-    `CLEANCHECK sessionTop ${sessionTop}`, `CLEANCHECK repoTop ${repoTop}`, `CLEANCHECK now ${now}`, 'CLEANCHECK end'].join('\n')
+    `CLEANCHECK sessionTop ${sessionTop}`, `CLEANCHECK repoTop ${repoTop}`, `CLEANCHECK now ${now}`,
+    ...askedOf(prompt).map(q => `CLEANCHECK path ${paths[q] || 'tracked'} ${q}`),
+    `CLEANCHECK linkrc ${linkRc}`, `CLEANCHECK linkcheck ${linkcheck != null ? linkcheck : linkRc === 0 ? LINKCHECK(links, refused) : ''}`, 'CLEANCHECK end'].join('\n')
 const DIRTY_OK = DIRTY()
 const patchOf = p => (p.match(/--patch '([^']+)'/) || [])[1]
 const APPLIED = (over = {}) => p => Object.assign({ step: 'apply', ok: true, applied: true, method: 'plain', treeModified: true, patch: patchOf(p), rc: 0 }, over)
@@ -2387,10 +2397,10 @@ const fableSpawned = calls => calls.some(c => c.opts.agentType === 'triage-fable
   // M12: strict parse — every malformed reply is retried once, then the sample is skipped.
   const bad = [
     'CLEANCHECK rc 0\nCLEANCHECK sessionTop /r/repo\nCLEANCHECK repoTop /r/repo\nCLEANCHECK now 2026-10-05T12:00:00Z',            // no end
-    `${DIRTY_OK}\nCLEANCHECK rc 0`,                                                                                             // end not last, rc twice
-    DIRTY_OK.replace('CLEANCHECK rc 0', 'CLEANCHECK rc null'),                                                                   // rc not a status
-    DIRTY_OK.replace('2026-10-05T12:00:00Z', 'today'),                                                                          // now not ISO
-    DIRTY_OK.replace('CLEANCHECK repoTop /r/repo', 'CLEANCHECK repoTop r/repo'),                                                 // relative top
+    p => `${DIRTY_OK(p)}\nCLEANCHECK rc 0`,                                                                                             // end not last, rc twice
+    p => DIRTY_OK(p).replace('CLEANCHECK rc 0', 'CLEANCHECK rc null'),                                                                 // rc not a status
+    p => DIRTY_OK(p).replace('2026-10-05T12:00:00Z', 'today'),                                                                     // now not ISO
+    p => DIRTY_OK(p).replace('CLEANCHECK repoTop /r/repo', 'CLEANCHECK repoTop r/repo'),                                             // relative top
     'porcelain: ""\nrc: 0\nsessionTop: /r/repo',                                                                                // a paraphrase
   ]
   let strict = true
@@ -2399,14 +2409,230 @@ const fableSpawned = calls => calls.some(c => c.opts.agentType === 'triage-fable
       { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
       { ...CLEAN, 'bakeoff:dirty:': [reply], 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
     if (!(x.workflows.length === 0 && countCalls(x.calls, 'bakeoff:dirty:t1') === 2 && x.result.bakeoffs[0].reason === 'dirty check unavailable' &&
-      countCalls(x.calls, 'builder:t1') === 1 && x.logs.some(l => l.includes('clean check gave no usable reply')))) { strict = false; console.log(`  (S75 lax on: ${JSON.stringify(reply.slice(0, 60))})`) }
+      countCalls(x.calls, 'builder:t1') === 1 && x.logs.some(l => l.includes('clean check gave no usable reply')))) { strict = false; console.log(`  (S75 lax on: ${JSON.stringify(String(reply).slice(0, 60))})`) }
   }
   chk('S75 (M12): a clean-check reply missing/duplicating a tag, a non-status rc, a bad time, a relative top or a paraphrase → retried once, then skipped (dirty check unavailable)', strict)
   const second = await run(
     { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() },
-    { ...CLEAN, 'bakeoff:dirty:': ['Sure! Running it now.', `Output:\n\`\`\`\n${DIRTY_OK}\n\`\`\``], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
+    { ...CLEAN, 'bakeoff:dirty:': ['Sure! Running it now.', p => `Output:\n\`\`\`\n${DIRTY_OK(p)}\n\`\`\``], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
   chk('S75 (M12): a chatty first reply, then the tagged stdout (fenced) → retried once and sampled', second.workflows.length === 1 && countCalls(second.calls, 'bakeoff:dirty:t1') === 2 &&
     second.result.bakeoffs[0].applied === 'planned')
+}
+
+// ---- Scenario 76 (Wave 23): toolchain pre-flight. Checks that run a gitignored or
+// untracked repo path (.venv/bin/python) would exit 127 in every staged worktree: the
+// clean check asks about every path the checks name, and an ignored/untracked one that
+// no .triage-stage-links entry covers skips the bake-off BEFORE anything is staged.
+{
+  const TOOL = 'checks need an untracked toolchain'
+  const VCHK = ['.venv/bin/python -m pytest tests/test_t1.py']
+  const plan = (checks = VCHK) => ({ subtasks: [BST('t1', 'builder', { checks })], checks: ['make test'], review: 'never', bakeoff: BO() })
+  const { result, workflows, calls, logs } = await run(plan(),
+    { ...CLEAN, 'bakeoff:dirty:': [DIRTY({ paths: { '.venv/bin/python': 'ignored' } })], 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
+  const d = calls.find(c => c.label === 'bakeoff:dirty:t1')
+  chk('S76: the clean check asks about every path the checks name, and asks the stage-link OWNER (link --check at HEAD), in the ONE command — no copy of its rules',
+    d && JSON.stringify(askedOf(d.prompt)) === JSON.stringify(['.venv/bin/python', 'tests/test_t1.py']) &&
+    d.prompt.includes(`~/.claude/scripts/stage-worktree.sh link --check --repo '/r/repo' --base HEAD`) && !d.prompt.includes('.triage-stage-links') &&
+    d.prompt.includes('CLEANCHECK path %s %s') && d.prompt.includes('CLEANCHECK linkcheck ') && countCalls(calls, 'bakeoff:dirty:') === 1)
+  chk('S76: an ignored toolchain path with no stage-link → no compare, skipped with the toolchain reason, nothing ingested',
+    workflows.length === 0 && result.bakeoffs.length === 1 && result.bakeoffs[0].outcome === 'skipped' && result.bakeoffs[0].reason === TOOL &&
+    JSON.stringify(result.bakeoffs[0].untracked) === '[".venv/bin/python"]' && result.ingest.length === 0)
+  chk('S76: …the subtask ran in place as usual, and the skip names the path', countCalls(calls, 'builder:t1') === 1 && statusOf(result, 't1') === 'ok' &&
+    logs.some(l => l.includes(TOOL) && l.includes('.venv/bin/python is ignored')))
+  const untr = await run(plan(['./scripts/local-run.sh']),
+    { ...CLEAN, 'bakeoff:dirty:': [DIRTY({ paths: { 'scripts/local-run.sh': 'untracked' } })], 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
+  chk('S76: an untracked (present, not ignored) script run as ./x → skipped too', untr.workflows.length === 0 && untr.result.bakeoffs[0].reason === TOOL &&
+    JSON.stringify(askedOf(untr.calls.find(c => c.label === 'bakeoff:dirty:t1').prompt)) === '["scripts/local-run.sh"]')
+  // Covered by a path the owner LINKS (the path itself, or a directory above it) → the bake-off runs.
+  for (const links of [['.venv'], ['.venv/bin/python'], ['node_modules', '.venv']]) {
+    const cov = await run(plan(),
+      { ...CLEAN, 'bakeoff:dirty:': [DIRTY({ paths: { '.venv/bin/python': 'ignored' }, links })], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
+    chk(`S76: the owner linking ${JSON.stringify(links)} covers .venv/bin/python → the bake-off runs and applies`,
+      cov.workflows.length === 1 && cov.result.bakeoffs[0].applied === 'planned' && !('untracked' in cov.result.bakeoffs[0]))
+  }
+  // An entry the owner REFUSED covers nothing: the refusal is named; a BOUND one skips with its own reason.
+  const refusedRun = await run(plan(),
+    { ...CLEAN, 'bakeoff:dirty:': [DIRTY({ paths: { '.venv/bin/python': 'ignored' }, refused: [{ path: '.venv', reason: 'already exists in the worktree' }] })], 'builder:': ['did it'], ...GREEN },
+    NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
+  chk('S76: an entry the owner refused does not cover → skipped with the toolchain reason, the refusal in the log',
+    refusedRun.workflows.length === 0 && refusedRun.result.bakeoffs[0].reason === TOOL && refusedRun.logs.some(l => l.includes('was refused: already exists in the worktree')))
+  const BOUND = 'linked toolchain imports the source repo'
+  const boundRun = await run(plan(),
+    { ...CLEAN, 'bakeoff:dirty:': [DIRTY({ paths: { '.venv/bin/python': 'ignored' }, refused: [{ path: '.venv', reason: 'imports the source repo: lib/x.pth (an editable install) names /r/repo' }] })], 'builder:': ['did it'], ...GREEN },
+    NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
+  chk('S76: a toolchain the owner refused as BOUND to the source repo → skipped "linked toolchain imports the source repo", run in place, nothing ingested',
+    boundRun.workflows.length === 0 && boundRun.result.bakeoffs[0].reason === BOUND && JSON.stringify(boundRun.result.bakeoffs[0].untracked) === '[".venv/bin/python"]' &&
+    boundRun.result.ingest.length === 0 && countCalls(boundRun.calls, 'builder:t1') === 1 && boundRun.logs.some(l => l.includes(BOUND)))
+  // The owner FAILED (an opt-in it could not read): no bake-off, no retry; a path git could not classify is a gap.
+  const ownerFail = await run(plan(),
+    { ...CLEAN, 'bakeoff:dirty:': [DIRTY({ paths: { '.venv/bin/python': 'ignored' }, linkRc: 1 })], 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
+  chk('S76: link --check exiting non-zero → no bake-off ("stage-link check failed"), never read as no links, not retried',
+    ownerFail.workflows.length === 0 && ownerFail.result.bakeoffs[0].reason === 'stage-link check failed' && countCalls(ownerFail.calls, 'bakeoff:dirty:t1') === 1 &&
+    countCalls(ownerFail.calls, 'builder:t1') === 1)
+  const errState = await run(plan(),
+    { ...CLEAN, 'bakeoff:dirty:': [DIRTY({ paths: { '.venv/bin/python': 'error' }, links: ['node_modules'] })], 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
+  chk('S76: a check path git could not classify (state error) is a gap → skipped', errState.workflows.length === 0 && errState.result.bakeoffs[0].reason === TOOL)
+  const near = await run(plan(),
+    { ...CLEAN, 'bakeoff:dirty:': [DIRTY({ paths: { '.venv/bin/python': 'ignored' }, links: ['.ven', '.venv/bin/pyth', 'venv'] })], 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
+  chk('S76: a stage-link that is only a string prefix (.ven, .venv/bin/pyth) does not cover → skipped', near.workflows.length === 0 && near.result.bakeoffs[0].reason === TOOL)
+  const fine = await run(plan(['node tests/new_test.mjs', 'make -C build check']),
+    { ...CLEAN, 'bakeoff:dirty:': [DIRTY({ paths: { 'tests/new_test.mjs': 'absent' } })], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
+  chk('S76: an absent path (a file the subtask creates) and tracked paths → the bake-off runs', fine.workflows.length === 1 && fine.result.bakeoffs[0].applied === 'planned')
+  // checkPaths(): which words count as repo-relative paths.
+  const words = await run(plan(['A=x/y ./scripts/run.sh --out=build/out/ http://h/p ~/home/x /abs/p $HOME/x ../up/x a/./b "q/r s" t/*.py ./ x/y']),
+    { ...CLEAN, 'bakeoff:dirty:': [DIRTY()], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
+  chk('S76: checkPaths keeps ./x and repo-relative words; drops VAR=/--opt= values, URLs, ~, absolute, $VAR, .. and . components, globs, duplicates',
+    JSON.stringify(askedOf(words.calls.find(c => c.label === 'bakeoff:dirty:t1').prompt)) === '["scripts/run.sh","q/r","x/y"]')
+  // Only INPUTS are dependencies: outputs (redirection targets, option values, the value
+  // after an output option) are never asked about, so a gitignored build/ never skips.
+  const IO = ['.venv/bin/python -m pytest --junitxml=build/x.xml --cov-report html:cov/h tests/t.py > build/out.log 2>&1',
+    'cc -o out/bin src/main.c && cat < data/in.txt >>logs/run.log && FOO=bar/baz node_modules/.bin/tool --basetemp tmp/pt &> logs/all.log',
+    'tee build/tee.log <<< "x/y" && cat <<EOF2 && sh scripts/gen.sh --output-dir gen/out 2> err/e.log']
+  const io = await run(plan(IO), { ...CLEAN, 'bakeoff:dirty:': [DIRTY()], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
+  chk('S76: checkPaths asks only about inputs (executables, files read, < inputs) — never a > / >> / 2> / &> target, a --x=/VAR= value, the value after -o/--basetemp/--*report*/--output-dir, a here-string or heredoc word',
+    JSON.stringify(askedOf(io.calls.find(c => c.label === 'bakeoff:dirty:t1').prompt)) ===
+      '[".venv/bin/python","tests/t.py","src/main.c","data/in.txt","node_modules/.bin/tool","build/tee.log","scripts/gen.sh"]')
+  const outRun = await run(plan(['python3 -m pytest --junitxml=build/results.xml > build/pytest.log']),
+    { ...CLEAN, 'bakeoff:dirty:': [DIRTY({ paths: { 'build/results.xml': 'ignored', 'build/pytest.log': 'ignored' } })], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
+  chk('S76: a check whose only paths are OUTPUTS under a gitignored build/ is no toolchain gap → the bake-off runs',
+    outRun.workflows.length === 1 && outRun.result.bakeoffs[0].applied === 'planned' && askedOf(outRun.calls.find(c => c.label === 'bakeoff:dirty:t1').prompt).length === 0)
+  // Strict parse of the new tags: a lost path line, an unknown state, an extra path line,
+  // no linkrc, an empty / garbled / wrong-shape owner answer with linkrc 0 → retried
+  // once, then 'dirty check unavailable' (never "no links").
+  const bad = [
+    p => DIRTY()(p).replace('CLEANCHECK path tracked tests/test_t1.py\n', ''),
+    p => DIRTY()(p).replace('CLEANCHECK path tracked .venv', 'CLEANCHECK path maybe .venv'),
+    p => DIRTY()(p).replace('CLEANCHECK end', 'CLEANCHECK path tracked other/x\nCLEANCHECK end'),
+    p => DIRTY()(p).replace('CLEANCHECK linkrc 0\n', ''),
+    p => DIRTY()(p).replace(/\nCLEANCHECK end$/, ''),                                // complete but truncated before the end marker
+    DIRTY({ linkcheck: '' }),
+    DIRTY({ linkcheck: '{"step":"link-check"' }),
+    DIRTY({ linkcheck: `${LINKCHECK()} ${LINKCHECK()}` }),
+    DIRTY({ linkcheck: LINKCHECK().replace('"link-check"', '"link"') }),
+    DIRTY({ linkcheck: LINKCHECK().replace('"links":[]', '"links":"none"') }),
+    DIRTY({ linkcheck: LINKCHECK(['../up']) }),
+    DIRTY({ linkcheck: LINKCHECK([], [{ path: '.venv' }]) }),
+    DIRTY({ linkcheck: LINKCHECK().replace('}', ',"env":{"PYTHONPATH":"src"}}') }),   // an outdated owner's stage env
+    p => DIRTY()(p).replace('CLEANCHECK linkcheck ', 'CLEANCHECK linkcheck {}\nCLEANCHECK linkcheck '),
+  ]
+  let strict = true
+  for (const reply of bad) {
+    const x = await run(plan(), { ...CLEAN, 'bakeoff:dirty:': [reply], 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'pass' }))
+    if (!(x.workflows.length === 0 && countCalls(x.calls, 'bakeoff:dirty:t1') === 2 && x.result.bakeoffs[0].reason === 'dirty check unavailable' && countCalls(x.calls, 'builder:t1') === 1)) {
+      strict = false; console.log(`  (S76 lax on: ${String(reply)})`)
+    }
+  }
+  chk('S76: a lost/extra path line, an unknown path state, no linkrc, no end marker, an empty / garbled / doubled / wrong-shape owner answer → retried once, then skipped (dirty check unavailable)', strict)
+}
+
+// ---- Scenario 77 (Wave 23): every candidate graded invalid because its checks could
+// not run (triage-compare invalidReason 'check-environment', rc 126/127) → the bake-off
+// is skipped with the toolchain reason, nothing is ledgered, the subtask runs in place.
+{
+  const TOOL = 'checks need an untracked toolchain'
+  const ENV = rc => ({ status: 'invalid', applies: true, rc, invalidReason: 'check-environment', diffstat: DIFF, patch: '/o/bake/t1/x.patch' })
+  const plan = { subtasks: [BST('t1', 'builder')], checks: ['make test'], review: 'never', bakeoff: BO() }
+  const { result, workflows, calls, logs } = await run(plan, { ...CLEAN, 'builder:': ['did it'], ...GREEN }, NO_BUDGET,
+    CMP({ planned: 'invalid', challenger: 'invalid' }, { cand: { planned: ENV(127), challenger: ENV(126) } }))
+  chk('S77: every candidate check-environment → skipped with the toolchain reason, no ingest, no apply',
+    workflows.length === 1 && result.bakeoffs[0].outcome === 'skipped' && result.bakeoffs[0].reason === TOOL && result.bakeoffs[0].applied === null &&
+    result.ingest.length === 0 && countCalls(calls, 'bakeoff:apply:') === 0)
+  chk('S77: …the subtask ran in place as usual', countCalls(calls, 'builder:t1') === 1 && statusOf(result, 't1') === 'ok' && logs.some(l => l.includes(TOOL)))
+  const mixed = await run(plan, { ...CLEAN, 'builder:': ['did it'], ...GREEN }, NO_BUDGET,
+    CMP({ planned: 'invalid', challenger: 'fail' }, { cand: { planned: ENV(127), challenger: { diffstat: null } } }))
+  chk('S77: one candidate check-environment, the other a real fail → not the toolchain skip; the env one is ingested invalid, never pass/fail',
+    mixed.result.bakeoffs[0].outcome === 'in-place' && mixed.result.bakeoffs[0].reason !== TOOL && mixed.result.ingest.length === 1 &&
+    mixed.result.ingest[0].result.candidates.find(c => c.label === 'planned').status === 'invalid' && countCalls(mixed.calls, 'builder:t1') === 1)
+  const plainInvalid = await run(plan, { ...CLEAN, 'builder:': ['did it'], ...GREEN }, NO_BUDGET,
+    CMP({ planned: 'invalid', challenger: 'invalid' }, { cand: { planned: { invalidReason: null }, challenger: ENV(127) } }))
+  chk('S77: invalid for another reason + check-environment → an ordinary in-place, not the toolchain skip',
+    plainInvalid.result.bakeoffs[0].outcome === 'in-place' && plainInvalid.result.bakeoffs[0].reason !== TOOL)
+}
+
+// ---- Scenario 78 (Wave 23): the clean-check command against a REAL git repo (bash),
+// with the REPO's stage-worktree.sh as the owner (the command's ~/.claude/scripts/ is
+// pointed at this checkout): tracked / ignored / untracked / absent states; the owner's
+// own rules decide what is linkable — an uncommitted list is not read, an entry it does
+// not accept (./.venv/ unnormalized, local.sh not gitignored) covers nothing, a
+// toolchain bound to the source repo (an editable .pth, a relative .pth into the repo)
+// is skipped with its own reason, and a committed .triage-stage-env lifts nothing.
+{
+  const TOOL = 'checks need an untracked toolchain'
+  const BOUND = 'linked toolchain imports the source repo'
+  const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'wfs-s78-')))
+  const repo = join(tmp, 'repo')
+  const scripts = join(here, '..', 'scripts')
+  try {
+    const git = (...a) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...a], { stdio: 'pipe' })
+    mkdirSync(join(repo, 'tests'), { recursive: true })
+    mkdirSync(join(repo, '.venv', 'bin'), { recursive: true })
+    mkdirSync(join(repo, '.venv', 'lib', 'site-packages'), { recursive: true })
+    execFileSync('git', ['init', '-q', repo])
+    writeFileSync(join(repo, '.gitignore'), '.venv/\n')
+    writeFileSync(join(repo, 'tests', 't1.py'), 'x\n')
+    writeFileSync(join(repo, '.venv', 'bin', 'python'), '#!/bin/sh\n')
+    git('add', '.gitignore', 'tests/t1.py')
+    git('commit', '-q', '-m', 'init')
+    writeFileSync(join(repo, 'local.sh'), 'x\n')   // untracked, not ignored
+    const shell = prompt => execFileSync('bash', ['-c', String(prompt).slice(String(prompt).indexOf('\n') + 1).split('~/.claude/scripts/').join(`${scripts}/`)], { encoding: 'utf8' })
+    const CH = ['.venv/bin/python -m pytest tests/t1.py && ./local.sh && node tests/new.mjs']
+    const CH2 = ['.venv/bin/python -m pytest tests/t1.py && node tests/new.mjs']
+    const plan = (checks = CH) => ({ repo, subtasks: [LV('t1', 'builder', ['src/t1.js'], { checks })], checks: ['make test'], review: 'never',
+      bakeoff: BO({}, { repo, outDir: join(tmp, 'bake') }) })
+    let replies = []
+    const dirtyRun = async checks => {
+      replies = []
+      return run(plan(checks), { ...CLEAN, 'bakeoff:dirty:': [p => { const o = shell(p); replies.push(o); return o }], 'builder:': ['did it'], ...GREEN }, NO_BUDGET, CMP({ planned: 'pass', challenger: 'fail' }))
+    }
+    const owner = () => { const m = (replies[0] || '').match(/^CLEANCHECK linkcheck (.*)$/m); try { return JSON.parse(m[1]) } catch (e) { return null } }
+    const a = await dirtyRun()
+    const txt = replies[0] || ''
+    chk('S78: real repo — states tracked / ignored / untracked / absent, and the owner answers linkrc 0 with no links (no stage-links file)',
+      txt.includes('CLEANCHECK path ignored .venv/bin/python\n') && txt.includes('CLEANCHECK path tracked tests/t1.py\n') &&
+      txt.includes('CLEANCHECK path untracked local.sh\n') && txt.includes('CLEANCHECK path absent tests/new.mjs\n') && txt.includes('CLEANCHECK linkrc 0\n') &&
+      owner() && owner().step === 'link-check' && owner().links.length === 0)
+    chk('S78: real repo — .venv (ignored) and local.sh (untracked) uncovered → skipped before staging',
+      a.workflows.length === 0 && a.result.bakeoffs[0].reason === TOOL && JSON.stringify(a.result.bakeoffs[0].untracked) === '[".venv/bin/python","local.sh"]')
+    // A stage-links file only in the working tree is NOT read (the owner reads the commit).
+    writeFileSync(join(repo, '.triage-stage-links'), '.venv\n')
+    const b = await dirtyRun()
+    chk('S78: real repo — an uncommitted .triage-stage-links is ignored by the owner → still skipped',
+      owner() && owner().links.length === 0 && b.workflows.length === 0 && b.result.bakeoffs[0].reason === TOOL)
+    // Committed, but entries the OWNER refuses: ./.venv/ (not normalized), local.sh (not gitignored).
+    writeFileSync(join(repo, '.triage-stage-links'), '# toolchains\n\n  ./.venv/  \nlocal.sh\n')
+    git('add', '.triage-stage-links')
+    git('commit', '-q', '-m', 'links')
+    const c = await dirtyRun()
+    chk('S78: real repo — entries the owner refuses (./.venv/ unnormalized, local.sh not gitignored) cover nothing → skipped, refusals named',
+      owner() && owner().links.length === 0 && JSON.stringify(owner().refused.map(r => r.reason)) === '["not a normalized repo-relative path","not gitignored in the repo"]' &&
+      c.workflows.length === 0 && c.result.bakeoffs[0].reason === TOOL && c.logs.some(l => l.includes('local.sh is untracked (its .triage-stage-links entry was refused: not gitignored in the repo)')))
+    writeFileSync(join(repo, '.triage-stage-links'), '.venv/\n')
+    git('commit', '-q', '-am', 'links fixed')
+    const d = await dirtyRun(CH2)
+    chk('S78: real repo — a committed .venv/ the owner links covers .venv/bin/python → the bake-off runs',
+      JSON.stringify(owner() && owner().links) === '[".venv"]' && d.workflows.length === 1 && d.result.bakeoffs[0].applied === 'planned')
+    // A venv bound to the source repo (an editable .pth naming <repo>/src): skipped as such.
+    writeFileSync(join(repo, '.venv', 'lib', 'site-packages', '__editable__.t-0.1.pth'), `${repo}/src\n`)
+    const e = await dirtyRun(CH2)
+    chk('S78: real repo — an editable .pth naming the repo makes the owner refuse .venv → skipped "linked toolchain imports the source repo"',
+      e.workflows.length === 0 && e.result.bakeoffs[0].reason === BOUND && e.logs.some(l => l.includes('imports the source repo: lib/site-packages/__editable__.t-0.1.pth')))
+    writeFileSync(join(repo, '.triage-stage-env'), 'PYTHONPATH=src\n')
+    git('add', '.triage-stage-env')
+    git('commit', '-q', '-m', 'env')
+    const f = await dirtyRun(CH2)
+    chk('S78: real repo — a committed .triage-stage-env (the retired override) lifts NOTHING → still skipped as bound, no env in the owner\'s answer',
+      owner() && !('env' in owner()) && owner().links.length === 0 && f.workflows.length === 0 && f.result.bakeoffs[0].reason === BOUND)
+    // A RELATIVE .pth entry that climbs out of the venv into the repo: bound too.
+    rmSync(join(repo, '.venv', 'lib', 'site-packages', '__editable__.t-0.1.pth'))
+    writeFileSync(join(repo, '.venv', 'lib', 'site-packages', 'rel.pth'), '../../../src\n')
+    const g = await dirtyRun(CH2)
+    chk('S78: real repo — a RELATIVE .pth entry resolving into the repo (../../../src) is bound → skipped "linked toolchain imports the source repo"',
+      g.workflows.length === 0 && g.result.bakeoffs[0].reason === BOUND && g.logs.some(l => l.includes('imports the source repo: lib/site-packages/rel.pth puts')))
+  } catch (e) {
+    chk(`S78: real-repo clean check ran (${String(e && e.message).slice(0, 200)})`, false)
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
 }
 
 console.log('')
