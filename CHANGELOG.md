@@ -4,6 +4,22 @@ Reverse-chronological. Each entry cites the commit(s) it corresponds to and,
 where known, the test-count delta. See `test/roundtrip.sh` and `test/lint.sh`
 for the current check catalog.
 
+## Wave 24 — Haiku 5.5 + CC 2.1.290–2.1.293 review (branch wave24-haiku55)
+
+- Quick level and the two codex wrappers (`triage-cross-reviewer`, `triage-external`) →
+  `claude-haiku-5-5` (CC 2.1.293: 1M context; `aliasHistory` haiku from 2026-10-07). Haiku 4.5
+  had no thinking (model catalog `thinking: none`), so their `effort: low` was nominal; Haiku
+  5.5 takes low…max (catalog default medium) and `low` now applies. Kept at low (mechanical
+  work / relays). Quick ledger groups restart at n=0 (grouping is by modelId); quick has no
+  bake-off challengers, so only parity runs are affected.
+- triage.md: effort is raised via a subtask's or the Agent tool's `effort` (Agent `effort`
+  param new in CC 2.1.292); rule 7's by-hand deep@max fallback is now settable.
+- Reviewed, no change needed: hook-output `<system-reminder>` escaping (2.1.292; triage.md
+  carries none), `agentType` in the `subagentStatusLine` payload (2.1.293; not used here),
+  `agent.spawn` mod hook now sees workflow agents (2.1.292; deferred — a possible enforced
+  Fable gate, since `permissions.ask` on Agent spawns isn't enforced under auto mode).
+- Checks: MV0 expects the new quick id; counts unchanged.
+
 ## Fixture hash fix — Cortex XDR false positive (branch fixture-unique-hashes)
 
 Cortex XDR "Hash Control" quarantined `flat/__init__.py` (15-byte `WHO = "source"\n`, sha256

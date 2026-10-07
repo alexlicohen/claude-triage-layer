@@ -514,7 +514,7 @@ chk "RA9 Wilson 95% upper bounds reuse the one formula: 5/10 = 0.7634, 0/10 = 0.
 # --- MV: model-version tracking — modelId per candidate, alias history, backfill,
 # grouping by concrete id, family cheapness, the history view -------------------
 chk "MV0 the shipped tiers pin concrete Claude ids (no alias left at levels.*.claude)" \
-  '[ "$(jq -r "[.levels[].claude.model] | join(\",\")" "$REPO_DIR/config/tiers.json")" = "claude-haiku-4-5-20251001,claude-sonnet-5-5,claude-opus-5-5,claude-fable-5-1" ]'
+  '[ "$(jq -r "[.levels[].claude.model] | join(\",\")" "$REPO_DIR/config/tiers.json")" = "claude-haiku-5-5,claude-sonnet-5-5,claude-opus-5-5,claude-fable-5-1" ]'
 cat > "$T/mv-compare.json" <<'EOF'
 {"candidates":[
  {"label":"c-null","vendor":"claude","level":"builder","model":null,"effort":null,"status":"pass"},
