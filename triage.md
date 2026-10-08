@@ -12,7 +12,7 @@ You (the main loop) are the **top of this system**: plan, classify, brief, integ
 |---|---|---|
 | `triage-quick-task` | implement, `quick` | Mechanical, unambiguous: renames, simple edits, lookups, boilerplate, formatting |
 | `triage-builder` | implement, `builder` | Spec'd features, known-cause fixes, tests, routine refactors |
-| `triage-deep-reasoner` | implement, `deep` | **Workhorse**: unfamiliar debugging, root cause, design, danger zone, hard fan-out. Effort: raise only for the hardest, via subtask `effort` (prose doesn't). |
+| `triage-deep-reasoner` | implement, `deep` | **Workhorse**: unfamiliar debugging, root cause, design, danger zone, hard fan-out. Effort: raise only for the hardest, via subtask/Agent `effort` (prose doesn't). |
 | `triage-fable-architect` | implement, `top`+claude | Rare: second opinion, or correctness-critical last resort; rule 7. |
 | `triage-reviewer` | review, read-only | Diff gate: by hand on quick/builder output lacking an objective check; triage-exec runs it per `review` (`auto`: no checks or a `danger` subtask; `always`; `never`) |
 | `triage-external` | implement, via codex, **edits the repo** | Codex work chosen at plan time (`vendor: 'codex'`; `overflow: true` = codex builders) or a rule-10 challenger; never a failed run's fallback; disposable worktree. triage-exec attests planned codex briefs (choosing codex = the boundary decision); `REFUSED`/`UNAVAILABLE` → re-run on Claude, in `report.external.codex`. |
