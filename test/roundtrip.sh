@@ -29,17 +29,12 @@
 #       new) and check the right warning (or none) is printed.
 #   K - a user-set env.CLAUDE_CODE_SUBAGENT_MODEL / subagentPromptCacheTtl is
 #       never overwritten by install and never deleted by uninstall.
-#   L - the superseded workflows/triage-run.js is removed on install when it
-#       matches a shipped version, and kept (with a note) when hand-modified.
 #   M - CLAUDE_CODE_SUBAGENT_MODEL_FORCE (collapses every tier onto one model):
 #       install warns from the environment AND from settings.json env, never
 #       edits the key, and drift.sh warns without changing its exit code.
 #   N - a subagent model still at a PREVIOUS installer default (claude-opus-5)
 #       is upgraded by install (dry-run says "would upgrade"), removed by
 #       uninstall, and install.sh/uninstall.sh carry identical owned values.
-#   O - the Wave 12 rename triage-overflow -> triage-external: install removes
-#       the legacy agent file and its Agent(triage-overflow) allow rule and adds
-#       triage-external; uninstall removes both names (agents + permissions).
 #   P - .driftignore'd forks (fixture .driftignore + repo copy naming triage.md)
 #       are skipped by EVERY install mode when the installed copy exists (bare
 #       install, --dry-run), and written only by a first install (bare or
@@ -50,24 +45,20 @@
 #   U - uninstall moves forks, edited files and per-agent memory to a backup dir;
 #       a clean round-trip leaves exactly {settings.json, CLAUDE.md}; drift checks
 #       every file install placed.
-#   V - retired files (agy-run.sh, triage-overflow.md): shipped bytes deleted,
-#       anything else moved aside.
 #   W - a jq failure (or a settings.json of the wrong shape) fails install and
 #       uninstall with rc != 0 and never prints Installed./Uninstalled.
 #   X - .driftignore entries with CRLF / trailing whitespace still protect forks
 #       (fixture .driftignore + repo copy).
 #   Y - tiers-sync.sh: --root without a value, an unclosed frontmatter.
-#   Z - drift.sh warns "settings migration pending" for a legacy subagent model,
-#       a missing triage SessionStart hook and a legacy @triage.md import.
+#   Z - drift.sh warns "settings migration pending" for a legacy subagent model and
+#       a missing triage SessionStart hook.
 #   SS - the SessionStart hook that delivers triage.md: appended once (never replacing
-#       a foreign SessionStart hook, which survives install AND uninstall), a legacy
-#       @triage.md import migrated to the pointer line, the pointer removed on
-#       uninstall, and a failed settings merge leaving settings.json and CLAUDE.md
+#       a foreign SessionStart hook, which survives install AND uninstall), the pointer
+#       line appended once and removed on uninstall, and a failed settings merge leaving settings.json and CLAUDE.md
 #       byte-identical (one settings write, after the whole merge succeeded).
 #   OWN/PIN/TYPE - ownership: only a command hook pinned to THIS CLAUDE_DIR counts as
 #       installed or is removed (other-dir, unpinned, prompt-type entries are foreign).
 #   MATCH - matcher coverage: all four of startup, resume, clear, compact.
-#   RUB - the legacy import goes only when the installed rubric passes --check.
 #   FALSE/BYTE/NL - false-valued settings keys refused; CLAUDE.md bytes kept exactly
 #       (cmp); a CLAUDE_DIR with a line break refused.
 #   CANON - CLAUDE_DIR spelled with a trailing slash / `.` is ONE install (one hook,
@@ -75,8 +66,6 @@
 #   DOWN - a marked subagent model you repointed to an OLD installer default is yours
 #       (never upgraded back; the stale marker goes).
 #   PTR - the pre-Wave-22 pointer line is replaced by install and removed by uninstall.
-#   NORM - one legacy-import normalisation in the hook, install and uninstall (other
-#       spellings migrated; two trailing CRs is not the import anywhere).
 #   ORD - uninstall writes settings.json, then CLAUDE.md, then removes files; a failed
 #       write stops before any file is removed.
 #   Plus two direct statusline.sh checks (non-numeric / numeric pct).
@@ -470,25 +459,21 @@ chk "H5: new claude version prints no version WARNING lines" '! grep -q "WARNING
 # Case I — uninstall must remove only the seven shipped agents by name, never
 # a user-authored triage-*.md agent (a glob-based revert would delete it).
 # M1 rides along: the external-CLI script scripts/ext-run.sh, triage-tiers.sh and
-# the installed tiers file are installed and removed by name too; the legacy
-# pre-Wave-12 scripts/agy-run.sh is removed by install AND by uninstall.
+# the installed tiers file are installed and removed by name too.
 # =============================================================================
 I_DIR=$(new_sandbox)
 mkdir -p "$I_DIR/agents" "$I_DIR/scripts"
-printf '#!/bin/bash\necho legacy\n' > "$I_DIR/scripts/agy-run.sh"
 
 run_install "$I_DIR" >/dev/null 2>&1
 chk "M1a: install placed scripts/ext-run.sh (executable)" '[ -x "$I_DIR/scripts/ext-run.sh" ]'
 chk "M1c: install placed scripts/triage-tiers.json and scripts/triage-tiers.sh" \
   '[ -f "$I_DIR/scripts/triage-tiers.json" ] && [ -x "$I_DIR/scripts/triage-tiers.sh" ]'
-chk "M1d: install removed the legacy scripts/agy-run.sh (renamed to ext-run.sh)" '[ ! -e "$I_DIR/scripts/agy-run.sh" ]'
 chk "M1f: install placed workflows/triage-compare.js, scripts/patch-check.sh and scripts/stage-worktree.sh (executable)" \
   '[ -f "$I_DIR/workflows/triage-compare.js" ] && [ -x "$I_DIR/scripts/patch-check.sh" ] && [ -x "$I_DIR/scripts/stage-worktree.sh" ]'
 chk "M1k: install placed scripts/parity-report.sh (executable)" '[ -x "$I_DIR/scripts/parity-report.sh" ]'
 chk "M1l: install placed scripts/review-stage.sh (executable)" '[ -x "$I_DIR/scripts/review-stage.sh" ]'
 chk "M1h: install placed workflows/triage-parity.js, scripts/parity-suite.sh and scripts/parity-cost.sh (executable)" \
   '[ -f "$I_DIR/workflows/triage-parity.js" ] && [ -x "$I_DIR/scripts/parity-suite.sh" ] && [ -x "$I_DIR/scripts/parity-cost.sh" ]'
-printf '#!/bin/bash\necho legacy\n' > "$I_DIR/scripts/agy-run.sh"
 printf 'my own agent, not shipped by this repo\n' > "$I_DIR/agents/triage-mine.md"
 
 run_uninstall "$I_DIR" >/dev/null 2>&1
@@ -500,7 +485,6 @@ chk "I3: all seven shipped agents removed" \
   '[ ! -f "$I_DIR/agents/triage-quick-task.md" ] && [ ! -f "$I_DIR/agents/triage-builder.md" ] && [ ! -f "$I_DIR/agents/triage-deep-reasoner.md" ] && [ ! -f "$I_DIR/agents/triage-reviewer.md" ] && [ ! -f "$I_DIR/agents/triage-cross-reviewer.md" ] && [ ! -f "$I_DIR/agents/triage-fable-architect.md" ] && [ ! -f "$I_DIR/agents/triage-external.md" ]'
 chk "M1b: uninstall removes scripts/ext-run.sh, triage-tiers.sh and triage-tiers.json" \
   '[ ! -f "$I_DIR/scripts/ext-run.sh" ] && [ ! -f "$I_DIR/scripts/triage-tiers.sh" ] && [ ! -f "$I_DIR/scripts/triage-tiers.json" ]'
-chk "M1e: uninstall also removes a legacy scripts/agy-run.sh" '[ ! -e "$I_DIR/scripts/agy-run.sh" ]'
 chk "M1g: uninstall removes workflows/triage-compare.js, scripts/patch-check.sh and scripts/stage-worktree.sh" \
   '[ ! -e "$I_DIR/workflows/triage-compare.js" ] && [ ! -e "$I_DIR/scripts/patch-check.sh" ] && [ ! -e "$I_DIR/scripts/stage-worktree.sh" ]'
 chk "M1j: uninstall removes scripts/parity-report.sh" '[ ! -e "$I_DIR/scripts/parity-report.sh" ]'
@@ -581,37 +565,6 @@ chk "K4: a user-set prompt-cache TTL survives uninstall (not ours to delete)" \
   '[ "$(jq -r ".subagentPromptCacheTtl" "$K_DIR/settings.json")" = "5m" ]'
 chk "K5: unrelated env vars survive the round-trip" \
   '[ "$(jq -r ".env.MY_OWN_VAR" "$K_DIR/settings.json")" = "keepme" ]'
-
-# =============================================================================
-# Case L — the superseded workflows/triage-run.js: removed on install when its
-# bytes match a version this repo shipped, kept (with a note) when hand-modified.
-# =============================================================================
-# test/fixtures/legacy/triage-run.js is a byte-exact copy of the last shipped
-# triage-run.js, so its SHA-256 is one of the entries in install.sh's
-# SHIPPED_TRIAGE_RUN_SHA256 list — that list is what this case exercises. Kept as a
-# checked-in fixture rather than read from git history: the mutation harness runs
-# this suite from a .git-less copy of the repo.
-L_DIR=$(new_sandbox)
-mkdir -p "$L_DIR/workflows"
-cp "$REPO_DIR/test/fixtures/legacy/triage-run.js" "$L_DIR/workflows/triage-run.js"
-L_OUT=$(mktemp)
-ALL_TMP="$ALL_TMP $L_OUT"
-CLAUDE_DIR="$L_DIR" "$REPO_DIR/install.sh" --files-only >"$L_OUT" 2>&1
-chk "L1: an unmodified shipped triage-run.js is removed on install" \
-  '[ ! -f "$L_DIR/workflows/triage-run.js" ]'
-chk "L2: the removal is announced" 'grep -q "removed superseded workflow" "$L_OUT"'
-chk "L3: triage-exec.js is installed in its place" '[ -f "$L_DIR/workflows/triage-exec.js" ]'
-
-L2_DIR=$(new_sandbox)
-mkdir -p "$L2_DIR/workflows"
-printf '// my own hand-edited triage-run workflow\n' > "$L2_DIR/workflows/triage-run.js"
-L2_OUT=$(mktemp)
-ALL_TMP="$ALL_TMP $L2_OUT"
-CLAUDE_DIR="$L2_DIR" "$REPO_DIR/install.sh" --files-only >"$L2_OUT" 2>&1
-chk "L4: a hand-modified triage-run.js is NOT deleted" '[ -f "$L2_DIR/workflows/triage-run.js" ]'
-chk "L5: keeping it is announced with a note" 'grep -q "is modified (or unhashable) — left in place" "$L2_OUT"'
-chk "L6: the hand-modified file is left byte-for-byte alone" \
-  '[ "$(cat "$L2_DIR/workflows/triage-run.js")" = "// my own hand-edited triage-run workflow" ]'
 
 # =============================================================================
 # Case M2/M3/M4 — CLAUDE_CODE_SUBAGENT_MODEL_FORCE overrides every agent's own
@@ -748,7 +701,7 @@ chk "N7: uninstall leaves an unmarked subagent model (even a previous default) a
 
 # The TTL is the one value both scripts own by value: they must agree. The subagent
 # model is a literal in neither (it comes from config/tiers.json; ownership is the marker).
-owned_lines() { grep -E '^((SUBAGENT_CACHE_TTL|OWNER_MARK|POINTER_HEAD|POINTER_TAIL|POINTER_TAILS_OLD|TRIAGE_HOOK_SCRIPT|TRIAGE_HOOK_OWNED_JQ|LEGACY_IMPORT_AWK)=|(triage_hook_command|pointer_line|old_pointer_line)\(\) )' "$1" | sort; }
+owned_lines() { grep -E '^((SUBAGENT_CACHE_TTL|OWNER_MARK|POINTER_HEAD|POINTER_TAIL|POINTER_TAILS_OLD|TRIAGE_HOOK_SCRIPT|TRIAGE_HOOK_OWNED_JQ)=|(triage_hook_command|pointer_line|old_pointer_line)\(\) )' "$1" | sort; }
 # canon_dir is a multi-line function: compared whole.
 canon_fn() { sed -n '/^canon_dir() {$/,/^}$/p' "$1"; }
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
@@ -757,46 +710,10 @@ N_INSTALL_OWNED=$(owned_lines "$REPO_DIR/install.sh")
 N_UNINSTALL_OWNED=$(owned_lines "$REPO_DIR/uninstall.sh")
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 N8_PTR=$(CLAUDE_DIR=/n8/dir bash -c "$(grep -E '^(POINTER_HEAD|POINTER_TAIL)=|^pointer_line\(\) ' "$REPO_DIR/install.sh"); pointer_line")
-chk "N8: install.sh and uninstall.sh define identical SUBAGENT_CACHE_TTL / OWNER_MARK / POINTER_HEAD / POINTER_TAIL / POINTER_TAILS_OLD / TRIAGE_HOOK_SCRIPT / TRIAGE_HOOK_OWNED_JQ (the hook ownership predicate) / LEGACY_IMPORT_AWK / triage_hook_command / pointer_line / old_pointer_line / canon_dir" \
-  '[ "$(printf "%s\n" "$N_INSTALL_OWNED" | grep -c .)" -eq 11 ] && [ "$N_INSTALL_OWNED" = "$N_UNINSTALL_OWNED" ] && [ "$N8_PTR" = "$(pointer_for /n8/dir)" ] && [ -n "$(canon_fn "$REPO_DIR/install.sh")" ] && [ "$(canon_fn "$REPO_DIR/install.sh")" = "$(canon_fn "$REPO_DIR/uninstall.sh")" ]'
+chk "N8: install.sh and uninstall.sh define identical SUBAGENT_CACHE_TTL / OWNER_MARK / POINTER_HEAD / POINTER_TAIL / POINTER_TAILS_OLD / TRIAGE_HOOK_SCRIPT / TRIAGE_HOOK_OWNED_JQ (the hook ownership predicate) / triage_hook_command / pointer_line / old_pointer_line / canon_dir" \
+  '[ "$(printf "%s\n" "$N_INSTALL_OWNED" | grep -c .)" -eq 10 ] && [ "$N_INSTALL_OWNED" = "$N_UNINSTALL_OWNED" ] && [ "$N8_PTR" = "$(pointer_for /n8/dir)" ] && [ -n "$(canon_fn "$REPO_DIR/install.sh")" ] && [ "$(canon_fn "$REPO_DIR/install.sh")" = "$(canon_fn "$REPO_DIR/uninstall.sh")" ]'
 chk "N9: neither script hard-codes a subagent model id (config/tiers.json owns it)" \
   '! grep -qE "^SUBAGENT_MODEL=\"claude-" "$REPO_DIR/install.sh" "$REPO_DIR/uninstall.sh"'
-
-# =============================================================================
-# Case O — Wave 12 rename: triage-overflow -> triage-external. An install made
-# before the rename holds agents/triage-overflow.md and an Agent(triage-overflow)
-# allow rule; install must retire both (a leftover would be an eighth, agy-only
-# agent), and uninstall must remove both names whatever state it finds.
-# =============================================================================
-O_DIR=$(new_sandbox)
-mkdir -p "$O_DIR/agents"
-printf -- '---\nname: triage-overflow\n---\nlegacy\n' > "$O_DIR/agents/triage-overflow.md"
-echo '{"permissions": {"allow": ["Bash(ls:*)", "Agent(triage-overflow)"]}}' > "$O_DIR/settings.json"
-
-O_DRY_OUT=$(mktemp)
-ALL_TMP="$ALL_TMP $O_DRY_OUT"
-CLAUDE_DIR="$O_DIR" "$REPO_DIR/install.sh" --dry-run >"$O_DRY_OUT" 2>&1
-chk "O1: --dry-run announces removing the legacy agent and its allow rule, adding triage-external, and changes nothing" \
-  'grep -qF "move aside (modified or unhashable; renamed to agents/triage-external.md)" "$O_DRY_OUT" && grep -qF "would remove legacy: Agent(triage-overflow)" "$O_DRY_OUT" && grep -qF "would add: Agent(triage-external)" "$O_DRY_OUT" && [ -f "$O_DIR/agents/triage-overflow.md" ]'
-
-run_install "$O_DIR" >/dev/null 2>&1
-chk "O2: install removed the legacy agents/triage-overflow.md and placed triage-external.md" \
-  '[ ! -e "$O_DIR/agents/triage-overflow.md" ] && [ -f "$O_DIR/agents/triage-external.md" ]'
-chk "O3: install removed the legacy Agent(triage-overflow) allow rule and added Agent(triage-external)" \
-  '! jq -e ".permissions.allow | index(\"Agent(triage-overflow)\")" "$O_DIR/settings.json" >/dev/null && jq -e ".permissions.allow | index(\"Agent(triage-external)\")" "$O_DIR/settings.json" >/dev/null'
-chk "O4: exactly the 6 worker rules plus the user rule remain (7), none duplicated" \
-  '[ "$(jq ".permissions.allow | length" "$O_DIR/settings.json")" -eq 7 ] && [ "$(jq ".permissions.allow | unique | length" "$O_DIR/settings.json")" -eq 7 ]'
-chk "O5: exactly 7 triage-*.md agents installed (the rename keeps the count)" \
-  '[ "$(find "$O_DIR/agents" -name "triage-*.md" | wc -l | tr -d " ")" -eq 7 ]'
-
-# Re-seed the legacy state next to the current one, then uninstall: both names go.
-printf -- '---\nname: triage-overflow\n---\nlegacy\n' > "$O_DIR/agents/triage-overflow.md"
-jq '.permissions.allow += ["Agent(triage-overflow)"]' "$O_DIR/settings.json" > "$O_DIR/settings.tmp" && mv "$O_DIR/settings.tmp" "$O_DIR/settings.json"
-run_uninstall "$O_DIR" >/dev/null 2>&1
-chk "O6: uninstall removes triage-external.md and the legacy triage-overflow.md" \
-  '[ ! -e "$O_DIR/agents/triage-external.md" ] && [ ! -e "$O_DIR/agents/triage-overflow.md" ]'
-chk "O7: uninstall removes both Agent(triage-external) and Agent(triage-overflow), keeping the user rule" \
-  '[ "$(jq -c ".permissions.allow" "$O_DIR/settings.json")" = "[\"Bash(ls:*)\"]" ]'
 
 # =============================================================================
 # Case P — an expected fork (fixture .driftignore: triage.md) survives EVERY
@@ -964,22 +881,6 @@ chk "U7: install -> uninstall leaves exactly {CLAUDE.md, settings.json} and no b
   '[ "$(file_set "$U5_DIR" | tr "\n" " ")" = "CLAUDE.md settings.json " ]'
 
 # =============================================================================
-# Case V — retired files: bytes this repo shipped are deleted; anything else is
-# moved aside, never deleted (codex#19).
-# =============================================================================
-V_DIR=$(new_sandbox)
-mkdir -p "$V_DIR/scripts" "$V_DIR/agents"
-printf '#!/bin/bash\n# my local agy wrapper\n' > "$V_DIR/scripts/agy-run.sh"
-cp "$REPO_DIR/test/fixtures/legacy/triage-overflow.md" "$V_DIR/agents/triage-overflow.md"
-V_OUT=$(mktemp)
-ALL_TMP="$ALL_TMP $V_OUT"
-CLAUDE_DIR="$V_DIR" "$REPO_DIR/install.sh" --files-only >"$V_OUT" 2>&1
-chk "V1: an agy-run.sh with unknown bytes is moved to a timestamped backup, not deleted" \
-  '[ ! -e "$V_DIR/scripts/agy-run.sh" ] && grep -qx "# my local agy wrapper" "$V_DIR"/scripts/agy-run.sh.bak-triage-* && grep -q "is modified (or unhashable) — moved to" "$V_OUT"'
-chk "V2: a shipped triage-overflow.md (fixture) is deleted outright, with no backup" \
-  '[ ! -e "$V_DIR/agents/triage-overflow.md" ] && ! ls "$V_DIR"/agents/triage-overflow.md.bak-triage* >/dev/null 2>&1 && grep -qF "removed legacy file: $V_DIR/agents/triage-overflow.md" "$V_OUT"'
-
-# =============================================================================
 # Case W — failures are failures: a jq error mid-install/uninstall exits non-zero
 # and never prints Installed./Uninstalled.; a wrong-shaped settings.json is refused
 # before any mutation.
@@ -1091,33 +992,29 @@ CLAUDE_DIR="$Z_DIR" "$REPO_DIR/drift.sh" >"$Z_OUT" 2>&1
 Z_RC=$?
 chk "Z2: a legacy subagent model prints 'settings migration pending' naming it, and drift still exits 0" \
   '[ "$Z_RC" -eq 0 ] && grep -q "settings migration pending: env.CLAUDE_CODE_SUBAGENT_MODEL is claude-opus-5" "$Z_OUT"'
-# A synced install whose settings predate the hook (make sync never edits settings), still
-# wired by the legacy import: drift names both pending migrations and still exits 0.
+# A synced install whose settings predate the hook (make sync never edits settings):
+# drift names the pending migration and still exits 0.
 jq 'del(.hooks)' "$Z_DIR/settings.json" > "$Z_DIR/s.tmp" && mv "$Z_DIR/s.tmp" "$Z_DIR/settings.json"
-printf '@triage.md\n' >> "$Z_DIR/CLAUDE.md"
 CLAUDE_DIR="$Z_DIR" "$REPO_DIR/drift.sh" >"$Z_OUT" 2>&1
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 Z3_RC=$?
 chk "Z3: a missing triage hook prints 'settings migration pending: triage hook missing', drift exits 0" \
   '[ "$Z3_RC" -eq 0 ] && grep -q "settings migration pending: triage hook missing" "$Z_OUT"'
-chk "Z4: a legacy @triage.md import prints 'settings migration pending: legacy @triage.md import present'" \
-  'grep -q "settings migration pending: legacy @triage.md import present" "$Z_OUT"'
 
 # =============================================================================
 # Case SS — the SessionStart hook that delivers triage.md to the main session only.
 # A foreign SessionStart hook (live settings hold others) survives install AND
-# uninstall; a legacy `@triage.md` import is migrated (backed up, removed, pointer
-# added) only after the settings write succeeded.
+# uninstall; the pointer line is added only after the settings write succeeded.
 # =============================================================================
 SS_FOREIGN='{"matcher":"startup","hooks":[{"type":"command","command":"bash ~/.claude/cc-status.sh"}]}'
 SS_DIR=$(new_sandbox)
-printf 'my rules\n@triage.md\nmore rules\n' > "$SS_DIR/CLAUDE.md"
+printf 'my rules\nmore rules\n' > "$SS_DIR/CLAUDE.md"
 printf '{"hooks": {"SessionStart": [%s], "Stop": [{"hooks": [{"type": "command", "command": "echo stop"}]}]}}\n' "$SS_FOREIGN" > "$SS_DIR/settings.json"
 SS_DRY=$(mktemp)
 ALL_TMP="$ALL_TMP $SS_DRY"
 CLAUDE_DIR="$SS_DIR" "$REPO_DIR/install.sh" --dry-run >"$SS_DRY" 2>&1
-chk "SS1: --dry-run plans the hook append and the legacy migration, and writes nothing" \
-  'grep -qF "hooks.SessionStart: triage hook missing" "$SS_DRY" && grep -qF "legacy @triage.md import present" "$SS_DRY" && grep -qxF "@triage.md" "$SS_DIR/CLAUDE.md" && [ "$(triage_hooks "$SS_DIR/settings.json")" -eq 0 ]'
+chk "SS1: --dry-run plans the hook append and the pointer line, and writes nothing" \
+  'grep -qF "hooks.SessionStart: triage hook missing" "$SS_DRY" && grep -qF "would append pointer line" "$SS_DRY" && [ "$(cat "$SS_DIR/CLAUDE.md")" = "$(printf "my rules\nmore rules")" ] && [ "$(triage_hooks "$SS_DIR/settings.json")" -eq 0 ]'
 SS_OUT=$(mktemp)
 ALL_TMP="$ALL_TMP $SS_OUT"
 run_install "$SS_DIR" >"$SS_OUT" 2>&1
@@ -1126,10 +1023,9 @@ SS_RC=$?
 chk "SS2: install exits 0; the foreign SessionStart group is kept first and ours appended after it" \
   '[ "$SS_RC" -eq 0 ] && [ "$(jq -c ".hooks.SessionStart[0]" "$SS_DIR/settings.json")" = "$SS_FOREIGN" ] && [ "$(jq ".hooks.SessionStart | length" "$SS_DIR/settings.json")" -eq 2 ] && [ "$(triage_hooks "$SS_DIR/settings.json")" -eq 1 ]'
 chk "SS3: other hook events are untouched" '[ "$(jq -r ".hooks.Stop[0].hooks[0].command" "$SS_DIR/settings.json")" = "echo stop" ]'
-chk "SS4: the legacy import is gone, the pointer added once, the other lines kept in order" \
+chk "SS4: the pointer added once, the other lines kept in order" \
   '[ "$(cat "$SS_DIR/CLAUDE.md")" = "$(printf "my rules\nmore rules\n%s" "$(pointer_for "$SS_DIR")")" ]'
-chk "SS5: the pre-migration CLAUDE.md is kept as a timestamped backup" \
-  'grep -qxF "@triage.md" "$SS_DIR"/CLAUDE.md.bak-triage-* && grep -qF "removed the legacy @triage.md import" "$SS_OUT"'
+chk "SS5: appending the pointer alone takes no CLAUDE.md backup" '! ls "$SS_DIR"/CLAUDE.md.bak-triage-* >/dev/null 2>&1'
 run_install "$SS_DIR" >/dev/null 2>&1
 chk "SS6: re-install is idempotent (still 2 groups, one triage hook, one pointer)" \
   '[ "$(jq ".hooks.SessionStart | length" "$SS_DIR/settings.json")" -eq 2 ] && [ "$(triage_hooks "$SS_DIR/settings.json")" -eq 1 ] && [ "$(grep -cxF "$(pointer_for "$SS_DIR")" "$SS_DIR/CLAUDE.md")" -eq 1 ]'
@@ -1149,17 +1045,12 @@ chk "SS8: uninstall removes the pointer line and keeps the user's lines" \
 SS_BACKUP=$(find "$SS_DIR" -maxdepth 1 -type d -name 'triage-uninstall-backup-*' | head -n 1)
 chk "SS9: the kill-switch file is moved to the uninstall backup dir, never deleted" \
   '[ ! -e "$SS_DIR/triage.disabled" ] && [ -n "$SS_BACKUP" ] && [ -e "$SS_BACKUP/triage.disabled" ]'
-# Uninstall over a still-legacy CLAUDE.md (never migrated) removes the import too.
-SS2_DIR=$(new_sandbox)
-printf 'keep\n@triage.md\n' > "$SS2_DIR/CLAUDE.md"
-run_uninstall "$SS2_DIR" >/dev/null 2>&1
-chk "SS10: uninstall removes a legacy @triage.md import" '[ "$(cat "$SS2_DIR/CLAUDE.md")" = "keep" ]'
 
 # One settings write: a jq failure in the LAST transformation (the hook append) fails
 # install with settings.json AND CLAUDE.md byte-for-byte unchanged — no earlier part of
 # the merge (subagent model, TTL, Agent rules) reaches the file first.
 SS3_DIR=$(new_sandbox)
-printf 'mine\n@triage.md\n' > "$SS3_DIR/CLAUDE.md"
+printf 'mine\n' > "$SS3_DIR/CLAUDE.md"
 printf '{"customKey": "keepme"}\n' > "$SS3_DIR/settings.json"
 cp "$SS3_DIR/CLAUDE.md" "$SS3_DIR/CLAUDE.md.before"; cp "$SS3_DIR/settings.json" "$SS3_DIR/settings.json.before"
 SS3_OUT=$(mktemp)
@@ -1278,45 +1169,44 @@ for MATCH_EV in startup resume clear compact; do
 done
 
 # =============================================================================
-# Case OFF — disableAllHooks: true. The hook could never run, so install must NOT
-# migrate: the @triage.md import stays, no pointer, a diagnostic is printed;
-# --settings-status reports it.
+# Case OFF — disableAllHooks: true. The hook could never run, so install leaves
+# CLAUDE.md alone: no pointer, a diagnostic is printed; --settings-status reports it.
 # =============================================================================
 OFF_DIR=$(new_sandbox)
-printf 'mine\n@triage.md\n' > "$OFF_DIR/CLAUDE.md"
+printf 'mine\n' > "$OFF_DIR/CLAUDE.md"
 printf '{"disableAllHooks": true}\n' > "$OFF_DIR/settings.json"
 OFF_ST=$(mktemp); OFF_OUT=$(mktemp); OFF_DRY=$(mktemp)
 ALL_TMP="$ALL_TMP $OFF_ST $OFF_OUT $OFF_DRY"
 CLAUDE_DIR="$OFF_DIR" "$REPO_DIR/install.sh" --settings-status >"$OFF_ST" 2>&1
-chk "OFF1: --settings-status reports disableAllHooks (migration blocked), not a pending legacy migration" \
-  'grep -q "settings migration blocked: disableAllHooks is true" "$OFF_ST" && ! grep -q "legacy @triage.md import present" "$OFF_ST"'
+chk "OFF1: --settings-status reports disableAllHooks (migration blocked)" \
+  'grep -q "settings migration blocked: disableAllHooks is true" "$OFF_ST"'
 CLAUDE_DIR="$OFF_DIR" "$REPO_DIR/install.sh" --dry-run >"$OFF_DRY" 2>&1
 chk "OFF2: --dry-run plans no CLAUDE.md change and says why" \
   'grep -q "disableAllHooks is true" "$OFF_DRY" && ! grep -q "would append pointer line" "$OFF_DRY"'
 run_install "$OFF_DIR" >"$OFF_OUT" 2>&1
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 OFF_RC=$?
-chk "OFF3: install exits 0, prints the diagnostic, and leaves CLAUDE.md byte-for-byte (import kept, no pointer, no backup)" \
-  '[ "$OFF_RC" -eq 0 ] && grep -q "WARNING: disableAllHooks is true" "$OFF_OUT" && [ "$(cat "$OFF_DIR/CLAUDE.md")" = "$(printf "mine\n@triage.md")" ] && ! ls "$OFF_DIR"/CLAUDE.md.bak-triage-* >/dev/null 2>&1'
+chk "OFF3: install exits 0, prints the diagnostic, and leaves CLAUDE.md byte-for-byte (no pointer, no backup)" \
+  '[ "$OFF_RC" -eq 0 ] && grep -q "WARNING: disableAllHooks is true" "$OFF_OUT" && [ "$(cat "$OFF_DIR/CLAUDE.md")" = "mine" ] && ! ls "$OFF_DIR"/CLAUDE.md.bak-triage-* >/dev/null 2>&1'
 chk "OFF4: disableAllHooks itself is left as the user set it" '[ "$(jq ".disableAllHooks" "$OFF_DIR/settings.json")" = "true" ]'
 
 # =============================================================================
-# Case CRLF — a CRLF CLAUDE.md: the legacy import is still recognized (status,
-# install, uninstall) and every other line keeps its CR.
+# Case CRLF — a CRLF CLAUDE.md: an outdated pointer line is still recognized (status,
+# install) and the pointer is removed by uninstall; every other line keeps its CR.
 # =============================================================================
 CRLF_DIR=$(new_sandbox)
-printf 'rules\r\n@triage.md\r\nmore\r\n' > "$CRLF_DIR/CLAUDE.md"
+printf 'rules\r\n%s\r\nmore\r\n' "$(old_pointer_for "$CRLF_DIR")" > "$CRLF_DIR/CLAUDE.md"
 CRLF_ST=$(mktemp)
 ALL_TMP="$ALL_TMP $CRLF_ST"
 CLAUDE_DIR="$CRLF_DIR" "$REPO_DIR/install.sh" --settings-status >"$CRLF_ST" 2>&1
-chk "CRLF1: --settings-status reports a CRLF legacy import" 'grep -q "legacy @triage.md import present" "$CRLF_ST"'
+chk "CRLF1: --settings-status reports a CRLF outdated pointer line" 'grep -q "outdated pointer line" "$CRLF_ST"'
 run_install "$CRLF_DIR" >/dev/null 2>&1
-chk "CRLF2: install removes the CRLF import and keeps the other lines' CRs" \
+chk "CRLF2: install replaces the CRLF outdated pointer and keeps the other lines' CRs" \
   '[ "$(od -An -c "$CRLF_DIR/CLAUDE.md" | tr -d " \n")" = "$(printf "rules\r\nmore\r\n%s\n" "$(pointer_for "$CRLF_DIR")" | od -An -c | tr -d " \n")" ]'
 CRLF2_DIR=$(new_sandbox)
-printf 'keep\r\n@triage.md\r\n' > "$CRLF2_DIR/CLAUDE.md"
+printf 'keep\r\n%s\r\n' "$(pointer_for "$CRLF2_DIR")" > "$CRLF2_DIR/CLAUDE.md"
 run_uninstall "$CRLF2_DIR" >/dev/null 2>&1
-chk "CRLF3: uninstall removes a CRLF import too (keep\\r stays)" \
+chk "CRLF3: uninstall removes a CRLF pointer line too (keep\\r stays)" \
   '[ "$(od -An -c "$CRLF2_DIR/CLAUDE.md" | tr -d " \n")" = "$(printf "keep\r\n" | od -An -c | tr -d " \n")" ]'
 
 # =============================================================================
@@ -1333,20 +1223,20 @@ exec "$REAL_AWK" "\$@"
 EOF
 chmod +x "$FC_BIN/awk"
 FC_SETTINGS='{"customKey": "keepme"}'
-fc_sandbox() { # -> a sandbox with a legacy CLAUDE.md and a small settings.json
+fc_sandbox() { # -> a sandbox whose CLAUDE.md has an outdated pointer, and a small settings.json
   local d; d=$(new_sandbox)
-  printf 'mine\n@triage.md\nalso mine\n' > "$d/CLAUDE.md"
+  printf 'mine\n%s\nalso mine\n' "$(old_pointer_for "$d")" > "$d/CLAUDE.md"
   printf '%s\n' "$FC_SETTINGS" > "$d/settings.json"
   printf '%s' "$d"
 }
 FC1_DIR=$(fc_sandbox)
 FC1_OUT=$(mktemp)
 ALL_TMP="$ALL_TMP $FC1_OUT"
-FAILAWK_MATCH='keep = !is_legacy($0) && (drop' PATH="$FC_BIN:$PATH" CLAUDE_DIR="$FC1_DIR" "$REPO_DIR/install.sh" >"$FC1_OUT" 2>&1
+FAILAWK_MATCH='keep = (l != drop)' PATH="$FC_BIN:$PATH" CLAUDE_DIR="$FC1_DIR" "$REPO_DIR/install.sh" >"$FC1_OUT" 2>&1
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 FC1_RC=$?
 chk "FC1: an awk failure filtering CLAUDE.md fails install; CLAUDE.md and settings.json are untouched" \
-  '[ "$FC1_RC" -ne 0 ] && ! grep -q "^Installed" "$FC1_OUT" && grep -q "could not filter" "$FC1_OUT" && [ "$(cat "$FC1_DIR/CLAUDE.md")" = "$(printf "mine\n@triage.md\nalso mine")" ] && [ "$(cat "$FC1_DIR/settings.json")" = "$FC_SETTINGS" ]'
+  '[ "$FC1_RC" -ne 0 ] && ! grep -q "^Installed" "$FC1_OUT" && grep -q "could not filter" "$FC1_OUT" && [ "$(cat "$FC1_DIR/CLAUDE.md")" = "$(printf "mine\n%s\nalso mine" "$(old_pointer_for "$FC1_DIR")")" ] && [ "$(cat "$FC1_DIR/settings.json")" = "$FC_SETTINGS" ]'
 FC2_DIR=$(fc_sandbox)
 FC2_OUT=$(mktemp)
 ALL_TMP="$ALL_TMP $FC2_OUT"
@@ -1354,7 +1244,7 @@ FAILJQ_MATCH='def covers' PATH="$W_BIN:$PATH" CLAUDE_DIR="$FC2_DIR" "$REPO_DIR/i
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 FC2_RC=$?
 chk "FC2: a jq failure in the hook decision fails install (never read as 'add'); nothing changed" \
-  '[ "$FC2_RC" -ne 0 ] && ! grep -q "^Installed" "$FC2_OUT" && grep -q "could not evaluate the SessionStart hooks" "$FC2_OUT" && [ "$(cat "$FC2_DIR/CLAUDE.md")" = "$(printf "mine\n@triage.md\nalso mine")" ] && [ "$(cat "$FC2_DIR/settings.json")" = "$FC_SETTINGS" ]'
+  '[ "$FC2_RC" -ne 0 ] && ! grep -q "^Installed" "$FC2_OUT" && grep -q "could not evaluate the SessionStart hooks" "$FC2_OUT" && [ "$(cat "$FC2_DIR/CLAUDE.md")" = "$(printf "mine\n%s\nalso mine" "$(old_pointer_for "$FC2_DIR")")" ] && [ "$(cat "$FC2_DIR/settings.json")" = "$FC_SETTINGS" ]'
 FC2_ST=$(mktemp)
 ALL_TMP="$ALL_TMP $FC2_ST"
 FAILJQ_MATCH='def covers' PATH="$W_BIN:$PATH" CLAUDE_DIR="$FC2_DIR" "$REPO_DIR/install.sh" --settings-status >"$FC2_ST" 2>&1
@@ -1367,7 +1257,7 @@ run_install "$FC4_DIR" >/dev/null 2>&1
 cp "$FC4_DIR/CLAUDE.md" "$FC4_DIR/CLAUDE.md.before"
 FC4_OUT=$(mktemp)
 ALL_TMP="$ALL_TMP $FC4_OUT"
-FAILAWK_MATCH='keep = !is_legacy($0) && l != p1' PATH="$FC_BIN:$PATH" CLAUDE_DIR="$FC4_DIR" "$REPO_DIR/uninstall.sh" >"$FC4_OUT" 2>&1
+FAILAWK_MATCH='keep = l != p1 && l != p2' PATH="$FC_BIN:$PATH" CLAUDE_DIR="$FC4_DIR" "$REPO_DIR/uninstall.sh" >"$FC4_OUT" 2>&1
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 FC4_RC=$?
 chk "FC4: an awk failure filtering CLAUDE.md fails uninstall before anything is touched" \
@@ -1376,29 +1266,29 @@ chk "FC4: an awk failure filtering CLAUDE.md fails uninstall before anything is 
 # =============================================================================
 # Case PIN — 'installed' means THIS install's hook: a command pinned to the current
 # CLAUDE_DIR. A hook pinned to another dir, or an unpinned one, neither counts as
-# installed nor allows the legacy import to go before ours is appended; uninstall
-# removes only ours.
+# installed nor lets CLAUDE.md change before ours is appended; uninstall removes only
+# ours.
 # =============================================================================
 PIN_DIR=$(new_sandbox)
 PIN_FOREIGN=$(jq -cn --arg c "$(hook_cmd_for /elsewhere/claude)" '{matcher: "startup|resume|clear|compact", hooks: [{type: "command", command: $c}]}')
 PIN_UNPINNED=$(jq -cn --arg c "bash $PIN_DIR/scripts/triage-context.sh" '{matcher: "startup|resume|clear|compact", hooks: [{type: "command", command: $c}]}')
 printf '{"hooks":{"SessionStart":[%s,%s]}}\n' "$PIN_FOREIGN" "$PIN_UNPINNED" > "$PIN_DIR/settings.json"
-printf 'mine\n@triage.md\n' > "$PIN_DIR/CLAUDE.md"
+printf 'mine\n%s\n' "$(old_pointer_for "$PIN_DIR")" > "$PIN_DIR/CLAUDE.md"
 PIN_ST=$(mktemp); PIN_OUT=$(mktemp); PIN_UN=$(mktemp)
 ALL_TMP="$ALL_TMP $PIN_ST $PIN_OUT $PIN_UN"
 CLAUDE_DIR="$PIN_DIR" "$REPO_DIR/install.sh" --settings-status >"$PIN_ST" 2>&1
 chk "PIN1: a hook pinned to another CLAUDE_DIR and an unpinned one: status says this install's hook is missing" \
-  'grep -q "settings migration pending: triage hook missing" "$PIN_ST" && grep -q "legacy @triage.md import present" "$PIN_ST"'
+  'grep -q "settings migration pending: triage hook missing" "$PIN_ST"'
 run_install "$PIN_DIR" >"$PIN_OUT" 2>&1
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 PIN_RC=$?
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
 PIN_ADD_AT=$(grep -n "^hooks.SessionStart: added the triage hook" "$PIN_OUT" | cut -d: -f1)
 # shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
-PIN_MIG_AT=$(grep -n "^CLAUDE.md: removed the legacy @triage.md import" "$PIN_OUT" | cut -d: -f1)
+PIN_MIG_AT=$(grep -n "^CLAUDE.md: replaced the outdated pointer line" "$PIN_OUT" | cut -d: -f1)
 chk "PIN2: install appends this install's pinned hook after both foreign groups, and only then migrates CLAUDE.md" \
   '[ "$PIN_RC" -eq 0 ] && [ -n "$PIN_ADD_AT" ] && [ -n "$PIN_MIG_AT" ] && [ "$PIN_ADD_AT" -lt "$PIN_MIG_AT" ] && [ "$(jq ".hooks.SessionStart | length" "$PIN_DIR/settings.json")" -eq 3 ] && [ "$(jq -c ".hooks.SessionStart[0]" "$PIN_DIR/settings.json")" = "$PIN_FOREIGN" ] && [ "$(jq -c ".hooks.SessionStart[1]" "$PIN_DIR/settings.json")" = "$PIN_UNPINNED" ] && [ "$(jq -r ".hooks.SessionStart[2].hooks[0].command" "$PIN_DIR/settings.json")" = "$(hook_cmd_for "$PIN_DIR")" ]'
-chk "PIN3: ... the legacy import is gone and the pointer names this install's triage.md" \
+chk "PIN3: ... the outdated pointer is gone and the pointer names this install's triage.md" \
   '[ "$(cat "$PIN_DIR/CLAUDE.md")" = "$(printf "mine\n%s" "$(pointer_for "$PIN_DIR")")" ]'
 run_uninstall "$PIN_DIR" >"$PIN_UN" 2>&1
 chk "PIN4: uninstall removes only the hook pinned to this CLAUDE_DIR (the other-dir and unpinned groups stay)" \
@@ -1431,43 +1321,13 @@ chk "TYPE2: uninstall removes our command hook and keeps the type:prompt entry" 
   '[ "$(jq -c ".hooks.SessionStart" "$TYPE_DIR/settings.json")" = "$(printf "[%s]" "$TYPE_GROUP")" ]'
 
 # =============================================================================
-# Case RUB — the legacy import goes only when the INSTALLED rubric passes
-# triage-context.sh --check. A preserved over-cap fork (fixture .driftignore naming
-# triage.md) blocks the migration: import kept, no pointer, a diagnostic; the hook is
-# still added. Once the fork fits, install migrates.
-# =============================================================================
-RUB_REPO=$(repo_copy)
-printf 'triage.md\n' > "$RUB_REPO/.driftignore"
-RUB_DIR=$(new_sandbox)
-head -c 10001 /dev/zero | tr '\0' 'x' > "$RUB_DIR/triage.md"
-printf 'mine\n@triage.md\n' > "$RUB_DIR/CLAUDE.md"
-cp "$RUB_DIR/CLAUDE.md" "$RUB_DIR/CLAUDE.md.before"
-RUB_ST=$(mktemp); RUB_DRY=$(mktemp); RUB_OUT=$(mktemp); RUB_OUT2=$(mktemp)
-ALL_TMP="$ALL_TMP $RUB_ST $RUB_DRY $RUB_OUT $RUB_OUT2"
-CLAUDE_DIR="$RUB_DIR" "$RUB_REPO/install.sh" --settings-status >"$RUB_ST" 2>&1
-chk "RUB1: --settings-status reports the migration blocked by the over-cap rubric, not pending" \
-  'grep -q "settings migration blocked: the rubric the triage hook would read fails its size check" "$RUB_ST" && grep -qF "$RUB_DIR/triage.md is too big" "$RUB_ST" && ! grep -q "legacy @triage.md import present" "$RUB_ST"'
-CLAUDE_DIR="$RUB_DIR" "$RUB_REPO/install.sh" --dry-run >"$RUB_DRY" 2>&1
-chk "RUB2: --dry-run plans no CLAUDE.md change and says why" \
-  'grep -q "fails its size check" "$RUB_DRY" && ! grep -q "would append pointer line" "$RUB_DRY" && ! grep -q "would remove it" "$RUB_DRY"'
-CLAUDE_DIR="$RUB_DIR" "$RUB_REPO/install.sh" >"$RUB_OUT" 2>&1
-# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
-RUB_RC=$?
-chk "RUB3: install keeps CLAUDE.md byte-for-byte (import kept, no pointer, no backup), warns, and still adds the hook" \
-  '[ "$RUB_RC" -eq 0 ] && grep -q "WARNING: the rubric the triage hook would read fails its size check" "$RUB_OUT" && cmp -s "$RUB_DIR/CLAUDE.md" "$RUB_DIR/CLAUDE.md.before" && ! ls "$RUB_DIR"/CLAUDE.md.bak-triage-* >/dev/null 2>&1 && [ "$(triage_hooks "$RUB_DIR/settings.json")" -eq 1 ]'
-printf 'a small fork\n' > "$RUB_DIR/triage.md"
-CLAUDE_DIR="$RUB_DIR" "$RUB_REPO/install.sh" >"$RUB_OUT2" 2>&1
-chk "RUB4: once the installed fork fits, install migrates (import gone, pointer added, still one hook)" \
-  '[ "$(cat "$RUB_DIR/CLAUDE.md")" = "$(printf "mine\n%s" "$(pointer_for "$RUB_DIR")")" ] && [ "$(triage_hooks "$RUB_DIR/settings.json")" -eq 1 ]'
-
-# =============================================================================
 # Case FALSE — a non-null, non-array hooks.SessionStart (false), or a false env, is
 # refused as wrong-shaped before anything changes (`// []` used to read false as absent).
 # =============================================================================
 for FALSE_JSON in '{"hooks":{"SessionStart":false}}' '{"env":false}'; do
   FALSE_DIR=$(new_sandbox)
   printf '%s\n' "$FALSE_JSON" > "$FALSE_DIR/settings.json"
-  printf 'mine\n@triage.md\n' > "$FALSE_DIR/CLAUDE.md"
+  printf 'mine\n' > "$FALSE_DIR/CLAUDE.md"
   cp "$FALSE_DIR/settings.json" "$FALSE_DIR/settings.before"; cp "$FALSE_DIR/CLAUDE.md" "$FALSE_DIR/CLAUDE.before"
   FALSE_OUT=$(mktemp)
   ALL_TMP="$ALL_TMP $FALSE_OUT"
@@ -1479,20 +1339,20 @@ for FALSE_JSON in '{"hooks":{"SessionStart":false}}' '{"env":false}'; do
 done
 
 # =============================================================================
-# Case BYTE — the migration (install) and the unwiring (uninstall) keep every other
-# byte of CLAUDE.md: CRLF lines, and an unterminated last line, compared with cmp.
+# Case BYTE — the pointer migration (install) and the unwiring (uninstall) keep every
+# other byte of CLAUDE.md: CRLF lines, and an unterminated last line, compared with cmp.
 # =============================================================================
 BYTE1_DIR=$(new_sandbox)
-printf '@triage.md\r\n%s\r\nkeep' "$(pointer_for "$BYTE1_DIR")" > "$BYTE1_DIR/CLAUDE.md"
+printf '%s\r\n%s\r\nkeep' "$(old_pointer_for "$BYTE1_DIR")" "$(pointer_for "$BYTE1_DIR")" > "$BYTE1_DIR/CLAUDE.md"
 printf '%s\r\nkeep' "$(pointer_for "$BYTE1_DIR")" > "$BYTE1_DIR/want"
 run_install "$BYTE1_DIR" >/dev/null 2>&1
-chk "BYTE1: CRLF file, pointer already present, no final newline: only the import's bytes go" \
+chk "BYTE1: CRLF file, current pointer already present (CR ignored), no final newline: only the outdated pointer's bytes go" \
   'cmp -s "$BYTE1_DIR/CLAUDE.md" "$BYTE1_DIR/want"'
 BYTE2_DIR=$(new_sandbox)
-printf '%s\na\n@triage.md' "$(pointer_for "$BYTE2_DIR")" > "$BYTE2_DIR/CLAUDE.md"
+printf '%s\na\n%s' "$(pointer_for "$BYTE2_DIR")" "$(old_pointer_for "$BYTE2_DIR")" > "$BYTE2_DIR/CLAUDE.md"
 printf '%s\na\n' "$(pointer_for "$BYTE2_DIR")" > "$BYTE2_DIR/want"
 run_install "$BYTE2_DIR" >/dev/null 2>&1
-chk "BYTE2: an unterminated import as the last line goes; the line before keeps its newline" \
+chk "BYTE2: an unterminated outdated pointer as the last line goes; the line before keeps its newline" \
   'cmp -s "$BYTE2_DIR/CLAUDE.md" "$BYTE2_DIR/want"'
 BYTE3_DIR=$(new_sandbox)
 printf 'x\r\n%s\ny' "$(pointer_for "$BYTE3_DIR")" > "$BYTE3_DIR/CLAUDE.md"
@@ -1688,37 +1548,6 @@ chk "PTR3: the pointer tells the main session to read the rubric itself when it 
 printf '%s\n' "$(old_pointer_for "$PTR_DIR")" >> "$PTR_DIR/CLAUDE.md"
 run_uninstall "$PTR_DIR" >/dev/null 2>&1
 chk "PTR4: uninstall removes the current AND the earlier pointer line" '[ "$(cat "$PTR_DIR/CLAUDE.md")" = "$(printf "mine\nalso mine")" ]'
-
-# =============================================================================
-# Case NORM — L10/U1: ONE legacy-import normalisation (LEGACY_IMPORT_AWK, identical in
-# install.sh, uninstall.sh and triage-context.sh). The other spellings of the import
-# are migrated by install and removed by uninstall; a line with TWO trailing CRs is
-# the import nowhere — the hook injects, and install leaves it (never "rubric loads
-# nowhere").
-# =============================================================================
-NORM_DIR=$(new_sandbox)
-printf 'mine\n@./triage.md\n@~/.claude/triage.md\n@%s/triage.md  \nend\n' "$NORM_DIR" > "$NORM_DIR/CLAUDE.md"
-NORM_ST=$(mktemp)
-ALL_TMP="$ALL_TMP $NORM_ST"
-CLAUDE_DIR="$NORM_DIR" "$REPO_DIR/install.sh" --settings-status >"$NORM_ST" 2>&1
-run_install "$NORM_DIR" >/dev/null 2>&1
-chk "NORM1: @./triage.md, @~/.claude/triage.md and @<CLAUDE_DIR>/triage.md (trailing blanks) are reported and migrated" \
-  'grep -q "legacy @triage.md import present" "$NORM_ST" && [ "$(cat "$NORM_DIR/CLAUDE.md")" = "$(printf "mine\nend\n%s" "$(pointer_for "$NORM_DIR")")" ]'
-printf '@./triage.md\r\n' >> "$NORM_DIR/CLAUDE.md"
-run_uninstall "$NORM_DIR" >/dev/null 2>&1
-chk "NORM2: uninstall removes another spelling (CRLF) too" '[ "$(cat "$NORM_DIR/CLAUDE.md")" = "$(printf "mine\nend")" ]'
-NORM2_DIR=$(new_sandbox)
-cp "$REPO_DIR/triage.md" "$NORM2_DIR/triage.md"
-printf 'mine\n@triage.md\r\r\n' > "$NORM2_DIR/CLAUDE.md"
-NORM2_ST=$(mktemp)
-ALL_TMP="$ALL_TMP $NORM2_ST"
-CLAUDE_DIR="$NORM2_DIR" "$REPO_DIR/install.sh" --settings-status >"$NORM2_ST" 2>&1
-# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
-NORM2_HOOK=$(printf '{}' | CLAUDE_DIR="$NORM2_DIR" bash "$REPO_DIR/scripts/triage-context.sh" | jq -r '.hookSpecificOutput.additionalContext // ""' | head -c 200)
-chk "NORM3: '@triage.md' + TWO CRs: install does not call it the import AND the hook injects the rubric (the same verdict, U1)" \
-  '! grep -q "legacy @triage.md import present" "$NORM2_ST" && [ -n "$NORM2_HOOK" ]'
-chk "NORM4: install.sh, uninstall.sh and triage-context.sh carry the identical LEGACY_IMPORT_AWK" \
-  '[ -n "$(grep "^LEGACY_IMPORT_AWK=" "$REPO_DIR/install.sh")" ] && [ "$(grep "^LEGACY_IMPORT_AWK=" "$REPO_DIR/install.sh")" = "$(grep "^LEGACY_IMPORT_AWK=" "$REPO_DIR/uninstall.sh")" ] && [ "$(grep "^LEGACY_IMPORT_AWK=" "$REPO_DIR/install.sh")" = "$(grep "^LEGACY_IMPORT_AWK=" "$REPO_DIR/scripts/triage-context.sh")" ]'
 
 # =============================================================================
 # Case ORD — L4: uninstall writes settings.json first, then CLAUDE.md, then removes

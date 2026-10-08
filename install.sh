@@ -16,16 +16,15 @@
 #
 # The rubric (triage.md) reaches the MAIN session through a SessionStart hook
 # (scripts/triage-context.sh), never an `@triage.md` import in CLAUDE.md: SessionStart
-# does not fire for subagents, so they no longer load it. A bare install appends that
+# does not fire for subagents, so they never load it. A bare install appends that
 # hook to settings.json (CLAUDE_DIR pinned in the command; never replacing your other
-# SessionStart hooks) and, only after the settings write succeeded, migrates a legacy
-# `@triage.md` line out of CLAUDE.md (backed up first; every other byte kept) and
-# appends one pointer line (pointer_line, naming this install's triage.md) — unless
-# settings.json has disableAllHooks: true, or the installed triage.md fails the hook's
-# size check (`triage-context.sh --check`); either leaves CLAUDE.md alone with a
-# warning. settings.json is written once, after every settings transformation and the
-# CLAUDE.md decision were computed: an evaluation error (jq/awk) aborts with
-# settings.json and CLAUDE.md untouched (the installed files may already be updated).
+# SessionStart hooks) and, only after the settings write succeeded, appends one pointer
+# line to CLAUDE.md (pointer_line, naming this install's triage.md; an outdated pointer
+# line is replaced, backed up first, every other byte kept) — unless settings.json has
+# disableAllHooks: true, which leaves CLAUDE.md alone with a warning. settings.json is
+# written once, after every settings transformation and the CLAUDE.md decision were
+# computed: an evaluation error (jq/awk) aborts with settings.json and CLAUDE.md
+# untouched (the installed files may already be updated).
 #
 # A locally modified installed file is backed up before it is overwritten, to
 # <file>.bak-triage-<UTC timestamp>; the newest BACKUP_KEEP (5) per file are kept.
@@ -103,12 +102,6 @@ POINTER_TAIL="/triage.md) reaches the main session through a SessionStart hook; 
 # Every earlier POINTER_TAIL (frozen): install replaces such a line with the current
 # one, uninstall removes it. Wave 21 shipped the first.
 POINTER_TAILS_OLD="/triage.md) reaches the main session through a SessionStart hook; subagents don't receive it."
-# The ONE legacy-import normalisation (identical in uninstall.sh and
-# scripts/triage-context.sh; test/roundtrip.sh N8 pins the three copies): an awk
-# function, is_legacy(line) — with ONE trailing CR, then trailing blanks dropped, the
-# line is @triage.md, @./triage.md, @~/.claude/triage.md or @<TRIAGE_DIR>/triage.md
-# (TRIAGE_DIR in awk's environment = CLAUDE_DIR). Anything else is not the import.
-LEGACY_IMPORT_AWK='function is_legacy(l) { sub(/\r$/, "", l); sub(/[ \t]+$/, "", l); return l == "@triage.md" || l == "@./triage.md" || l == "@~/.claude/triage.md" || l == "@" ENVIRON["TRIAGE_DIR"] "/triage.md" }'
 # TRIAGE_INSTALL_STAMP: test hook only (forces the same-second clash case).
 STAMP="${TRIAGE_INSTALL_STAMP:-$(date -u +%Y%m%dT%H%M%SZ)}"
 
@@ -221,7 +214,7 @@ triage_hook_action() {
   esac
 }
 # The one hook command install writes. CLAUDE_DIR is PINNED in it, so a non-default
-# install reads its own kill switch, legacy guard and triage.md, whatever $HOME is.
+# install reads its own kill switch and triage.md, whatever $HOME is.
 # %q leaves an ordinary path as is and escapes anything else (spaces, quotes), so each
 # path stays one shell word.
 triage_hook_command() { printf 'CLAUDE_DIR=%q bash %q/%s' "$CLAUDE_DIR" "$CLAUDE_DIR" "$TRIAGE_HOOK_SCRIPT"; }
@@ -239,22 +232,15 @@ has_line() { # $1 = file, $2 = line
   [ -e "$1" ] || return 1
   awk -v want="$2" '{ l = $0; sub(/\r$/, "", l); if (l == want) found = 1 } END { exit found ? 0 : 1 }' "$1"
 }
-# Does CLAUDE.md $1 hold the legacy import (LEGACY_IMPORT_AWK)? 0 yes, 1 no (or no
-# file), anything else = could not read it: callers fail closed on that.
-has_legacy() { # $1 = file
-  [ -e "$1" ] || return 1
-  TRIAGE_DIR="$CLAUDE_DIR" awk "$LEGACY_IMPORT_AWK"' is_legacy($0) { found = 1 } END { exit found ? 0 : 1 }' "$1"
-}
-# File $1 without its legacy import lines (LEGACY_IMPORT_AWK) and without lines equal
-# to $2 (a trailing CR ignored; "" = none), on stdout. Every other byte is kept
-# exactly: each kept line keeps its own terminator (CRLF included), and an
-# unterminated last line stays unterminated (awk's print would add a newline).
+# File $1 without its lines equal to $2 (a trailing CR ignored), on stdout. Every
+# other byte is kept exactly: each kept line keeps its own terminator (CRLF included),
+# and an unterminated last line stays unterminated (awk's print would add a newline).
 drop_line() { # $1 = file, $2 = line
   local nl=1
   if [ -s "$1" ] && [ -n "$(tail -c1 "$1")" ]; then nl=0; fi
-  TRIAGE_DIR="$CLAUDE_DIR" awk -v drop="$2" -v nl="$nl" "$LEGACY_IMPORT_AWK"'
+  awk -v drop="$2" -v nl="$nl" '
     NR > 1 && keep { printf "%s\n", prev }
-    { prev = $0; l = $0; sub(/\r$/, "", l); keep = !is_legacy($0) && (drop == "" || l != drop) }
+    { prev = $0; l = $0; sub(/\r$/, "", l); keep = (l != drop) }
     END { if (NR > 0 && keep) printf "%s%s", prev, (nl ? "\n" : "") }' "$1"
 }
 
@@ -267,49 +253,22 @@ is_ignored() { # $1 = repo-relative path
   tr -d '\r' < "$DRIFTIGNORE" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
     | grep -v '^#' | grep -qxF "$1"
 }
-# The file step 1 leaves at $2 for repo file $1: an expected fork that already exists
-# stays, anything else becomes the repo copy. Used where a mode that copies nothing
-# (--dry-run, --settings-status) must judge what a bare install would install.
-planned_copy() { # $1 = repo-relative src, $2 = installed path
-  if is_ignored "$1" && [ -e "$2" ]; then printf '%s' "$2"; else printf '%s' "$REPO_DIR/$1"; fi
-}
 
-# Single owner of the migration gate on the rubric: the legacy import may go only when
-# the rubric the hook will read passes the hook's own size check (an over-cap rubric
-# would arrive as a notice, not the rubric, where the import loaded all of it).
-# $1 = the triage-context.sh to ask, $2 = the rubric. Sets RUBRIC_DIAG to its output;
-# returns 0 only when the check passed (1 = too big, anything else = could not check).
-RUBRIC_DIAG=""
-rubric_fits() {
-  local rc=0
-  RUBRIC_DIAG=$(bash "$1" --check "$2" 2>&1) || rc=$?
-  [ -n "$RUBRIC_DIAG" ] || RUBRIC_DIAG="$1 --check $2 exited $rc"
-  return "$rc"
-}
-rubric_note() { # the one diagnostic for a blocked migration (uses RUBRIC_DIAG)
-  printf '%s' "the rubric the triage hook would read fails its size check, so CLAUDE.md is NOT migrated (the @triage.md import stays the working wiring; no pointer line): $RUBRIC_DIAG — trim it under the cap, then run ./install.sh."
-}
-
-# Preflight for every mode that reads settings.json / CLAUDE.md (not --files-only): all
-# settings.json / CLAUDE.md decisions but the rubric gate (rubric_fits, which needs the
-# installed rubric) are made HERE, before anything is written, and any evaluation error
-# dies with nothing changed. Sets HOOK_ACTION (present|add), HOOKS_OFF (1 when
-# settings.json has disableAllHooks: true — the hook could never run, so CLAUDE.md is
-# not migrated), LEGACY (1 when CLAUDE.md still has the `@triage.md` import line,
-# LEGACY_IMPORT_AWK), OLD_POINTER (1 when it has an earlier pointer line) and POINTER
-# (1 when the current pointer line is already there). An absent settings.json is an
-# empty one.
+# Preflight for every mode that reads settings.json / CLAUDE.md (not --files-only):
+# every settings.json / CLAUDE.md decision is made HERE, before anything is written,
+# and any evaluation error dies with nothing changed. Sets HOOK_ACTION (present|add),
+# HOOKS_OFF (1 when settings.json has disableAllHooks: true — the hook could never run,
+# so CLAUDE.md is left alone), OLD_POINTER (1 when CLAUDE.md has an earlier pointer
+# line) and POINTER (1 when the current pointer line is already there). An absent
+# settings.json is an empty one.
 # Single owner of "is CLAUDE.md left alone?": sets CLAUDE_MD_BLOCK to the reason it is
-# (disableAllHooks, or a legacy import whose replacement rubric fails rubric_fits), or
-# "" when install migrates it and appends the pointer. $1 = the triage-context.sh, $2 =
-# the rubric that hook will read. Call after hook_preflight.
+# (disableAllHooks), or "" when install appends the pointer (replacing an outdated
+# one). Call after hook_preflight.
 CLAUDE_MD_BLOCK=""
 claude_md_decision() {
   CLAUDE_MD_BLOCK=""
   if [ "$HOOKS_OFF" -eq 1 ]; then
     CLAUDE_MD_BLOCK="$HOOKS_OFF_NOTE"
-  elif [ "$LEGACY" -eq 1 ] && ! rubric_fits "$1" "$2"; then
-    CLAUDE_MD_BLOCK="$(rubric_note)"
   fi
 }
 
@@ -329,12 +288,6 @@ hook_preflight() {
     1) HOOKS_OFF=0 ;;
     *) die "could not read disableAllHooks from $SETTINGS (jq failed) — nothing was changed." ;;
   esac
-  rc=0; has_legacy "$CLAUDE_DIR/CLAUDE.md" || rc=$?
-  case "$rc" in
-    0) LEGACY=1 ;;
-    1) LEGACY=0 ;;
-    *) die "could not read $CLAUDE_DIR/CLAUDE.md — nothing was changed." ;;
-  esac
   rc=0; has_line "$CLAUDE_DIR/CLAUDE.md" "$(old_pointer_line)" || rc=$?
   case "$rc" in
     0) OLD_POINTER=1 ;;
@@ -348,7 +301,7 @@ hook_preflight() {
     *) die "could not read $CLAUDE_DIR/CLAUDE.md — nothing was changed." ;;
   esac
 }
-HOOKS_OFF_NOTE="disableAllHooks is true in $SETTINGS, so the triage SessionStart hook cannot run: CLAUDE.md is NOT migrated (a legacy @triage.md import stays the working wiring; no pointer line). Without that import the rubric is not loaded at all. Remove disableAllHooks (or set it false), then run ./install.sh."
+HOOKS_OFF_NOTE="disableAllHooks is true in $SETTINGS, so the triage SessionStart hook cannot run: CLAUDE.md is left alone (no pointer line) and the rubric is not loaded at all. Remove disableAllHooks (or set it false), then run ./install.sh."
 
 # --settings-status: read-only, for drift.sh. Only the settings.json / CLAUDE.md
 # changes `make sync` (--files-only) never makes. No settings.json = an empty one: a
@@ -367,11 +320,9 @@ if [ "$SETTINGS_STATUS" -eq 1 ]; then
   if [ "$HOOK_ACTION" = "add" ]; then
     echo "settings migration pending: triage hook missing (no hooks.SessionStart group runs this install's command, $(triage_hook_command), for $TRIAGE_HOOK_MATCHER) — run ./install.sh to add it (make sync never edits settings.json)"
   fi
-  claude_md_decision "$(planned_copy "$TRIAGE_HOOK_SCRIPT" "$CLAUDE_DIR/$TRIAGE_HOOK_SCRIPT")" "$(planned_copy triage.md "$CLAUDE_DIR/triage.md")"
+  claude_md_decision
   if [ -n "$CLAUDE_MD_BLOCK" ]; then
     echo "settings migration blocked: $CLAUDE_MD_BLOCK"
-  elif [ "$LEGACY" -eq 1 ]; then
-    echo "settings migration pending: legacy @triage.md import present in $CLAUDE_DIR/CLAUDE.md (it loads the rubric into every subagent too) — run ./install.sh to replace it with the SessionStart hook"
   elif [ "$OLD_POINTER" -eq 1 ]; then
     echo "settings migration pending: outdated pointer line in $CLAUDE_DIR/CLAUDE.md (it does not say what to do when the hook did not run) — run ./install.sh to replace it"
   fi
@@ -496,13 +447,6 @@ backup_copy() { # $1 = file -> copy saved to a fresh backup path (printed)
   prune_backups "$1"
   printf '%s' "$b"
 }
-backup_move() { # $1 = file -> moved to a fresh backup path (printed)
-  local b
-  b=$(backup_path "$1")
-  mv "$1" "$b"
-  prune_backups "$1"
-  printf '%s' "$b"
-}
 
 # Copy a repo file into place, backing up a locally-modified target first so a
 # re-run never silently clobbers edits you made under ~/.claude (e.g. a tuned
@@ -552,96 +496,6 @@ install_file() {
   fi
 }
 
-# --- retiring the pre-wave-9 /triage-run workflow ----------------------------
-# triage-exec.js replaced triage-run.js (classification moved to the orchestrator).
-# An old install leaves triage-run.js behind, where it still registers as a second,
-# stale /triage-run command. Remove it — but ONLY when the installed bytes match a
-# version this repo actually shipped. A copy you edited yourself is yours: it is left
-# alone with a note, never silently deleted. Checksums are of every triage-run.js
-# revision in this repo's history (`git log --all -- workflows/triage-run.js`).
-SHIPPED_TRIAGE_RUN_SHA256="
-3736f0238457f0ca4ee0ecae098d980f806feba1f61b668d5bc89221fa9ee237
-393e07dd9e10d5bf60a22ae406c2816ccf529ef80181968b7dc940da23c37ad4
-44ad66222c641ddcbf811a7b4883e28d457f1c3e8f088501f3b03d246be023c0
-4843fd5ac4caab33ec2a8de8b4c8b6d04c7cfd71fd7d982896e7dff14a33b3dc
-627fbfe326ff53a1880edebb191d08d38e2303f86074cbcbc6ecc8362a356993
-bbc1769308f6f239062fe05c79d598c19cc8292cabc339328bfd9cf0380b7979
-dba7a06f59eaddbaa1fb78b9f81a91b8372af01b21166c3775304c49c0174308
-"
-
-# Portable sha256 (macOS ships `shasum`, most Linux images ship `sha256sum`).
-# Prints nothing when neither exists — the caller then declines to delete.
-file_sha256() { # $1 = file
-  if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1
-  elif command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" 2>/dev/null | cut -d' ' -f1
-  fi
-}
-
-retire_triage_run() {
-  old="$CLAUDE_DIR/workflows/triage-run.js"
-  [ -f "$old" ] || return 0
-  sha=$(file_sha256 "$old")
-  if [ -n "$sha" ] && printf '%s' "$SHIPPED_TRIAGE_RUN_SHA256" | grep -qxF "$sha"; then
-    if [ "$DRY_RUN" -eq 1 ]; then
-      echo "  remove (superseded by triage-exec.js, unmodified): $old"
-    else
-      rm -f "$old"
-      echo "  removed superseded workflow: $old (replaced by triage-exec.js)"
-    fi
-  else
-    echo "  note: $old is modified (or unhashable) — left in place. /triage-run will keep appearing alongside /triage-exec until you delete it."
-  fi
-}
-
-# --- retiring scripts/agy-run.sh (renamed to ext-run.sh in Wave 12) ----------
-# ext-run.sh is the single owner of every external-CLI call now. A leftover
-# agy-run.sh would be a second, stale owner with hard-coded model ids and none of
-# the per-vendor deny rules. Checksums: every agy-run.sh revision this repo shipped.
-SHIPPED_AGY_RUN_SHA256="
-4a8c43d68632aebac6a6c632fc6937b23160b45afdb4155a64763048191ef204
-a5156feb2d68506c788e091c2c4560681d688decabfc504e96ad3ccc9f8a79a2
-"
-# --- retiring agents/triage-overflow.md (renamed to triage-external in Wave 12) ---
-# A leftover triage-overflow.md would be an eighth, stale agent that knows only agy
-# and none of the VENDOR/LEVEL/EFFORT header. Its Agent(triage-overflow) allow rule
-# goes in step 3b. Checksums: every triage-overflow.md revision this repo shipped.
-SHIPPED_OVERFLOW_AGENT_SHA256="
-107c132fba26ddbd5da87e215fb2f49c51f273108c73fe80f02c9e26d3d84bdb
-22f23167c50bceb245e02369f717b931aa90d0bcb2973dd6b6b1c2160275da8f
-"
-
-# Single owner of retiring a renamed file. Bytes this repo shipped are removed;
-# anything else is yours and is moved to a timestamped backup (out of the way of the
-# agent/script loaders, never deleted). $1 = installed path, $2 = checksum list,
-# $3 = what replaced it.
-retire_renamed() {
-  local old sums why sha b
-  old="$1"; sums="$2"; why="$3"
-  [ -f "$old" ] || return 0
-  sha=$(file_sha256 "$old")
-  if [ -n "$sha" ] && printf '%s' "$sums" | grep -qxF "$sha"; then
-    if [ "$DRY_RUN" -eq 1 ]; then
-      echo "  remove (unmodified; $why): $old"
-    else
-      rm -f "$old"
-      echo "  removed legacy file: $old ($why)"
-    fi
-  elif [ "$DRY_RUN" -eq 1 ]; then
-    echo "  move aside (modified or unhashable; $why): $old -> $old.bak-triage-<timestamp>"
-  else
-    b=$(backup_move "$old")
-    echo "  note: $old is modified (or unhashable) — moved to $b ($why)"
-  fi
-}
-retire_agy_run() {
-  retire_renamed "$CLAUDE_DIR/scripts/agy-run.sh" "$SHIPPED_AGY_RUN_SHA256" "renamed to scripts/ext-run.sh"
-}
-retire_overflow_agent() {
-  retire_renamed "$CLAUDE_DIR/agents/triage-overflow.md" "$SHIPPED_OVERFLOW_AGENT_SHA256" "renamed to agents/triage-external.md"
-}
-
 # =============================================================================
 # 1. Installed files (agents, statusline, /triage-exec workflow, usage script,
 #    triage.md rubric) — the only step --files-only performs.
@@ -676,9 +530,6 @@ install_file "scripts/parity-report.sh" "$CLAUDE_DIR/scripts/parity-report.sh" x
 install_file "scripts/triage-tiers.sh" "$CLAUDE_DIR/scripts/triage-tiers.sh" x
 install_file "scripts/triage-context.sh" "$CLAUDE_DIR/scripts/triage-context.sh" x
 install_file "config/tiers.json" "$CLAUDE_DIR/scripts/triage-tiers.json"
-retire_triage_run
-retire_agy_run
-retire_overflow_agent
 
 if [ "$FILES_ONLY" -eq 1 ]; then
   if [ "$DRY_RUN" -eq 0 ]; then
@@ -689,8 +540,8 @@ fi
 
 # =============================================================================
 # 2. Merge settings (subagent default model + prompt-cache TTL) + 2b. permissions
-#    + 2c. the SessionStart hook that delivers the rubric. 3. CLAUDE.md (pointer line,
-#    legacy @triage.md migration) only after every settings write succeeded.
+#    + 2c. the SessionStart hook that delivers the rubric. 3. CLAUDE.md (pointer line)
+#    only after every settings write succeeded.
 #
 #    NOT written, ever: model, effortLevel, statusLine. Your orchestrator model and
 #    your statusline are yours; this layer works with whatever you have chosen.
@@ -725,9 +576,6 @@ if [ "$DRY_RUN" -eq 1 ]; then
       echo "  permissions.allow: would add: $rule"
     fi
   done
-  if printf '%s' "$CUR_SETTINGS_JSON" | jq -e '.permissions.allow // [] | index("Agent(triage-overflow)")' >/dev/null 2>&1; then
-    echo "  permissions.allow: would remove legacy: Agent(triage-overflow) (renamed to triage-external)"
-  fi
   fable_rule="Agent(triage-fable-architect)"
   if printf '%s' "$CUR_SETTINGS_JSON" | jq -e --arg r "$fable_rule" '.permissions.ask // [] | index($r)' >/dev/null 2>&1; then
     echo "  permissions.ask: already present: $fable_rule"
@@ -742,13 +590,10 @@ if [ "$DRY_RUN" -eq 1 ]; then
 
   echo ""
   echo "CLAUDE.md ($CLAUDE_DIR/CLAUDE.md), only after the settings write succeeds:"
-  claude_md_decision "$(planned_copy "$TRIAGE_HOOK_SCRIPT" "$CLAUDE_DIR/$TRIAGE_HOOK_SCRIPT")" "$(planned_copy triage.md "$CLAUDE_DIR/triage.md")"
+  claude_md_decision
   if [ -n "$CLAUDE_MD_BLOCK" ]; then
     echo "  ⚠ $CLAUDE_MD_BLOCK"
   else
-    if [ "$LEGACY" -eq 1 ]; then
-      echo "  legacy @triage.md import present — would remove it (backup to CLAUDE.md.bak-triage-<timestamp> first); the SessionStart hook replaces it"
-    fi
     if [ "$OLD_POINTER" -eq 1 ]; then
       echo "  outdated pointer line present — would replace it (backup to CLAUDE.md.bak-triage-<timestamp> first)"
     fi
@@ -786,8 +631,6 @@ fi
 #      - `ask` before any Fable spawn → confirms the costly tier (the ⚠ rule, enforced)
 #      - `allow` the worker spawns    → fan-out never prompts (a worker's OWN Bash/Edit
 #                                        calls stay gated by your normal permissions)
-#    The pre-Wave-12 Agent(triage-overflow) allow rule is removed: that agent is now
-#    triage-external, and a rule for an agent that no longer exists is only noise.
 #    Gate by agent TYPE, not `model:` — `Agent(type)` enforcement for named subagent
 #    spawns landed in Claude Code 2.1.186; matching a frontmatter-set `model:` is
 #    unverified. Switch the `ask` to `deny` below to hard-block Fable instead.
@@ -795,14 +638,13 @@ fi
 #    its own group when HOOK_ACTION (decided in hook_preflight) is add; existing
 #    SessionStart groups (yours) are never replaced or reordered.
 #    Any jq or write failure aborts with rc 1 — never "Installed." over a skipped merge.
-# Before that write, the CLAUDE.md decision (claude_md_decision, on the rubric step 1
-# just installed) and its filtered copy are computed too, so a check/read/filter error
-# dies with settings.json and CLAUDE.md both untouched. Step 3 only backs up and writes
-# the result. A legacy line with a trailing CR (CRLF file) counts; every other byte is
-# kept exactly (drop_line).
+# Before that write, the CLAUDE.md decision (claude_md_decision) and its filtered copy
+# are computed too, so a read/filter error dies with settings.json and CLAUDE.md both
+# untouched. Step 3 only backs up and writes the result. An outdated pointer line with
+# a trailing CR (CRLF file) counts; every other byte is kept exactly (drop_line).
 CLAUDE_MD="$CLAUDE_DIR/CLAUDE.md"
-claude_md_decision "$CLAUDE_DIR/$TRIAGE_HOOK_SCRIPT" "$CLAUDE_DIR/triage.md"
-if [ -z "$CLAUDE_MD_BLOCK" ] && { [ "$LEGACY" -eq 1 ] || [ "$OLD_POINTER" -eq 1 ]; }; then
+claude_md_decision
+if [ -z "$CLAUDE_MD_BLOCK" ] && [ "$OLD_POINTER" -eq 1 ]; then
   CLAUDE_MD_NEW=$(mktemp) || die "mktemp failed — nothing was changed."
   drop_line "$CLAUDE_MD" "$(old_pointer_line)" > "$CLAUDE_MD_NEW" \
     || die "could not filter $CLAUDE_MD (awk failed) — nothing was changed."
@@ -833,9 +675,8 @@ jq --arg m "$SUBAGENT_MODEL" --arg ttl "$SUBAGENT_CACHE_TTL" --arg up "$upgrade_
   | (if (.subagentPromptCacheTtl // null) == null then .subagentPromptCacheTtl = $ttl else . end)
   # 2b. Agent(...) permission rules
   | ["Agent(triage-quick-task)","Agent(triage-builder)","Agent(triage-deep-reasoner)","Agent(triage-reviewer)","Agent(triage-cross-reviewer)","Agent(triage-external)"] as $workers
-  | ["Agent(triage-overflow)"] as $legacy_workers
   | ["Agent(triage-fable-architect)"] as $fable
-  | .permissions.allow = (((.permissions.allow // []) - $legacy_workers) + ($workers - (.permissions.allow // [])))
+  | .permissions.allow = ((.permissions.allow // []) + ($workers - (.permissions.allow // [])))
   | .permissions.ask   = ((.permissions.ask   // []) + ($fable   - (.permissions.ask   // [])))
   # 2c. the SessionStart hook, appended
   | (if $add == "1" then .hooks.SessionStart = ((.hooks.SessionStart // []) + [$group]) else . end)
@@ -851,28 +692,21 @@ fi
 
 # =============================================================================
 # 3. CLAUDE.md — reached only after the settings write above succeeded (a failure dies
-#    first), so the legacy import is removed only once this install's hook is in
-#    settings.json. A legacy `@triage.md` import (CRLF too) is removed (backed up first:
-#    it would load the rubric into every subagent, and the hook stays silent while it is
-#    there), and the pointer line is appended once. Written through a symlink, never
-#    replacing it. Fails CLOSED: the filtered copy was computed before step 2
-#    (CLAUDE_MD_NEW), and a failed backup dies before the rewrite; a failed rewrite
-#    names the backup. With CLAUDE_MD_BLOCK set (disableAllHooks, or a rubric that fails
-#    its size check) nothing here runs.
+#    first), so the pointer line is written only once this install's hook is in
+#    settings.json. An outdated pointer line (CRLF too) is replaced (backed up first),
+#    and the pointer line is appended once. Written through a symlink, never replacing
+#    it. Fails CLOSED: the filtered copy was computed before step 2 (CLAUDE_MD_NEW), and
+#    a failed backup dies before the rewrite; a failed rewrite names the backup. With
+#    CLAUDE_MD_BLOCK set (disableAllHooks) nothing here runs.
 # =============================================================================
 if [ -n "$CLAUDE_MD_BLOCK" ]; then
   echo "⚠ WARNING: $CLAUDE_MD_BLOCK"
 else
   touch "$CLAUDE_MD" || die "could not create $CLAUDE_MD."
-  if [ "$LEGACY" -eq 1 ] || [ "$OLD_POINTER" -eq 1 ]; then
+  if [ "$OLD_POINTER" -eq 1 ]; then
     b=$(backup_copy "$CLAUDE_MD") || die "could not back up $CLAUDE_MD — it was not changed."
     cat "$CLAUDE_MD_NEW" > "$CLAUDE_MD" || die "could not rewrite $CLAUDE_MD (your copy is in $b)."
-    if [ "$LEGACY" -eq 1 ]; then
-      echo "CLAUDE.md: removed the legacy @triage.md import (the SessionStart hook replaces it); previous copy saved to $b"
-    fi
-    if [ "$OLD_POINTER" -eq 1 ]; then
-      echo "CLAUDE.md: replaced the outdated pointer line; previous copy saved to $b"
-    fi
+    echo "CLAUDE.md: replaced the outdated pointer line; previous copy saved to $b"
   fi
   if [ "$POINTER" -eq 0 ]; then
     # Ensure the file ends with a newline first, or the pointer fuses onto the last

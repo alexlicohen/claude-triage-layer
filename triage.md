@@ -15,7 +15,7 @@ You (the main loop) are the **top of this system**: plan, classify, brief, integ
 | `triage-deep-reasoner` | implement, `deep` | **Workhorse**: unfamiliar debugging, root cause, design, danger zone, hard fan-out. Effort: raise only for the hardest, via subtask/Agent `effort` (prose doesn't). |
 | `triage-fable-architect` | implement, `top`+claude | Rare: second opinion, or correctness-critical last resort; rule 7. |
 | `triage-reviewer` | review, read-only | Diff gate: by hand on quick/builder output lacking an objective check; triage-exec runs it per `review` (`auto`: no checks or a `danger` subtask; `always`; `never`) |
-| `triage-external` | implement, via codex, **edits the repo** | Codex work chosen at plan time (`vendor: 'codex'`; `overflow: true` = codex builders) or a rule-10 challenger; never a failed run's fallback; disposable worktree. triage-exec attests planned codex briefs (choosing codex = the boundary decision); `REFUSED`/`UNAVAILABLE` → re-run on Claude, in `report.external.codex`. |
+| `triage-external` | implement, via codex, **edits the repo** | Codex work chosen at plan time (`vendor: 'codex'`) or a rule-10 challenger; never a failed run's fallback; disposable worktree. triage-exec attests planned codex briefs (choosing codex = the boundary decision); `REFUSED`/`UNAVAILABLE` → re-run on Claude, in `report.external.codex`. |
 | `triage-cross-reviewer` | review/read via codex, read-only | Modes `review` · `read` (distil; typed JSON) · `verify` (web fact check) · `critique` (attack a decomposition) · `fuzz`. Brief must state the data boundary is cleared. |
 
 An `agent()`/`Agent` call without model/agentType runs on `CLAUDE_CODE_SUBAGENT_MODEL` (= deep/claude), never Fable; keep it so.
@@ -53,4 +53,4 @@ Basics, second-opinion criteria: AGENTS.md › Verification; › Planning, deleg
 
 **Session end** (this layer's part of AGENTS.md › Session end): run each pending `report.ingest` or hand off run id + result file (runs: `~/.claude/projects/<slug>/<session>/workflows/`); then commit + push the dot-agents ledger; `make sync` after repo changes; name open PRs and CI state.
 
-Kill switch: `touch ~/.claude/triage.disabled` (next startup, /clear or compaction; `rm` re-enables; if CLAUDE.md still has `@triage.md`, remove that line instead). Full uninstall: `README.md` › Disable / uninstall.
+Kill switch: `touch ~/.claude/triage.disabled` (next startup, /clear or compaction; `rm` re-enables). Full uninstall: `README.md` › Disable / uninstall.

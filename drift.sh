@@ -95,7 +95,7 @@ fi
 
 # Warn-only: settings.json / CLAUDE.md changes a bare ./install.sh would still make but
 # `make sync` (--files-only) never does: a subagent model left at an earlier installer
-# default, the triage SessionStart hook missing, a legacy @triage.md import present.
+# default, the triage SessionStart hook missing, an outdated CLAUDE.md pointer line.
 # The decision is install.sh's (--settings-status, read-only); needs jq, like install.
 # Runs whether or not settings.json exists: a missing one is an empty one (no hook, no
 # subagent model), never a reason to stay quiet. A status error is printed, still

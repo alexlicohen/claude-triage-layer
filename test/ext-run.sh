@@ -1,6 +1,6 @@
 #!/bin/bash
 # Hermetic test suite for scripts/ext-run.sh (the single owner of every external
-# CLI invocation: `codex`; the retired `agy` is refused) and for the tiers file
+# CLI invocation: `codex`) and for the tiers file
 # tooling (config/tiers.json, scripts/tiers-sync.sh, scripts/triage-tiers.sh).
 #
 # NEVER calls the real Codex CLI and never touches the network: a stub `codex`
@@ -19,7 +19,7 @@
 # check, exits non-zero if anything failed or a prerequisite is missing.
 #
 # Coverage map:
-#   V*      the retired agy vendor is refused (exit 3) before anything runs
+#   V*      an unknown --vendor (agy included) is a usage error before anything runs
 #   R*      boundary attestation, deny-list (component / marker / input), usage
 #           errors, the 256KB prompt guard, stage containment
 #   B*      build mode: the disposable worktree, carrying uncommitted and
@@ -418,9 +418,6 @@ cat > "$FIX" <<'FIXTURE'
   }
 }
 FIXTURE
-# A tiers file that still carries retired agy entries: they must not revive it.
-FIX_AGY="$HARNESS/tiers-fixture-agy.json"
-jq '.modes.agy = {"review": {"model": "gemini-3.1-pro-high"}} | .levels.builder.agy = {"model": "gemini-3.1-pro-high"}' "$FIX" > "$FIX_AGY"
 
 echo "=== ext-run.sh — hermetic suite (stub codex, no network; sandbox: $([ "$REAL_SANDBOX" -eq 1 ] && echo real || echo test double)) ==="
 
@@ -429,32 +426,23 @@ RC=0; ERR=""
 chk "S0 the stub codex is first on PATH (no real CLI can be reached)" \
   '[ "$(command -v codex)" = "$STUB_BIN/codex" ]'
 
-# --- V*: agy is retired ---------------------------------------------------------
+# --- V*: codex is the only vendor ------------------------------------------------
 CODEX_BOUNDARY_CLEARED=1 run_ext review --vendor agy --prompt-file "$BRIEF"
-chk "V1 --vendor agy is REFUSED (exit 3, 'agy retired 2026-09-24'), nothing runs" \
-  '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "agy retired 2026-09-24" && [ ! -s "$STUB_LOG" ]'
-CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX_AGY" run_ext review --vendor agy --prompt-file "$BRIEF"
-chk "V1b ...even when the tiers file still lists agy entries" \
-  '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "agy retired 2026-09-24" && [ ! -s "$STUB_LOG" ]'
-CODEX_BOUNDARY_CLEARED=1 run_ext build --vendor agy --level builder --prompt-file "$BRIEF" --workdir "$PROMPTS"
-chk "V1c ...in build mode too, before any workdir/level validation" \
-  '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "agy retired" && [ ! -s "$STUB_LOG" ]'
+chk "V1 --vendor agy (retired 2026-09-24) is an unknown vendor: usage error (exit 2), nothing runs" \
+  '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q "unknown --vendor .agy." && [ ! -s "$STUB_LOG" ]'
 CODEX_BOUNDARY_CLEARED=1 run_ext review --vendor gemini --prompt-file "$BRIEF"
 chk "V2 an unknown --vendor is a usage error (exit 2)" \
   '[ "$RC" -eq 2 ] && printf "%s" "$ERR" | grep -q "unknown --vendor"'
 
 # --- R*: refusals and usage errors ---------------------------------------------
-CODEX_BOUNDARY_CLEARED="" AGY_BOUNDARY_CLEARED="" run_ext read --prompt-file "$BRIEF"
-chk "R1 neither CODEX_BOUNDARY_CLEARED nor its alias set refuses before anything runs (exit 3)" \
+CODEX_BOUNDARY_CLEARED="" run_ext read --prompt-file "$BRIEF"
+chk "R1 CODEX_BOUNDARY_CLEARED unset refuses before anything runs (exit 3)" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "REFUSED: CODEX_BOUNDARY_CLEARED is not set" && [ ! -s "$STUB_LOG" ]'
-CODEX_BOUNDARY_CLEARED=0 AGY_BOUNDARY_CLEARED=yes run_ext read --prompt-file "$BRIEF"
-chk "R1a only the value 1 attests, under either name (exit 3)" \
+CODEX_BOUNDARY_CLEARED=0 run_ext read --prompt-file "$BRIEF"
+chk "R1a only the value 1 attests (exit 3)" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "REFUSED" && [ ! -s "$STUB_LOG" ]'
-CODEX_BOUNDARY_CLEARED=1 AGY_BOUNDARY_CLEARED="" TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF"
-chk "R1b CODEX_BOUNDARY_CLEARED=1 alone attests (the run reaches codex, exit 0)" \
-  '[ "$RC" -eq 0 ] && [ -s "$STUB_LOG" ]'
-CODEX_BOUNDARY_CLEARED="" AGY_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF"
-chk "R1c the deprecated alias AGY_BOUNDARY_CLEARED=1 alone still attests (exit 0)" \
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF"
+chk "R1b CODEX_BOUNDARY_CLEARED=1 attests (the run reaches codex, exit 0)" \
   '[ "$RC" -eq 0 ] && [ -s "$STUB_LOG" ]'
 
 DENY=$(new_tmp)
@@ -583,9 +571,9 @@ chk "R19c a read-only run that writes is contained AND reported, never silent" \
 chk "R19d the staging dir is gone after exit (nothing codex wrote survives)" \
   '[ ! -e "$STUB_PWD" ]'
 
-CODEX_BOUNDARY_CLEARED=1 AGY_STAGE_KEEP=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input "$DATA"
+CODEX_BOUNDARY_CLEARED=1 EXT_STAGE_KEEP=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext read --prompt-file "$BRIEF" --input "$DATA"
 KEPT=$(kept_stage)
-chk "R21b AGY_STAGE_KEEP=1 keeps the stage and its meta/prompt.txt for inspection" \
+chk "R21b EXT_STAGE_KEEP=1 keeps the stage and its meta/prompt.txt for inspection" \
   '[ -n "$KEPT" ] && [ -f "$KEPT/meta/prompt.txt" ] && grep -q -- "--- Workspace ---" "$KEPT/meta/prompt.txt"'
 [ -n "$KEPT" ] && rm -rf "$KEPT"
 
@@ -596,7 +584,7 @@ printf 'REFOK\n' > "$ROOT/refdata/ok.txt"
 printf 'ORIGINAL\n' > "$OUTSIDE/target.txt"
 TMPPROBE="/private/tmp/ext-run-probe.$$.$(date +%s)"
 SHARED_PROBE="/Users/Shared/.ext-run-probe.$$"
-CODEX_BOUNDARY_CLEARED=1 AGY_STAGE_KEEP=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=probe \
+CODEX_BOUNDARY_CLEARED=1 EXT_STAGE_KEEP=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=probe \
   CODEX_STUB_TMPPROBE="$TMPPROBE" CODEX_STUB_ALLOWED="$ROOT/refdata" CODEX_STUB_OUTSIDE="$OUTSIDE" CODEX_STUB_RUNTAG="$$" \
   run_ext read --prompt-file "$BRIEF" --allow-read "$ROOT/refdata"
 KEPT=$(kept_stage)
@@ -783,7 +771,7 @@ if [ -n "$VFD" ] && [ -d "$VFD" ] && VF=$(mktemp -d "${VFD%/}/ext-run-test.XXXXX
   VF_FILE="$VF/secret.txt"
 fi
 PY_OK=""; python3 -c 'import os' >/dev/null 2>&1 && PY_OK=1
-CODEX_BOUNDARY_CLEARED=1 AGY_STAGE_KEEP=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=probetmp HOME="$HT" TMPDIR="$TP" CODEX_BIN="$HT_BIN" \
+CODEX_BOUNDARY_CLEARED=1 EXT_STAGE_KEEP=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=probetmp HOME="$HT" TMPDIR="$TP" CODEX_BIN="$HT_BIN" \
   CODEX_STUB_LOG="$HT/.codex/stub.log" CODEX_STUB_PROMPT="$HT/.codex/stub-prompt.txt" \
   CODEX_STUB_SIBLING="$TP/ext-run.sibling/ws/secret.txt" CODEX_STUB_SIBPATCH="$TP/cand-b.patch" \
   CODEX_STUB_SCRATCH="$TP/claude-501/-Users-x-proj/0000-sess/scratchpad/secret.txt" \
@@ -843,7 +831,7 @@ chk "A8 a trailing --allow-read with no value is exit 2" \
 
 # --- L*: the command audit log --------------------------------------------------
 AUD="$ROOT/audit/a.jsonl"
-CODEX_BOUNDARY_CLEARED=1 AGY_STAGE_KEEP=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=cmds EXT_RUN_AUDIT_LOG="$AUD" \
+CODEX_BOUNDARY_CLEARED=1 EXT_STAGE_KEEP=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=cmds EXT_RUN_AUDIT_LOG="$AUD" \
   run_ext review --prompt-file "$BRIEF"
 KEPT=$(kept_stage)
 chk "L1 one audit line per command_execution item (started+completed collapse to one), run passes" \
@@ -1265,7 +1253,7 @@ chk "E5 a --workdir symlink to a clip-creator repo is refused (exit 3)" \
 CODEX_BOUNDARY_CLEARED=1 run_ext read --prompt-file "$BRIEF" --input "$SYM/marked-link.txt"
 chk "E6 a symlink into a .codex-deny tree is refused by the marker at its TARGET (exit 3)" \
   '[ "$RC" -eq 3 ] && printf "%s" "$ERR" | grep -q "\.codex-deny" && [ ! -s "$STUB_LOG" ]'
-CODEX_BOUNDARY_CLEARED=1 CODEX_STUB_MODE=ok AGY_STAGE_KEEP=1 run_ext read --prompt-file "$BRIEF" --input "$SYM/ok-link.txt"
+CODEX_BOUNDARY_CLEARED=1 CODEX_STUB_MODE=ok EXT_STAGE_KEEP=1 run_ext read --prompt-file "$BRIEF" --input "$SYM/ok-link.txt"
 KEPT=$(kept_stage)
 chk "E7 an allowed symlink runs: staged under the caller's name with the TARGET's content (a copy, not a link)" \
   '[ "$RC" -eq 0 ] && [ -n "$KEPT" ] && [ -f "$KEPT/ws/inputs/ok-link.txt" ] && [ ! -L "$KEPT/ws/inputs/ok-link.txt" ] && [ "$(cat "$KEPT/ws/inputs/ok-link.txt")" = needle ]'
@@ -1478,7 +1466,7 @@ mkdir -p "$IDR/snap/sub/deeper"
 printf 'top\n' > "$IDR/snap/top.md"
 printf 'deep\n' > "$IDR/snap/sub/deeper/d.md"
 ln -s ../top.md "$IDR/snap/sub/inside-link.md"
-CODEX_BOUNDARY_CLEARED=1 AGY_STAGE_KEEP=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok \
+CODEX_BOUNDARY_CLEARED=1 EXT_STAGE_KEEP=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok \
   run_ext read --prompt-file "$BRIEF" --input-dir "$IDR/snap" --input "$DATA"
 KEPT=$(kept_stage)
 chk "I1 --input-dir stages a COPY of the whole tree at inputs/<basename> (nested files, same bytes), next to --input files" \
