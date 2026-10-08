@@ -157,7 +157,7 @@ const repoAsWorkdir = p => /(^|\s)cd\s+'?\/r\/repo'?(\s|$|\/)/.test(p) || /WORKD
     ['no candidates', A({ candidates: [] })],
     ['unknown vendor', A({ candidates: [{ vendor: 'gemini', level: 'builder' }] })],
     ['unknown level', A({ candidates: [{ vendor: 'claude', level: 'fable' }] })],
-    ['retired agy vendor', A({ candidates: [{ vendor: 'agy', level: 'builder' }] })],
+    ['agy (retired 2026-09-24) is an unknown vendor', A({ candidates: [{ vendor: 'agy', level: 'builder' }] })],
     ['bad effort', A({ candidates: [{ vendor: 'codex', level: 'deep', effort: 'ultra' }] })],
     ['model with a space', A({ candidates: [{ vendor: 'codex', level: 'deep', model: 'gpt 6' }] })],
     ['duplicate default labels', A({ candidates: [{ vendor: 'claude', level: 'deep' }, { vendor: 'claude', level: 'deep' }] })],
@@ -169,9 +169,6 @@ const repoAsWorkdir = p => /(^|\s)cd\s+'?\/r\/repo'?(\s|$|\/)/.test(p) || /WORKD
     const r = await throws(args)
     chk(`C1: ${name} throws before any spawn`, r.threw && r.calls.length === 0 && /triage-compare:/.test(r.message))
   }
-  const agy = await throws(A({ candidates: [{ vendor: 'codex', level: 'builder' }, { vendor: 'agy', level: 'builder' }] }))
-  chk('C1: an agy candidate is refused by name, naming its retirement, before any spawn',
-    agy.threw && agy.calls.length === 0 && agy.message.includes('candidates[1].vendor "agy"') && agy.message.includes('agy was retired 2026-09-24'))
   const ok = await throws(A({ base: 'main~1', candidates: [{ vendor: 'claude', level: 'builder' }] }), { 'grade:': [FIN({})] })
   chk('C1: a non-HEAD base is fine for Claude candidates', ok.threw === false)
   const okExt = await throws(A({ base: 'main~1', candidates: [{ vendor: 'codex', level: 'builder' }] }), { 'candidate:': [EXT_OK('codex', 'm')], 'grade:': [FIN({})] })
@@ -883,7 +880,7 @@ const near = (x, y) => x != null && Math.abs(x - y) < 1e-9
     ['extras src inside repo', RA({ extras: [{ src: `${LIVE}/cache.json`, dest: 'cad/index.json' }] })],
     ['extras dest with ..', RA({ extras: [{ src: '/c/cache.json', dest: '../index.json' }] })],
     ['no reviewers', RA({ reviewers: [] })],
-    ['retired agy reviewer', RA({ reviewers: [{ vendor: 'agy', level: 'deep' }] })],
+    ['agy reviewer (an unknown vendor)', RA({ reviewers: [{ vendor: 'agy', level: 'deep' }] })],
     ['codex reviewer without model/effort', RA({ reviewers: [{ vendor: 'codex', level: 'deep' }] })],
     ['duplicate reviewer labels', RA({ reviewers: [{ vendor: 'claude', level: 'deep', label: 'x' }, { vendor: 'claude', level: 'top', label: 'x' }] })],
     ['path-unsafe reviewer label', RA({ reviewers: [{ vendor: 'claude', level: 'deep', label: '../x' }] })],
@@ -895,8 +892,6 @@ const near = (x, y) => x != null && Math.abs(x - y) < 1e-9
     const r = await throws(args)
     chk(`RV1: ${name} throws before any spawn`, r.threw && r.calls.length === 0 && /triage-compare/.test(r.message))
   }
-  const agy = await throws(RA({ reviewers: [{ vendor: 'agy', level: 'deep' }] }))
-  chk('RV1: an agy reviewer is refused by name, naming its retirement', agy.threw && agy.message.includes('agy was retired 2026-09-24'))
   const cx = await throws(RA({ reviewers: [{ vendor: 'codex', level: 'deep' }] }))
   chk('RV1: the codex refusal says why (read mode would run its own default model)', cx.threw && /must pin model and effort/.test(cx.message))
 }

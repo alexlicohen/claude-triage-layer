@@ -1,7 +1,7 @@
 export const meta = {
   name: 'triage-exec',
   description: 'Execute a pre-built triage plan: delegate each subtask to its level agent (Claude, or an external vendor), run the objective checks, remediate and escalate',
-  whenToUse: 'Run a plan the orchestrator has ALREADY classified (it never classifies; a malformed plan throws before any spawn): args = {repo?, subtasks:[{brief, level, vendor?, files, acceptance, danger?, effort?, checks?}], checks:[cmd...], review?, crossReview?, overflow?, vendor?, bakeoff?, noFable?}. noFable: true (rubric rule 7 material) refuses claude top subtasks and stops at deep@max with report.needsUser instead of escalating to Fable. Inline build bake-offs are on by default: pass bakeoff on every plan unless triage.md rule 10 excludes the work, then run each report.ingest entry. Full arg spec: README.md › Workflow arguments › triage-exec.',
+  whenToUse: 'Run a plan the orchestrator has ALREADY classified (it never classifies; a malformed plan throws before any spawn): args = {repo?, subtasks:[{brief, level, vendor?, files, acceptance, danger?, effort?, checks?}], checks:[cmd...], review?, crossReview?, vendor?, bakeoff?, noFable?}. noFable: true (rubric rule 7 material) refuses claude top subtasks and stops at deep@max with report.needsUser instead of escalating to Fable. Inline build bake-offs are on by default: pass bakeoff on every plan unless triage.md rule 10 excludes the work, then run each report.ingest entry. Full arg spec: README.md › Workflow arguments › triage-exec.',
   phases: [
     { title: 'Execute' },
     { title: 'Verify' },
@@ -20,23 +20,17 @@ export const meta = {
 // in config/tiers.json (ext-run.sh reads it for the external vendors); the routing
 // POLICY — defaults, danger floors, fallbacks — lives here.
 const LEVELS = ['quick', 'builder', 'deep', 'top']
-// Legacy tier names that are really a level + a vendor. `fable` was the top level's
-// Claude slot; `overflow` is builder work moved onto codex (on agy until its
-// retirement, 2026-09-24).
-const LEVEL_ALIASES = { fable: { level: 'top', vendor: 'claude' }, overflow: { level: 'builder', vendor: 'codex' } }
+// Legacy tier names that are really a level + a vendor: `fable` was the top level's
+// Claude slot. (`overflow`, builder work on codex, was removed in Wave 25: plan it
+// with vendor: 'codex'.)
+const LEVEL_ALIASES = { fable: { level: 'top', vendor: 'claude' } }
 const LEVEL_NAMES = [...LEVELS, ...Object.keys(LEVEL_ALIASES)]
 const VENDORS = ['claude', 'codex']
-// Vendors that once existed and are now refused by name, with the reason. agy's
-// headless mode let the model set a per-command BypassSandbox flag, and a
-// read-only review run used it to write into a real repo.
-const RETIRED_VENDORS = { agy: 'agy was retired 2026-09-24 (it bypassed its own sandbox and wrote into a real repo) — use codex or claude' }
-const isRetired = v => typeof v === 'string' && Object.prototype.hasOwnProperty.call(RETIRED_VENDORS, v)
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 const REVIEW_MODES = ['auto', 'always', 'never']
-// crossReview → the external reviewers spawned: `true` or 'codex' = codex (agy until
-// its retirement); false/absent = none. 'agy' and 'both' are refused by name.
+// crossReview → the external reviewers spawned: `true` or 'codex' = codex;
+// false/absent = none. Any other value is refused.
 const CROSS_REVIEW_VENDORS = { codex: ['codex'] }
-const RETIRED_CROSS_REVIEW = ['agy', 'both']
 // The Claude agent serving each level. test/lint.sh checks this map against
 // config/tiers.json levels.*.claude.agent. `top` is listed for that check only: its
 // one spawn path is runFable().
@@ -49,7 +43,6 @@ const USAGE = 'Expected args = {\n' +
   '  checks?:      string[]   // shell commands run as objective gates\n' +
   '  repo?:        "/abs repo" // the plan\'s tree: checks, reviewer, cross-review, briefs and WORKDIR use it (default: the session cwd)\n' +
   `  vendor?:      ${VENDORS.join('|')}   // default vendor for subtasks that omit one (default: claude)\n` +
-  '  overflow?:    boolean    // default: false — builder-level subtasks without a vendor run on codex\n' +
   `  review?:      ${REVIEW_MODES.join('|')}   // default: auto\n` +
   `  crossReview?: boolean|${Object.keys(CROSS_REVIEW_VENDORS).join('|')}   // default: false (true = codex)\n` +
   '  noFable?:     boolean    // default: false — never spawn Fable: no claude top subtask; stop at deep@max (report.needsUser)\n' +
@@ -72,15 +65,14 @@ if (!args || typeof args !== 'object' || Array.isArray(args)) bad(`args must be 
 if (!Array.isArray(args.subtasks) || args.subtasks.length === 0) bad('args.subtasks must be a non-empty array.')
 if (args.checks != null && !(Array.isArray(args.checks) && args.checks.every(isStr))) bad('args.checks must be an array of non-empty shell-command strings.')
 if (args.review != null && !REVIEW_MODES.includes(args.review)) bad(`args.review must be one of ${REVIEW_MODES.join('|')} (got ${JSON.stringify(args.review)}).`)
-if (RETIRED_CROSS_REVIEW.includes(args.crossReview)) bad(`args.crossReview ${JSON.stringify(args.crossReview)} is no longer accepted: ${RETIRED_VENDORS.agy}; crossReview true means codex.`)
 if (args.crossReview != null && typeof args.crossReview !== 'boolean' && !Object.keys(CROSS_REVIEW_VENDORS).includes(args.crossReview)) {
   bad(`args.crossReview must be a boolean or one of ${Object.keys(CROSS_REVIEW_VENDORS).join('|')} (got ${JSON.stringify(args.crossReview)}).`)
 }
-if (args.overflow != null && typeof args.overflow !== 'boolean') bad('args.overflow must be a boolean.')
+// args.overflow (builder work moved onto codex) was removed in Wave 25: refused, never
+// silently ignored — a plan that still sets it expects codex builders it would not get.
+if (args.overflow !== undefined) bad(`args.overflow is no longer accepted (removed in Wave 25) — give the builder subtasks vendor: 'codex' (or set the plan-level vendor) instead.`)
 if (args.noFable != null && typeof args.noFable !== 'boolean') bad(`args.noFable must be a boolean (got ${JSON.stringify(args.noFable)}).`)
-if (isRetired(args.vendor)) bad(`args.vendor ${JSON.stringify(args.vendor)}: ${RETIRED_VENDORS[args.vendor]}.`)
 if (args.vendor != null && !VENDORS.includes(args.vendor)) bad(`args.vendor must be one of ${VENDORS.join('|')} (got ${JSON.stringify(args.vendor)}).`)
-const wantsOverflow = args.overflow === true
 // noFable — the plan's material is excluded from Fable (rubric rule 7(a)/(b)). Deep@max
 // is then the ceiling: redoStep() never steps onto top and runFable() never spawns Fable.
 const noFable = args.noFable === true
@@ -207,7 +199,6 @@ const subtasks = args.subtasks.map((raw, i) => {
   if (raw.checks != null && !(Array.isArray(raw.checks) && raw.checks.every(isStr))) bad(`subtasks[${i}].checks must be an array of non-empty shell-command strings.`)
   if (raw.danger != null && typeof raw.danger !== 'boolean') bad(`subtasks[${i}].danger must be a boolean.`)
   if (raw.effort != null && !EFFORTS.includes(raw.effort)) bad(`subtasks[${i}].effort must be one of ${EFFORTS.join('|')} (got ${JSON.stringify(raw.effort)}).`)
-  if (isRetired(raw.vendor)) bad(`subtasks[${i}].vendor ${JSON.stringify(raw.vendor)}: ${RETIRED_VENDORS[raw.vendor]}.`)
   if (raw.vendor != null && !VENDORS.includes(raw.vendor)) bad(`subtasks[${i}].vendor must be one of ${VENDORS.join('|')} (got ${JSON.stringify(raw.vendor)}).`)
   if (raw.vendor != null && aliasVendor && raw.vendor !== aliasVendor) bad(`subtasks[${i}]: ${byLevel && byLevel.vendor ? `level ${JSON.stringify(raw.level)}` : `tier ${JSON.stringify(raw.tier)}`} implies vendor ${aliasVendor}, but vendor is ${JSON.stringify(raw.vendor)}.`)
   if (raw.id != null && !isStr(raw.id)) bad(`subtasks[${i}].id must be a non-empty string when given.`)
@@ -219,20 +210,11 @@ const subtasks = args.subtasks.map((raw, i) => {
   seenIds.add(id)
   const danger = raw.danger === true
   // Vendor precedence, most specific first: the subtask's own vendor, the vendor its
-  // alias implies, plan-level overflow (builder-level work only — quick work is too cheap
-  // to be worth the external round-trip, and deep/top was never overflow's remit), the
-  // plan-level vendor default, then Claude.
-  const overflowVendor = wantsOverflow && plannedLevel === 'builder' ? LEVEL_ALIASES.overflow.vendor : null
-  const plannedVendor = raw.vendor || aliasVendor || overflowVendor || planVendor || 'claude'
-  // viaOverflow — this subtask is external because of OVERFLOW (the alias, or the plan
-  // flag deciding its vendor): a throughput choice for work that was never hard, not a
-  // parity-based routing decision.
-  const viaOverflow = raw.level === 'overflow' || raw.tier === 'overflow' || (!raw.vendor && !aliasVendor && overflowVendor !== null)
+  // alias implies, the plan-level vendor default, then Claude.
+  const plannedVendor = raw.vendor || aliasVendor || planVendor || 'claude'
   const plannedEffort = raw.effort || null
   // Danger-zone routing, ENFORCED here rather than trusted to the caller. The plan is
   // well-formed, only mis-routed — so upgrade loudly instead of throwing:
-  //   overflow → Claude deep. Correctness-critical work never goes off-vendor for
-  //              throughput, exactly as overflow+danger always did (on agy, then codex).
   //   codex    → allowed (parity is data in tiers.json), but lifted to at least deep and
   //              to at least effort high (codexDangerEffort()).
   //   claude   → quick/builder lifted to deep.
@@ -240,8 +222,7 @@ const subtasks = args.subtasks.map((raw, i) => {
   let vendor = plannedVendor
   let effort = plannedEffort
   if (danger) {
-    if (viaOverflow) { vendor = 'claude'; level = 'deep' }
-    else if (vendor === 'codex') { level = atLeast(level, 'deep'); effort = codexDangerEffort(level, effort) }
+    if (vendor === 'codex') { level = atLeast(level, 'deep'); effort = codexDangerEffort(level, effort) }
     else level = atLeast(level, 'deep')
   }
   return {
@@ -276,7 +257,7 @@ for (const st of subtasks) {
   const planned = `${tierName(st.plannedLevel, st.plannedVendor)}${st.plannedEffort ? `@${st.plannedEffort}` : ''}`
   const now = `${tierName(st.level, st.vendor)}${st.effort ? `@${st.effort}` : ''}`
   if (planned !== now) {
-    log(`⚠ Danger-zone routing: "${st.id}" was planned as ${planned} but danger=true — running it on ${now} instead (correctness-critical work never runs below deep, never below effort high off-vendor, and never via overflow).`)
+    log(`⚠ Danger-zone routing: "${st.id}" was planned as ${planned} but danger=true — running it on ${now} instead (correctness-critical work never runs below deep, and never below effort high off-vendor).`)
   }
   if (isExternal(st.vendor)) {
     log(`⚠ External routing: "${st.id}" runs on ${st.vendor} at level ${st.level}${st.effort ? ` (effort ${st.effort})` : ''} instead of Claude — its workspace leaves this machine.`)
@@ -1166,11 +1147,10 @@ function report(extra) {
   const ran = new Map(results.map(r => [r.subtask.id, r]))
   const skippedIds = new Set(skipped.filter(s => s.stage.startsWith('Execute') || s.stage.startsWith('Remediate')).map(s => s.desc))
   // Present only when an external vendor was in play — mirroring how crossReview is
-  // absent when not requested. The plan-flag arms keep the field honest when every
-  // candidate was pulled back by the danger rule (routed: []). (The pre-Wave-12
-  // `overflow` mirror of external.agy went with agy.) The last arm: a bake-off applied
-  // an external challenger's patch to an all-Claude plan.
-  const externalInPlay = wantsOverflow || (planVendor && isExternal(planVendor)) ||
+  // absent when not requested. The plan-vendor arm keeps the field present for a plan
+  // that defaulted to codex. The last arm: a bake-off applied an external challenger's
+  // patch to an all-Claude plan.
+  const externalInPlay = (planVendor && isExternal(planVendor)) ||
     subtasks.some(st => isExternal(st.plannedVendor) || isExternal(st.vendor)) ||
     bakeoffs.some(b => { const v = appliedVendor(b); return v !== null && isExternal(v) })
   const external = externalInPlay ? externalReport() : null
@@ -1235,8 +1215,8 @@ function redoStep(r, isEscalate) {
   // Every redo runs on CLAUDE. An external (codex) result that failed verification
   // comes back onto the Claude ladder FROM ITS OWN LEVEL, exactly as a Claude result at
   // that level would: FIX / objective FAIL → the same level on Claude, ESCALATE → one
-  // level up (deep → deep@max first). Choice, replacing pre-Wave-12 overflow's "any
-  // failure → deep": a failed builder-level check condemns the vendor's attempt, not the
+  // level up (deep → deep@max first). Choice, replacing the pre-Wave-12 "any external
+  // failure → deep" rule: a failed builder-level check condemns the vendor's attempt, not the
   // plan's classification — the task is still well-specified builder work, so Claude
   // builder gets it with the failure text, and a reviewer ESCALATE still climbs. Never
   // sideways on the same vendor (the check already says it got this wrong), and never

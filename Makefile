@@ -34,7 +34,8 @@ tiers:
 
 # Mutation gate: prove the test suite has teeth (killed/survivor/error per
 # mutation). Strict: every cataloged mutation has a covering test, so any
-# survivor fails the gate.
+# survivor fails the gate. CI only: qc/mutate.sh exits 2 unless CI=true or
+# MUTATE_LOCAL=1 (Cortex XDR on Alex's Mac quarantines the mutated scripts).
 mutate:
 	./qc/mutate.sh --strict
 

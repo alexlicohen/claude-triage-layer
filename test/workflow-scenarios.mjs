@@ -357,8 +357,7 @@ const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).
     ['bad review mode', { subtasks: [ST('t1', 'builder', [])], review: 'sometimes' }, 'review must be one of'],
     ['bad crossReview type', { subtasks: [ST('t1', 'builder', [])], crossReview: 'yes' }, 'crossReview must be a boolean'],
     ['crossReview names an unknown vendor', { subtasks: [ST('t1', 'builder', [])], crossReview: 'gemini' }, 'crossReview must be a boolean or one of codex'],
-    ['crossReview names the retired agy', { subtasks: [ST('t1', 'builder', [])], crossReview: 'agy' }, 'agy was retired 2026-09-24'],
-    ['crossReview both (agy+codex) is retired with agy', { subtasks: [ST('t1', 'builder', [])], crossReview: 'both' }, 'crossReview "both" is no longer accepted'],
+    ['crossReview agy is an unknown vendor', { subtasks: [ST('t1', 'builder', [])], crossReview: 'agy' }, 'crossReview must be a boolean or one of codex'],
     ['crossReview names an inherited key', { subtasks: [ST('t1', 'builder', [])], crossReview: 'toString' }, 'crossReview must be'],
   ]
   for (const [name, plan, needle] of cases) {
@@ -492,7 +491,7 @@ const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).
       'verify:objective-check': ['ok\nCHECKRC 0'],
       'verify:cross-review': ['CROSS-REVIEW (codex · review · exit 0): core.js line 12 looks wrong to me'],
     })
-  // Wave 13: crossReview:true means codex (agy until its retirement), keyed by vendor.
+  // Wave 13: crossReview:true means codex, keyed by vendor.
   chk('S20: cross-reviewer spawned on the cross-review tier, for codex',
     countCalls(calls, 'verify:cross-review') === 1 &&
     calls.find(c => c.label === 'verify:cross-review:codex').opts.agentType === 'triage-cross-reviewer')
@@ -529,121 +528,20 @@ const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).
     ['subtasks', 'checks', 'review', 'escalations'].every(k => k in result))
 }
 
-// ---- Scenario 22 (wave 10; wave 13: codex): plan-level overflow rewrites ONLY builder
-// subtasks onto codex (via triage-external); quick/deep are untouched.
+// ---- Scenario 25 (Wave 25): the `overflow` plan flag and level/tier alias were removed.
+// A plan that still uses either is refused before any spawn, never silently run on Claude.
 {
-  const { result, logs, calls } = await run(
-    { overflow: true, subtasks: [ST('b1', 'builder', ['a.js']), ST('d1', 'deep', ['b.js']), ST('q1', 'quick', ['c.js'])], checks: ['make test'], review: 'never' },
-    {
-      'codex:': ['EXTERNAL (codex · build · exit 0)\ndid b1 externally'],
-      'deep:': ['did d1'],
-      'quick:': ['did q1'],
-      'verify:objective-check': ['ok\nCHECKRC 0'],
-    })
-  chk('S22: exactly one external spawn, on triage-external with the codex header',
-    countCalls(calls, 'codex:') === 1 &&
-    calls.find(c => c.label === 'codex:builder:b1').opts.agentType === 'triage-external' &&
-    calls.find(c => c.label === 'codex:builder:b1').prompt.split('\n')[0] === 'VENDOR=codex LEVEL=builder')
-  chk('S22: deep and quick subtasks were NOT rewritten',
-    calls.find(c => c.label === 'deep:d1').opts.agentType === 'triage-deep-reasoner' &&
-    calls.find(c => c.label === 'quick:q1').opts.agentType === 'triage-quick-task')
-  chk('S22: report shows the tier that actually ran b1',
-    result.subtasks.find(s => s.id === 'b1').tier === 'codex:builder' &&
-    result.subtasks.find(s => s.id === 'b1').vendor === 'codex' && result.subtasks.find(s => s.id === 'b1').level === 'builder' &&
-    result.subtasks.find(s => s.id === 'd1').tier === 'deep')
-  chk('S22: external routing is logged loudly and names the subtask and vendor',
-    logs.some(l => l.includes('External routing') && l.includes('b1') && l.includes('codex')))
-  // An overflow rewrite also makes tier !== plannedTier, but it is NOT a danger upgrade —
-  // the danger log asserts danger=true and claims the opposite of the rule, so it must
-  // stay silent here (see the else-if in the routing log loop).
-  chk('S22: the overflow rewrite does NOT fire the danger-zone log',
-    !logs.some(l => l.includes('Danger-zone routing')))
-  chk('S22: the external report is ids-only and accurate; no agy key, no overflow mirror',
-    JSON.stringify(result.external) === JSON.stringify({ codex: { routed: ['b1'], ranExternally: ['b1'], returnedToClaude: [], refused: [], unavailable: [] } }) &&
-    result.overflow === undefined)
-  chk('S22: round is green with no remediation', result.failed === false && result.remediation === null)
-}
-
-// ---- Scenario 23 (wave 10; CHANGED in wave 12): an overflow (codex builder) subtask that
-// fails its objective check comes back to the Claude ladder AT ITS LEVEL — Claude
-// builder on a plain FAIL (was: straight to deep) — and never externally again.
-{
-  const { result, calls } = await run(
-    { overflow: true, subtasks: [ST('b1', 'builder', ['a.js'])], checks: ['make test'], review: 'never' },
-    {
-      'codex:': [EXT('did b1 externally')],
-      'redo:b1': ['fixed it on Claude builder'],
-      'verify:objective-check': ['a.js is broken\nCHECKRC 1'],
-      'verify:recheck': ['ok\nCHECKRC 0'],
-    })
-  chk('S23: the redo ran on triage-builder (same level, on Claude)',
-    countCalls(calls, 'redo:b1') === 1 &&
-    calls.find(c => c.label === 'redo:b1').opts.agentType === 'triage-builder')
-  chk('S23: no second external spawn', calls.filter(c => c.opts.agentType === 'triage-external').length === 1)
-  chk('S23: escalation recorded codex:builder -> builder',
-    result.escalations.some(e => e.id === 'b1' && e.from === 'codex:builder' && e.to === 'builder'))
-  chk('S23: subtask reports the tier that finished it, with 2 attempts',
-    result.subtasks[0].tier === 'builder' && result.subtasks[0].vendor === 'claude' && result.subtasks[0].attempts === 2)
-  chk('S23: ranExternally still credits the external run (derived, not read off results)',
-    result.external.codex.ranExternally.includes('b1') && result.external.codex.returnedToClaude.includes('b1→builder'))
-  chk('S23: second round is green', result.failed === false && result.incomplete === false)
-}
-
-// ---- Scenario 24 (wave 10): (a) overflow never takes danger work off-vendor — it goes
-// to Claude deep, while an explicit codex vendor is lifted instead (S33); (b) an
-// unavailable external tier falls back sideways to builder, loudly.
-{
-  const { result, logs, calls } = await run(
-    { overflow: true, subtasks: [ST('core', 'builder', ['core.js'], { danger: true })], checks: ['make test'], review: 'never' },
-    { 'deep:': ['did core on deep'], 'verify:objective-check': ['ok\nCHECKRC 0'] })
-  chk('S24a: zero external spawns for a danger subtask', !calls.some(c => c.opts.agentType === 'triage-external'))
-  chk('S24a: it ran on deep', calls.find(c => c.label === 'deep:core').opts.agentType === 'triage-deep-reasoner')
-  chk('S24a: the danger upgrade is logged', logs.some(l => l.includes('Danger-zone routing') && l.includes('core')))
-  chk('S24a: the external report shows nothing routed', result.external.codex.routed.length === 0)
-
-  const { result: rX, calls: cX } = await run(
-    { subtasks: [ST('core2', 'overflow', ['core.js'], { danger: true })], checks: ['make test'], review: 'never' },
-    { 'deep:': ['did core2 on deep'], 'verify:objective-check': ['ok\nCHECKRC 0'] })
-  chk('S24a: an EXPLICIT tier:overflow + danger is also upgraded to deep',
-    !cX.some(c => c.opts.agentType === 'triage-external') && rX.subtasks[0].tier === 'deep')
-  const { result: rY, calls: cY } = await run(
-    { subtasks: [ST('core3', 'overflow', ['core.js'], { vendor: 'codex', danger: true })], checks: ['make test'], review: 'never' },
-    { 'deep:': ['did core3 on deep'], 'verify:objective-check': ['ok\nCHECKRC 0'] })
-  chk('S24a: tier:overflow + danger stays off codex even with vendor codex spelled out',
-    !cY.some(c => c.opts.agentType === 'triage-external') && rY.subtasks[0].tier === 'deep' && rY.subtasks[0].vendor === 'claude')
-
-  const { result: r2, logs: l2, calls: c2 } = await run(
-    { overflow: true, subtasks: [ST('b1', 'builder', ['a.js'])], checks: ['make test'], review: 'never' },
-    {
-      'codex:': [null],
-      'builder←codex:': ['did it on builder'],
-      'verify:objective-check': ['ok\nCHECKRC 0'],
-    })
-  chk('S24b: fallback spawned on triage-builder',
-    c2.find(c => c.label === 'builder←codex:b1').opts.agentType === 'triage-builder')
-  chk('S24b: the quota cost is announced loudly, as codex→claude',
-    l2.some(l => l.includes('codex→claude') && l.includes('SPENDS Claude quota')))
-  chk('S24b: escalation records codex:builder -> builder',
-    r2.escalations.some(e => e.id === 'b1' && e.from === 'codex:builder' && e.to === 'builder'))
-  chk('S24b: subtask reported ok on the tier that ran it',
-    statusOf(r2, 'b1') === 'ok' && r2.subtasks[0].tier === 'builder')
-  chk('S24b: routed records the PLAN, ranExternally records what actually reached the CLI',
-    JSON.stringify(r2.external.codex) === JSON.stringify({ routed: ['b1'], ranExternally: [], returnedToClaude: ['b1→builder'], refused: [],
-      unavailable: [{ id: 'b1', reason: 'spawn returned nothing', kind: 'no-reply' }] }))
-}
-
-// ---- Scenario 25 (wave 10): entry contract for the overflow flag/tier.
-{
-  const badOverflow = await runExpectingThrow({ subtasks: [ST('t1', 'builder', ['a.js'])], overflow: 'yes' })
-  chk('S25: non-boolean overflow throws before any spawn',
-    badOverflow.threw && /args\.overflow must be a boolean/.test(badOverflow.message) && badOverflow.calls.length === 0)
-  chk('S25: the usage text advertises the overflow tier', /overflow/.test(badOverflow.message))
-
-  const { result } = await run(
-    { subtasks: [ST('t1', 'overflow', ['a.js'])], checks: ['make test'], review: 'never' },
-    { 'codex:': [EXT('ok')], 'verify:objective-check': ['ok\nCHECKRC 0'] })
-  chk('S25: an explicit tier:"overflow" is accepted without the plan flag (= builder on codex)',
-    result.subtasks[0].tier === 'codex:builder' && result.external.codex.routed[0] === 't1')
+  const flag = await runExpectingThrow({ overflow: true, subtasks: [ST('t1', 'builder', ['a.js'])] })
+  chk('S25: args.overflow is refused before any spawn, pointing at vendor codex',
+    flag.threw && flag.message.includes('args.overflow is no longer accepted') && flag.message.includes("vendor: 'codex'") && flag.calls.length === 0)
+  const off = await runExpectingThrow({ overflow: false, subtasks: [ST('t1', 'builder', ['a.js'])] })
+  chk('S25: args.overflow is refused even when false', off.threw && off.message.includes('args.overflow is no longer accepted') && off.calls.length === 0)
+  const tier = await runExpectingThrow({ subtasks: [ST('t1', 'overflow', ['a.js'])] })
+  chk('S25: tier "overflow" is refused as an unknown level before any spawn',
+    tier.threw && tier.message.includes('subtasks[0].tier must be one of quick|builder|deep|top (aliases: fable)') && tier.calls.length === 0)
+  const lvl = await runExpectingThrow({ subtasks: [{ id: 't1', brief: 'b', level: 'overflow', files: ['a.js'], acceptance: 'works' }] })
+  chk('S25: level "overflow" is refused too', lvl.threw && lvl.message.includes('subtasks[0].level must be one of') && lvl.calls.length === 0)
+  chk('S25: the usage text no longer advertises overflow', !/overflow/.test(lvl.message.split('Expected args')[1] || 'overflow'))
 }
 
 // ---- Scenario 26 (wave 11): the deep@max rung. The rubric escalates to Fable only from
@@ -827,31 +725,25 @@ const GREEN = { 'verify:objective-check': ['ok\nCHECKRC 0'] }
   chk('S27: alias vs level conflict (level fable = top, tier deep) throws', oldName.threw && oldName.message.includes('disagree') && oldName.calls.length === 0)
 }
 
-// ---- Scenario 28: the legacy aliases. fable = top on Claude; overflow = builder on codex.
+// ---- Scenario 28: the legacy alias fable = top on Claude.
 {
   const { result, calls, logs } = await run(
-    { subtasks: [ST('f', 'fable', ['f.js']), ST('o', 'overflow', ['o.js'])], checks: ['make test'], review: 'never' },
-    { 'fable:': ['fable did f'], 'codex:': [EXT('codex did o')], ...GREEN })
+    { subtasks: [ST('f', 'fable', ['f.js'])], checks: ['make test'], review: 'never' },
+    { 'fable:': ['fable did f'], ...GREEN })
   const f = result.subtasks.find(x => x.id === 'f')
-  const o = result.subtasks.find(x => x.id === 'o')
   chk('S28: tier:"fable" = level top on claude, via runFable (announced)',
     f.level === 'top' && f.vendor === 'claude' && f.tier === 'fable' &&
     calls.find(c => c.label === 'fable:f').opts.agentType === 'triage-fable-architect' && logs.some(l => l.startsWith('⚠ Escalating to Fable: f')))
-  chk('S28: tier:"overflow" = level builder on codex',
-    o.level === 'builder' && o.vendor === 'codex' && firstLine(calls.find(c => c.label === 'codex:builder:o')) === 'VENDOR=codex LEVEL=builder')
   const both = await run(
-    { subtasks: [ST('f', 'fable', [], { level: 'top' }), ST('o', 'overflow', [], { level: 'builder' })], checks: ['make test'], review: 'never' },
-    { 'fable:': ['ok'], 'codex:': [EXT('ok')], ...GREEN })
-  chk('S28: an alias and its expansion given together agree', both.result.subtasks.map(x => x.tier).join() === 'fable,codex:builder')
-  const oClash = await runExpectingThrow({ subtasks: [ST('o', 'overflow', [], { vendor: 'claude' })] })
-  chk('S28: tier:"overflow" with vendor:"claude" throws (the alias implies codex)',
-    oClash.threw && oClash.message.includes('implies vendor codex') && oClash.calls.length === 0)
+    { subtasks: [ST('f', 'fable', [], { level: 'top' })], checks: ['make test'], review: 'never' },
+    { 'fable:': ['ok'], ...GREEN })
+  chk('S28: an alias and its expansion given together agree', both.result.subtasks.map(x => x.tier).join() === 'fable')
   const clash = await runExpectingThrow({ subtasks: [ST('f', 'fable', [], { vendor: 'codex' })] })
   chk('S28: tier:"fable" with vendor:"codex" throws (the alias implies claude)',
     clash.threw && clash.message.includes('implies vendor claude') && clash.calls.length === 0)
 }
 
-// ---- Scenario 29: plan-level vendor default; overflow:true is the more specific default.
+// ---- Scenario 29: plan-level vendor default.
 {
   const { result, calls } = await run(
     { vendor: 'codex', subtasks: [LV('b', 'builder', ['b.js']), LV('d', 'deep', ['d.js'], { vendor: 'claude' })], checks: ['make test'], review: 'never' },
@@ -860,13 +752,6 @@ const GREEN = { 'verify:objective-check': ['ok\nCHECKRC 0'] }
     extCalls(calls).length === 1 && firstLine(extCalls(calls)[0]) === 'VENDOR=codex LEVEL=builder')
   chk('S29: a subtask vendor overrides the plan default', calls.find(c => c.label === 'deep:d').opts.agentType === 'triage-deep-reasoner')
   chk('S29: report shows both vendors', result.subtasks.map(x => `${x.id}=${x.vendor}`).join() === 'b=codex,d=claude')
-
-  const { calls: c2 } = await run(
-    { vendor: 'claude', overflow: true, subtasks: [LV('b', 'builder', ['b.js']), LV('d', 'deep', ['d.js'])], checks: ['make test'], review: 'never' },
-    { 'codex:': [EXT('codex did b')], 'deep:': ['did d'], ...GREEN })
-  chk('S29: overflow:true beats the plan vendor for builder work (→ codex); deep keeps the plan vendor',
-    firstLine(c2.find(c => c.label === 'codex:builder:b')) === 'VENDOR=codex LEVEL=builder' &&
-    c2.find(c => c.label === 'deep:d').opts.agentType === 'triage-deep-reasoner')
 }
 
 // ---- Scenario 30: an unknown vendor throws before any spawn (subtask or plan level).
@@ -878,22 +763,12 @@ const GREEN = { 'verify:objective-check': ['ok\nCHECKRC 0'] }
   chk('S30: unknown plan vendor throws before any spawn',
     plan.threw && plan.message.includes('args.vendor must be one of') && plan.calls.length === 0)
   chk('S30: the usage text advertises level and vendor', /level: quick\|builder\|deep\|top/.test(plan.message) && /vendor\?:/.test(plan.message))
-}
-
-// ---- Scenario 31: agy is retired (2026-09-24) — refused by name at every level,
-// as a subtask vendor and as the plan-level default, before any spawn.
-{
-  for (const level of ['quick', 'builder', 'deep', 'top']) {
-    const r = await runExpectingThrow({ subtasks: [LV('t1', level, ['a.js'], { vendor: 'agy' })] })
-    chk(`S31: vendor agy at level ${level} throws before any spawn, naming the retirement`,
-      r.threw && r.message.includes('subtasks[0].vendor "agy"') && r.message.includes('agy was retired 2026-09-24') && r.calls.length === 0)
-  }
-  const planAgy = await runExpectingThrow({ vendor: 'agy', subtasks: [LV('b', 'builder', ['a.js'])] })
-  chk('S31: a plan-level agy default throws too, naming the retirement',
-    planAgy.threw && planAgy.message.includes('args.vendor "agy"') && planAgy.message.includes('agy was retired 2026-09-24') && planAgy.calls.length === 0)
-  const both = await runExpectingThrow({ subtasks: [LV('b', 'builder', ['a.js'])], crossReview: 'both' })
-  chk('S31: crossReview "both" throws before any spawn, naming the retirement',
-    both.threw && both.message.includes('agy was retired 2026-09-24') && both.calls.length === 0)
+  // agy (retired 2026-09-24) has no special case any more: it is just an unknown vendor.
+  const agy = await runExpectingThrow({ subtasks: [LV('t1', 'builder', ['a.js'], { vendor: 'agy' })] })
+  const planAgy = await runExpectingThrow({ vendor: 'agy', subtasks: [LV('t1', 'builder', ['a.js'])] })
+  chk('S30: vendor "agy" is refused as an unknown vendor (subtask and plan level) before any spawn',
+    agy.threw && agy.message.includes('subtasks[0].vendor must be one of claude|codex (got "agy")') && agy.calls.length === 0 &&
+    planAgy.threw && planAgy.message.includes('args.vendor must be one of claude|codex (got "agy")') && planAgy.calls.length === 0)
 }
 
 // ---- Scenario 32: codex routing — triage-external, the exact header line, the brief
@@ -942,22 +817,6 @@ const GREEN = { 'verify:objective-check': ['ok\nCHECKRC 0'] }
     logs.some(l => l.includes('Danger-zone routing') && l.includes('"q"') && l.includes('codex:deep@high')) &&
     !logs.some(l => l.includes('Danger-zone routing') && (l.includes('"m"') || l.includes('"x"'))))
   chk('S33: the report shows the lifted level', result.subtasks.find(x => x.id === 'q').level === 'deep')
-}
-
-// ---- Scenario 34: overflow + danger is rerouted to Claude deep (overflow never takes
-// correctness-critical work off-vendor), while plain codex + danger is lifted (S33).
-{
-  const { result, calls, logs } = await run(
-    { overflow: true, subtasks: [LV('core', 'builder', ['core.js'], { danger: true }), LV('c2', 'builder', ['c2.js'], { vendor: 'codex', danger: true })], checks: ['make test'], review: 'never' },
-    { 'deep:': ['did core on Claude deep'], 'codex:': [EXT('did c2 on codex')], ...GREEN })
-  chk('S34: overflow + danger → triage-deep-reasoner; only the explicit-codex subtask goes external',
-    extCalls(calls).length === 1 && calls.find(c => c.label === 'deep:core').opts.agentType === 'triage-deep-reasoner' &&
-    firstLine(extCalls(calls)[0]) === 'VENDOR=codex LEVEL=deep EFFORT=high')
-  chk('S34: the vendor-neutral danger log names both routes',
-    logs.some(l => l.includes('Danger-zone routing') && l.includes('codex:builder') && l.includes('running it on deep') && l.includes('never via overflow')))
-  chk('S34: report: core on Claude deep, c2 on codex deep; external.codex routed only c2',
-    result.subtasks[0].tier === 'deep' && result.subtasks[0].vendor === 'claude' && result.subtasks[1].tier === 'codex:deep' &&
-    JSON.stringify(result.external.codex.routed) === '["c2"]')
 }
 
 // ---- Scenario 35: an external spawn with no work (null, UNAVAILABLE, REFUSED) reruns
@@ -1026,11 +885,11 @@ const GREEN = { 'verify:objective-check': ['ok\nCHECKRC 0'] }
   chk('S36b: never a second external spawn; escalation codex:deep -> deep@max',
     extCalls(c2).length === 1 && escChain(r2) === 'codex:deep->deep@max' && r2.failed === false)
 
-  // (c) ESCALATE on an overflow (codex builder) subtask climbs the Claude ladder: builder -> deep.
+  // (c) ESCALATE on a codex builder subtask climbs the Claude ladder: builder -> deep.
   const { result: r3, calls: c3 } = await run(
-    { subtasks: [ST('o', 'overflow', ['o.js'])] },
+    { subtasks: [LV('o', 'builder', ['o.js'], { vendor: 'codex' })] },
     { 'codex:': [EXT('did o')], 'verify:reviewer': ['ESCALATE: o.js wrong'], 'redo:': ['redone'], 'verify:re-review': ['PASS'] })
-  chk('S36c: ESCALATE on overflow codex builder → Claude deep, no second external spawn',
+  chk('S36c: ESCALATE on codex builder → Claude deep, no second external spawn',
     c3.find(c => c.label === 'redo:o').opts.agentType === 'triage-deep-reasoner' && extCalls(c3).length === 1 &&
     escChain(r3) === 'codex:builder->deep')
 }
@@ -1050,7 +909,7 @@ const GREEN = { 'verify:objective-check': ['ok\nCHECKRC 0'] }
     !events.some(e => e.startsWith('log:⚠ Escalating to Fable: c')))
 }
 
-// ---- Scenario 38: crossReview modes — codex only since agy's retirement.
+// ---- Scenario 38: crossReview modes — codex only.
 {
   const { result, logs } = await run(
     { subtasks: [LV('t1', 'builder', ['a.js'])], checks: ['make test'], review: 'never', crossReview: 'codex' },
@@ -1084,13 +943,12 @@ const GREEN = { 'verify:objective-check': ['ok\nCHECKRC 0'] }
   chk('S38: crossReview false → no spawn, no field', !c5.some(c => c.opts.agentType === 'triage-cross-reviewer') && r5.crossReview === undefined)
 }
 
-// ---- Scenario 39: report().external counts per vendor (codex only since agy's
-// retirement; the overflow mirror of external.agy went with it).
+// ---- Scenario 39: report().external counts per vendor (codex only).
 {
   const { result } = await run(
     {
       subtasks: [
-        ST('o', 'overflow', ['o.js']),
+        LV('o', 'builder', ['o.js'], { vendor: 'codex' }),
         LV('c', 'builder', ['c.js'], { vendor: 'codex' }),
         LV('n', 'deep', ['n.js'], { vendor: 'codex' }),
         LV('k', 'quick', ['k.js']),
@@ -1098,15 +956,15 @@ const GREEN = { 'verify:objective-check': ['ok\nCHECKRC 0'] }
       checks: ['make test'], review: 'never',
     },
     { 'codex:builder:': [EXT('did it')], 'codex:deep:': [null], 'deep←codex:': ['n on Claude'], 'quick:': ['did k'], ...GREEN })
-  chk('S39: external.codex counts overflow and explicit codex alike',
+  chk('S39: external.codex counts every codex subtask, across levels',
     JSON.stringify(result.external.codex) === JSON.stringify({ routed: ['o', 'c', 'n'], ranExternally: ['o', 'c'], returnedToClaude: ['n→deep'], refused: [],
       unavailable: [{ id: 'n', reason: 'spawn returned nothing', kind: 'no-reply' }] }))
-  chk('S39: external has no agy key; there is no overflow field', Object.keys(result.external).join() === 'codex' && result.overflow === undefined)
+  chk('S39: external is keyed by codex only', Object.keys(result.external).join() === 'codex')
 
   const { result: r2 } = await run(
     { subtasks: [LV('k', 'quick', ['k.js'])], checks: ['make test'], review: 'never' },
     { 'quick:': ['did k'], ...GREEN })
-  chk('S39: an all-Claude plan has neither external nor overflow', r2.external === undefined && r2.overflow === undefined)
+  chk('S39: an all-Claude plan has no external field', r2.external === undefined)
 }
 
 // ════ Wave 13B: inline build bake-offs (args.bakeoff) ═══════════════════════

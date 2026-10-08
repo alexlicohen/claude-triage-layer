@@ -7,10 +7,6 @@
 # all live here. Model ids and efforts do NOT live here: they come from the tiers
 # file (config/tiers.json; see "Tiers" below).
 #
-# Google's Antigravity (`agy`) was RETIRED on 2026-09-24: its headless mode let
-# the model set a per-command BypassSandbox flag, and a read-only review run used
-# it to copy a file into a real repo. `--vendor agy` is refused (exit 3).
-#
 # Usage:
 #   scripts/ext-run.sh <mode> --prompt-file FILE [options]
 #   scripts/ext-run.sh deny-query [--beneath] PATH...
@@ -33,7 +29,7 @@
 #
 # Options:
 #   --vendor codex       the external CLI. codex is the only one (and the default);
-#                        `agy` is refused (exit 3, retired 2026-09-24).
+#                        any other value is a usage error (exit 2).
 #   --level L            build mode only: quick|builder|deep|top. Resolves the
 #                        model and effort from tiers.json levels.L.codex.
 #                        Without it, build resolves modes.codex.build.
@@ -97,10 +93,7 @@
 #                         checked (no clinical/BCH/PHI — no BAA; not a deny-listed
 #                         repo). COI material may go (codex training opt-out
 #                         confirmed, Alex 2026-09-25). Absent => REFUSED.
-#   AGY_BOUNDARY_CLEARED  deprecated alias of CODEX_BOUNDARY_CLEARED (the pre-
-#                         retirement name), accepted identically: either one = 1
-#                         attests; neither => REFUSED.
-#   AGY_STAGE_KEEP        1 = keep the staging dir (debugging). It NEVER keeps
+#   EXT_STAGE_KEEP        1 = keep the staging dir (debugging). It NEVER keeps
 #                         the build worktree — that is always removed.
 #   EXT_RUN_AUDIT_LOG     the command audit log (default
 #                         ~/.claude/logs/ext-run/codex-commands.jsonl).
@@ -109,8 +102,8 @@
 #   0  OK          stdout is the model's answer (or the raw output with --raw)
 #   2  USAGE       bad mode/flags/missing file/bad tiers file — nothing ran
 #   3  REFUSED     deny-list hit, boundary not attested, codex not listed in
-#                  tiers.json for this level/mode, a refused --allow-read, the
-#                  retired agy vendor, or --patch-out on a dirty tree — nothing ran
+#                  tiers.json for this level/mode, a refused --allow-read, or
+#                  --patch-out on a dirty tree — nothing ran
 #   4  UNAVAILABLE CLI missing, OS sandbox missing or not enforcing, audit log not
 #                  writable, auth failed, timed out, a failure event, the response
 #                  was empty, or the build stage could not be prepared. NEVER
@@ -259,7 +252,7 @@ cleanup() {
   restore_git
   # The worktree goes first and unconditionally: it is registered in the real
   # repo's .git, so leaving it behind would litter the caller's repo, and
-  # AGY_STAGE_KEEP must not be able to defeat that.
+  # EXT_STAGE_KEEP must not be able to defeat that.
   # It is unlocked first (see the worktree add below: the lock is what keeps a
   # parallel run's `worktree prune` from deleting this run's admin dir while its
   # .git is hidden); the prune after it can then only remove THIS run's entry —
@@ -269,7 +262,7 @@ cleanup() {
     git -C "$BUILD_REPO" worktree remove --force "$BUILD_WT" >/dev/null 2>&1 || rm -rf "$BUILD_WT"
     git -C "$BUILD_REPO" worktree prune >/dev/null 2>&1
   fi
-  if [ -n "$STAGE" ] && [ -d "$STAGE" ] && [ "${AGY_STAGE_KEEP:-0}" != "1" ]; then
+  if [ -n "$STAGE" ] && [ -d "$STAGE" ] && [ "${EXT_STAGE_KEEP:-0}" != "1" ]; then
     rm -rf "$STAGE"
   fi
 }
@@ -373,8 +366,8 @@ resolve_tier() {
 # outside $HOME) also refuses, so a repo can opt itself out without editing this
 # script. Each of those paths that sits in a git work tree is ALSO checked via the
 # main worktree of its repository (git-common-dir), so a linked worktree created
-# outside a deny-listed repo is refused like the repo. (The .agy-deny markers of
-# the retired agy vendor are inert.)
+# outside a deny-listed repo is refused like the repo. (A leftover .agy-deny marker
+# from the retired agy vendor is inert.)
 # ---------------------------------------------------------------------------
 # resolve_path — SINGLE OWNER of "which file does this path really name". The
 # whole symlink chain of the leaf is followed (a link in an allowed dir pointing
@@ -614,7 +607,6 @@ done
 
 case "$VENDOR" in
   codex) ;;
-  agy) die "REFUSED: agy retired 2026-09-24 — Antigravity bypassed its own sandbox (a model-settable BypassSandbox flag) and wrote into a real repo; codex is the only external vendor." "$E_REFUSED" ;;
   *) die "USAGE: unknown --vendor '$VENDOR' (codex)" "$E_USAGE" ;;
 esac
 if [ -n "$LEVEL" ]; then
@@ -694,10 +686,8 @@ fi
 
 # Boundary attestation — mirrors the cross-reviewer tier's rule 1. The caller,
 # not this script, knows whether the material is clinical/PHI or restricted.
-# AGY_BOUNDARY_CLEARED is the deprecated alias (the name predates agy's retirement).
 BOUNDARY_OK=0
 [ "${CODEX_BOUNDARY_CLEARED:-}" = "1" ] && BOUNDARY_OK=1
-[ "${AGY_BOUNDARY_CLEARED:-}" = "1" ] && BOUNDARY_OK=1
 [ "$BOUNDARY_OK" -eq 1 ] || \
   die "REFUSED: CODEX_BOUNDARY_CLEARED is not set — the caller must attest the data boundary was checked before anything leaves the machine." "$E_REFUSED"
 
@@ -790,7 +780,7 @@ mkdir -p "$STAGE/ws/inputs" "$STAGE/meta" "$STAGE/cx/tmp"
 STAGE_ABS=$(resolve_path "$STAGE")
 RUN_ID=$(basename "$STAGE_ABS")
 CX="$STAGE_ABS/cx"
-[ "${AGY_STAGE_KEEP:-0}" = "1" ] && echo "ext-run: staging dir kept at $STAGE_ABS" >&2
+[ "${EXT_STAGE_KEEP:-0}" = "1" ] && echo "ext-run: staging dir kept at $STAGE_ABS" >&2
 
 # ---------------------------------------------------------------------------
 # Build staging worktree. codex is pointed at $BUILD_WT, never at $BUILD_REPO.

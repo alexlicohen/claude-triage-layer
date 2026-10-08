@@ -220,9 +220,7 @@ GNU-only flags, or associative arrays.
 Nothing else in this repo, and no agent, may call `codex` (OpenAI Codex CLI) directly. The
 adapter, the OS sandbox profile, the deny-list, the known-good flags, the timeouts, the build
 staging worktree, the command audit log and the exit-code contract all live in this one
-script. It was `agy-run.sh` until Wave 12; `install.sh` retires a leftover installed copy of
-the old name (deleted when its bytes match a shipped version, otherwise moved to a timestamped
-backup).
+script. It was `agy-run.sh` until Wave 12.
 
 **Threat model.** codex is treated as a trusted collaborator that can make mistakes, not as an
 adversary. The confinement below, the deny-list and the bake-off leak checks exist to keep an
@@ -235,8 +233,8 @@ caller's statement, never verified.
 
 **agy (Google Antigravity) was retired on 2026-09-24**: its headless mode let the model set a
 per-command `BypassSandbox` flag, and a read-only parity review used it to copy a file into a
-real repo. `--vendor agy` is exit 3 (`agy retired 2026-09-24`); leftover `.agy-deny` markers
-are inert.
+real repo. Since Wave 25 `--vendor agy` is just an unknown vendor (exit 2, like any other);
+leftover `.agy-deny` markers are inert.
 
 ```
 Usage: ext-run.sh <review|read|verify|critique|fuzz|build> --prompt-file FILE
@@ -438,7 +436,7 @@ opportunistically, under a `mkdir` lock concurrent runs share.
    git 2.54), a 3-way check is clean only without "conflict" in its output. Anything else
    writes nothing: exit 6 with the tree byte-identical (one exception: a clean 3-way check followed by a failing `--3way` apply, a race with a concurrent edit — ext-run then says to inspect the tree). `--index` is deliberately *not*
    used: it refuses any path whose worktree copy differs from the index;
-7. removes the worktree on every exit path, including failures — `AGY_STAGE_KEEP` cannot
+7. removes the worktree on every exit path, including failures — `EXT_STAGE_KEEP` cannot
    defeat that.
 
 The patch is captured before the result gates, so a failed run still leaves something
@@ -457,7 +455,7 @@ stderr and never changes the exit code.
 |---|---|---|
 | 0 | OK — stdout is the model's answer (the JSONL events with `--raw`) | relay |
 | 2 | USAGE — bad mode/flags/missing file/bad tiers file; nothing ran | caller bug, fail loud |
-| 3 | REFUSED — deny-list hit, boundary not attested, codex not listed in the tiers file for this level/mode, a refused `--allow-read`, the retired agy vendor, or `--patch-out` on a dirty tree; nothing ran | return `REFUSED: …` |
+| 3 | REFUSED — deny-list hit, boundary not attested, codex not listed in the tiers file for this level/mode, a refused `--allow-read`, or `--patch-out` on a dirty tree; nothing ran | return `REFUSED: …` |
 | 4 | UNAVAILABLE — CLI missing, no `sandbox-exec` or a profile that does not apply/enforce, audit log dir not writable, non-zero exit, timeout, a codex failure event, empty response, or the build stage could not be prepared | return `UNAVAILABLE: …`; never substitute your own work, never read as "no findings" |
 | 5 | SCHEMA — `--schema` given and the response is not valid JSON | retry once or report INCOMPLETE |
 | 6 | APPLY — build only: the patch would not apply cleanly to the real repo, so NOTHING was written (the tree is unchanged). The patch is left at `--output`; the answer still went to stdout | resolve by hand, or re-run |
@@ -501,8 +499,7 @@ supplies exactly one value, its own run directory, after that path has passed th
 | `CODEX_BIN` | the codex executable (default `codex` looked up on PATH); resolved to its real file |
 | `CODEX_DENY_REPOS` | extra space-separated names codex must never see (`clip-creator` is always denied) |
 | `CODEX_BOUNDARY_CLEARED` | must be `1`, else REFUSED before anything runs |
-| `AGY_BOUNDARY_CLEARED` | deprecated alias of `CODEX_BOUNDARY_CLEARED` (its pre-retirement name, renamed 2026-10-04); `1` attests identically |
-| `AGY_STAGE_KEEP` | `1` keeps the staging dir (its path is printed on stderr). Never keeps the build worktree |
+| `EXT_STAGE_KEEP` | `1` keeps the staging dir (its path is printed on stderr). Never keeps the build worktree |
 | `EXT_RUN_AUDIT_LOG` | the command audit log (default `~/.claude/logs/ext-run/codex-commands.jsonl`) |
 | `TRIAGE_TIERS` | the tiers file to read (overrides the installed and repo copies) |
 | `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_COMMON_DIR`, `GIT_NAMESPACE`, `GIT_CEILING_DIRECTORIES` | **cleared** at the top (also by `patch-check.sh`, `stage-worktree.sh`, `parity-suite.sh`): an inherited absolute `GIT_DIR`/`GIT_WORK_TREE` (a git hook's environment) would otherwise redirect `git -C` into another repository |
@@ -544,8 +541,8 @@ absolute / `../` / directory links out refused, deny-listed repos and markers in
 `$HOME`, the size cap, special files, name collisions, read-only modes only), the audit log
 (fields, no output, failed runs, prune), the exit-code contract, the watchdog, `--patch-out`/`--check`, the build-worktree round trip, symlink
 chains, a marker at `$HOME`, an inherited `GIT_DIR`, a trailing option with no value, and
-`tiers-sync.sh`/`triage-tiers.sh`. `qc/mutate.sh` proves the confinement, audit and agy-refusal
-guards have teeth (#56–#59), deny-by-default writes, the temp-dir read rule and the outside
+`tiers-sync.sh`/`triage-tiers.sh`. `qc/mutate.sh` proves the confinement and audit
+guards have teeth (#56–#58), deny-by-default writes, the temp-dir read rule and the outside
 canary (#60–#62), the `--input-dir` outside-symlink refusal (#70), as well as the git-env,
 symlink and apply-back guards (#49–#51).
 

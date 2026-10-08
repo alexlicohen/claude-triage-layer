@@ -16,14 +16,11 @@ export const meta = {
 
 // ─── Entry contract ─────────────────────────────────────────────────────────
 // A bake-off is a measurement, so everything that could make it unfair or unsafe is
-// rejected in plain JS BEFORE any spawn: unknown or retired vendor, unknown level/effort,
+// rejected in plain JS BEFORE any spawn: unknown vendor, unknown level/effort,
 // duplicate or path-unsafe labels, relative paths, no checks to grade by. A malformed
 // plan is a caller bug and fails loudly and for free.
 const LEVELS = ['quick', 'builder', 'deep', 'top']
 const VENDORS = ['claude', 'codex']
-// agy was retired 2026-09-24 (its headless mode let the model bypass its sandbox; a
-// read-only run wrote into a real repo): refused by name, never silently unknown.
-const RETIRED_VENDORS = { agy: 'agy was retired 2026-09-24 (it bypassed its own sandbox and wrote into a real repo) — use codex or claude' }
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 // The Claude agent serving each level — the SAME map as triage-exec.js; test/lint.sh
 // checks both against config/tiers.json levels.*.claude.agent.
@@ -212,7 +209,6 @@ const ENV_LINE = 'To run the checks yourself, first run: . .parity-env'
 const seen = new Set()
 const candidates = args.candidates.map((raw, i) => {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) bad(`candidates[${i}] must be an object (got ${typeName(raw)}).`)
-  if (typeof raw.vendor === 'string' && Object.prototype.hasOwnProperty.call(RETIRED_VENDORS, raw.vendor)) bad(`candidates[${i}].vendor ${JSON.stringify(raw.vendor)}: ${RETIRED_VENDORS[raw.vendor]}.`)
   if (!VENDORS.includes(raw.vendor)) bad(`candidates[${i}].vendor must be one of ${VENDORS.join('|')} (got ${JSON.stringify(raw.vendor)}).`)
   if (!LEVELS.includes(raw.level)) bad(`candidates[${i}].level must be one of ${LEVELS.join('|')} (got ${JSON.stringify(raw.level)}).`)
   if (raw.effort != null && !EFFORTS.includes(raw.effort)) bad(`candidates[${i}].effort must be one of ${EFFORTS.join('|')} (got ${JSON.stringify(raw.effort)}).`)
@@ -752,7 +748,6 @@ async function runReview() {
 
   function spec(raw, what, i) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) badR(`${what}[${i}] must be an object (got ${typeName(raw)}).`)
-    if (typeof raw.vendor === 'string' && Object.prototype.hasOwnProperty.call(RETIRED_VENDORS, raw.vendor)) badR(`${what}[${i}].vendor ${JSON.stringify(raw.vendor)}: ${RETIRED_VENDORS[raw.vendor]}.`)
     if (!VENDORS.includes(raw.vendor)) badR(`${what}[${i}].vendor must be one of ${VENDORS.join('|')} (got ${JSON.stringify(raw.vendor)}).`)
     if (!LEVELS.includes(raw.level)) badR(`${what}[${i}].level must be one of ${LEVELS.join('|')} (got ${JSON.stringify(raw.level)}).`)
     if (raw.effort != null && !EFFORTS.includes(raw.effort)) badR(`${what}[${i}].effort must be one of ${EFFORTS.join('|')} (got ${JSON.stringify(raw.effort)}).`)

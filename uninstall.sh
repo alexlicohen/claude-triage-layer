@@ -16,7 +16,7 @@
 # The SessionStart hook: only THIS install's hook (a command hook running exactly the
 # command install.sh pins to the current CLAUDE_DIR) is deleted (a group it leaves empty
 # goes too); your other SessionStart hooks, and hooks pinned to another CLAUDE_DIR,
-# stay. This install's CLAUDE.md pointer line and any legacy `@triage.md` import are
+# stay. This install's CLAUDE.md pointer line (current and earlier spellings) is
 # removed, every other byte kept; the kill switch
 # file ($CLAUDE_DIR/triage.disabled) is moved to the backup dir, never deleted.
 # Order, failing CLOSED: the settings and CLAUDE.md rewrites are both computed (in temp
@@ -43,8 +43,7 @@ CLAUDE_DIR=$(canon_dir "$CLAUDE_DIR_GIVEN") || { echo "ERROR: CLAUDE_DIR must be
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 SETTINGS="$CLAUDE_DIR/settings.json"
 PREINSTALL="$CLAUDE_DIR/triage-preinstall.json"   # legacy artifact of pre-wave-9 installs
-# triage-overflow is the pre-Wave-12 name of triage-external; an old install may still hold it.
-AGENTS="triage-quick-task triage-builder triage-deep-reasoner triage-reviewer triage-cross-reviewer triage-fable-architect triage-external triage-overflow"
+AGENTS="triage-quick-task triage-builder triage-deep-reasoner triage-reviewer triage-cross-reviewer triage-fable-architect triage-external"
 
 # The settings key install.sh owns by value (must match install.sh — test/roundtrip.sh
 # case N asserts it), and the env key install.sh writes to record subagent-model ownership.
@@ -59,7 +58,6 @@ OWNER_MARK="TRIAGE_LAYER_OWNS_SUBAGENT_MODEL"
 POINTER_HEAD="The triage routing rubric ("
 POINTER_TAIL="/triage.md) reaches the main session through a SessionStart hook; if you are the main session and it is not in your context, read that file before planning. Subagents don't need it."
 POINTER_TAILS_OLD="/triage.md) reaches the main session through a SessionStart hook; subagents don't receive it."
-LEGACY_IMPORT_AWK='function is_legacy(l) { sub(/\r$/, "", l); sub(/[ \t]+$/, "", l); return l == "@triage.md" || l == "@./triage.md" || l == "@~/.claude/triage.md" || l == "@" ENVIRON["TRIAGE_DIR"] "/triage.md" }'
 TRIAGE_HOOK_SCRIPT="scripts/triage-context.sh"
 TRIAGE_HOOK_OWNED_JQ='type == "object" and .type == "command" and .command == $cmd'
 triage_hook_command() { printf 'CLAUDE_DIR=%q bash %q/%s' "$CLAUDE_DIR" "$CLAUDE_DIR" "$TRIAGE_HOOK_SCRIPT"; }
@@ -93,16 +91,15 @@ apply_file() { # $1 = tmp, $2 = dest
   if [ -L "$2" ]; then cat "$1" > "$2" && rm -f "$1"; else mv "$1" "$2"; fi
 }
 
-# File $1 without its legacy import lines (LEGACY_IMPORT_AWK) and its lines equal to $2
-# or $3 (a trailing CR ignored), on stdout. Every other byte is kept exactly: each kept
+# File $1 without its lines equal to $2 or $3 (a trailing CR ignored), on stdout. Every other byte is kept exactly: each kept
 # line keeps its own terminator (CRLF included), and an unterminated last line stays
 # unterminated (awk's print would add a newline).
 drop_lines() { # $1 = file, $2 $3 = lines
   local nl=1
   if [ -s "$1" ] && [ -n "$(tail -c1 "$1")" ]; then nl=0; fi
-  TRIAGE_DIR="$CLAUDE_DIR" awk -v p1="$2" -v p2="$3" -v nl="$nl" "$LEGACY_IMPORT_AWK"'
+  awk -v p1="$2" -v p2="$3" -v nl="$nl" '
     NR > 1 && keep { printf "%s\n", prev }
-    { prev = $0; l = $0; sub(/\r$/, "", l); keep = !is_legacy($0) && l != p1 && l != p2 }
+    { prev = $0; l = $0; sub(/\r$/, "", l); keep = l != p1 && l != p2 }
     END { if (NR > 0 && keep) printf "%s%s", prev, (nl ? "\n" : "") }' "$1"
 }
 
@@ -143,7 +140,7 @@ if [ -f "$SETTINGS" ]; then
      --arg ttl "$SUBAGENT_CACHE_TTL" --arg k "$OWNER_MARK" --arg cmd "$(triage_hook_command)" "
     def ours: $TRIAGE_HOOK_OWNED_JQ;"'
     if type != "object" then error("settings.json is not an object") else . end
-    | ["Agent(triage-quick-task)","Agent(triage-builder)","Agent(triage-deep-reasoner)","Agent(triage-reviewer)","Agent(triage-cross-reviewer)","Agent(triage-external)","Agent(triage-overflow)"] as $workers
+    | ["Agent(triage-quick-task)","Agent(triage-builder)","Agent(triage-deep-reasoner)","Agent(triage-reviewer)","Agent(triage-cross-reviewer)","Agent(triage-external)"] as $workers
     | ["Agent(triage-fable-architect)"] as $fable
     | (if .permissions.allow then .permissions.allow -= $workers else . end)
     | (if .permissions.ask   then .permissions.ask   -= $fable   else . end)
@@ -166,9 +163,8 @@ if [ -f "$SETTINGS" ]; then
   SUB_LEFT=$(jq -r '.env.CLAUDE_CODE_SUBAGENT_MODEL // ""' "$tmp")
 fi
 
-# 2. Compute the CLAUDE.md unwiring: the pointer line (current and earlier spellings)
-#    and any legacy import (LEGACY_IMPORT_AWK; a trailing CR is ignored, so a CRLF file
-#    is unwired too). Fails CLOSED: a read or filter error dies here, before anything is
+# 2. Compute the CLAUDE.md unwiring: the pointer line (current and earlier spellings;
+#    a trailing CR is ignored, so a CRLF file is unwired too). Fails CLOSED: a read or filter error dies here, before anything is
 #    written.
 if [ -f "$CLAUDE_DIR/CLAUDE.md" ]; then
   CLAUDE_MD_TMP=$(mktemp)
@@ -195,21 +191,20 @@ fi
 # 4. Remove installed files (agents, rubric, statusline, workflows, scripts) and move
 #    per-agent memory aside. The seven agents are removed by name — never
 #    `rm triage-*.md` by glob, which would also delete any unrelated triage-* agents
-#    you authored yourself. Retired files an older install may have left
-#    (triage-overflow.md, workflows/triage-run.js, scripts/agy-run.sh,
-#    hooks/triage-verify.sh) have no repo copy, so they are moved aside too.
+#    you authored yourself. hooks/triage-verify.sh, which a pre-Wave-9 install may have
+#    left, has no repo copy, so it is moved aside too.
 for a in $AGENTS; do
   remove_installed "agents/$a.md" "$CLAUDE_DIR/agents/$a.md"
   if [ -e "$CLAUDE_DIR/agent-memory/$a" ]; then backup_move "$CLAUDE_DIR/agent-memory/$a"; fi
 done
 remove_installed "triage.md" "$CLAUDE_DIR/triage.md"
 remove_installed "statusline.sh" "$CLAUDE_DIR/statusline.sh"
-for w in triage-exec.js triage-compare.js triage-parity.js triage-run.js; do
+for w in triage-exec.js triage-compare.js triage-parity.js; do
   remove_installed "workflows/$w" "$CLAUDE_DIR/workflows/$w"
 done
 for s in triage-usage.sh triage-stats.sh triage-cache-segment.sh ext-run.sh patch-check.sh \
          stage-worktree.sh review-stage.sh parity-suite.sh parity-cost.sh parity-report.sh \
-         triage-tiers.sh triage-context.sh agy-run.sh; do
+         triage-tiers.sh triage-context.sh; do
   remove_installed "scripts/$s" "$CLAUDE_DIR/scripts/$s"
 done
 remove_installed "config/tiers.json" "$CLAUDE_DIR/scripts/triage-tiers.json"

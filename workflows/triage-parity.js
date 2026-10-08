@@ -17,9 +17,6 @@ export const meta = {
 // make it unfair or unsafe is rejected in plain JS before any spawn.
 const LEVELS = ['quick', 'builder', 'deep', 'top']
 const VENDORS = ['claude', 'codex']
-// agy was retired 2026-09-24 (its headless mode let the model bypass its sandbox; a
-// parity review run wrote into a real repo): refused by name for candidates and judges.
-const RETIRED_VENDORS = { agy: 'agy was retired 2026-09-24 (it bypassed its own sandbox and wrote into a real repo) — use codex or claude' }
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 // The Claude agent serving each level — the SAME map as triage-exec.js and
 // triage-compare.js; test/lint.sh checks it against config/tiers.json.
@@ -78,7 +75,6 @@ const passRate = args.bandPassRate || 0.5
 
 function checkAgentSpec(raw, what, i) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) bad(`${what}[${i}] must be an object (got ${typeName(raw)}).`)
-  if (typeof raw.vendor === 'string' && Object.prototype.hasOwnProperty.call(RETIRED_VENDORS, raw.vendor)) bad(`${what}[${i}].vendor ${JSON.stringify(raw.vendor)}: ${RETIRED_VENDORS[raw.vendor]}.`)
   if (!VENDORS.includes(raw.vendor)) bad(`${what}[${i}].vendor must be one of ${VENDORS.join('|')} (got ${JSON.stringify(raw.vendor)}).`)
   if (!LEVELS.includes(raw.level)) bad(`${what}[${i}].level must be one of ${LEVELS.join('|')} (got ${JSON.stringify(raw.level)}).`)
   if (raw.effort != null && !EFFORTS.includes(raw.effort)) bad(`${what}[${i}].effort must be one of ${EFFORTS.join('|')} (got ${JSON.stringify(raw.effort)}).`)

@@ -4,6 +4,60 @@ Reverse-chronological. Each entry cites the commit(s) it corresponds to and,
 where known, the test-count delta. See `test/roundtrip.sh` and `test/lint.sh`
 for the current check catalog.
 
+## Wave 25 — agy + migration leftovers (branch wave25-lean-leftovers; lean audit 2026-10-08, findings 5–8)
+
+Commit: uncommitted at time of writing (fill in the hash at merge). +262 / −1,347
+lines (net −1,085; CHANGELOG excluded; 408 of the deletions are the legacy fixtures).
+- **agy remnants (finding 5)**: `RETIRED_VENDORS` gone from triage-exec/compare/parity and
+  `RETIRED_CROSS_REVIEW` from triage-exec; `agy` (and `crossReview: 'agy'|'both'`) is now refused
+  by the generic unknown-vendor / crossReview checks (S30 asserts `vendor: 'agy'` at subtask and
+  plan level). ext-run.sh: the `agy)` refusal arm (`--vendor agy` is now exit 2, unknown vendor,
+  not exit 3) and the deprecated `AGY_BOUNDARY_CLEARED` alias are removed
+  (`CODEX_BOUNDARY_CLEARED=1` is the only attestation; unset still refuses);
+  `AGY_STAGE_KEEP` → `EXT_STAGE_KEEP`. The two codex wrapper agents lose their `VENDOR=agy`
+  clauses. Tests: S31, ext-run V1b/V1c (+ the agy tiers fixture) and R1c removed, V1 now
+  expects the usage error; C1/RV1's by-name agy checks dropped (their table rows stay as
+  unknown-vendor refusals).
+- **Retired-file migrations (finding 6)**: install.sh `retire_renamed()`, `retire_triage_run()`,
+  the three `SHIPPED_*_SHA256` lists, `file_sha256` and the now-unused `backup_move`; the
+  `Agent(triage-overflow)` allow-rule removal (install and uninstall); uninstall's
+  `triage-overflow` agent and `triage-run.js` / `agy-run.sh` removal. `test/fixtures/legacy/`
+  deleted; roundtrip cases L, O, V and M1d/M1e removed. `LEGACY_SUBAGENT_MODELS` /
+  `sub_model_action()` untouched. Kept: uninstall's pre-Wave-9 `hooks/triage-verify.sh`,
+  SubagentStop and `triage-preinstall.json` handling (not in finding 6).
+- **Legacy `@triage.md` import migration (finding 7)**: `LEGACY_IMPORT_AWK` (install, uninstall,
+  triage-context.sh), `has_legacy`, `rubric_fits`/`rubric_note` (they only gated the import's
+  removal), the `LEGACY` preflight flag and the now-unused `planned_copy`. The hook no longer
+  stays silent when CLAUDE.md has an `@triage.md` line. A fresh install is unchanged: hook
+  append (`triage_hook_action`, `TRIAGE_HOOK_OWNED_JQ`), the pointer line, the outdated-pointer
+  replacement, `disableAllHooks` block, the 10,000-char cap check, kill switch, subagent silence.
+  triage.md's kill-switch line drops the `@triage.md` clause (9,492 → 9,394 bytes; `--check`
+  9,535 of 10,000). Tests: roundtrip RUB and NORM removed; SS, OFF, PIN, FC, FALSE, BYTE and
+  CRLF rebuilt on the outdated pointer line (CRLF/byte-exact coverage kept); Z4, SS10, N8's
+  awk copy removed; triage-context L1–L6 removed.
+- **`overflow` (finding 8)**: the plan flag, the `overflow` level/tier alias, `viaOverflow`'s
+  danger arm and the report's `wantsOverflow` arm. A plan that still sets `overflow` (true or
+  false) is refused by a new `bad()` line; a `level`/`tier` of `overflow` is refused as an
+  unknown level. Scenarios S22–S24 and S34 removed; S25 now asserts the refusals; S28/S29 lose
+  their overflow parts; S36c and S39 use `vendor: 'codex'` instead of the alias. Docs: triage.md
+  (triage-external row), agents/triage-external.md, the meta `whenToUse`, README.
+- Check counts (make verify): roundtrip 270 → 243 (−27), ext-run 236 → 233 (−3),
+  workflow-scenarios 486 → 452 (−34), compare 397 → 395 (−2), triage-context 25 → 19 (−6);
+  lint 96, usage 34, patch-check 94, stage-worktree 126, review-stage 83, parity-suite 119,
+  parity-scenarios 136, parity-report 235 unchanged.
+- Mutation catalog 372 → 361: retired 16, 59, 134, 176, 181, 188, 201, 207, 208, 295, 303, 305
+  (their code is gone); added 385 (the `args.overflow` refusal); re-anchored 28; re-described
+  177, 196 (now the CRLF pointer line), 202. Full `make mutate` not run; see the deferred list.
+- Mutation testing is CI-only (Alex 2026-10-08): Cortex XDR Hash Control quarantined
+  `mut-192/uninstall.sh` in a local `--only` run (prevention id f18b158c-…). `qc/mutate.sh`
+  exits 2 unless `CI=true` (GitHub Actions) or `MUTATE_LOCAL=1`; AGENTS.md's gate line says so.
+  The PR's CI run is the strict mutate gate.
+- Deferred / not done: full strict `make mutate` locally (CI runs it);
+  `parity-report.sh` `FAMILY_ORDER`/`VENDORS` still list `agy` (historical ledger lines) and
+  `parity-suite.sh` still tolerates `agy` in older task files (both out of scope).
+- AGENTS.md (approved by Alex): danger-zone, sync and single-owner bullets no longer name agy,
+  the legacy-import migration, `retire_renamed()` or the `SHIPPED_*` lists.
+
 ## Wave 24 — Haiku 5.5 + CC 2.1.290–2.1.293 review (branch wave24-haiku55)
 
 - Quick level and the two codex wrappers (`triage-cross-reviewer`, `triage-external`) →
