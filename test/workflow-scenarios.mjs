@@ -228,6 +228,36 @@ const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).
   chk('S6: INCOMPLETE logged loudly', logs.some(l => l.includes('VERIFICATION INCOMPLETE')))
 }
 
+// ---- Scenario 6b (Wave 26): a check gate auto mode DENIED → not retried (a retry reads as a
+// bypass), INCOMPLETE, listed in deniedGates; check output that merely quotes the words
+// (CHECKRC present) still counts as a verdict.
+{
+  // Wording as Claude Code prints it (transcripts, 2026-10).
+  const DENIAL = 'Permission for this action was denied by the Claude Code auto mode classifier. Reason: [Irreversible Local Destruction].'
+  const SAFETY = 'Error: Permission for this command was denied by a built-in Claude Code safety check, not by the user.'
+  const OUTAGE = 'The server-side auto mode classifier gave no verdict (error), so auto mode cannot determine the safety of this action.'
+  const { result, logs, calls } = await run(
+    { subtasks: [ST('t1', 'builder', ['a.js'])], checks: ['bash /tmp/scratch/gate.sh', 'make test', 'make lint', 'rm -rf build'] },
+    {
+      'builder:': ['did t1'],
+      'verify:objective-check#0': [DENIAL, 'ok\nCHECKRC 0'],
+      'verify:objective-check#1': ['grep hit: denied by the Claude Code auto mode classifier\nCHECKRC 0'],
+      'verify:objective-check#2': [OUTAGE, 'ok\nCHECKRC 0'],
+      'verify:objective-check#3': [SAFETY, 'ok\nCHECKRC 0'],
+    })
+  chk('S6b: a safety-check denial is not retried either', countCalls(calls, 'verify:objective-check#3') === 1)
+  chk('S6b: a classifier outage (no verdict) is a dead gate: retried once, then passes',
+    countCalls(calls, 'verify:objective-check#2') === 2 && result.checks[2].pass === true)
+  chk('S6b: denied gate tried exactly once', countCalls(calls, 'verify:objective-check#0') === 1)
+  chk('S6b: no retry logged for the denied gate', !logs.some(l => l.includes('check#0 gate') && l.includes('retrying the gate once')))
+  chk('S6b: result.incomplete === true', result.incomplete === true)
+  chk('S6b: denied check reports pass:null', result.checks[0].pass === null)
+  chk('S6b: deniedGates names only the denied gates', JSON.stringify([...result.deniedGates].sort()) === '["check#0","check#3"]')
+  chk('S6b: output quoting the words with a CHECKRC line still passes', result.checks[1].pass === true)
+  chk('S6b: no remediation on a denied gate', result.remediation === null)
+  chk('S6b: needs-the-user logged', logs.some(l => l.includes('needs the user: gate(s) denied') && l.includes('check#0')))
+}
+
 // ---- Scenario 7: review-only path, reviewer null twice → INCOMPLETE, no remediation
 {
   const { result, logs } = await run(

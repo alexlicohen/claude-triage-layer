@@ -4,9 +4,37 @@ Reverse-chronological. Each entry cites the commit(s) it corresponds to and,
 where known, the test-count delta. See `test/roundtrip.sh` and `test/lint.sh`
 for the current check catalog.
 
+## Wave 26 — harness-friction fixes A, D, G (branch wave26-harness-friction; 2026-10-18)
+
+Source: transcript scan Aug 30–Oct 17 (1,760 tool errors) by the ~/projects root session;
+Alex approved A, D, G there. Commit: see PR (fill in at the next wave).
+- **A — gate denials and sleep-polls (`workflows/triage-exec.js`)**: the check-gate prompt
+  now runs the command in one Bash call with `timeout: 600000`; a backgrounded command is
+  waited on with a bounded `grep -q '^CHECKRC '` loop (never `sleep N; cmd`: 68 of 82
+  sleep-poll blocks followed a backgrounding); a denied command is relayed verbatim. New
+  `gateDenied()` (next to the verdict parsers): `runGate()` no longer retries a gate whose
+  reply is an auto-mode or built-in-safety-check DENIAL (14 seen: scratchpad scripts as
+  `checks`, whose retry then drew [Auto-Mode Bypass]); it is reported `pass: null`,
+  `incomplete`, named in the new `report.deniedGates`, and logged as needing the user. A
+  classifier OUTAGE ("gave no verdict") does not match and keeps its one retry; the regex is
+  narrower than the proposal (`auto mode classifier` alone matched the outage text).
+- **D — checks guidance (`triage.md` rule 1, README › Workflow arguments › checks)**: checks
+  are inline commands or repo-tracked targets, never scratchpad scripts (the classifier sees
+  only the command). README also: `bash -c '…'` for small inline bodies (a heredoc breaks the
+  `{ cmd ; }` wrapper), the denial behaviour and the gate's wait loop. triage.md 9,394 → 9,496
+  bytes (budget 9,500; hook `--check` 9,637 of 10,000).
+- **G — `agents/triage-external.md` step 4**: the prompt file is filled with
+  `cat > <path> <<'TRIAGE_PROMPT_EOF'`, not the Write tool (22 Write-before-Read errors on
+  the mktemp-created file).
+- Tests: workflow-scenarios 452 → 462 (S6b: safety-check and classifier denials tried once,
+  INCOMPLETE, `deniedGates`; an outage retried; check output quoting the words still counts).
+  Mutation 386 (denied gate retried) added; strict mutate runs in CI.
+- Deferred: whether a repo-tracked script on its own avoids the classifier denial is
+  unverified (the scan saw only scratchpad scripts denied).
+
 ## Wave 25 — agy + migration leftovers (branch wave25-lean-leftovers; lean audit 2026-10-08, findings 5–8)
 
-Commit: uncommitted at time of writing (fill in the hash at merge). +262 / −1,347
+Commit: 2afd3c5 (PR #37, merge 4c8ef81). +262 / −1,347
 lines (net −1,085; CHANGELOG excluded; 408 of the deletions are the legacy fixtures).
 - **agy remnants (finding 5)**: `RETIRED_VENDORS` gone from triage-exec/compare/parity and
   `RETIRED_CROSS_REVIEW` from triage-exec; `agy` (and `crossReview: 'agy'|'both'`) is now refused
