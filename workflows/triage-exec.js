@@ -278,6 +278,9 @@ const escalations = []
 const neverRanExternally = new Set()
 // Ids stopped under noFable where the ladder would have gone to Fable (stopForUser()).
 const needsUser = new Set()
+// Gate names (check#<i>, reviewer) whose command auto mode or a safety check denied
+// (runGate()): never retried; the run reads INCOMPLETE and report() lists them.
+const deniedGates = new Set()
 const NO_FABLE_REASON = 'noFable: Fable excluded for this plan — needs the user'
 
 // ─── Budget awareness ───────────────────────────────────────────────────────
@@ -1167,6 +1170,7 @@ function report(extra) {
     escalations,
     noFable,
     needsUser: [...needsUser],
+    deniedGates: [...deniedGates],
     budget: budgetReport(),
     ...(external ? { external } : {}),
     ...(bakeoffOn ? bakeoffReport() : {}),
@@ -1285,6 +1289,13 @@ function reviewVerdict(text) {
   const m = String(text == null ? '' : text).trimStart().match(/^\**\s*(PASS|FIX|ESCALATE)\b/i)
   return m ? m[1].toUpperCase() : null
 }
+// gateDenied(text) → true when a gate's reply relays a Claude Code permission denial (the
+// auto-mode classifier or a built-in safety check) instead of a verdict. runGate() reads it
+// only on a reply with no usable verdict, so check output quoting these words still counts.
+// Only a DENIAL matches: a classifier outage ("auto mode classifier gave no verdict") is a
+// dead gate and keeps its one retry.
+const gateDenied = text =>
+  /denied by (?:the |a )?(?:Claude Code )?(?:auto mode|built-in Claude Code safety check)/i.test(String(text == null ? '' : text))
 
 // Aggregate a verification object into { text, failed, isEscalate, incomplete, rcs, verdict }.
 //   text       = feedback fed to remediation AND matched against for failure attribution.
@@ -1325,7 +1336,9 @@ async function verify(items, remediated) {
   // checkCommand(), and quotes its output; checkRc() reads the shell's own exit status.
   // One gate per command, so a failure is attributable to the command that produced it.
   const runCheck = (cmd, i) => () => agent(
-    `Run this one command exactly as written${planRepo ? '' : ' from the repo root'} and reply with its output verbatim, including the final CHECKRC line. ` +
+    `Run this one command exactly as written${planRepo ? '' : ' from the repo root'}, in ONE Bash call with \`timeout: 600000\`, and reply with its output verbatim, including the final CHECKRC line. ` +
+    `If Bash says it moved the command to the background, wait with exactly \`for i in $(seq 1 110); do grep -q '^CHECKRC ' <output file> && break; sleep 5; done; tail -n 45 <output file>\`, repeated until CHECKRC appears; never \`sleep N; cmd\`. ` +
+    `If auto mode or a safety check denies the command, reply with the denial text verbatim and stop. ` +
     `Do not run anything else, and do not interpret or fix anything:\n${checkCommand(cmd)}`,
     { label: `${remediated ? 'verify:recheck' : 'verify:objective-check'}#${i}`, phase: 'Verify', agentType: 'triage-quick-task' }
   )
@@ -1385,6 +1398,13 @@ async function verify(items, remediated) {
     const why = o => (o == null ? 'returned no output (spawn/run failure)'
       : `gave no usable verdict (reply began: ${JSON.stringify(String(o).trim().slice(0, 200))})`)
     let out = await attempt()
+    // A gate the permission layer DENIED is not dead, it is refused: retrying it is what the
+    // auto-mode classifier reads as a bypass attempt. Recorded once, never retried, INCOMPLETE.
+    if (!live(out) && gateDenied(out)) {
+      log(`⚠ ${name} gate DENIED by auto mode/a safety check — not retried (a retry reads as a bypass); verification INCOMPLETE, needs the user.`)
+      deniedGates.add(name)
+      return null
+    }
     if (!live(out) && !ceilinged) {
       log(`⚠ ${name} gate ${why(out)} — retrying the gate once.`)
       out = await attempt()
@@ -1551,6 +1571,7 @@ if (withheld.size) log(`⚠ INCOMPLETE — bake-off subtask(s) withheld, never r
 // A subtask stopped for the user (noFable) is unfinished work whatever the final gates say
 // (its deep@max fallback may have produced nothing for them to check): never a clean run.
 if (needsUser.size) log(`⚠ INCOMPLETE — needs the user (noFable): ${[...needsUser].join(', ')}.`)
+if (deniedGates.size) log(`⚠ INCOMPLETE — needs the user: gate(s) denied by auto mode/a safety check: ${[...deniedGates].join(', ')} (make each check an inline command or a repo-tracked target).`)
 
 const reviewText = verification.verdict == null ? '' : String(verification.verdict)
 const out = report({
