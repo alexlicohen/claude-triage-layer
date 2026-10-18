@@ -68,6 +68,13 @@
 #   PTR - the pre-Wave-22 pointer line is replaced by install and removed by uninstall.
 #   ORD - uninstall writes settings.json, then CLAUDE.md, then removes files; a failed
 #       write stops before any file is removed.
+#   HIST/NG - an installed file holding an earlier committed version of the same source
+#       path is replaced without a backup (note printed; --dry-run says which case);
+#       uncommitted bytes, bytes committed under another path, and any REPO_DIR that is
+#       not the top of its own git work tree are backed up as before.
+#   SK - the triage-plan skill: installed (bare, --files-only, --dry-run plan), removed
+#       by uninstall (edits moved to the backup dir; its dir only when empty; skills/ and
+#       other skills untouched), checked by drift.
 #   Plus two direct statusline.sh checks (non-numeric / numeric pct).
 set -u
 
@@ -77,6 +84,10 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # --- prerequisite check: fail loud, never silently skip ---------------------
 if ! command -v jq >/dev/null 2>&1; then
   echo "INCOMPLETE: jq is required to run this suite (brew install jq) — cannot verify settings.json merges." >&2
+  exit 1
+fi
+if ! command -v git >/dev/null 2>&1; then
+  echo "INCOMPLETE: git is required to run this suite — cannot build the HIST fixture histories." >&2
   exit 1
 fi
 
@@ -1582,6 +1593,151 @@ chmod 644 "$ORD_DIR/CLAUDE.real.md"
 run_uninstall "$ORD_DIR" >"$ORD_OUT" 2>&1
 chk "ORD3: once the write can succeed, a re-run completes the uninstall" \
   'grep -q "^Uninstalled" "$ORD_OUT" && [ "$(cat "$ORD_DIR/CLAUDE.real.md")" = mine ] && [ ! -e "$ORD_DIR/scripts/triage-context.sh" ]'
+
+# =============================================================================
+# Case HIST — an installed file holding an earlier COMMITTED version of the same
+# source path is a previous release, not a local edit: it is replaced without a
+# backup (git history has the bytes), with a note. Bytes never committed — or
+# committed only under ANOTHER path — are backed up exactly as before. The lookup is
+# keyed on the SOURCE path (config/tiers.json, installed as scripts/triage-tiers.json)
+# and spans every ref (that tiers.json version lives only on an unmerged branch).
+# The fixture history is built here (the mutation harness's repo copy has no .git).
+# =============================================================================
+# git for the fixture histories: fixed identity, no signing, no user hooks.
+fx_git() { git -c user.name=triage-test -c user.email=triage-test@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null -c init.defaultBranch=main -C "$@"; }
+HIST_OLD_SL='# triage-layer test fixture: statusline.sh as an earlier commit had it'
+HIST_OLD_TIERS='{"_comment": "triage-layer test fixture: config/tiers.json as an unmerged branch had it"}'
+HIST_LOCAL='# triage-layer test fixture: a local edit, never committed'
+HIST_OTHER='# triage-layer test fixture: bytes committed only as fixture-other.txt'
+HIST_REPO=$(repo_copy)
+fx_git "$HIST_REPO" init -q
+printf '%s\n' "$HIST_OLD_SL" > "$HIST_REPO/statusline.sh"
+printf '%s\n' "$HIST_OTHER" > "$HIST_REPO/fixture-other.txt"
+fx_git "$HIST_REPO" add statusline.sh fixture-other.txt
+fx_git "$HIST_REPO" commit -q -m "fixture: earlier statusline.sh"
+fx_git "$HIST_REPO" checkout -q -b side
+printf '%s\n' "$HIST_OLD_TIERS" > "$HIST_REPO/config/tiers.json"
+fx_git "$HIST_REPO" add config/tiers.json
+fx_git "$HIST_REPO" commit -q -m "fixture: earlier tiers.json, unmerged"
+fx_git "$HIST_REPO" checkout -q main
+# Leaving the branch untracked (and so deleted) config/tiers.json and its emptied dir.
+mkdir -p "$HIST_REPO/config"
+cp -p "$REPO_DIR/statusline.sh" "$HIST_REPO/statusline.sh"
+cp -p "$REPO_DIR/config/tiers.json" "$HIST_REPO/config/tiers.json"
+fx_git "$HIST_REPO" add statusline.sh
+fx_git "$HIST_REPO" commit -q -m "fixture: current statusline.sh"
+HIST_DIR=$(new_sandbox)
+CLAUDE_DIR="$HIST_DIR" "$HIST_REPO/install.sh" --files-only >/dev/null 2>&1
+printf '%s\n' "$HIST_OLD_SL" > "$HIST_DIR/statusline.sh"
+printf '%s\n' "$HIST_OLD_TIERS" > "$HIST_DIR/scripts/triage-tiers.json"
+printf '%s\n' "$HIST_LOCAL" > "$HIST_DIR/triage.md"
+printf '%s\n' "$HIST_OTHER" > "$HIST_DIR/workflows/triage-parity.js"
+HIST_DRY=$(mktemp)
+ALL_TMP="$ALL_TMP $HIST_DRY"
+CLAUDE_DIR="$HIST_DIR" "$HIST_REPO/install.sh" --dry-run --files-only >"$HIST_DRY" 2>&1
+chk "HIST1: --dry-run says which overwrite case applies (an earlier repo version vs. a local edit) and writes nothing" \
+  'grep -qxF "  overwrite (an earlier repo version — replaced without a backup, git history has it): $HIST_DIR/statusline.sh" "$HIST_DRY" && grep -qxF "  overwrite (a local edit — backs up to $HIST_DIR/triage.md.bak-triage-<timestamp> first): $HIST_DIR/triage.md" "$HIST_DRY" && grep -qxF "$HIST_OLD_SL" "$HIST_DIR/statusline.sh" && ! ls "$HIST_DIR"/*.bak-triage-* >/dev/null 2>&1'
+HIST_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $HIST_OUT"
+CLAUDE_DIR="$HIST_DIR" "$HIST_REPO/install.sh" --files-only >"$HIST_OUT" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+HIST_RC=$?
+chk "HIST2: an installed earlier committed version is overwritten with NO .bak-triage copy, and the note says so" \
+  '[ "$HIST_RC" -eq 0 ] && cmp -s "$REPO_DIR/statusline.sh" "$HIST_DIR/statusline.sh" && ! ls "$HIST_DIR"/statusline.sh.bak-triage-* >/dev/null 2>&1 && grep -qxF "  note: $HIST_DIR/statusline.sh held an earlier repo version — replaced without a backup (git history has it)" "$HIST_OUT"'
+chk "HIST3: keyed on the SOURCE path, on every ref: scripts/triage-tiers.json holding an unmerged branch's config/tiers.json is replaced without a backup" \
+  'cmp -s "$REPO_DIR/config/tiers.json" "$HIST_DIR/scripts/triage-tiers.json" && ! ls "$HIST_DIR"/scripts/triage-tiers.json.bak-triage-* >/dev/null 2>&1 && grep -qF "$HIST_DIR/scripts/triage-tiers.json held an earlier repo version" "$HIST_OUT"'
+chk "HIST4: a local edit never committed is still backed up (git present), with the differed note" \
+  'cmp -s "$REPO_DIR/triage.md" "$HIST_DIR/triage.md" && grep -lxF "$HIST_LOCAL" "$HIST_DIR"/triage.md.bak-triage-* >/dev/null 2>&1 && grep -qF "note: $HIST_DIR/triage.md differed from the repo — saved your copy to" "$HIST_OUT"'
+chk "HIST5: bytes committed only under ANOTHER path are a local edit for this file: backed up" \
+  'grep -lxF "$HIST_OTHER" "$HIST_DIR"/workflows/triage-parity.js.bak-triage-* >/dev/null 2>&1 && ! grep -qF "$HIST_DIR/workflows/triage-parity.js held an earlier repo version" "$HIST_OUT"'
+
+# No git history to ask: a .git-less repo copy (as the mutation harness runs it) backs
+# up even the bytes HIST excused — exactly the pre-history behaviour.
+NG_REPO=$(repo_copy)
+NG_DIR=$(new_sandbox)
+CLAUDE_DIR="$NG_DIR" "$NG_REPO/install.sh" --files-only >/dev/null 2>&1
+printf '%s\n' "$HIST_OLD_SL" > "$NG_DIR/statusline.sh"
+NG_OUT=$(mktemp)
+ALL_TMP="$ALL_TMP $NG_OUT"
+CLAUDE_DIR="$NG_DIR" "$NG_REPO/install.sh" --files-only >"$NG_OUT" 2>&1
+chk "NG1: a non-git REPO_DIR backs up a differing installed file as before (fail safe)" \
+  'cmp -s "$REPO_DIR/statusline.sh" "$NG_DIR/statusline.sh" && grep -lxF "$HIST_OLD_SL" "$NG_DIR"/statusline.sh.bak-triage-* >/dev/null 2>&1 && grep -qF "note: $NG_DIR/statusline.sh differed from the repo" "$NG_OUT"'
+# A .git-less copy NESTED in another repo whose history holds those bytes at
+# inner/statusline.sh: REPO_DIR is not the top of its own work tree, so still a backup.
+NEST_TOP=$(new_sandbox)
+mkdir -p "$NEST_TOP/inner"
+( cd "$REPO_DIR" && tar cf - --exclude=.git . ) | ( cd "$NEST_TOP/inner" && tar xf - )
+fx_git "$NEST_TOP" init -q
+cp -p "$NEST_TOP/inner/statusline.sh" "$NEST_TOP/statusline.cur"
+printf '%s\n' "$HIST_OLD_SL" > "$NEST_TOP/inner/statusline.sh"
+fx_git "$NEST_TOP" add inner/statusline.sh
+fx_git "$NEST_TOP" commit -q -m "fixture: earlier inner statusline.sh"
+cp -p "$NEST_TOP/statusline.cur" "$NEST_TOP/inner/statusline.sh"
+NEST_DIR=$(new_sandbox)
+CLAUDE_DIR="$NEST_DIR" "$NEST_TOP/inner/install.sh" --files-only >/dev/null 2>&1
+printf '%s\n' "$HIST_OLD_SL" > "$NEST_DIR/statusline.sh"
+CLAUDE_DIR="$NEST_DIR" "$NEST_TOP/inner/install.sh" --files-only >/dev/null 2>&1
+chk "NG2: a .git-less REPO_DIR nested in another repo's work tree is not asked: backed up" \
+  'cmp -s "$REPO_DIR/statusline.sh" "$NEST_DIR/statusline.sh" && grep -lxF "$HIST_OLD_SL" "$NEST_DIR"/statusline.sh.bak-triage-* >/dev/null 2>&1'
+
+# =============================================================================
+# Case SK — the triage-plan skill: installed by bare, --files-only (and planned by
+# --dry-run) as skills/triage-plan/SKILL.md, byte-identical to the repo copy;
+# removed by uninstall (a local edit moved to the backup dir); its dir removed only
+# when then empty; $CLAUDE_DIR/skills and other skills never touched; drift checks it.
+# =============================================================================
+SK_SIB='# triage-layer test fixture: another skill that is not ours'
+SK_DIR=$(new_sandbox)
+mkdir -p "$SK_DIR/skills/fixture-sibling"
+printf '%s\n' "$SK_SIB" > "$SK_DIR/skills/fixture-sibling/SKILL.md"
+SK_DRY=$(mktemp)
+ALL_TMP="$ALL_TMP $SK_DRY"
+CLAUDE_DIR="$SK_DIR" "$REPO_DIR/install.sh" --dry-run >"$SK_DRY" 2>&1
+chk "SK1: --dry-run plans the skill and creates nothing" \
+  'grep -qxF "  create: $SK_DIR/skills/triage-plan/SKILL.md" "$SK_DRY" && [ ! -e "$SK_DIR/skills/triage-plan" ]'
+run_install "$SK_DIR" >/dev/null 2>&1
+chk "SK2: a bare install places skills/triage-plan/SKILL.md byte-identical to the repo copy" \
+  'cmp -s "$REPO_DIR/skills/triage-plan/SKILL.md" "$SK_DIR/skills/triage-plan/SKILL.md"'
+SK2_DIR=$(new_sandbox)
+CLAUDE_DIR="$SK2_DIR" "$REPO_DIR/install.sh" --files-only >/dev/null 2>&1
+chk "SK3: --files-only places it too" \
+  'cmp -s "$REPO_DIR/skills/triage-plan/SKILL.md" "$SK2_DIR/skills/triage-plan/SKILL.md"'
+run_uninstall "$SK_DIR" >/dev/null 2>&1
+chk "SK4: uninstall removes the skill and its emptied dir; the sibling skill and skills/ stay" \
+  '[ ! -e "$SK_DIR/skills/triage-plan" ] && [ -d "$SK_DIR/skills" ] && grep -qxF "$SK_SIB" "$SK_DIR/skills/fixture-sibling/SKILL.md" && [ -z "$(find "$SK_DIR" -maxdepth 1 -name "triage-uninstall-backup-*")" ]'
+run_uninstall "$SK2_DIR" >/dev/null 2>&1
+chk "SK5: skills/ itself is never removed, even when uninstall leaves it empty" \
+  '[ ! -e "$SK2_DIR/skills/triage-plan" ] && [ -d "$SK2_DIR/skills" ]'
+SK3_DIR=$(new_sandbox)
+run_install "$SK3_DIR" >/dev/null 2>&1
+printf '%s\n' "$HIST_LOCAL" >> "$SK3_DIR/skills/triage-plan/SKILL.md"
+run_uninstall "$SK3_DIR" >/dev/null 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+SK3_BACKUP=$(find "$SK3_DIR" -maxdepth 1 -type d -name 'triage-uninstall-backup-*' | head -n 1)
+chk "SK6: a locally modified SKILL.md is moved to the uninstall backup dir, never deleted" \
+  '[ ! -e "$SK3_DIR/skills/triage-plan/SKILL.md" ] && [ -n "$SK3_BACKUP" ] && grep -qxF "$HIST_LOCAL" "$SK3_BACKUP/skills/triage-plan/SKILL.md"'
+SK4_DIR=$(new_sandbox)
+run_install "$SK4_DIR" >/dev/null 2>&1
+printf '%s\n' "$SK_SIB" > "$SK4_DIR/skills/triage-plan/notes.md"
+run_uninstall "$SK4_DIR" >/dev/null 2>&1
+chk "SK7: a file of yours in skills/triage-plan keeps the dir: only SKILL.md goes" \
+  '[ ! -e "$SK4_DIR/skills/triage-plan/SKILL.md" ] && grep -qxF "$SK_SIB" "$SK4_DIR/skills/triage-plan/notes.md"'
+SK5_DIR=$(new_sandbox)
+run_install "$SK5_DIR" >/dev/null 2>&1
+printf '%s\n' "$HIST_LOCAL" > "$SK5_DIR/skills/triage-plan/SKILL.md"
+SK5_FORK=$(mktemp)
+ALL_TMP="$ALL_TMP $SK5_FORK"
+CLAUDE_DIR="$SK5_DIR" "$REPO_DIR/drift.sh" >"$SK5_FORK" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+SK5_FORK_RC=$?
+rm -f "$SK5_DIR/skills/triage-plan/SKILL.md"
+SK5_MISS=$(mktemp)
+ALL_TMP="$ALL_TMP $SK5_MISS"
+CLAUDE_DIR="$SK5_DIR" "$REPO_DIR/drift.sh" >"$SK5_MISS" 2>&1
+# shellcheck disable=SC2034  # used inside chk's eval'd condition strings, not directly
+SK5_MISS_RC=$?
+chk "SK8: drift flags a different installed SKILL.md (FORKED) and a missing one (MISSING), each rc != 0" \
+  '[ "$SK5_FORK_RC" -ne 0 ] && grep -qxF "FORKED: skills/triage-plan/SKILL.md" "$SK5_FORK" && [ "$SK5_MISS_RC" -ne 0 ] && grep -qxF "MISSING (not installed): skills/triage-plan/SKILL.md" "$SK5_MISS"'
 
 # =============================================================================
 # Result

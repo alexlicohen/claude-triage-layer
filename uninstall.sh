@@ -188,8 +188,8 @@ if [ -n "$CLAUDE_MD_TMP" ]; then
   CLAUDE_MD_TMP=""
 fi
 
-# 4. Remove installed files (agents, rubric, statusline, workflows, scripts) and move
-#    per-agent memory aside. The seven agents are removed by name — never
+# 4. Remove installed files (agents, rubric, triage-plan skill, statusline, workflows,
+#    scripts) and move per-agent memory aside. The seven agents are removed by name — never
 #    `rm triage-*.md` by glob, which would also delete any unrelated triage-* agents
 #    you authored yourself. hooks/triage-verify.sh, which a pre-Wave-9 install may have
 #    left, has no repo copy, so it is moved aside too.
@@ -198,6 +198,13 @@ for a in $AGENTS; do
   if [ -e "$CLAUDE_DIR/agent-memory/$a" ]; then backup_move "$CLAUDE_DIR/agent-memory/$a"; fi
 done
 remove_installed "triage.md" "$CLAUDE_DIR/triage.md"
+# The triage-plan skill: its file goes like every other installed file; its dir only
+# while it is then empty (rmdir refuses anything else — a file of yours in it stays).
+# $CLAUDE_DIR/skills itself and every other skill in it are never touched.
+remove_installed "skills/triage-plan/SKILL.md" "$CLAUDE_DIR/skills/triage-plan/SKILL.md"
+if [ -d "$CLAUDE_DIR/skills/triage-plan" ] && [ ! -L "$CLAUDE_DIR/skills/triage-plan" ]; then
+  rmdir "$CLAUDE_DIR/skills/triage-plan" 2>/dev/null || true
+fi
 remove_installed "statusline.sh" "$CLAUDE_DIR/statusline.sh"
 for w in triage-exec.js triage-compare.js triage-parity.js; do
   remove_installed "workflows/$w" "$CLAUDE_DIR/workflows/$w"

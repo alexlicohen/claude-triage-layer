@@ -3,7 +3,7 @@
 ## `triage-usage.sh` — deterministic per-tier token tally
 
 Replaces the orchestrator eyeballing per-subagent token counts and summing them from
-memory (see `triage.md` § Usage tally). Deterministic, read-only, offline.
+memory (see the `triage-plan` skill › Usage). Deterministic, read-only, offline.
 
 ```
 Usage: triage-usage.sh [-v] [PATH]

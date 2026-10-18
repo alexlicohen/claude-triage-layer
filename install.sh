@@ -6,7 +6,8 @@
 #   --dry-run     print the full mutation plan, write NOTHING.
 #   --files-only  copy/chmod the installed FILES only (agents, statusline.sh,
 #                 workflows/triage-exec.js + triage-compare.js + triage-parity.js, scripts/*, the
-#                 tiers file as scripts/triage-tiers.json, triage.md).
+#                 tiers file as scripts/triage-tiers.json, triage.md, and the plan-time
+#                 skill as skills/triage-plan/SKILL.md).
 #                 Skips CLAUDE.md, settings.json, and permissions entirely.
 #                 This is the "make sync" primitive.
 #   --settings-status  read-only: print one "settings migration pending" line per
@@ -28,6 +29,11 @@
 #
 # A locally modified installed file is backed up before it is overwritten, to
 # <file>.bak-triage-<UTC timestamp>; the newest BACKUP_KEEP (5) per file are kept.
+# An installed file that differs from the repo copy but holds a version of the SAME
+# source file committed anywhere in this clone's git history (all refs) is an earlier
+# repo release, not a local edit: it is replaced without a backup (git has it), with a
+# note. Without git history to ask (no git, REPO_DIR not the top of a work tree, any
+# git error) every differing file is backed up. CLAUDE.md's backup is unconditional.
 #
 # Files listed in .driftignore (deliberate personal forks — none currently) are
 # skipped rather than clobbered in EVERY mode — bare install, --files-only and
@@ -447,17 +453,41 @@ backup_copy() { # $1 = file -> copy saved to a fresh backup path (printed)
   prune_backups "$1"
   printf '%s' "$b"
 }
+# Single owner of "is a differing installed file only an earlier repo version?" (the
+# installed-file backup decision). 0 = installed file $2 is byte-identical to a version
+# of repo-relative source $1 (the SOURCE path: config/tiers.json, not
+# scripts/triage-tiers.json) committed in this clone's history on any ref; git has
+# those bytes, so no backup is needed. 1 = not committed, or unknown — git missing,
+# REPO_DIR not the top of its own work tree (a .git-less copy, even one nested in
+# another repo), or any git call failing: back up, exactly as before this check.
+in_repo_history() { # $1 = repo-relative src, $2 = installed file (absolute)
+  local top here blob ids
+  command -v git >/dev/null 2>&1 || return 1
+  top=$(git -C "$REPO_DIR" rev-parse --show-toplevel 2>/dev/null) || return 1
+  here=$(cd "$REPO_DIR" && pwd -P) || return 1
+  [ -n "$top" ] && [ "$top" = "$here" ] || return 1
+  blob=$(git -C "$REPO_DIR" hash-object --no-filters -- "$2" 2>/dev/null) || return 1
+  [ -n "$blob" ] || return 1
+  # Every blob id the path ever had (old and new side of each change, root commit too).
+  ids=$(git -C "$REPO_DIR" log --all --root --no-renames --raw --no-abbrev --format= -- "$1" 2>/dev/null) || return 1
+  printf '%s\n' "$ids" | awk -v b="$blob" '$3 == b || $4 == b { f = 1 } END { exit f ? 0 : 1 }'
+}
 
 # Copy a repo file into place, backing up a locally-modified target first so a
 # re-run never silently clobbers edits you made under ~/.claude (e.g. a tuned
-# statusline threshold or a hand-edited triage.md).
-copy_file() { # $1 = src, $2 = dst
+# statusline threshold or a hand-edited triage.md). A target holding an earlier
+# committed version of the same source (in_repo_history) is replaced without one.
+copy_file() { # $1 = repo-relative src, $2 = dst
   local b
-  if [ -f "$2" ] && ! cmp -s "$1" "$2"; then
-    b=$(backup_copy "$2")
-    echo "  note: $2 differed from the repo — saved your copy to $b"
+  if [ -f "$2" ] && ! cmp -s "$REPO_DIR/$1" "$2"; then
+    if in_repo_history "$1" "$2"; then
+      echo "  note: $2 held an earlier repo version — replaced without a backup (git history has it)"
+    else
+      b=$(backup_copy "$2")
+      echo "  note: $2 differed from the repo — saved your copy to $b"
+    fi
   fi
-  cp "$1" "$2"
+  cp "$REPO_DIR/$1" "$2"
 }
 
 # Write a jq-produced tmp file over $SETTINGS. If $SETTINGS is a symlink (common
@@ -485,12 +515,17 @@ install_file() {
     status=$(plan_file_status "$REPO_DIR/$rel" "$dst")
     case "$status" in
       create) echo "  create: $dst" ;;
-      overwrite) echo "  overwrite (differs from repo — backs up to $dst.bak-triage-<timestamp> first): $dst" ;;
+      overwrite)
+        if in_repo_history "$rel" "$dst"; then
+          echo "  overwrite (an earlier repo version — replaced without a backup, git history has it): $dst"
+        else
+          echo "  overwrite (a local edit — backs up to $dst.bak-triage-<timestamp> first): $dst"
+        fi ;;
       unchanged) echo "  unchanged: $dst" ;;
     esac
     return
   fi
-  copy_file "$REPO_DIR/$rel" "$dst"
+  copy_file "$rel" "$dst"
   if [ "$mode" = "x" ]; then
     chmod +x "$dst"
   fi
@@ -498,14 +533,14 @@ install_file() {
 
 # =============================================================================
 # 1. Installed files (agents, statusline, /triage-exec workflow, usage script,
-#    triage.md rubric) — the only step --files-only performs.
+#    triage.md rubric, the triage-plan skill) — the only step --files-only performs.
 # =============================================================================
 if [ "$DRY_RUN" -eq 1 ]; then
   echo "Plan (dry run — no changes will be made):"
   echo ""
   echo "Files:"
 else
-  mkdir -p "$CLAUDE_DIR/agents" "$CLAUDE_DIR/workflows" "$CLAUDE_DIR/scripts"
+  mkdir -p "$CLAUDE_DIR/agents" "$CLAUDE_DIR/workflows" "$CLAUDE_DIR/scripts" "$CLAUDE_DIR/skills/triage-plan"
 fi
 
 for f in "$REPO_DIR"/agents/triage-*.md; do
@@ -513,6 +548,7 @@ for f in "$REPO_DIR"/agents/triage-*.md; do
   install_file "agents/$base" "$CLAUDE_DIR/agents/$base"
 done
 install_file "triage.md" "$CLAUDE_DIR/triage.md"
+install_file "skills/triage-plan/SKILL.md" "$CLAUDE_DIR/skills/triage-plan/SKILL.md"
 install_file "statusline.sh" "$CLAUDE_DIR/statusline.sh" x
 install_file "workflows/triage-exec.js" "$CLAUDE_DIR/workflows/triage-exec.js"
 install_file "workflows/triage-compare.js" "$CLAUDE_DIR/workflows/triage-compare.js"
