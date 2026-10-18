@@ -1,7 +1,7 @@
 export const meta = {
   name: 'triage-compare',
   description: 'Bake-off. kind build (default): run one brief on several candidates (Claude levels, codex), each in its own staged worktree outside the repo, then grade every worktree diff independently with patch-check.sh. kind review: the same pinned snapshot + range diff to N reviewers in parallel, merge duplicate findings, blind cross-vendor adjudication, per-reviewer precision/recall. Never applies anything; the real repo is never a candidate or reviewer workdir.',
-  whenToUse: 'Bake-off on ONE well-specified task (kind build, the default) or one review (kind:"review"); never applies anything. Build args = {repo, base?, brief, files, acceptance, checks:[cmd...], outDir, candidates:[{vendor:claude|codex, level, model?, effort?, label?}]}. Review args = {kind:"review", repo, repoName, base, include:[globs], groundTruth, outDir, reviewers:[...]}; default adjudicators = config/tiers.json levels.deep per vendor. Full arg spec: README.md › Workflow arguments › triage-compare.',
+  whenToUse: 'Load the triage-plan skill first. Bake-off on ONE well-specified task (kind build, the default) or one review (kind:"review"); never applies anything. Build args = {repo, base?, brief, files, acceptance, checks:[cmd...], outDir, candidates:[{vendor:claude|codex, level, model?, effort?, label?}]}. Review args = {kind:"review", repo, repoName, base, include:[globs], groundTruth, outDir, reviewers:[...]}; default adjudicators = config/tiers.json levels.deep per vendor. Full arg spec: README.md › Workflow arguments › triage-compare.',
   phases: [
     { title: 'Stage' },
     { title: 'Candidates' },

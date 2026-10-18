@@ -1,7 +1,7 @@
 export const meta = {
   name: 'triage-exec',
   description: 'Execute a pre-built triage plan: delegate each subtask to its level agent (Claude, or an external vendor), run the objective checks, remediate and escalate',
-  whenToUse: 'Run a plan the orchestrator has ALREADY classified (it never classifies; a malformed plan throws before any spawn): args = {repo?, subtasks:[{brief, level, vendor?, files, acceptance, danger?, effort?, checks?}], checks:[cmd...], review?, crossReview?, vendor?, bakeoff?, noFable?}. noFable: true (rubric rule 7 material) refuses claude top subtasks and stops at deep@max with report.needsUser instead of escalating to Fable. Inline build bake-offs are on by default: pass bakeoff on every plan unless triage.md rule 10 excludes the work, then run each report.ingest entry. Full arg spec: README.md › Workflow arguments › triage-exec.',
+  whenToUse: 'Load the triage-plan skill first. Run a plan the orchestrator has ALREADY classified (it never classifies; a malformed plan throws before any spawn): args = {repo?, subtasks:[{brief, level, vendor?, files, acceptance, danger?, effort?, checks?}], checks:[cmd...], review?, crossReview?, vendor?, bakeoff?, noFable?}. noFable: true (rubric rule 7 material) refuses claude top subtasks and stops at deep@max with report.needsUser instead of escalating to Fable. Inline build bake-offs are on by default: pass bakeoff on every plan unless triage.md rule 10 excludes the work, then run each report.ingest entry. Full arg spec: README.md › Workflow arguments › triage-exec.',
   phases: [
     { title: 'Execute' },
     { title: 'Verify' },

@@ -1,7 +1,7 @@
 export const meta = {
   name: 'triage-parity',
   description: 'Parity research run: every candidate (vendor x model x effort) climbs a private task suite band by band (B1 mechanical to B4 danger/judgment), each build task graded by a nested triage-compare bake-off, rubric tasks by two blind judges, review tasks by seeded-defect recall/precision. Returns a ranking, plateau clusters and flags; never writes tiers.json or anything outside outDir. Tier-change proposals are not made here: the orchestrator saves the result, runs scripts/parity-report.sh ingest-parity, then report (the ONE owner of the ledger and the decision rule).',
-  whenToUse: 'Re-rank models and efforts when a model ships or on request: args = {suite:"/abs suite dir", outDir:"/abs fresh dir outside any source repo", candidates:[{vendor:claude|codex, level, model?, effort?, label?}], bands?, reps?, judges?, taskFilter?}. Proposes nothing itself: save the result, then run scripts/parity-report.sh ingest-parity and report. Full arg spec: README.md › Workflow arguments › triage-parity.',
+  whenToUse: 'Load the triage-plan skill first. Re-rank models and efforts when a model ships or on request: args = {suite:"/abs suite dir", outDir:"/abs fresh dir outside any source repo", candidates:[{vendor:claude|codex, level, model?, effort?, label?}], bands?, reps?, judges?, taskFilter?}. Proposes nothing itself: save the result, then run scripts/parity-report.sh ingest-parity and report. Full arg spec: README.md › Workflow arguments › triage-parity.',
   phases: [
     { title: 'Load' },
     { title: 'Desk' },

@@ -189,7 +189,9 @@ done
 # Over the cap Claude Code delivers only a 2,000-char preview, so the main session
 # would silently lose most of the rubric; the hook prints a notice instead, and this
 # check keeps it from ever shipping that way.
-TRIAGE_MD_MAX=9500
+# The budget is far below the cap on purpose (Wave 27): triage.md is the always-on
+# core, loaded every turn; plan-time detail belongs in skills/triage-plan/SKILL.md.
+TRIAGE_MD_MAX=5500
 if CTX_OUT=$(./scripts/triage-context.sh --check triage.md 2>&1); then
   ok "triage.md: $CTX_OUT"
 else
@@ -390,8 +392,8 @@ fi
 # --- 7. no hard-coded model ids outside config/tiers.json --------------------------
 # config/tiers.json is the one owner of every model id (AGENTS.md › Single owners);
 # an id typed into code goes stale silently when a tier is upgraded. Scanned: every
-# code/config file (*.sh *.js *.mjs *.json *.yml Makefile), agents/*.md and triage.md
-# (the installed rubric: an id there is routing policy, so it names DANGER_FAMILIES or
+# code/config file (*.sh *.js *.mjs *.json *.yml Makefile), agents/*.md, triage.md and
+# skills/triage-plan/SKILL.md (the installed rubric and its on-demand half: an id there is routing policy, so it names DANGER_FAMILIES or
 # tiers.json instead); full-line code comments are skipped (an example in prose is not
 # configuration). Not scanned: the owner itself, test/ (fixtures pin ids on purpose),
 # qc/ (mutations plant them) and prose docs (README, CHANGELOG, AGENTS.md, scripts/README).
@@ -412,7 +414,7 @@ model_id_allowed() { # FILE LINE -> 0 when the allowlist covers it
 MID_HITS=""
 MID_FILES=$( { find . \( -path ./.git -o -path ./test -o -path ./qc -o -path './.?*' \) -prune -o -type f \
     \( -name '*.sh' -o -name '*.js' -o -name '*.mjs' -o -name '*.json' -o -name '*.yml' -o -name Makefile \) -print
-  find ./agents -maxdepth 1 -type f -name '*.md' -print 2>/dev/null; echo ./triage.md; } | sed 's#^\./##' | grep -vx 'config/tiers.json' | sort -u)
+  find ./agents -maxdepth 1 -type f -name '*.md' -print 2>/dev/null; echo ./triage.md; echo ./skills/triage-plan/SKILL.md; } | sed 's#^\./##' | grep -vx 'config/tiers.json' | sort -u)
 while IFS= read -r f; do
   [ -n "$f" ] || continue
   case "$f" in *.js|*.mjs) cmt='^[[:space:]]*(//|\*|/\*)' ;; *.json|*.md) cmt='^$' ;; *) cmt='^[[:space:]]*#' ;; esac
