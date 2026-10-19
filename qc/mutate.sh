@@ -204,7 +204,12 @@ fi
 # its first branch); 196 now guards the CRLF pointer line (has_line), 212 the outdated
 # pointer's migration.
 # Wave 26: 386 covers runGate's no-retry on a gate auto mode denied.
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165 166 167 168 169 170 171 172 173 174 175 177 178 179 180 182 183 184 185 187 189 190 191 192 193 194 195 196 197 198 199 200 202 203 204 205 206 209 210 211 212 213 214 215 216 217 218 219 220 221 222 223 224 225 226 227 228 229 230 231 232 233 234 235 236 237 238 239 240 241 242 243 244 245 246 247 248 249 250 251 252 253 254 255 256 257 258 259 260 261 262 263 264 265 266 267 268 269 270 271 272 273 274 275 276 277 278 279 280 281 282 283 284 285 286 287 288 289 290 291 292 293 294 296 297 298 299 300 301 302 304 306 307 308 309 310 311 312 313 314 315 316 317 318 319 320 321 322 323 324 325 326 327 328 329 330 331 332 333 334 335 336 337 338 339 340 341 342 343 344 345 346 350 351 353 354 356 357 358 359 361 362 363 364 365 366 367 368 369 370 371 372 373 374 375 376 377 378 379 380 381 382 383 384 385 386"
+# Wave 27: 387-394 cover install.sh's backup-only-local-edits decision (in_repo_history:
+# never always-committed / never-committed, the non-git and nested-copy fallbacks, the
+# per-path and all-refs lookup, the SOURCE-path key, the --dry-run wording); 395-399
+# the triage-plan skill (uninstall removes it, never a non-empty dir or skills/ itself;
+# install places it; drift checks it). 400: lint check 7 scans the skill for model ids.
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165 166 167 168 169 170 171 172 173 174 175 177 178 179 180 182 183 184 185 187 189 190 191 192 193 194 195 196 197 198 199 200 202 203 204 205 206 209 210 211 212 213 214 215 216 217 218 219 220 221 222 223 224 225 226 227 228 229 230 231 232 233 234 235 236 237 238 239 240 241 242 243 244 245 246 247 248 249 250 251 252 253 254 255 256 257 258 259 260 261 262 263 264 265 266 267 268 269 270 271 272 273 274 275 276 277 278 279 280 281 282 283 284 285 286 287 288 289 290 291 292 293 294 296 297 298 299 300 301 302 304 306 307 308 309 310 311 312 313 314 315 316 317 318 319 320 321 322 323 324 325 326 327 328 329 330 331 332 333 334 335 336 337 338 339 340 341 342 343 344 345 346 350 351 353 354 356 357 358 359 361 362 363 364 365 366 367 368 369 370 371 372 373 374 375 376 377 378 379 380 381 382 383 384 385 386 387 388 389 390 391 392 393 394 395 396 397 398 399 400"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -487,6 +492,20 @@ mut_file() {
     384) echo "workflows/triage-compare.js" ;;
     385) echo "workflows/triage-exec.js" ;;
     386) echo "workflows/triage-exec.js" ;;
+    387) echo "install.sh" ;;
+    388) echo "install.sh" ;;
+    389) echo "install.sh" ;;
+    390) echo "install.sh" ;;
+    391) echo "install.sh" ;;
+    392) echo "install.sh" ;;
+    393) echo "install.sh" ;;
+    394) echo "install.sh" ;;
+    395) echo "uninstall.sh" ;;
+    396) echo "uninstall.sh" ;;
+    397) echo "uninstall.sh" ;;
+    398) echo "install.sh" ;;
+    399) echo "drift.sh" ;;
+    400) echo "skills/triage-plan/SKILL.md" ;;
     *) echo "" ;;
   esac
 }
@@ -855,6 +874,20 @@ mut_desc() {
     384) echo 'triage-compare.js: a 126/127 the base cannot run either but reaches differently (INCONCLUSIVE) grades as the candidate'\''s fail' ;;
     385) echo "triage-exec.js: a plan still setting the removed args.overflow is silently run (its builders stay on Claude) instead of refused" ;;
     386) echo "triage-exec.js: a gate auto mode denied is retried like a dead one (the retry reads as a bypass) and not listed in deniedGates" ;;
+    387) echo "install.sh: in_repo_history reads every differing installed file as committed (a local edit is overwritten without a backup)" ;;
+    388) echo "install.sh: in_repo_history never reads a file as committed (every repo release leaves a .bak-triage copy again)" ;;
+    389) echo "install.sh: a REPO_DIR that is no git work tree reads as committed (the non-git fallback to a backup removed)" ;;
+    390) echo "install.sh: a .git-less REPO_DIR nested in another work tree asks that tree's history (top-of-own-work-tree check dropped)" ;;
+    391) echo "install.sh: the history lookup drops its path filter (bytes committed under ANY path excuse the backup)" ;;
+    392) echo "install.sh: the history lookup drops --all (a version committed only on another ref is backed up)" ;;
+    393) echo "install.sh: the history lookup is keyed on the installed path (scripts/triage-tiers.json), not the source path (config/tiers.json)" ;;
+    394) echo "install.sh: --dry-run reports every overwrite as a local edit (never says an earlier repo version is replaced without a backup)" ;;
+    395) echo "uninstall.sh: the triage-plan skill is left installed" ;;
+    396) echo "uninstall.sh: skills/triage-plan is rm -rf'd even when it holds a file of yours" ;;
+    397) echo "uninstall.sh: \$CLAUDE_DIR/skills (and every other skill in it) is removed" ;;
+    398) echo "install.sh: the triage-plan skill is not installed" ;;
+    399) echo "drift.sh: the installed triage-plan skill is not checked" ;;
+    400) echo "skills/triage-plan/SKILL.md: names a model id in prose (lint check 7 scans the skill too)" ;;
     *) echo "" ;;
   esac
 }
@@ -902,7 +935,7 @@ mut_suite() {
     222|223|224|225|226|227|228|229|230|231|232|233|234|235|236|237|238|239|240|241|242|243|244|245) echo "scenarios" ;;
     246|247|248|249|250|251|252|253|254|255|256) echo "compare" ;;
     257|258|259) echo "parity" ;;
-    260|273|274|275|276) echo "lint" ;;
+    260|273|274|275|276|400) echo "lint" ;;
     261|262|263|264|265|266|267|268|269) echo "parityreport" ;;
     270|271|272) echo "usage" ;;
     277|278|279|280|281|282|283) echo "stagewt" ;;
@@ -953,6 +986,7 @@ mut_suite() {
     384) echo "compare" ;;
     385) echo "scenarios" ;;
     386) echo "scenarios" ;;
+    387|388|389|390|391|392|393|394|395|396|397|398|399) echo "roundtrip" ;;
     *) echo "" ;;
   esac
 }
@@ -2836,10 +2870,10 @@ MUT274
     275)
       # triage.md: names a model id in prose (lint check 7, model ids live in config/tiers.json)
       cat > "$rep" <<'MUT275'
-## Tiers: level × vendor × role
+## How work flows
 - MUTATED: danger work runs on gpt-6-astra
 MUT275
-      mut_replace_block "$target" '## Tiers: level × vendor × role' 1 "$rep"
+      mut_replace_block "$target" '## How work flows' 1 "$rep"
       ;;
     276)
       # ext-run.sh: a hard-coded model id (lint check 7)
@@ -3564,6 +3598,105 @@ MUT385
 MUT386
       mut_replace_block "$target" '    if (!live(out) && gateDenied(out)) {' 1 "$rep"
       ;;
+    387)
+      # install.sh in_repo_history: every differing file counts as an earlier repo version.
+      cat > "$rep" <<'MUT387'
+  return 0 # MUTATED: every differing file read as committed
+MUT387
+      mut_replace_block "$target" '  command -v git >/dev/null 2>&1 || return 1' 1 "$rep"
+      ;;
+    388)
+      # install.sh in_repo_history: nothing counts as committed.
+      cat > "$rep" <<'MUT388'
+  return 1 # MUTATED: no installed file read as committed
+MUT388
+      mut_replace_block "$target" '  command -v git >/dev/null 2>&1 || return 1' 1 "$rep"
+      ;;
+    389)
+      # install.sh in_repo_history: no work tree to ask reads as committed.
+      cat > "$rep" <<'MUT389'
+  top=$(git -C "$REPO_DIR" rev-parse --show-toplevel 2>/dev/null) || return 0 # MUTATED: no work tree read as committed
+MUT389
+      mut_replace_block "$target" '  top=$(git -C "$REPO_DIR" rev-parse --show-toplevel 2>/dev/null) || return 1' 1 "$rep"
+      ;;
+    390)
+      # install.sh in_repo_history: REPO_DIR need not be the top of its own work tree.
+      cat > "$rep" <<'MUT390'
+  : # MUTATED: nested copy asks the enclosing work tree
+MUT390
+      mut_replace_block "$target" '  [ -n "$top" ] && [ "$top" = "$here" ] || return 1' 1 "$rep"
+      ;;
+    391)
+      # install.sh in_repo_history: any blob in the history counts, whatever its path.
+      cat > "$rep" <<'MUT391'
+  ids=$(git -C "$REPO_DIR" log --all --root --no-renames --raw --no-abbrev --format= 2>/dev/null) || return 1 # MUTATED: path filter dropped
+MUT391
+      mut_replace_block "$target" '  ids=$(git -C "$REPO_DIR" log --all --root --no-renames --raw --no-abbrev --format= -- "$1" 2>/dev/null) || return 1' 1 "$rep"
+      ;;
+    392)
+      # install.sh in_repo_history: only HEAD's history is asked.
+      cat > "$rep" <<'MUT392'
+  ids=$(git -C "$REPO_DIR" log --root --no-renames --raw --no-abbrev --format= -- "$1" 2>/dev/null) || return 1 # MUTATED: --all dropped
+MUT392
+      mut_replace_block "$target" '  ids=$(git -C "$REPO_DIR" log --all --root --no-renames --raw --no-abbrev --format= -- "$1" 2>/dev/null) || return 1' 1 "$rep"
+      ;;
+    393)
+      # install.sh copy_file: the history lookup keyed on the installed (dst) path.
+      cat > "$rep" <<'MUT393'
+    if in_repo_history "${2#"$CLAUDE_DIR"/}" "$2"; then # MUTATED: keyed on the installed path
+MUT393
+      mut_replace_block "$target" '    if in_repo_history "$1" "$2"; then' 1 "$rep"
+      ;;
+    394)
+      # install.sh install_file --dry-run: every overwrite reported as a local edit.
+      cat > "$rep" <<'MUT394'
+        if false; then # MUTATED: dry-run always reports a local edit
+MUT394
+      mut_replace_block "$target" '        if in_repo_history "$rel" "$dst"; then' 1 "$rep"
+      ;;
+    395)
+      # uninstall.sh: the triage-plan skill is never removed.
+      cat > "$rep" <<'MUT395'
+# MUTATED: triage-plan skill left installed
+MUT395
+      mut_replace_block "$target" 'remove_installed "skills/triage-plan/SKILL.md" "$CLAUDE_DIR/skills/triage-plan/SKILL.md"' 1 "$rep"
+      ;;
+    396)
+      # uninstall.sh: skills/triage-plan removed whatever it still holds.
+      cat > "$rep" <<'MUT396'
+  rm -rf "$CLAUDE_DIR/skills/triage-plan" # MUTATED: non-empty skill dir removed
+MUT396
+      mut_replace_block "$target" '  rmdir "$CLAUDE_DIR/skills/triage-plan" 2>/dev/null || true' 1 "$rep"
+      ;;
+    397)
+      # uninstall.sh: the whole skills dir goes with ours.
+      cat > "$rep" <<'MUT397'
+  rmdir "$CLAUDE_DIR/skills/triage-plan" 2>/dev/null; rm -rf "$CLAUDE_DIR/skills" # MUTATED: skills dir removed
+MUT397
+      mut_replace_block "$target" '  rmdir "$CLAUDE_DIR/skills/triage-plan" 2>/dev/null || true' 1 "$rep"
+      ;;
+    398)
+      # install.sh: the triage-plan skill is not installed.
+      cat > "$rep" <<'MUT398'
+# MUTATED: triage-plan skill not installed
+MUT398
+      mut_replace_block "$target" 'install_file "skills/triage-plan/SKILL.md" "$CLAUDE_DIR/skills/triage-plan/SKILL.md"' 1 "$rep"
+      ;;
+    399)
+      # drift.sh: the installed triage-plan skill is not checked.
+      cat > "$rep" <<'MUT399'
+# MUTATED: triage-plan skill not drift-checked
+MUT399
+      mut_replace_block "$target" 'check_file "skills/triage-plan/SKILL.md" "$CLAUDE_DIR/skills/triage-plan/SKILL.md"' 1 "$rep"
+      ;;
+    400)
+      # skills/triage-plan/SKILL.md: names a model id in prose (lint check 7)
+      cat > "$rep" <<'MUT400'
+## Building a plan (core rules 1–10, full form)
+- MUTATED: skill says danger work runs on gpt-6-astra
+MUT400
+      mut_replace_block "$target" '## Building a plan (core rules 1–10, full form)' 1 "$rep"
+      ;;
     *)
       return 1
       ;;
@@ -3942,6 +4075,20 @@ verify_mutation() {
     384) grep -qF 'MUTATED: inconclusive reads as a fail' "$target" && lacks '    if (CHECK_ENV_RC.includes(baseRcs[f])) {' "$target" ;;
     385) grep -qF 'MUTATED: removed overflow flag ignored' "$target" && lacks 'if (args.overflow !== undefined) bad(' "$target" ;;
     386) grep -qF 'MUTATED: denied gate retried' "$target" && lacks '    if (!live(out) && gateDenied(out)) {' "$target" ;;
+    387) grep -qF 'MUTATED: every differing file read as committed' "$target" && lacks '  command -v git >/dev/null 2>&1 || return 1' "$target" ;;
+    388) grep -qF 'MUTATED: no installed file read as committed' "$target" && lacks '  command -v git >/dev/null 2>&1 || return 1' "$target" ;;
+    389) grep -qF 'MUTATED: no work tree read as committed' "$target" && lacks '  top=$(git -C "$REPO_DIR" rev-parse --show-toplevel 2>/dev/null) || return 1' "$target" ;;
+    390) grep -qF 'MUTATED: nested copy asks the enclosing work tree' "$target" && lacks '  [ -n "$top" ] && [ "$top" = "$here" ] || return 1' "$target" ;;
+    391) grep -qF 'MUTATED: path filter dropped' "$target" && lacks '--format= -- "$1" 2>/dev/null) || return 1' "$target" ;;
+    392) grep -qF 'MUTATED: --all dropped' "$target" && lacks 'log --all --root' "$target" ;;
+    393) grep -qF 'MUTATED: keyed on the installed path' "$target" && lacks '    if in_repo_history "$1" "$2"; then' "$target" ;;
+    394) grep -qF 'MUTATED: dry-run always reports a local edit' "$target" && lacks '        if in_repo_history "$rel" "$dst"; then' "$target" ;;
+    395) grep -qF 'MUTATED: triage-plan skill left installed' "$target" && lacks 'remove_installed "skills/triage-plan/SKILL.md"' "$target" ;;
+    396) grep -qF 'MUTATED: non-empty skill dir removed' "$target" && lacks '  rmdir "$CLAUDE_DIR/skills/triage-plan" 2>/dev/null || true' "$target" ;;
+    397) grep -qF 'MUTATED: skills dir removed' "$target" && lacks '  rmdir "$CLAUDE_DIR/skills/triage-plan" 2>/dev/null || true' "$target" ;;
+    398) grep -qF 'MUTATED: triage-plan skill not installed' "$target" && lacks 'install_file "skills/triage-plan/SKILL.md"' "$target" ;;
+    399) grep -qF 'MUTATED: triage-plan skill not drift-checked' "$target" && lacks 'check_file "skills/triage-plan/SKILL.md"' "$target" ;;
+    400) grep -qF 'MUTATED: skill says danger work runs on gpt-6-astra' "$target" ;;
     *) return 1 ;;
   esac
 }

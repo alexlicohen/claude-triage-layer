@@ -4,10 +4,42 @@ Reverse-chronological. Each entry cites the commit(s) it corresponds to and,
 where known, the test-count delta. See `test/roundtrip.sh` and `test/lint.sh`
 for the current check catalog.
 
+## Wave 27 — rubric split + backups only for local edits (branch wave27-rubric-split; 2026-10-18)
+
+Requested by the ~/projects root session (best-practices review: always-loaded instructions short,
+situational workflows as skills); Alex chose the skill, the backup design and the cleanup here.
+Commits: 8f303b7 (rubric split), installer commit on the same branch (fill in hashes next wave).
+- **Rubric split**: `triage.md` (injected every main-session turn) 9,496 → 5,405 bytes, the
+  always-on core: tiers, routing, delegation, Fable rule 7, danger floor, codex boundary, rule 10's
+  exclusions, verification 1–7 in short form, session end, kill switch. Everything plan-time moves
+  verbatim to the new `skills/triage-plan/SKILL.md` (10.4 KB, loaded on demand): bake-off
+  construction, report handling (withheld, LEAK, ingest, external, needsUser, deniedGates),
+  verification 6–7 in full, usage, the full tier table. Rule numbers kept (rule 7, rule 10,
+  verification 4/6 are cited by triage-exec.js, README and the CLAUDE.md adapter). The three
+  workflows' `whenToUse` start with "Load the triage-plan skill first.". Above the 2–3 KB target:
+  the first ~4 KB cut weakened a dozen rules (worst: rule 10's PHI/boundary exclusions only in
+  the skill) — restored.
+- Gates for the rewrite: an independent rule-by-rule preservation audit (deep tier, fresh context;
+  FIX → PASS after one round) and a codex second opinion (24 findings, all addressed). Lint:
+  `triage.md` budget 9,500 → 5,500; the skill joins the model-id scan.
+- **Installer** (install.sh / uninstall.sh / drift.sh): the skill installs to
+  `~/.claude/skills/triage-plan/SKILL.md`, uninstall removes it (non-repo bytes to the backup dir
+  as usual) and its dir only when empty, never `skills/` or another skill; drift checks it.
+- **Backups only for local edits**: new `in_repo_history()` next to the backup owners. A differing
+  installed file whose bytes match a committed version of the same SOURCE path on any ref is
+  replaced without a backup (note printed; `--dry-run` says which case). No git, REPO_DIR not the
+  top of its own work tree, or any git error → backed up as before. CLAUDE.md backups unchanged.
+  Cause: every repo change used to back up the previous release (33 such files, all in git).
+- Tests: roundtrip 243 → 258 (HIST1–5, NG1–2, SK1–8). Mutations 387–400 (275 re-anchored: its triage.md heading moved). Built by triage-exec
+  (deep, danger); first run aborted LEAK (orchestrator edited the tree mid-bake-off; nothing
+  applied); re-run: planned and codex challenger both pass, planned applied, reviewer PASS.
+- Deferred: whether Claude Code re-attaches a loaded skill's body after compaction is unknown;
+  the core's load line covers resumed work and session end.
+
 ## Wave 26 — harness-friction fixes A, D, G (branch wave26-harness-friction; 2026-10-18)
 
 Source: transcript scan Aug 30–Oct 17 (1,760 tool errors) by the ~/projects root session;
-Alex approved A, D, G there. Commit: see PR (fill in at the next wave).
+Alex approved A, D, G there. Commit: c05b835 (PR #38, merge 0c3360d).
 - **A — gate denials and sleep-polls (`workflows/triage-exec.js`)**: the check-gate prompt
   now runs the command in one Bash call with `timeout: 600000`; a backgrounded command is
   waited on with a bounded `grep -q '^CHECKRC '` loop (never `sleep N; cmd`: 68 of 82

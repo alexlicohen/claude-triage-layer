@@ -3,7 +3,7 @@
 # repo, file-by-file, for: the 7 agents, statusline.sh, workflows/triage-exec.js
 # triage-compare.js and triage-parity.js, the scripts (incl. ext-run.sh, patch-check.sh, stage-worktree.sh, review-stage.sh,
 # parity-suite.sh, parity-cost.sh, parity-report.sh and the triage-context.sh SessionStart hook), config/tiers.json (installed as
-# scripts/triage-tiers.json), triage.md. Prints one of `same` / `MISSING (not installed)` / `FORKED` per
+# scripts/triage-tiers.json), triage.md, skills/triage-plan/SKILL.md. Prints one of `same` / `MISSING (not installed)` / `FORKED` per
 # file (or `forked (expected)` for files listed in .driftignore), then a warn-only
 # "settings migration pending" line for each settings.json change a bare install
 # would still make (install.sh --settings-status).
@@ -83,6 +83,7 @@ check_file "scripts/triage-tiers.sh" "$CLAUDE_DIR/scripts/triage-tiers.sh"
 check_file "scripts/triage-context.sh" "$CLAUDE_DIR/scripts/triage-context.sh"
 check_file "config/tiers.json" "$CLAUDE_DIR/scripts/triage-tiers.json"
 check_file "triage.md" "$CLAUDE_DIR/triage.md"
+check_file "skills/triage-plan/SKILL.md" "$CLAUDE_DIR/skills/triage-plan/SKILL.md"
 
 # Warn-only: a forced subagent model silently collapses every tier onto one model, so
 # the installed files can be byte-identical while the routing they encode is inert. This
