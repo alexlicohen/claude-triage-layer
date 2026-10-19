@@ -30,7 +30,7 @@ Commits: 8f303b7 (rubric split), installer commit on the same branch (fill in ha
   replaced without a backup (note printed; `--dry-run` says which case). No git, REPO_DIR not the
   top of its own work tree, or any git error → backed up as before. CLAUDE.md backups unchanged.
   Cause: every repo change used to back up the previous release (33 such files, all in git).
-- Tests: roundtrip 243 → 258 (HIST1–5, NG1–2, SK1–8). Mutations 387–399. Built by triage-exec
+- Tests: roundtrip 243 → 258 (HIST1–5, NG1–2, SK1–8). Mutations 387–400 (275 re-anchored: its triage.md heading moved). Built by triage-exec
   (deep, danger); first run aborted LEAK (orchestrator edited the tree mid-bake-off; nothing
   applied); re-run: planned and codex challenger both pass, planned applied, reviewer PASS.
 - Deferred: whether Claude Code re-attaches a loaded skill's body after compaction is unknown;
