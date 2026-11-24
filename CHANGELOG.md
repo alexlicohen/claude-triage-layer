@@ -4,11 +4,39 @@ Reverse-chronological. Each entry cites the commit(s) it corresponds to and,
 where known, the test-count delta. See `test/roundtrip.sh` and `test/lint.sh`
 for the current check catalog.
 
+## Wave 28 — codex read gate + app connectors off (branch wave28-codex-read-gate; 2026-11-24)
+
+Trigger: on 2026-11-21 five cross-vendor reviews from another project (codex-cli 0.171.0, upgraded
+that morning) exited 0 with a final message saying codex could not read `inputs/input.md`
+("session-opening timeout" on every tool call; no command in the audit log). Not reproduced
+afterwards (six live runs read their input); cause unknown.
+Commits: fe0e3d5 (feature flags), gate/tests/docs commit on the same branch (fill in hashes next wave).
+- **Read gate** (`ext-run.sh` `codex_gate()`): a read-only run with a staged `--input`/`--input-dir`
+  whose event stream has no `item.completed` `command_execution` with `exit_code` 0 is exit 4,
+  `UNAVAILABLE: codex answered without reading its staged input …`, instead of a pass. Build mode
+  and runs without staged input are unaffected. Known limit: an input codex could only consume
+  through a non-shell tool (an image via `view_image`) would be refused.
+- **App connectors off**: `codex_invoke()` passes `-c features.apps=false -c features.plugins=false`.
+  `--ignore-user-config` does not remove the account's connectors: a confined run saw 320 tools
+  (295 `mcp__codex_apps`); with the flags 24, and `list_mcp_resources` is empty (verified live,
+  0.171.0). A minimal run also fell from ~74k to ~29k tokens.
+- Flags and the sandbox wrapping re-verified live against codex-cli 0.171.0 (2026-11-24).
+- Tests: ext-run 233 → 242 (C15a–e, C16a–b; stub modes `noread`, `readfail`, `readstarted`; the
+  stub's passing events now include a read when inputs are staged). Mutations 401–407 (each
+  hand-checked against the suite; strict run in CI).
+- Wave 27 hashes: e5f5e30 (installer), 44f2183 (mutation re-anchor), merge f4cdaf6.
+- Process: built by the deep tier from a direct brief, not triage-exec, so no bake-off: the
+  Workflow harness delivered the plan args as a string and `triage-exec` refuses a non-object.
+- Deferred: (1) `triage-exec` accepting a JSON-string plan (danger zone; needs Alex's call);
+  (2) codex still has its `web` tool in non-verify read-only modes; (3) `~/.codex/AGENTS.md`
+  (a symlink into `~/.agents`) is unreadable in the sandbox: one error item per run, harmless;
+  (4) the 2026-11-21 timeout's cause.
+
 ## Wave 27 — rubric split + backups only for local edits (branch wave27-rubric-split; 2026-10-18)
 
 Requested by the ~/projects root session (best-practices review: always-loaded instructions short,
 situational workflows as skills); Alex chose the skill, the backup design and the cleanup here.
-Commits: 8f303b7 (rubric split), installer commit on the same branch (fill in hashes next wave).
+Commits: 8f303b7 (rubric split), e5f5e30 (installer), 44f2183 (mutation re-anchor); merge f4cdaf6.
 - **Rubric split**: `triage.md` (injected every main-session turn) 9,496 → 5,405 bytes, the
   always-on core: tiers, routing, delegation, Fable rule 7, danger floor, codex boundary, rule 10's
   exclusions, verification 1–7 in short form, session end, kill switch. Everything plan-time moves

@@ -44,7 +44,9 @@
 #   C*      codex: the flag table per mode, every result gate, the watchdog,
 #           the --schema normalized to OpenAI-strict (and the reply's nulls
 #           mapped back), the API error surfaced, skills-loader stderr dropped,
-#           deny-list/markers, linked worktrees, --patch-out and --check
+#           deny-list/markers, linked worktrees, --patch-out and --check, the read
+#           gate (a read-only run with staged input must have completed a
+#           command with exit 0), the apps/plugins feature flags
 #   Y*      tiers-sync.sh (frontmatter <-> tiers.json) and triage-tiers.sh
 set -u
 
@@ -186,6 +188,12 @@ done
 ok_events() {
   echo '{"type":"thread.started","thread_id":"t-1"}'
   echo '{"type":"turn.started"}'
+  # A read-only stage with staged inputs: a real codex reads them through a
+  # command, so a passing run says so (ext-run's read gate requires it).
+  if [ -n "$(ls -A "$PWD/inputs" 2>/dev/null)" ]; then
+    echo '{"type":"item.started","item":{"id":"r0","type":"command_execution","command":"bash -lc ls -R inputs","aggregated_output":"","exit_code":null,"status":"in_progress"}}'
+    echo '{"type":"item.completed","item":{"id":"r0","type":"command_execution","command":"bash -lc ls -R inputs","aggregated_output":"note.txt","exit_code":0,"status":"completed"}}'
+  fi
   echo '{"type":"item.completed","item":{"id":"i0","type":"agent_message","text":"done"}}'
   echo '{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":30,"reasoning_output_tokens":12}}'
 }
@@ -233,6 +241,24 @@ case "${CODEX_STUB_MODE:-ok}" in
     printf 'sneaky\n' > "$PWD/sneaky.txt"
     ok_events; printf 'wrote a file\n' > "$last" ;;
   cmds)      cmd_events; ok_events; printf 'ran commands\n' > "$last" ;;
+  noread|readfail|readstarted)
+    # The 2026-11-21 shape: rc 0 and a final message, but the staged input was
+    # never read. noread: no command at all; readfail: every command failed (a
+    # non-zero exit, a timed-out one with no exit code); readstarted: a command
+    # that only ever STARTED (its exit_code 0 is forged so only the event type
+    # tells it apart from a completed read).
+    echo '{"type":"thread.started","thread_id":"t-1"}'
+    echo '{"type":"turn.started"}'
+    case "$CODEX_STUB_MODE" in
+      readfail)
+        echo '{"type":"item.completed","item":{"id":"f1","type":"command_execution","command":"bash -lc cat inputs/note.txt","aggregated_output":"","exit_code":1,"status":"failed"}}'
+        echo '{"type":"item.completed","item":{"id":"f2","type":"command_execution","command":"bash -lc cat inputs/note.txt","aggregated_output":"","exit_code":null,"status":"failed"}}' ;;
+      readstarted)
+        echo '{"type":"item.started","item":{"id":"s1","type":"command_execution","command":"bash -lc cat inputs/note.txt","aggregated_output":"","exit_code":0,"status":"in_progress"}}' ;;
+    esac
+    echo '{"type":"item.completed","item":{"id":"i0","type":"agent_message","text":"done"}}'
+    echo '{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":30,"reasoning_output_tokens":12}}'
+    printf 'I could not read inputs/note.txt\nevery tool call timed out (session-opening timeout)\n' > "$last" ;;
   cmdsfail)  cmd_events; fail_events; exit 1 ;;
   buildedit)
     printf 'CODEX WAS HERE\n' >> "$PWD/calc.txt"
@@ -845,9 +871,13 @@ chk "L1e NEVER the command output: no aggregated_output key, no output text" \
   '! grep -q "aggregated_output" "$AUD" && ! grep -q "SECRET-OUTPUT" "$AUD"'
 [ -n "$KEPT" ] && rm -rf "$KEPT"
 
+# Earlier passing runs with staged inputs logged their read command there too:
+# this run must add exactly its own 2 lines to whatever is already there.
+# shellcheck disable=SC2034  # read inside chk's eval'd condition string
+L2_BEFORE=$(wc -l < "$ROOT/.claude/logs/ext-run/codex-commands.jsonl" 2>/dev/null | tr -d " ")
 CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=cmds run_ext review --prompt-file "$BRIEF"
 chk "L2 the default audit log is \$HOME/.claude/logs/ext-run/codex-commands.jsonl" \
-  '[ "$RC" -eq 0 ] && [ "$(wc -l < "$ROOT/.claude/logs/ext-run/codex-commands.jsonl" | tr -d " ")" -eq 2 ]'
+  '[ "$RC" -eq 0 ] && [ "$(wc -l < "$ROOT/.claude/logs/ext-run/codex-commands.jsonl" | tr -d " ")" -eq $(( ${L2_BEFORE:-0} + 2 )) ]'
 
 AUD3="$ROOT/audit/failed.jsonl"
 CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=cmdsfail EXT_RUN_AUDIT_LOG="$AUD3" run_ext review --prompt-file "$BRIEF"
@@ -1001,6 +1031,42 @@ chk "C5i --raw relays the codex JSONL event stream" \
 
 CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_BIN="$HARNESS/no-such-codex" run_ext read --prompt-file "$BRIEF"
 chk "C5j a missing codex binary is UNAVAILABLE (exit 4)" '[ "$RC" -eq 4 ] && [ ! -s "$STUB_LOG" ]'
+
+# --- C15-C16: the read gate (a read-only run with staged input must have read it)
+# and the apps/plugins feature flags on every invocation --------------------------
+# shellcheck disable=SC2034  # read inside chk's eval'd condition strings
+GATE_LINE="UNAVAILABLE: codex answered without reading its staged input (no command completed with exit 0; rc 0 is NOT sufficient) — final message: I could not read inputs/note.txt every tool call timed out (session-opening timeout) "
+GD=$(new_tmp)
+mkdir -p "$GD/gate-snap"
+printf '# triage-layer test fixture: read-gate --input-dir tree\nread-gate-alpha\n' > "$GD/gate-snap/readme.md"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=noread run_ext review --prompt-file "$BRIEF" --input "$DATA"
+chk "C15a rc 0 + a final message but NO command after an --input is UNAVAILABLE (exit 4): the gate line with the final message on one line, nothing on stdout" \
+  '[ "$RC" -eq 4 ] && printf "%s\n" "$ERR" | grep -qxF -- "$GATE_LINE" && [ -z "$OUT" ]'
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=noread run_ext read --prompt-file "$BRIEF" --input-dir "$GD/gate-snap"
+chk "C15a2 ...and after an --input-dir alone (exit 4, the gate line, nothing on stdout)" \
+  '[ "$RC" -eq 4 ] && printf "%s\n" "$ERR" | grep -qxF -- "$GATE_LINE" && [ -z "$OUT" ]'
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=readfail run_ext review --prompt-file "$BRIEF" --input "$DATA"
+chk "C15b commands that all FAILED (exit_code 1, exit_code null) are no read: exit 4, the gate line, nothing on stdout" \
+  '[ "$RC" -eq 4 ] && printf "%s\n" "$ERR" | grep -qxF -- "$GATE_LINE" && [ -z "$OUT" ]'
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=readstarted run_ext review --prompt-file "$BRIEF" --input "$DATA"
+chk "C15b2 a command that only STARTED (item.started, never item.completed) is no read: exit 4, the gate line, nothing on stdout" \
+  '[ "$RC" -eq 4 ] && printf "%s\n" "$ERR" | grep -qxF -- "$GATE_LINE" && [ -z "$OUT" ]'
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext review --prompt-file "$BRIEF" --input "$DATA"
+chk "C15c a read-only run with --input and a completed command (exit_code 0) passes (exit 0, the answer on stdout)" \
+  '[ "$RC" -eq 0 ] && [ "$OUT" = "hello from codex" ] && ! printf "%s\n" "$ERR" | grep -q "^UNAVAILABLE"'
+chk "C16a a read-only run passes -c features.apps=false and -c features.plugins=false" \
+  'grep -qx "CFG=features.apps=false" "$STUB_LOG" && grep -qx "CFG=features.plugins=false" "$STUB_LOG"'
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=noread run_ext review --prompt-file "$BRIEF"
+chk "C15d a read-only run with NOTHING staged needs no command (exit 0, the answer on stdout)" \
+  '[ "$RC" -eq 0 ] && [ "$(printf "%s\n" "$OUT" | head -1)" = "I could not read inputs/note.txt" ] && ! printf "%s\n" "$ERR" | grep -q "^UNAVAILABLE"'
+GREPO="$GD/repo"
+new_repo "$GREPO"
+CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=noread \
+  run_ext build --level builder --prompt-file "$BRIEF" --workdir "$GREPO" --output "$GD/gate.patch" --input "$DATA"
+chk "C15e build mode is not subject to the read gate (--input, no command: exit 0, the answer on stdout)" \
+  '[ "$RC" -eq 0 ] && [ "$(printf "%s\n" "$OUT" | head -1)" = "I could not read inputs/note.txt" ] && ! printf "%s\n" "$ERR" | grep -q "^UNAVAILABLE"'
+chk "C16b a build run passes -c features.apps=false and -c features.plugins=false" \
+  'grep -qx "CFG=features.apps=false" "$STUB_LOG" && grep -qx "CFG=features.plugins=false" "$STUB_LOG"'
 
 # --- B*: build mode — the disposable worktree ----------------------------------
 BUILD=$(new_tmp)

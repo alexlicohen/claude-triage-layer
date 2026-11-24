@@ -106,8 +106,9 @@
 #                  --patch-out on a dirty tree — nothing ran
 #   4  UNAVAILABLE CLI missing, OS sandbox missing or not enforcing, audit log not
 #                  writable, auth failed, timed out, a failure event, the response
-#                  was empty, or the build stage could not be prepared. NEVER
-#                  silently a pass.
+#                  was empty, a read-only run with staged input answered without
+#                  any command completing with exit 0 (it never read the input),
+#                  or the build stage could not be prepared. NEVER silently a pass.
 #   5  SCHEMA      --schema was given and the response is not valid JSON
 #   6  APPLY       build only: a patch was produced but would NOT apply cleanly
 #                  to the real repo. The real repo is left exactly as it was (the
@@ -119,6 +120,15 @@
 #   turn.failed event and a top-level {"type":"error"} event, exits 1, and does
 #   NOT write the -o file. The codex gate requires rc 0 AND a non-empty -o file
 #   AND no turn.failed/error event.
+#   And rc 0 with a final message can still mean the input was never read
+#   (2026-11-21, codex-cli 0.171.0: five review runs exited 0 saying they could not
+#   read inputs/input.md — every tool call timed out — and their event stream held
+#   no command_execution item at all). codex reaches a staged file only through a
+#   tool, and every local read (plain shell or the session-based exec tool) is a
+#   command_execution item. So a READ-ONLY run with at least one --input/--input-dir
+#   also needs an item.completed command_execution with exit_code 0; build mode and
+#   runs with nothing staged are exempt. Known limit: an input codex could consume
+#   only through a non-shell tool (e.g. an image via view_image) would be refused.
 #
 # WHY codex runs inside an OS sandbox this script generates (sandbox-exec):
 #   Staging controls what we HAND codex, not what it can REACH. codex's own
@@ -1274,7 +1284,8 @@ audit_commands() {
 
 # ---------------------------------------------------------------------------
 # codex adapter. Flags — verified live against codex-cli 0.155.1 (2026-09-23) and
-# the sandbox-exec wrapping against 0.156.1 (2026-09-24):
+# the sandbox-exec wrapping against 0.156.1 (2026-09-24); the flags and the
+# sandbox wrapping re-verified live against codex-cli 0.171.0 (2026-11-24):
 #   sandbox-exec -f <profile>       the OS confinement (see write_profile), always.
 #   exec -C <rundir>                non-interactive; workspace root pinned here,
 #                                   and the process cwd is the same dir (a cwd
@@ -1289,7 +1300,12 @@ audit_commands() {
 #   --skip-git-repo-check           the read-only stage is not a git repo.
 #   --ignore-user-config            no ~/.codex/config.toml (notify hooks etc.);
 #                                   auth is kept.
-#   --json -o <file>                JSONL events on stdout; final message in -o
+#   -c features.apps=false -c features.plugins=false
+#                                   the account's app connectors and plugins off:
+#                                   --ignore-user-config does not remove them (a
+#                                   confined run saw 320 tools, 295 of them
+#                                   mcp__codex_apps connectors; with these, 24).
+#   --json -o <file>               JSONL events on stdout; final message in -o
 #                                   (in codex's scratch dir: it must be writable).
 #   -c web_search="live"            verify mode only.
 #   - <PROMPT                       brief on stdin, never on argv.
@@ -1399,6 +1415,17 @@ codex_gate() {
   fi
   if [ ! -s "$LASTMSG" ]; then
     gate_fail "UNAVAILABLE: codex wrote no final message (-o file missing or empty; rc 0 is NOT sufficient) — $(codex_detail)" "$E_UNAVAIL"
+  fi
+  # Read-only run with staged input: codex can reach a staged file only through a
+  # tool, and every local read is a command_execution item. No such item that
+  # completed with exit_code 0 = it answered without reading what it was handed.
+  if ! mode_writes "$MODE" && [ $((${#INPUTS[@]} + ${#INPUT_DIRS[@]})) -gt 0 ]; then
+    local read_ok
+    read_ok=$(jq -rR 'fromjson? | select(type == "object" and .type == "item.completed" and (.item | type) == "object")
+      | select(.item.type == "command_execution" and .item.exit_code == 0) | .item.type' "$EVENTS" 2>/dev/null | head -1)
+    if [ -z "$read_ok" ]; then
+      gate_fail "UNAVAILABLE: codex answered without reading its staged input (no command completed with exit 0; rc 0 is NOT sufficient) — final message: $(tr '\r\n' '  ' < "$LASTMSG" | head -c 300)" "$E_UNAVAIL"
+    fi
   fi
   RESPONSE=$(cat "$LASTMSG")
 }
