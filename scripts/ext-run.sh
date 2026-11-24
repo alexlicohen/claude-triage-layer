@@ -1303,6 +1303,7 @@ codex_invoke() {
   tsecs=$(to_seconds "$TIMEOUT")
   set -- exec -C "$RUNDIR_ABS" --dangerously-bypass-approvals-and-sandbox -m "$MODEL" -c "model_reasoning_effort=$EFFORT"
   set -- "$@" --ephemeral --skip-git-repo-check --ignore-user-config --json -o "$LASTMSG"
+  set -- "$@" -c features.apps=false -c features.plugins=false
   [ -n "$SCHEMA_FILE" ] && set -- "$@" --output-schema "$SCHEMA_FILE"
   [ "$MODE" = "verify" ] && set -- "$@" -c 'web_search="live"'
   set -- "$@" -
