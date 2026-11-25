@@ -4,13 +4,41 @@ Reverse-chronological. Each entry cites the commit(s) it corresponds to and,
 where known, the test-count delta. See `test/roundtrip.sh` and `test/lint.sh`
 for the current check catalog.
 
+## Wave 29 — string-plan diagnosis + codex web search off (branch wave29-string-plan-web-off; 2026-11-25)
+
+Trigger: Wave 28's two deferred items. A triage-exec launch was refused three times with only
+"args must be a plan object (got string)": the Workflow harness passes an args that is not valid
+JSON through as the raw string (valid JSON arrives as an object), and the plan was one closing
+brace short.
+Commits: fill in hashes next wave.
+- **String-plan diagnosis** (`triage-exec.js` top-of-file arg checks, new `stringArgsCause()`): a
+  string args is still refused (string plans are never accepted), but the message names the
+  cause. Not valid JSON: "arrived as a string because it is not valid JSON" with the parser's
+  error, the string's length and its last 60 characters (truncation and unbalanced braces show
+  at the end). Valid JSON: "arrived double-encoded — pass the plan object itself". Non-string
+  non-objects keep the old "(got <type>)." message.
+- **Web search off outside verify** (`ext-run.sh` `codex_invoke()`): every non-verify mode passes
+  `-c web_search="disabled"`; verify keeps `-c web_search="live"` and is the only mode with it.
+  Before, non-verify modes left codex's default and a confined review run on 0.171.0 still listed
+  a web tool. Value from the installed codex-cli 0.171.0 binary (`strings`): the serde enum
+  `WebSearchMode` = `disabled|cached|indexed|live`, and its config hint "Set `web_search` to
+  `"live"`, `"indexed"`, `"cached"`, or `"disabled"` at the top level". Not run live (stub tests
+  only). Flag-table comment and `scripts/README.md` › Modes updated.
+- Tests: workflow-scenarios 462 → 472 (S13s-1..7); ext-run 242 → 245 (C2w, C3w, C16c; C1e now
+  asserts the off flag instead of no web_search at all). Mutations 408–411 (reasoned against the
+  suite, not run locally; strict run in CI).
+- Deferred: (1) `triage-compare.js` and `triage-parity.js` keep the generic "args must be an object
+  (got string)" message; (2) verify mode's `live` path was not re-run live (flag unchanged).
+- Live (2026-11-25, 0.171.0, review mode): tool list 24 → 23, no `web` namespace; staged input
+  read, rc 0.
+
 ## Wave 28 — codex read gate + app connectors off (branch wave28-codex-read-gate; 2026-11-24)
 
 Trigger: on 2026-11-21 five cross-vendor reviews from another project (codex-cli 0.171.0, upgraded
 that morning) exited 0 with a final message saying codex could not read `inputs/input.md`
 ("session-opening timeout" on every tool call; no command in the audit log). Not reproduced
 afterwards (six live runs read their input); cause unknown.
-Commits: fe0e3d5 (feature flags), gate/tests/docs commit on the same branch (fill in hashes next wave).
+Commits: fe0e3d5 (feature flags), 1a45d1c (read gate, tests, docs); merge hash pending.
 - **Read gate** (`ext-run.sh` `codex_gate()`): a read-only run with a staged `--input`/`--input-dir`
   whose event stream has no `item.completed` `command_execution` with `exit_code` 0 is exit 4,
   `UNAVAILABLE: codex answered without reading its staged input …`, instead of a pass. Build mode

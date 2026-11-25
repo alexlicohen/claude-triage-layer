@@ -1308,6 +1308,10 @@ audit_commands() {
 #   --json -o <file>               JSONL events on stdout; final message in -o
 #                                   (in codex's scratch dir: it must be writable).
 #   -c web_search="live"            verify mode only.
+#   -c web_search="disabled"        every other mode: codex's web tool off (left at
+#                                   codex's default, a confined review run on 0.171.0
+#                                   still listed it). Values per the 0.171.0 binary's
+#                                   WebSearchMode enum: disabled|cached|indexed|live.
 #   - <PROMPT                       brief on stdin, never on argv.
 #   TMPDIR=<scratch>/tmp            codex's temp files stay in its scratch dir.
 # CODEX_HOME is unset for the run: the profile allows exactly ~/.codex. codex has
@@ -1321,7 +1325,11 @@ codex_invoke() {
   set -- "$@" --ephemeral --skip-git-repo-check --ignore-user-config --json -o "$LASTMSG"
   set -- "$@" -c features.apps=false -c features.plugins=false
   [ -n "$SCHEMA_FILE" ] && set -- "$@" --output-schema "$SCHEMA_FILE"
-  [ "$MODE" = "verify" ] && set -- "$@" -c 'web_search="live"'
+  if [ "$MODE" = "verify" ]; then
+    set -- "$@" -c 'web_search="live"'
+  else
+    set -- "$@" -c 'web_search="disabled"'
+  fi
   set -- "$@" -
   # Its own process group (set -m): the watchdog and reap_tree signal the WHOLE
   # tree, so a grandchild (a tool the CLI spawned) cannot outlive the run.
