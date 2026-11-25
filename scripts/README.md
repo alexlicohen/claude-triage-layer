@@ -277,8 +277,12 @@ Every model id and effort is read from the tiers file: `$TRIAGE_TIERS`, else
 **Every run:** `cd <workspace> && TMPDIR=<stage>/cx/tmp sandbox-exec -f <profile> <codex>
 exec -C <workspace> --dangerously-bypass-approvals-and-sandbox -m <model> -c
 model_reasoning_effort=<effort> --ephemeral --skip-git-repo-check --ignore-user-config --json
--o <stage>/cx/last-message.txt - < <prompt>`, with `CODEX_HOME` unset. `<codex>` is the real
-file `CODEX_BIN` names (a PATH lookup that never sees a shell function, symlinks resolved).
+-o <stage>/cx/last-message.txt -c features.apps=false -c features.plugins=false - < <prompt>`,
+with `CODEX_HOME` unset. `<codex>` is the real file `CODEX_BIN` names (a PATH lookup that
+never sees a shell function, symlinks resolved). The two `features` flags switch off the account's app connectors and plugins, which
+`--ignore-user-config` does not remove (a confined run saw 320 tools, 295 of them
+`mcp__codex_apps` connectors; with the flags, 24). Flags and sandbox wrapping re-verified live
+against codex-cli 0.171.0 on 2026-11-24.
 codex has no print-timeout, so a background watchdog enforces the mode timeout (`--timeout
 N|Ns|Nm|Nh`). codex runs as its own process group (`set -m`; bash 3.2 has no `setsid`): the
 watchdog signals the whole tree (frozen with STOP, leaves first) and the group, and after
@@ -456,7 +460,7 @@ stderr and never changes the exit code.
 | 0 | OK — stdout is the model's answer (the JSONL events with `--raw`) | relay |
 | 2 | USAGE — bad mode/flags/missing file/bad tiers file; nothing ran | caller bug, fail loud |
 | 3 | REFUSED — deny-list hit, boundary not attested, codex not listed in the tiers file for this level/mode, a refused `--allow-read`, or `--patch-out` on a dirty tree; nothing ran | return `REFUSED: …` |
-| 4 | UNAVAILABLE — CLI missing, no `sandbox-exec` or a profile that does not apply/enforce, audit log dir not writable, non-zero exit, timeout, a codex failure event, empty response, or the build stage could not be prepared | return `UNAVAILABLE: …`; never substitute your own work, never read as "no findings" |
+| 4 | UNAVAILABLE — CLI missing, no `sandbox-exec` or a profile that does not apply/enforce, audit log dir not writable, non-zero exit, timeout, a codex failure event, empty response, a read-only run with staged input that never completed a command with exit 0 (the read gate), or the build stage could not be prepared | return `UNAVAILABLE: …`; never substitute your own work, never read as "no findings" |
 | 5 | SCHEMA — `--schema` given and the response is not valid JSON | retry once or report INCOMPLETE |
 | 6 | APPLY — build only: the patch would not apply cleanly to the real repo, so NOTHING was written (the tree is unchanged). The patch is left at `--output`; the answer still went to stdout | resolve by hand, or re-run |
 
@@ -466,6 +470,18 @@ exit 3 on a machine without `sandbox-exec`.
 **Exit 0 alone is never proof of work.** A failed codex turn emits `turn.failed` and
 `{"type":"error"}` events, exits 1, and writes no `-o` file; the codex gate needs rc 0, a
 non-empty `-o` file and no failure event. A codex rate limit is therefore UNAVAILABLE too.
+
+**The read gate.** rc 0 with a final message can still mean codex never read its input: on
+2026-11-21 five review runs exited 0 saying they could not read `inputs/input.md` (every tool
+call timed out), and their event stream held no `command_execution` item at all. codex reaches
+a staged file only through a tool, and every local read (plain shell or the session-based exec
+tool) is a `command_execution` item. So a **read-only** run with at least one `--input` or
+`--input-dir` also needs an `item.completed` event whose `item.type` is `command_execution` and
+whose `item.exit_code` is 0; otherwise exit 4, `UNAVAILABLE: codex answered without reading its
+staged input (no command completed with exit 0; rc 0 is NOT sufficient) — final message: …`
+(its first 300 characters, on one line). Build mode and runs with nothing staged are exempt.
+Known limit: an input codex could only consume through a non-shell tool (e.g. an image via
+`view_image`) would be refused by this gate.
 
 ### Deny-list and the data boundary
 
