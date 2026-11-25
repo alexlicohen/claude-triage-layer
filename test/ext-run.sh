@@ -562,7 +562,8 @@ chk "P0b codex's own sandbox flags are gone: no -s, no sandbox_workspace_write.*
   '! grep -q "^SANDBOX=" "$STUB_LOG" && ! grep -qx -- "ARG=-s" "$STUB_LOG" && ! grep -q "sandbox_workspace_write" "$STUB_LOG" && [ "$(grep -c -- "^ARG=--dangerously" "$STUB_LOG")" -eq 1 ]'
 chk "C1d --ephemeral --skip-git-repo-check --ignore-user-config --json, prompt on stdin (-)" \
   'grep -qx -- "ARG=--ephemeral" "$STUB_LOG" && grep -qx -- "ARG=--skip-git-repo-check" "$STUB_LOG" && grep -qx -- "ARG=--ignore-user-config" "$STUB_LOG" && grep -qx -- "ARG=--json" "$STUB_LOG" && grep -qx -- "LASTARG=-" "$STUB_LOG"'
-chk "C1e no web search outside verify" '! grep -q "web_search" "$STUB_LOG"'
+chk "C1e a read-only mode outside verify switches web search off: -c web_search=\"disabled\", once, never live" \
+  '[ "$(grep -c "^CFG=web_search=" "$STUB_LOG")" -eq 1 ] && grep -qx "CFG=web_search=\"disabled\"" "$STUB_LOG"'
 chk "C1f -C pins the throwaway stage, which is also the process cwd" \
   '[ "$(grep "^CDIR=" "$STUB_LOG" | sed "s/^CDIR=//")" = "$STUB_PWD" ] && case "$STUB_PWD" in */ext-run.*/ws) true ;; *) false ;; esac'
 chk "C1g the stdin prompt carries the Workspace footer, the staged input and the non-interactive footer" \
@@ -901,10 +902,14 @@ chk "L5 an audit log dir that cannot be created is UNAVAILABLE (exit 4) and code
 CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext verify --prompt-file "$BRIEF"
 chk "C2 verify adds -c web_search=\"live\" on the fixture verify model/effort" \
   '[ "$RC" -eq 0 ] && grep -qx "CFG=web_search=\"live\"" "$STUB_LOG" && grep -qx "MODEL=gpt-fx-verify" "$STUB_LOG" && grep -qx "CFG=model_reasoning_effort=medium" "$STUB_LOG"'
+chk "C2w ...and verify alone keeps it live: no web_search=\"disabled\", exactly one web_search setting" \
+  '! grep -q "web_search=\"disabled\"" "$STUB_LOG" && [ "$(grep -c "^CFG=web_search=" "$STUB_LOG")" -eq 1 ]'
 
 CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext review --vendor codex --prompt-file "$BRIEF" --effort xhigh
 chk "C3 review uses the fixture review model; --effort overrides the tiers effort (--vendor codex accepted)" \
   '[ "$RC" -eq 0 ] && grep -qx "MODEL=gpt-fx-review" "$STUB_LOG" && grep -qx "CFG=model_reasoning_effort=xhigh" "$STUB_LOG" && ! grep -q "CFG=model_reasoning_effort=high" "$STUB_LOG"'
+chk "C3w review mode passes -c web_search=\"disabled\" and never live" \
+  'grep -qx "CFG=web_search=\"disabled\"" "$STUB_LOG" && ! grep -q "web_search=\"live\"" "$STUB_LOG"'
 
 CODEX_BOUNDARY_CLEARED=1 TRIAGE_TIERS="$FIX" CODEX_STUB_MODE=ok run_ext review --prompt-file "$BRIEF" --effort max
 chk "C3a codex accepts --effort max and passes it through unchanged" \
@@ -1067,6 +1072,8 @@ chk "C15e build mode is not subject to the read gate (--input, no command: exit 
   '[ "$RC" -eq 0 ] && [ "$(printf "%s\n" "$OUT" | head -1)" = "I could not read inputs/note.txt" ] && ! printf "%s\n" "$ERR" | grep -q "^UNAVAILABLE"'
 chk "C16b a build run passes -c features.apps=false and -c features.plugins=false" \
   'grep -qx "CFG=features.apps=false" "$STUB_LOG" && grep -qx "CFG=features.plugins=false" "$STUB_LOG"'
+chk "C16c a build run passes -c web_search=\"disabled\" and never live" \
+  'grep -qx "CFG=web_search=\"disabled\"" "$STUB_LOG" && ! grep -q "web_search=\"live\"" "$STUB_LOG"'
 
 # --- B*: build mode — the disposable worktree ----------------------------------
 BUILD=$(new_tmp)

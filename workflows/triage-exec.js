@@ -61,6 +61,22 @@ const atLeast = (level, floor) => (LEVELS.indexOf(level) >= LEVELS.indexOf(floor
 // pre-Wave-12 tier name on Claude (top on Claude IS Fable), `<vendor>:<level>` off it.
 const tierName = (level, vendor) => (vendor === 'claude' ? (level === 'top' ? 'fable' : level) : `${vendor}:${level}`)
 
+// A string args is never accepted, but its cause is named (Wave 29). The Workflow
+// harness passes an args that is not valid JSON through as the raw string (valid JSON
+// arrives as an object), so a bare "got string" hid a plan one closing brace short for
+// three launches. Parse it only to diagnose: the parser's error, the length and the
+// tail (truncation and unbalanced braces show at the end), or double-encoding.
+function stringArgsCause(s) {
+  let parsed
+  try {
+    parsed = JSON.parse(s)
+  } catch (e) {
+    const tail = s.length > 60 ? `…${s.slice(-60)}` : s
+    return `the plan arrived as a string because it is not valid JSON (${String((e && e.message) || e)}; ${s.length} chars, ending ${JSON.stringify(tail)}) — usually a truncated plan or unbalanced braces/brackets; fix the JSON and relaunch.`
+  }
+  return `the plan arrived double-encoded (a string that parses as JSON to ${typeName(parsed)}) — pass the plan object itself, not a JSON-encoded string of it.`
+}
+if (typeof args === 'string') bad(`args must be a plan object (got string): ${stringArgsCause(args)}`)
 if (!args || typeof args !== 'object' || Array.isArray(args)) bad(`args must be a plan object (got ${typeName(args)}).`)
 if (!Array.isArray(args.subtasks) || args.subtasks.length === 0) bad('args.subtasks must be a non-empty array.')
 if (args.checks != null && !(Array.isArray(args.checks) && args.checks.every(isStr))) bad('args.checks must be an array of non-empty shell-command strings.')

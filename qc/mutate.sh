@@ -213,7 +213,10 @@ fi
 # needs an item.completed command_execution with exit_code 0: the gate itself, the
 # exit_code condition, the read-only restriction, the staged-input condition, the
 # item.completed type); 405-406 the codex features.apps / features.plugins flags.
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165 166 167 168 169 170 171 172 173 174 175 177 178 179 180 182 183 184 185 187 189 190 191 192 193 194 195 196 197 198 199 200 202 203 204 205 206 209 210 211 212 213 214 215 216 217 218 219 220 221 222 223 224 225 226 227 228 229 230 231 232 233 234 235 236 237 238 239 240 241 242 243 244 245 246 247 248 249 250 251 252 253 254 255 256 257 258 259 260 261 262 263 264 265 266 267 268 269 270 271 272 273 274 275 276 277 278 279 280 281 282 283 284 285 286 287 288 289 290 291 292 293 294 296 297 298 299 300 301 302 304 306 307 308 309 310 311 312 313 314 315 316 317 318 319 320 321 322 323 324 325 326 327 328 329 330 331 332 333 334 335 336 337 338 339 340 341 342 343 344 345 346 350 351 353 354 356 357 358 359 361 362 363 364 365 366 367 368 369 370 371 372 373 374 375 376 377 378 379 380 381 382 383 384 385 386 387 388 389 390 391 392 393 394 395 396 397 398 399 400 401 402 403 404 405 406 407"
+# Wave 29: 408-409 cover triage-exec's string-args diagnosis (a string plan gets the
+# generic message; the invalid-JSON diagnosis loses its length and tail); 410-411
+# ext-run's web search setting (off flag dropped outside verify; off flag in verify too).
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 15 17 18 19 20 21 22 23 24 25 26 28 29 31 32 33 34 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165 166 167 168 169 170 171 172 173 174 175 177 178 179 180 182 183 184 185 187 189 190 191 192 193 194 195 196 197 198 199 200 202 203 204 205 206 209 210 211 212 213 214 215 216 217 218 219 220 221 222 223 224 225 226 227 228 229 230 231 232 233 234 235 236 237 238 239 240 241 242 243 244 245 246 247 248 249 250 251 252 253 254 255 256 257 258 259 260 261 262 263 264 265 266 267 268 269 270 271 272 273 274 275 276 277 278 279 280 281 282 283 284 285 286 287 288 289 290 291 292 293 294 296 297 298 299 300 301 302 304 306 307 308 309 310 311 312 313 314 315 316 317 318 319 320 321 322 323 324 325 326 327 328 329 330 331 332 333 334 335 336 337 338 339 340 341 342 343 344 345 346 350 351 353 354 356 357 358 359 361 362 363 364 365 366 367 368 369 370 371 372 373 374 375 376 377 378 379 380 381 382 383 384 385 386 387 388 389 390 391 392 393 394 395 396 397 398 399 400 401 402 403 404 405 406 407 408 409 410 411"
 RUN_IDS="$ALL_IDS"
 if [ -n "$ONLY" ]; then
   RUN_IDS="$ONLY"
@@ -511,6 +514,8 @@ mut_file() {
     399) echo "drift.sh" ;;
     400) echo "skills/triage-plan/SKILL.md" ;;
     401|402|403|404|405|406|407) echo "scripts/ext-run.sh" ;;
+    408|409) echo "workflows/triage-exec.js" ;;
+    410|411) echo "scripts/ext-run.sh" ;;
     *) echo "" ;;
   esac
 }
@@ -900,6 +905,10 @@ mut_desc() {
     405) echo "ext-run.sh: codex_invoke drops -c features.apps=false (the account's app connectors are back in the confined run)" ;;
     406) echo "ext-run.sh: codex_invoke drops -c features.plugins=false" ;;
     407) echo "ext-run.sh: the read gate counts an item.started command (never completed) as a read" ;;
+    408) echo "triage-exec.js: a string args gets only the generic 'must be a plan object (got string)' (no invalid-JSON / double-encoded diagnosis)" ;;
+    409) echo "triage-exec.js: the invalid-JSON diagnosis drops the string's length and tail" ;;
+    410) echo "ext-run.sh: codex_invoke drops -c web_search=\"disabled\" outside verify (codex's web tool back at its default)" ;;
+    411) echo "ext-run.sh: codex_invoke passes -c web_search=\"disabled\" in verify too (verify loses live search)" ;;
     *) echo "" ;;
   esac
 }
@@ -955,6 +964,8 @@ mut_suite() {
     285|286|287|288) echo "reviewstage" ;;
     289|290|291|292|293|294) echo "extrun" ;;
     401|402|403|404|405|406|407) echo "extrun" ;;
+    408|409) echo "scenarios" ;;
+    410|411) echo "extrun" ;;
     296|297|298|299|300|301|302|304) echo "roundtrip" ;;
     306|307|308|309|310|311|312|313|314|315|316|317|318|319|320) echo "stagewt" ;;
     321|322|323|324|325|326|327|328) echo "scenarios" ;;
@@ -3759,6 +3770,34 @@ MUT406
 MUT407
       mut_replace_block "$target" '    read_ok=$(jq -rR '\''fromjson? | select(type == "object" and .type == "item.completed"' 1 "$rep"
       ;;
+    408)
+      # triage-exec.js: a string args falls through to the generic type message.
+      cat > "$rep" <<'MUT408'
+// MUTATED: string args get the generic message
+MUT408
+      mut_replace_block "$target" "if (typeof args === 'string') bad(" 1 "$rep"
+      ;;
+    409)
+      # triage-exec.js: the invalid-JSON diagnosis keeps the parser error, drops length and tail.
+      cat > "$rep" <<'MUT409'
+    return `the plan arrived as a string because it is not valid JSON (${String((e && e.message) || e)}) — fix the JSON and relaunch.` // MUTATED: no length or tail
+MUT409
+      mut_replace_block "$target" '    return `the plan arrived as a string because it is not valid JSON (' 1 "$rep"
+      ;;
+    410)
+      # ext-run.sh: codex_invoke drops the web-search-off flag outside verify.
+      cat > "$rep" <<'MUT410'
+    : # MUTATED: web search left at the default
+MUT410
+      mut_replace_block "$target" "    set -- \"\$@\" -c 'web_search=\"disabled\"'" 1 "$rep"
+      ;;
+    411)
+      # ext-run.sh: codex_invoke passes the web-search-off flag in verify too (last -c wins).
+      cat > "$rep" <<'MUT411'
+    set -- "$@" -c 'web_search="live"' -c 'web_search="disabled"' # MUTATED: web search off in verify too
+MUT411
+      mut_replace_block "$target" "    set -- \"\$@\" -c 'web_search=\"live\"'" 1 "$rep"
+      ;;
     *)
       return 1
       ;;
@@ -4158,6 +4197,10 @@ verify_mutation() {
     405) grep -qF 'MUTATED: apps feature left on' "$target" && lacks '  set -- "$@" -c features.apps=false -c features.plugins=false' "$target" ;;
     406) grep -qF 'MUTATED: plugins feature left on' "$target" && lacks '  set -- "$@" -c features.apps=false -c features.plugins=false' "$target" ;;
     407) grep -qF 'MUTATED: started counts' "$target" && lacks 'select(type == "object" and .type == "item.completed"' "$target" ;;
+    408) grep -qF 'MUTATED: string args get the generic message' "$target" && lacks "if (typeof args === 'string') bad(" "$target" ;;
+    409) grep -qF 'MUTATED: no length or tail' "$target" && lacks 'chars, ending ${JSON.stringify(tail)}' "$target" ;;
+    410) grep -qF 'MUTATED: web search left at the default' "$target" && lacks "    set -- \"\$@\" -c 'web_search=\"disabled\"'" "$target" ;;
+    411) grep -qF 'MUTATED: web search off in verify too' "$target" && grep -qF -- "-c 'web_search=\"live\"' -c 'web_search=\"disabled\"'" "$target" ;;
     *) return 1 ;;
   esac
 }

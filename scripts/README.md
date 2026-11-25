@@ -267,12 +267,16 @@ Every model id and effort is read from the tiers file: `$TRIAGE_TIERS`, else
 
 | Mode | codex flags (besides the common set) | Workspace | Timeout | Writes |
 |---|---|---|---|---|
-| `review` | — | staging dir | 8m | no |
-| `read` | `--output-schema` with `--schema` | staging dir | 5m | no |
+| `review` | `-c web_search="disabled"` | staging dir | 8m | no |
+| `read` | `-c web_search="disabled"`; `--output-schema` with `--schema` | staging dir | 5m | no |
 | `verify` | `-c web_search="live"` | staging dir | 5m | no |
-| `critique` | — | staging dir | 8m | no |
-| `fuzz` | — | staging dir | 8m | no |
-| `build` | — | **disposable git worktree** | 20m | **yes** |
+| `critique` | `-c web_search="disabled"` | staging dir | 8m | no |
+| `fuzz` | `-c web_search="disabled"` | staging dir | 8m | no |
+| `build` | `-c web_search="disabled"` | **disposable git worktree** | 20m | **yes** |
+
+Web search is explicit in every mode: `live` in `verify` (its job), `disabled` everywhere else
+(left at codex's default, a confined review run on 0.171.0 still listed a web tool). The values
+are the 0.171.0 binary's `WebSearchMode` enum (`disabled`, `cached`, `indexed`, `live`).
 
 **Every run:** `cd <workspace> && TMPDIR=<stage>/cx/tmp sandbox-exec -f <profile> <codex>
 exec -C <workspace> --dangerously-bypass-approvals-and-sandbox -m <model> -c

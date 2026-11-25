@@ -397,6 +397,42 @@ const statusOf = (result, id) => (result.subtasks.find(s => s.id === id) || {}).
   }
 }
 
+// ---- Scenario 13s (wave 29): a STRING args is still refused, but the message names
+// the cause. The harness hands args that are not valid JSON through as the raw string,
+// so an invalid-JSON string gets the parser's error, its length and its tail; a string
+// of valid JSON is a double-encoded plan. Non-string non-objects keep the old wording.
+{
+  const plan = { subtasks: [ST('t1', 'builder', ['a.js'])], checks: ['make test'] }
+  const short = JSON.stringify(plan).slice(0, -1) // one closing brace short
+  let parseMsg = ''
+  try { JSON.parse(short) } catch (e) { parseMsg = e.message }
+  const tail = short.slice(-60)
+  const r1 = await runExpectingThrow(short)
+  chk('S13s-1: an invalid-JSON string plan throws before any spawn, still "must be a plan object (got string)"',
+    r1.threw && r1.message.startsWith('triage-exec: args must be a plan object (got string): ') && r1.calls.length === 0)
+  chk('S13s-2: ...and says it is not valid JSON, with the parser\'s own error message',
+    parseMsg.length > 0 && r1.message.includes('arrived as a string because it is not valid JSON') && r1.message.includes(parseMsg))
+  chk('S13s-3: ...and gives the string\'s length and its last 60 characters',
+    short.length > 60 && r1.message.includes(`${short.length} chars`) && r1.message.includes(JSON.stringify(`…${tail}`)) &&
+    !r1.message.includes(short.slice(0, short.length - 61)))
+  chk('S13s-4: ...and is not mistaken for double-encoding', !r1.message.includes('double-encoded'))
+
+  const r2 = await runExpectingThrow(JSON.stringify(plan))
+  chk('S13s-5: a valid-JSON string plan is refused (never run) as double-encoded: pass the object itself',
+    r2.threw && r2.calls.length === 0 && r2.message.startsWith('triage-exec: args must be a plan object (got string): ') &&
+    r2.message.includes('double-encoded') && r2.message.includes('pass the plan object itself') && !r2.message.includes('not valid JSON'))
+
+  const r3 = await runExpectingThrow('{"subtasks"')
+  chk('S13s-6: a short invalid string is quoted whole (no ellipsis) with its length',
+    r3.threw && r3.message.includes('11 chars') && r3.message.includes(JSON.stringify('{"subtasks"')) && !r3.message.includes('…'))
+
+  for (const [name, a, want] of [['undefined', undefined, 'undefined'], ['null', null, 'null'], ['an array', [plan], 'an array'], ['a number', 42, 'number']]) {
+    const r = await runExpectingThrow(a)
+    chk(`S13s-7: ${name} args keeps the unchanged message "(got ${want})." with no JSON diagnosis`,
+      r.threw && r.calls.length === 0 && r.message.startsWith(`triage-exec: args must be a plan object (got ${want}).\n`) && !r.message.includes('JSON'))
+  }
+}
+
 // ---- Scenario 14 (wave 9): a valid minimal plan gets ids assigned, and effort is
 // passed through to agent() only when the plan set one.
 {
